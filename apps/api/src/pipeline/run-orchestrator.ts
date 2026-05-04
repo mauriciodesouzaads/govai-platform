@@ -166,6 +166,8 @@ export async function executeGovernedRun(
           inputText: effectiveInput,
           baseUrl: deps.env.GOVAI_PROVIDER_BASE_URL ?? '',
           headers: { 'x-api-key': ANTHROPIC_KEYS[0] },
+          workspaceId: body.workspace_id,
+          testMode: deps.env.NODE_ENV === 'test',
         });
       } catch (err) {
         if (err instanceof ProviderInvokeError) {

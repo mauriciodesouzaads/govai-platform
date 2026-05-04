@@ -8,9 +8,22 @@ import { generateApiKey } from '@govai/core-identity';
 import { startPostgres, stopPostgres, freshSeedHex, type TestDb } from '../setup.js';
 import {
   startProviderProtocolServer,
+  setErrorOverride,
+  clearErrorOverrides,
   type ProviderProtocolServer,
 } from '../fixtures/provider-protocol-server.js';
 import type { GovAIEnv } from '@govai/config';
+
+export async function configureProviderError(
+  _stack: Stack,
+  opts: { workspaceId: string; status: number; body?: Record<string, unknown> },
+): Promise<void> {
+  setErrorOverride(opts.workspaceId, { status: opts.status, body: opts.body });
+}
+
+export function clearProviderErrors(): void {
+  clearErrorOverrides();
+}
 
 export type SeededOrg = {
   org_id: string;

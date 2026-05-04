@@ -6,6 +6,7 @@ export default defineConfig({
     globals: false,
     include: [
       'packages/*/src/**/*.test.ts',
+      'apps/*/src/**/*.test.ts',
       'tests/integration/**/*.test.ts',
     ],
     exclude: [

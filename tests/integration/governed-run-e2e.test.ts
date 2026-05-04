@@ -7,6 +7,8 @@ import {
   seedOrg,
   setBaselineDlpAction,
   inject,
+  configureProviderError,
+  clearProviderErrors,
   type Stack,
 } from './helpers/server-fixture.js';
 import { setLocalAppOrgId } from '@govai/core-tenant';
@@ -182,5 +184,69 @@ describe('Governed Run E2E', () => {
     const body = res.body as { error: string; capability: string };
     expect(body.error).toBe('capability_not_registered');
     expect(body.capability).toBe('imaginary.capability');
+  });
+
+  it('E2E.7 — provider returns HTTP 429 → 502 + run.failed + audit chain still valid', async () => {
+    const org = await seedOrg(stack);
+    try {
+      await configureProviderError(stack, { workspaceId: org.workspace_id, status: 429 });
+
+      const res = await inject(stack, 'POST', '/v1/runs', org.api_key, {
+        workspace_id: org.workspace_id,
+        capability: 'anthropic.messages.create',
+        model: 'claude-fixture-1',
+        input: 'test 429 path',
+      });
+
+      expect(res.statusCode).toBe(502);
+      const body = res.body as {
+        status: string;
+        run_id: string;
+        audit_event_id: string;
+        provider_invocation_id: string;
+        policy_decision: { kind: string };
+      };
+      expect(body.status).toBe('failed');
+      expect(body.policy_decision.kind).toBe('allow');
+      expect(body.audit_event_id).toBeDefined();
+      expect(body.provider_invocation_id).toBeDefined();
+
+      // provider_invocation row carries status_code=429 and an error_class.
+      const c = await stack.db.appPool.connect();
+      try {
+        await c.query('BEGIN');
+        await setLocalAppOrgId(c, org.org_id);
+        const inv = await c.query<{ status_code: number; error_class: string | null }>(
+          `SELECT status_code, error_class FROM govai.provider_invocations WHERE id = $1::uuid`,
+          [body.provider_invocation_id],
+        );
+        await c.query('COMMIT');
+        expect(inv.rows[0]?.status_code).toBe(429);
+        expect(inv.rows[0]?.error_class).toBeTruthy();
+      } finally {
+        c.release();
+      }
+
+      // Audit event run.failed is on the chain via the public route.
+      const events = await inject(stack, 'GET', '/v1/audit-events?chain_category=run', org.api_key);
+      expect(events.statusCode).toBe(200);
+      const ev = events.body as { events: Array<{ event_type: string }> };
+      expect(ev.events.map((e) => e.event_type)).toContain('run.failed');
+
+      // verifyFullChain is still green — failure event didn't corrupt the chain.
+      const c2 = await stack.db.appPool.connect();
+      try {
+        await c2.query('BEGIN');
+        await setLocalAppOrgId(c2, org.org_id);
+        const result = await verifyFullChain(c2, kms, chainIdFor(org.org_id, 'run'));
+        await c2.query('COMMIT');
+        expect(result.valid).toBe(true);
+      } finally {
+        c2.release();
+      }
+    } finally {
+      // Clean up the override so following tests aren't poisoned.
+      clearProviderErrors();
+    }
   });
 });

@@ -27,6 +27,30 @@ type ErrorPayload = {
   body: Record<string, unknown>;
 };
 
+/**
+ * Per-workspace error injection. Tests call setErrorOverride(workspaceId, ...)
+ * before exercising the route; the handler matches on `x-test-workspace-id`
+ * header (forwarded by provider-invoke ONLY in NODE_ENV=test + loopback URL).
+ */
+const errorOverrides = new Map<string, ErrorPayload>();
+
+export function setErrorOverride(
+  workspaceId: string,
+  override: { status: number; body?: Record<string, unknown> },
+): void {
+  errorOverrides.set(workspaceId, {
+    status: override.status,
+    body:
+      override.body ?? {
+        error: { type: 'simulated', status: override.status },
+      },
+  });
+}
+
+export function clearErrorOverrides(): void {
+  errorOverrides.clear();
+}
+
 function errorFor(code: string | undefined): ErrorPayload | null {
   if (!code) return null;
   switch (code) {
@@ -41,6 +65,12 @@ function errorFor(code: string | undefined): ErrorPayload | null {
     default:
       return null;
   }
+}
+
+function workspaceErrorFor(req: { headers: Record<string, string | string[] | undefined> }): ErrorPayload | null {
+  const wsId = req.headers['x-test-workspace-id'];
+  if (typeof wsId !== 'string') return null;
+  return errorOverrides.get(wsId) ?? null;
 }
 
 function sseChunk(data: unknown): string {
@@ -69,6 +99,11 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       reply.header('x-request-id', requestId);
       reply.header('anthropic-request-id', requestId);
 
+      const wsErr = workspaceErrorFor(req);
+      if (wsErr) {
+        reply.code(wsErr.status);
+        return wsErr.body;
+      }
       const errCode = req.headers['x-test-error'] as string | undefined;
       const err = errorFor(errCode);
       if (err) {
@@ -122,6 +157,11 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       reply.header('x-request-id', requestId);
       reply.header('openai-request-id', requestId);
 
+      const wsErr = workspaceErrorFor(req);
+      if (wsErr) {
+        reply.code(wsErr.status);
+        return wsErr.body;
+      }
       const errCode = req.headers['x-test-error'] as string | undefined;
       const err = errorFor(errCode);
       if (err) {
@@ -170,6 +210,11 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       const requestId = randomUUID();
       reply.header('x-request-id', requestId);
 
+      const wsErr = workspaceErrorFor(req);
+      if (wsErr) {
+        reply.code(wsErr.status);
+        return wsErr.body;
+      }
       const errCode = req.headers['x-test-error'] as string | undefined;
       const err = errorFor(errCode);
       if (err) {

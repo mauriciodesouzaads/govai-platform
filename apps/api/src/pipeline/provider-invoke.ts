@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { sha256 } from '@govai/core-audit';
+import { isLoopbackUrl } from './capability-resolution.js';
 
 export type ProviderInvokeInput = {
   capability: 'anthropic.messages.create' | 'openai.responses.create' | 'openai.chat.completions.create';
@@ -11,7 +12,41 @@ export type ProviderInvokeInput = {
   inputText: string;
   baseUrl: string;
   headers?: Record<string, string>;
+  /**
+   * Test-only discriminator forwarded to the hermetic provider-protocol server
+   * via `x-test-workspace-id` so suites can inject per-workspace HTTP errors.
+   * Forwarded ONLY when buildProviderHeaders sees NODE_ENV='test' AND a loopback
+   * baseUrl. In any other environment it is silently dropped.
+   */
+  workspaceId?: string;
+  /**
+   * Hermetic-mode signal. Defaults to false. The orchestrator sets this from
+   * `env.NODE_ENV === 'test'`; production callers leave it false.
+   */
+  testMode?: boolean;
 };
+
+/**
+ * Pure header builder — extracted so the hermetic-only forwarding rule can be
+ * unit-tested independently. Returns the header object that fetch() will send.
+ */
+export function buildProviderHeaders(input: {
+  baseUrl: string;
+  workspaceId?: string;
+  testMode?: boolean;
+  baseHeaders?: Record<string, string>;
+}): Record<string, string> {
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    ...input.baseHeaders,
+  };
+  // Forward x-test-workspace-id ONLY in NODE_ENV=test AND when the provider is
+  // a loopback URL. Both conditions must hold; either one missing → drop.
+  if (input.testMode === true && isLoopbackUrl(input.baseUrl) && input.workspaceId) {
+    headers['x-test-workspace-id'] = input.workspaceId;
+  }
+  return headers;
+}
 
 export type ProviderInvokeResult = {
   invocationId: string;
@@ -121,16 +156,15 @@ export async function invokeProvider(input: ProviderInvokeInput): Promise<Provid
   const invocationId = randomUUID();
 
   const t0 = Date.now();
+  const headers = buildProviderHeaders({
+    baseUrl: input.baseUrl,
+    workspaceId: input.workspaceId,
+    testMode: input.testMode,
+    baseHeaders: input.headers,
+  });
   let res: Response;
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...input.headers,
-      },
-      body: bodyJson,
-    });
+    res = await fetch(url, { method: 'POST', headers, body: bodyJson });
   } catch (err) {
     // Network-level failure (DNS, connection refused, TLS, etc.). Convert into
     // a structured ProviderInvokeError so the orchestrator's failure path runs

@@ -34,3 +34,15 @@ a partir dos campos do row e compara contra `canonical_bytes` armazenado.
 
 **Native reconstruction PASSED.** `canonical_bytes` is redundant but kept as defense.
 
+## CR.1 outcome (run on 2026-05-04T06:41:02.125Z)
+
+**Native reconstruction PASSED.** `canonical_bytes` is redundant but kept as defense.
+
+## CR.1 outcome (run on 2026-05-04T06:44:03.567Z)
+
+**Native reconstruction PASSED.** `canonical_bytes` is redundant but kept as defense.
+
+## CR.1 outcome (run on 2026-05-04T06:44:20.135Z)
+
+**Native reconstruction PASSED.** `canonical_bytes` is redundant but kept as defense.
+
