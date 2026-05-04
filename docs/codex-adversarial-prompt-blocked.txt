@@ -1,0 +1,26 @@
+You are an ADVERSARIAL reviewer attacking the GovAI Platform baseline kernel monorepo at the working directory. Architecture source: `../docs/govai_adp_v3.md`. Operational prompt: `../docs/govai_claude_code_prompt_v2.md`.
+
+Try to BREAK the codebase. Focus on:
+
+1. RLS bypasses — find any path where org A can read or write org B audit events / runs / payloads.
+2. Audit chain corruption — race conditions between TS HMAC compute and SQL insert; ways to skip pg_advisory_xact_lock; ways to forge previous_hmac; ways to make verifyFullChain return valid for a tampered chain.
+3. Append-only bypasses — ways for govai_app to INSERT/UPDATE/DELETE audit_events directly; ways to disable triggers; ways to bypass FORCE ROW LEVEL SECURITY.
+4. Privilege escalation — govai_app → govai_audit_writer; through SECURITY DEFINER functions; through search_path manipulation.
+5. Crypto-shred bypasses — calling crypto_shred without RBAC enforcement; race conditions; double-shred; shred without admin chain audit.
+6. ReDoS in custom DLP — even with RE2; via input_max_chars limits; via chain-of-detectors blowup.
+7. JWT bypasses — alg=none, alg confusion (HS256 with public key as secret), missing aud/iss/exp checks, jti replay.
+8. KMS leaks — KMS_DEV_SEED accidentally accepted in production; HKDF salt collisions; envelope encryption mistakes (IV reuse, missing AEAD tag check).
+9. Tenant context leaks — `app.org_id` set on connection that gets pooled; transactions not rolled back; SET LOCAL not enforced.
+10. Capability override upgrade attacks — bypassing the downgrade-only guard.
+11. Boot fail bypasses — production with NODE_ENV unset; DevKms accidentally falling through.
+12. canonical-json determinism breaks — Unicode normalization edge cases, key ordering in non-ASCII, undefined vs null asymmetries.
+
+For each attack vector, indicate:
+- Attack class (e.g., "RLS bypass via search_path", "race condition in HMAC commit").
+- Severity (CRITICAL / HIGH / MEDIUM / LOW).
+- Concrete reproduction steps or code path that enables the attack.
+- Suggested fix.
+
+Be brutal. Assume malicious tenant, malicious admin, malicious developer with code-write access to one DLP custom detector.
+
+Limit your investigation to ~10 minutes of file reads. Do not run tests. Output a ranked list at the end.

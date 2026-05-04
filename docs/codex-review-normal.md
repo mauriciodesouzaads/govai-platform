@@ -1,0 +1,35 @@
+**Summary**  
+The audit-chain SQL kernel is mostly faithful to ADP §7/§8: RLS FORCE is enabled, `audit_events_select_writer` exists, append-only triggers are present, `canonical_bytes` was added, and `verifyFullChain` reads it directly. The implementation is not an acceptable baseline, though, because multiple ADP-supported public runtime paths are registered but return 503 placeholders, while the capability registry advertises them as `supported`. Several required canary tests are present, but important acceptance tests are missing, especially crypto-shred RBAC, provider protocol, concurrency, KMS production boot failure, and custom DLP audit flow. I did not run tests, per request.
+
+**Findings**
+
+- **CRITICAL, fix now:** Public runtime routes are placeholders despite ADP forbidding public placeholders and requiring supported runtime code. `/v1/runs`, `/passthrough/anthropic/*`, `/passthrough/openai/*`, `/v1/audit-events`, admin shred, and admin DLP all return `pipeline_incomplete_in_baseline`/503. This contradicts registry claims like `anthropic.messages.create`, `openai.responses.create`, and chat completions marked `supported`.  
+  Refs: [runs.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/routes/runs.ts:3), [passthrough-anthropic.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/routes/passthrough-anthropic.ts:3), [passthrough-openai.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/routes/passthrough-openai.ts:3), [registry.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/packages/core-governance/src/registry.ts:4)
+
+- **CRITICAL, fix now:** Crypto-shredding SQL exists, but the required app-layer RBAC and denial-audit workflow does not. ADP §8.2 requires JWT/session validation, `admin`/`data_protection_officer` check, `admin.action_denied` audit on denial, and authorized call choreography. The route is only a 503 placeholder, so this is not implemented end to end.  
+  Refs: [admin-audit-shred.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/routes/admin-audit-shred.ts:3), [0001_audit_chain.sql](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/db/migrations/0001_audit_chain.sql:400)
+
+- **HIGH, fix now:** `GET /v1/capabilities` does not resolve per-org effective capabilities. It returns `org_id: null`, base registry only, and never applies DB overrides, so downgrade-only override behavior is tested only as a helper, not through the public contract required by ADP §9.4/§10.  
+  Ref: [capabilities.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/routes/capabilities.ts:5)
+
+- **HIGH, fix now:** Production KMS boot failure is incomplete. `loadEnv` correctly fails if `KMS_DEV_SEED` or `GOVAI_KMS_PROVIDER=dev` is set in production, but `GOVAI_KMS_PROVIDER=aws|gcp|azure` returns `ProductionKmsRequired` and `buildServer()` can boot; failure occurs only when KMS is used. ADP §12.6 requires production without real KMS to fail at boot.  
+  Ref: [kms/index.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/packages/core-identity/src/kms/index.ts:198)
+
+- **HIGH, fix now:** Custom DLP registration is not implemented as a runtime feature. The table and RE2 compiler helper exist, but `POST /v1/admin/dlp-detectors` is a 503 placeholder; there is no RBAC, detector limit enforcement, version increment flow, audit event, or worker/cache invalidation path. This should not be accepted as “supported”; at most the contract/compiler are partial baseline pieces.  
+  Refs: [admin-dlp.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/routes/admin-dlp.ts:3), [0004_dlp_custom.sql](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/db/migrations/0004_dlp_custom.sql:5)
+
+- **MEDIUM, fix now:** Provider wrappers use real SDKs and include usage extraction, but provider readiness is incomplete. OpenAI has create methods for Responses and Chat Completions but no stream wrapper; Anthropic has stream wrapper. Passthrough credential rewrite helpers exist but are not wired into routes, so header rewrite, metadata capture, audit append, and provider-protocol tests are not real.  
+  Refs: [provider-openai index.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/packages/provider-openai/src/index.ts:20), [provider-anthropic index.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/packages/provider-anthropic/src/index.ts:20)
+
+- **MEDIUM, fix now:** Required test coverage is incomplete. Present and meaningful: RLS-FORCE canary, bootstrap idempotency, append-only direct-defense tests, `chainLockKey` 50000 fixture, JWT `alg=none`, capability validation, CPF/CNPJ checksum unit tests. Missing or not found: same-chain and multi-chain concurrency tests, crypto-shred success/failure/RBAC-denial tests, provider-protocol test server, custom DLP audit/registration tests, RS256 JWT acceptance/caller-alg hardening, canonical reconstruction test, and production KMS real-provider boot-fail test.
+
+- **LOW, fix now:** Capability override SQL grants `DELETE` on `capability_overrides` to `govai_app` even though no DELETE policy exists. RLS prevents deletion today, but the grant is unnecessary and weakens future defense-in-depth.  
+  Ref: [0003_capabilities_overrides.sql](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/db/migrations/0003_capabilities_overrides.sql:45)
+
+- **LOW, accept as documented limitation or tighten now:** DLP custom detectors use RE2, but baseline detector utilities still use native JS regex for digit stripping/repeated-digit checks. If “no native JS RegExp” is meant globally, replace those with simple character loops; if it is meant only for custom detector engines, this is acceptable.  
+  Ref: [baseline-detectors.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/packages/dlp-br/src/baseline-detectors.ts:22)
+
+Positive notes: [0001_audit_chain.sql](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/db/migrations/0001_audit_chain.sql:83) has FORCE RLS, [audit_events_select_writer](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/apps/api/src/db/migrations/0001_audit_chain.sql:115), append-only triggers, `restrict_update`, `audit_append_locked`, `audit_event_payload_crypto_shred`, and `canonical_bytes`. [verify.ts](/Users/mauriciodesouza/Projects/GovAI%20GRC%20Platform/govai-platform/packages/core-audit/src/verify.ts:34) verifies from `canonical_bytes`, which satisfies the §14.5 fallback direction.
+
+**Verdict: REJECT**  
+The SQL audit kernel is close, but the baseline cannot be accepted while runtime capabilities are advertised as supported yet implemented as public 503 placeholders.
