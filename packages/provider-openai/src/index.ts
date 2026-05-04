@@ -1,0 +1,93 @@
+import OpenAI from 'openai';
+import type { UsageSource } from '@govai/core-events';
+
+export type OpenAIAuth = { apiKey: string; organization?: string };
+
+export type NormalizedOpenAIUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+};
+
+export type OpenAIErrorClass =
+  | 'auth'
+  | 'rate_limit'
+  | 'invalid_request'
+  | 'overloaded'
+  | 'server_error'
+  | 'unknown';
+
+export class OpenAIProvider {
+  readonly client: OpenAI;
+  constructor(auth: OpenAIAuth) {
+    this.client = new OpenAI({ apiKey: auth.apiKey, organization: auth.organization });
+  }
+
+  async chatCompletionsCreate(input: Parameters<OpenAI['chat']['completions']['create']>[0]) {
+    return this.client.chat.completions.create(input);
+  }
+
+  async responsesCreate(input: Parameters<OpenAI['responses']['create']>[0]) {
+    return this.client.responses.create(input);
+  }
+}
+
+type UsageInput =
+  | { input_tokens?: number; output_tokens?: number; total_tokens?: number }
+  | { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+
+export function extractOpenAIUsage(response: { usage?: UsageInput | null }): {
+  normalized: NormalizedOpenAIUsage;
+  source: UsageSource;
+} | null {
+  const u = response.usage;
+  if (!u) return null;
+  // Responses API
+  if ('input_tokens' in u && typeof u.input_tokens === 'number') {
+    const inT = u.input_tokens ?? 0;
+    const outT = (u as { output_tokens?: number }).output_tokens ?? 0;
+    return {
+      normalized: { input_tokens: inT, output_tokens: outT, total_tokens: inT + outT },
+      source: 'provider_direct',
+    };
+  }
+  // Chat Completions
+  if ('prompt_tokens' in u && typeof u.prompt_tokens === 'number') {
+    const inT = u.prompt_tokens ?? 0;
+    const outT = (u as { completion_tokens?: number }).completion_tokens ?? 0;
+    return {
+      normalized: { input_tokens: inT, output_tokens: outT, total_tokens: inT + outT },
+      source: 'provider_direct',
+    };
+  }
+  return null;
+}
+
+export function classifyOpenAIError(err: unknown): OpenAIErrorClass {
+  if (typeof err !== 'object' || err === null) return 'unknown';
+  const e = err as { status?: number };
+  if (e.status === 401 || e.status === 403) return 'auth';
+  if (e.status === 429) return 'rate_limit';
+  if (e.status === 400 || e.status === 422) return 'invalid_request';
+  if (e.status === 503) return 'overloaded';
+  if (typeof e.status === 'number' && e.status >= 500) return 'server_error';
+  return 'unknown';
+}
+
+export function rewritePassthroughHeaders(
+  inboundHeaders: Record<string, string | string[] | undefined>,
+  providerKey: string,
+  organization?: string,
+): { outbound: Record<string, string> } {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(inboundHeaders)) {
+    const key = k.toLowerCase();
+    if (key === 'authorization' || key === 'x-govai-api-key') continue;
+    if (key === 'host' || key === 'connection' || key === 'content-length') continue;
+    if (Array.isArray(v)) out[k] = v.join(', ');
+    else if (v !== undefined) out[k] = v;
+  }
+  out['authorization'] = `Bearer ${providerKey}`;
+  if (organization) out['openai-organization'] = organization;
+  return { outbound: out };
+}

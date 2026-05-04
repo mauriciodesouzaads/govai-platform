@@ -1,0 +1,89 @@
+import { z } from 'zod';
+
+const EnvSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+
+  KMS_DEV_SEED: z.string().optional(),
+  GOVAI_KMS_PROVIDER: z.enum(['dev', 'aws', 'gcp', 'azure']).default('dev'),
+
+  DATABASE_URL: z.string().min(1).optional(),
+  DATABASE_ADMIN_URL: z.string().min(1).optional(),
+  REDIS_URL: z.string().min(1).optional(),
+
+  API_PORT: z.coerce.number().int().min(1).max(65535).default(8080),
+  API_HOST: z.string().default('0.0.0.0'),
+  API_CORS_ORIGINS: z.string().default(''),
+  API_CORS_CREDENTIALS: z
+    .union([z.literal('true'), z.literal('false')])
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  JWT_ISSUER: z.string().default('https://govai.local'),
+  JWT_AUDIENCE: z.string().default('govai-api'),
+  JWT_PUBLIC_KEY_PEM: z.string().optional(),
+
+  ANTHROPIC_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
+  OTEL_SERVICE_NAME: z.string().default('govai-api'),
+  OTEL_TRACES_SAMPLER_ARG: z.coerce.number().min(0).max(1).default(1.0),
+
+  GOVAI_LIVE_TESTS: z
+    .union([z.literal('0'), z.literal('1')])
+    .default('0')
+    .transform((v) => v === '1'),
+});
+
+export type GovAIEnv = z.infer<typeof EnvSchema>;
+
+export class BootError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BootError';
+  }
+}
+
+export function loadEnv(source: NodeJS.ProcessEnv = process.env): GovAIEnv {
+  const parsed = EnvSchema.safeParse(source);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((i) => `${i.path.join('.')}: ${i.message}`)
+      .join('; ');
+    throw new BootError(`invalid environment: ${issues}`);
+  }
+  const env = parsed.data;
+
+  // Boot-fail conditions enforced regardless of subsystem.
+  if (env.NODE_ENV === 'production') {
+    if (env.KMS_DEV_SEED && env.KMS_DEV_SEED.length > 0) {
+      throw new BootError(
+        'KMS_DEV_SEED set in production. Remove env var. Runbook: docs/runbooks/kms-production.md',
+      );
+    }
+    if (env.GOVAI_KMS_PROVIDER === 'dev') {
+      throw new BootError(
+        'DevKMS detected in production. Configure GOVAI_KMS_PROVIDER. Runbook: docs/runbooks/kms-production.md',
+      );
+    }
+  }
+
+  return env;
+}
+
+export function originsFromCsv(csv: string): string[] {
+  return csv
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+export function assertCorsSafeForProd(env: GovAIEnv): void {
+  if (env.NODE_ENV !== 'production') return;
+  const origins = originsFromCsv(env.API_CORS_ORIGINS);
+  if (env.API_CORS_CREDENTIALS && origins.includes('*')) {
+    throw new BootError(
+      'CORS credentials=true with origin=* is unsafe in production. Set explicit origins.',
+    );
+  }
+}

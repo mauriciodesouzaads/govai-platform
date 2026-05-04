@@ -1,0 +1,28 @@
+{
+  "name": "@govai/tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run --reporter=default",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "@govai/config": "workspace:*",
+    "@govai/core-audit": "workspace:*",
+    "@govai/core-events": "workspace:*",
+    "@govai/core-governance": "workspace:*",
+    "@govai/core-identity": "workspace:*",
+    "@govai/core-tenant": "workspace:*",
+    "@govai/dlp-br": "workspace:*",
+    "@govai/signing": "workspace:*",
+    "@testcontainers/postgresql": "11.14.0",
+    "pg": "8.20.0",
+    "testcontainers": "11.14.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.15.6",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5"
+  }
+}

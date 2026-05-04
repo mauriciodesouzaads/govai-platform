@@ -1,0 +1,45 @@
+{
+  "name": "govai-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.33.2"
+  },
+  "scripts": {
+    "build": "pnpm -r --parallel build",
+    "lint": "eslint --max-warnings=0 .",
+    "typecheck": "pnpm -r --parallel typecheck",
+    "test": "vitest run --reporter=default",
+    "test:integration": "GOVAI_INTEGRATION=1 vitest run --reporter=default",
+    "test:live": "GOVAI_LIVE_TESTS=1 vitest run --reporter=default tests/live"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "@typescript-eslint/eslint-plugin": "8.13.0",
+    "@typescript-eslint/parser": "8.13.0",
+    "eslint": "9.13.0",
+    "prettier": "3.6.2",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "zod": "4.4.2"
+    },
+    "peerDependencyRules": {
+      "ignoreMissing": []
+    },
+    "onlyBuiltDependencies": [
+      "argon2",
+      "re2",
+      "esbuild",
+      "protobufjs",
+      "cpu-features",
+      "ssh2"
+    ]
+  }
+}

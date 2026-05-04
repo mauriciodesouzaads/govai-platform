@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": [],
+  "references": [
+    { "path": "./packages/config" },
+    { "path": "./packages/core-events" },
+    { "path": "./packages/core-tenant" },
+    { "path": "./packages/core-audit" },
+    { "path": "./packages/core-identity" },
+    { "path": "./packages/signing" },
+    { "path": "./packages/core-governance" },
+    { "path": "./packages/dlp-br" },
+    { "path": "./packages/provider-anthropic" },
+    { "path": "./packages/provider-openai" },
+    { "path": "./apps/api" }
+  ]
+}
