@@ -1,8 +1,14 @@
-# GovAI Platform — Baseline Enterprise Kernel
+# GovAI Platform
 
 Plataforma de governance de IA, modular, com audit chain append-only,
 RLS multi-tenant, KMS, capability registry, DLP-BR (CPF/CNPJ/email/telefone + RE2 custom),
 e providers Anthropic + OpenAI nativos.
+
+**Status:** Runtime Phase 1 (PR1 / `runtime-patch-1`) — Governed Run pipeline
+hermético `POST /v1/runs` + `GET /v1/audit-events` + `GET /v1/capabilities` por org +
+guard de planned-capability (apenas hermético). Passthrough e admin routes ainda em
+501 com schema estruturado apontando para PR2/PR3 (ver
+`docs/architecture/baseline-decisions.md#runtime-roadmap`).
 
 > Veja `../docs/govai_adp_v3.md` para a especificação canônica externa.
 > Veja `docs/architecture/baseline-decisions.md` para resoluções pinadas.

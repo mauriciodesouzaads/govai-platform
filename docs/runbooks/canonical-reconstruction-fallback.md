@@ -14,3 +14,23 @@ de canonical roundtrips em jsonb/timestamptz/bytea.
 
 **Como verificar:** verifyFullChain compara `sha256(canonical_bytes)` vs `canonical_hash`
 e `hmac_canonical_bytes` vs `hmac` em cada row.
+
+## CR.1 status (runtime-patch-1)
+
+`tests/integration/canonical-reconstruction.test.ts` (CR.1) reconstrói o canonical
+a partir dos campos do row e compara contra `canonical_bytes` armazenado.
+
+- Em runtime-patch-1, a reconstrução nativa **PASSOU** consistentemente.
+- `canonical_bytes` permanece como defense-in-depth — ainda é o caminho load-bearing
+  do `verifyFullChain` (mais barato e à prova de divergências futuras de driver
+  pg/jsonb).
+- O teste só append nesta seção em caso de **falha** futura, sinalizando que algo
+  no roundtrip do row mudou e merece investigação.
+## CR.1 outcome (run on 2026-05-04T05:58:35.950Z)
+
+**Native reconstruction PASSED.** `canonical_bytes` is redundant but kept as defense.
+
+## CR.1 outcome (run on 2026-05-04T06:01:22.781Z)
+
+**Native reconstruction PASSED.** `canonical_bytes` is redundant but kept as defense.
+

@@ -1,9 +1,11 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import helmet from '@fastify/helmet';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
-import { loadEnv, originsFromCsv, assertCorsSafeForProd, BootError } from '@govai/config';
-import { createKmsFromEnv } from '@govai/core-identity';
+import type { Pool } from 'pg';
+import { loadEnv, originsFromCsv, assertCorsSafeForProd, BootError, type GovAIEnv } from '@govai/config';
+import { createKmsFromEnv, type Kms } from '@govai/core-identity';
+import { createPool } from './db/client.js';
 import { healthRoute } from './routes/health.js';
 import { capabilitiesRoute } from './routes/capabilities.js';
 import { runsRoute } from './routes/runs.js';
@@ -13,15 +15,23 @@ import { adminDlpRoute } from './routes/admin-dlp.js';
 import { passthroughAnthropicRoute } from './routes/passthrough-anthropic.js';
 import { passthroughOpenaiRoute } from './routes/passthrough-openai.js';
 
-export async function buildServer() {
-  const env = loadEnv(process.env);
+export type ServerDeps = {
+  env: GovAIEnv;
+  kms: Kms;
+  pool: Pool;
+  policyCommitSha: string;
+};
+
+export type ServerOverrides = Partial<{
+  pool: Pool;
+  env: GovAIEnv;
+}>;
+
+export async function buildServer(overrides: ServerOverrides = {}): Promise<FastifyInstance> {
+  const env = overrides.env ?? loadEnv(process.env);
   assertCorsSafeForProd(env);
-  // KMS init valida fail-conditions em production.
   const kms = createKmsFromEnv(env);
 
-  // Probe at boot — production KMS that is not implemented yet must fail-fast,
-  // not on first use. This catches GOVAI_KMS_PROVIDER=aws|gcp|azure in production
-  // before serving any request.
   if (env.NODE_ENV === 'production') {
     await kms.deriveKey({
       purpose: 'audit_hmac',
@@ -30,6 +40,10 @@ export async function buildServer() {
       version: 1,
     });
   }
+
+  const pool =
+    overrides.pool ??
+    createPool({ connectionString: env.DATABASE_URL ?? '' });
 
   const app = Fastify({
     logger: { level: env.NODE_ENV === 'production' ? 'info' : 'debug' },
@@ -44,7 +58,9 @@ export async function buildServer() {
   });
   await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
 
-  app.decorate('govai', { env, kms });
+  const policyCommitSha = process.env['GOVAI_POLICY_COMMIT_SHA'] ?? 'runtime-patch-1';
+
+  app.decorate('govai', { env, kms, pool, policyCommitSha });
 
   await app.register(healthRoute);
   await app.register(capabilitiesRoute);
@@ -55,12 +71,18 @@ export async function buildServer() {
   await app.register(passthroughAnthropicRoute);
   await app.register(passthroughOpenaiRoute);
 
+  app.addHook('onClose', async () => {
+    if (!overrides.pool) {
+      await pool.end().catch(() => undefined);
+    }
+  });
+
   return app;
 }
 
 declare module 'fastify' {
   interface FastifyInstance {
-    govai: { env: ReturnType<typeof loadEnv>; kms: ReturnType<typeof createKmsFromEnv> };
+    govai: ServerDeps;
   }
 }
 

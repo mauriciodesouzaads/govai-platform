@@ -8,6 +8,7 @@
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
+    "@govai/api": "workspace:*",
     "@govai/config": "workspace:*",
     "@govai/core-audit": "workspace:*",
     "@govai/core-events": "workspace:*",
@@ -17,6 +18,7 @@
     "@govai/dlp-br": "workspace:*",
     "@govai/signing": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
+    "fastify": "5.8.5",
     "pg": "8.20.0",
     "testcontainers": "11.14.0"
   },

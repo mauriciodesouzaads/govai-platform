@@ -19,13 +19,21 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      include: ['packages/core-*/src/**/*.ts'],
-      exclude: ['**/*.test.ts', '**/*.d.ts'],
+      include: [
+        'packages/core-audit/src/**/*.ts',
+        'packages/core-governance/src/**/*.ts',
+        'packages/core-identity/src/**/*.ts',
+        'packages/dlp-br/src/**/*.ts',
+      ],
+      exclude: ['**/*.test.ts', '**/*.d.ts', 'packages/dlp-br/scripts/**'],
       thresholds: {
-        lines: 0,
-        functions: 0,
-        branches: 0,
-        statements: 0,
+        // Active gate per runtime-patch-1 §3.1.6.
+        // append.ts and verify.ts are exercised by integration tests; configured
+        // accordingly so the gate measures real production paths.
+        lines: 80,
+        functions: 80,
+        branches: 70,
+        statements: 80,
       },
     },
   },
