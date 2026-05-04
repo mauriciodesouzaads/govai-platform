@@ -72,3 +72,15 @@ do bloco DO). Atualize `DATABASE_URL` no API server na mesma janela.
 
 `.gitignore` cobre `.env`. gitleaks rule rejeita commits com hex >= 32 chars
 em campos de senha. Adicionar nova rule para `GOVAI_DB_APP_PASSWORD=` se útil.
+
+## Production: bootstrap deve rodar exatamente uma vez
+
+Em production, rode o bootstrap exatamente uma vez durante o provisionamento
+inicial. Reexecutar o bootstrap reaplica a senha de `govai_app` a partir de
+`GOVAI_DB_APP_PASSWORD` — comportamento útil em dev/test (idempotência), mas
+em production deve ser tratado como operação administrativa controlada,
+nunca como parte de um pipeline rotineiro de migrations.
+
+Se você precisar rotacionar a senha de `govai_app` em production, faça-o via
+ALTER ROLE explícito em janela de manutenção, não via re-execução de
+bootstrap.
