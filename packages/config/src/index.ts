@@ -33,6 +33,12 @@ const EnvSchema = z.object({
     .union([z.literal('0'), z.literal('1')])
     .default('0')
     .transform((v) => v === '1'),
+
+  GOVAI_PROVIDER_BASE_URL: z.string().optional(),
+  GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION: z
+    .union([z.literal('0'), z.literal('1')])
+    .default('0')
+    .transform((v) => v === '1'),
 });
 
 export type GovAIEnv = z.infer<typeof EnvSchema>;
@@ -64,6 +70,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): GovAIEnv {
     if (env.GOVAI_KMS_PROVIDER === 'dev') {
       throw new BootError(
         'DevKMS detected in production. Configure GOVAI_KMS_PROVIDER. Runbook: docs/runbooks/kms-production.md',
+      );
+    }
+    if (env.GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION) {
+      throw new BootError(
+        'GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION cannot be set in production. Remove env var. Runbook: docs/runbooks/planned-capability-guard.md',
       );
     }
   }

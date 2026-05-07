@@ -3,12 +3,16 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # Senha vem do env (.env). Refuse to start if missing.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set; see .env.example}
       POSTGRES_DB: govai
     ports:
       - "5432:5432"
     volumes:
-      - ./postgres/bootstrap.sql:/docker-entrypoint-initdb.d/00-bootstrap.sql:ro
+      # bootstrap.sql NÃO é mais auto-executado pelo entry-point: ele exige
+      # `SET govai.app_password` na sessão, o que o docker-entrypoint-initdb.d
+      # não consegue fazer. Rode `pnpm --filter @govai/api run migrate` após
+      # o container subir (ver README e docs/runbooks/db-roles-production.md).
       - govai_pg_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]

@@ -1,0 +1,15 @@
+You are a senior security engineer reviewing controls in three specific areas of the GovAI Platform runtime-patch-1. The architectural spec is at `../docs/govai_adp_v3.md`. Identify gaps in:
+
+1. **Tenant isolation** — Can org A read org B's audit events through any of the new routes (/v1/runs, /v1/audit-events, /v1/capabilities)? Check how `app.org_id` is set via setLocalAppOrgId, whether any path queries the audit_events table without first opening a transaction + setting tenant context, whether the audit-events GET correctly scopes by chain_id which embeds org_id.
+
+2. **Audit chain integrity invariants** — Can a request reach auditAppend with crafted parameters that would corrupt the chain? Specifically: forging previous_hmac (TS-side check only?), racing the advisory lock (advisory_xact_lock taken before head read?), bypassing expected_sequence (validated in SECURITY DEFINER?), smuggling content past canonical reconstruction (canonical_bytes always stored?).
+
+3. **Capability execution authorization (planned-capability guard)** — Can the guard at assertCapabilityExecutable be bypassed? Check:
+   - URL parsing weaknesses in the LOCAL_PROVIDER_RE regex (e.g., `http://localhost.attacker.com`, `http://127.0.0.1@evil.com`, `http://127.0.0.1.evil/`).
+   - Capability id confusion (can a client request a `supported` cap and the resolver return a `planned` one?).
+   - Status field tampering between resolution and execution.
+   - Production env-var bypass (does loadEnv really reject GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION=1 in production?).
+
+For each finding, provide: severity (CRITICAL/HIGH/MEDIUM/LOW), area, concrete reproduction steps. Out of scope: providers (PR2), passthrough (PR2), admin routes (PR3), streaming (PR2).
+
+Limit investigation to ~10 minutes. Do NOT run tests. Verdict: ACCEPT_PATCH / NEEDS_FIXES / REJECT.

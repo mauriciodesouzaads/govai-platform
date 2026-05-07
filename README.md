@@ -1,8 +1,14 @@
-# GovAI Platform — Baseline Enterprise Kernel
+# GovAI Platform
 
 Plataforma de governance de IA, modular, com audit chain append-only,
 RLS multi-tenant, KMS, capability registry, DLP-BR (CPF/CNPJ/email/telefone + RE2 custom),
 e providers Anthropic + OpenAI nativos.
+
+**Status:** Runtime Phase 1 (PR1 / `runtime-patch-1`) — Governed Run pipeline
+hermético `POST /v1/runs` + `GET /v1/audit-events` + `GET /v1/capabilities` por org +
+guard de planned-capability (apenas hermético). Passthrough e admin routes ainda em
+501 com schema estruturado apontando para PR2/PR3 (ver
+`docs/architecture/baseline-decisions.md#runtime-roadmap`).
 
 > Veja `../docs/govai_adp_v3.md` para a especificação canônica externa.
 > Veja `docs/architecture/baseline-decisions.md` para resoluções pinadas.
@@ -16,25 +22,32 @@ e providers Anthropic + OpenAI nativos.
 ## Quickstart
 
 ```bash
-# 1. Subir Postgres 16 + Redis 7
-docker compose -f infra/docker-compose.yml up -d
+# 1. Generate dev secrets (NEVER commit .env)
+cp .env.example .env
+openssl rand -hex 32 | xargs printf 'KMS_DEV_SEED=%s\n'      >> .env
+openssl rand -hex 24 | xargs printf 'POSTGRES_PASSWORD=%s\n' >> .env
+openssl rand -hex 24 | xargs printf 'GOVAI_DB_APP_PASSWORD=%s\n' >> .env
+# Then edit DATABASE_URL / DATABASE_ADMIN_URL with the passwords above.
 
-# 2. Instalar deps
+# 2. Subir Postgres 16 + Redis 7 (POSTGRES_PASSWORD obrigatório no env)
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+
+# 3. Instalar deps
 pnpm install
 
-# 3. Aplicar bootstrap.sql + migrations
-DATABASE_ADMIN_URL=postgres://postgres:postgres@localhost:5432/govai \
+# 4. Aplicar bootstrap.sql + migrations (lê GOVAI_DB_APP_PASSWORD do env)
+DATABASE_ADMIN_URL=$DATABASE_ADMIN_URL \
+GOVAI_DB_APP_PASSWORD=$GOVAI_DB_APP_PASSWORD \
   pnpm --filter @govai/api run migrate
 
-# 4. Rodar testes (unit + integration via Testcontainers)
+# 5. Rodar testes (unit + integration via Testcontainers — gera senha por container)
 pnpm test
 
-# 5. Subir o servidor (dev)
-cp .env.example .env
-# editar .env, gerar KMS_DEV_SEED localmente:
-openssl rand -hex 32 | xargs printf 'KMS_DEV_SEED=%s\n' >> .env
+# 6. Subir o servidor (dev)
 pnpm --filter @govai/api run dev
 ```
+
+> Senhas de DB nunca são hardcoded. Ver `docs/runbooks/db-roles-production.md`.
 
 ## Live tests
 

@@ -181,16 +181,18 @@ export class ProductionKmsRequired implements Kms {
       'Production KMS provider not configured. Set GOVAI_KMS_PROVIDER and provide credentials. Runbook: docs/runbooks/kms-production.md',
     );
   }
-  async deriveKey(): Promise<Uint8Array> {
+  async deriveKey(_input: Parameters<Kms['deriveKey']>[0]): Promise<Uint8Array> {
     this.fail();
   }
-  async hmacSha256(): Promise<Uint8Array> {
+  async hmacSha256(_input: Parameters<Kms['hmacSha256']>[0]): Promise<Uint8Array> {
     this.fail();
   }
-  async envelopeEncrypt(): Promise<{ ciphertext: Uint8Array; dekWrapped: Uint8Array }> {
+  async envelopeEncrypt(
+    _input: Parameters<Kms['envelopeEncrypt']>[0],
+  ): Promise<{ ciphertext: Uint8Array; dekWrapped: Uint8Array }> {
     this.fail();
   }
-  async envelopeDecrypt(): Promise<Uint8Array> {
+  async envelopeDecrypt(_input: Parameters<Kms['envelopeDecrypt']>[0]): Promise<Uint8Array> {
     this.fail();
   }
 }

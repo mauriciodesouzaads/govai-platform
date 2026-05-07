@@ -1,0 +1,17 @@
+You are reviewing runtime-patch-1 of the GovAI Platform monorepo. The architectural source of truth is `../docs/govai_adp_v3.md`. The patch spec is the user's runtime-completion-patch-1 prompt (delivered in chat; you don't have it on disk).
+
+Goal of this review (NORMAL): assess whether the four runtime routes are wired correctly, whether the 18 new tests cover the critical paths, whether the 48 prior tests still pass conceptually (no obvious regressions in the kernel), and whether the structured 501 schema is consistent across deferred routes.
+
+Focus on:
+
+1. POST /v1/runs — pipeline auth → tenant → capability resolution → DLP → policy → provider-invoke → audit append → persist. Check: deterministic policy version id, audit chain (`run.completed`, `run.denied`, `run.failed`) appended in the right order, RLS context set inside transaction, errors mapped to correct status codes (403 deny, 502 invoke failure, 401 auth, 404 unknown capability).
+2. GET /v1/audit-events — RLS context set, paginated by chain_category and before_seq, returns ONLY metadata (payload_hash, hmac, etc.) — never the underlying payload, never sensitive content from the run input.
+3. GET /v1/capabilities — RLS context set, baseline registry merged with capability_overrides via `resolveEffectiveLevel` (downgrade-only).
+4. 501 routes — passthrough/* and admin/* return the structured shape `{error, capability, status: 'planned', planned_phase, tracker}` and never the literal `pipeline_incomplete_in_baseline`.
+5. assertCapabilityExecutable — refuses to execute `planned` capabilities outside hermetic environment (NODE_ENV=test or override flag) AND without loopback provider.
+6. KMS production probe at boot — fail-fast.
+7. Tests — RLS.3 substring scan, NI tests, PCG.4 boot-fail, CR.1 informative.
+
+For each finding, classify severity (CRITICAL / HIGH / MEDIUM / LOW / NIT). Verdict: ACCEPT_PATCH / NEEDS_FIXES / REJECT.
+
+Limit investigation to ~10 minutes of file reads. Do NOT run tests.

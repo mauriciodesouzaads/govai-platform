@@ -15,7 +15,7 @@ afterAll(async () => {
 
 describe('bootstrap + migrations idempotency', () => {
   it('runs bootstrap.sql + migrations a second time without errors', async () => {
-    await expect(migrate(db.adminUrl)).resolves.toBeUndefined();
+    await expect(migrate(db.adminUrl, db.appPassword)).resolves.toBeUndefined();
   });
 
   it('audit_events table exists and is empty after re-run', async () => {

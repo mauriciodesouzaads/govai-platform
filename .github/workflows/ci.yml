@@ -2,11 +2,18 @@ name: ci
 on:
   push: { branches: [main] }
   pull_request: {}
+permissions:
+  contents: read
+  pull-requests: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks needs full history to compute the diff range against the
+          # parent of the PR's base commit; depth=1 makes `<base>^..<head>` fail.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with: { node-version: 24 }
       - uses: pnpm/action-setup@v4
@@ -19,3 +26,5 @@ jobs:
         run: pnpm --filter @govai/dlp-br run smoke:re2
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
