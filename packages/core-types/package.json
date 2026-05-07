@@ -1,23 +1,21 @@
 {
-  "name": "@govai/core-governance",
+  "name": "@govai/core-types",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./capability": "./src/capability.ts",
+    "./beta-token-policy": "./src/beta-token-policy.ts"
+  },
   "scripts": {
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit"
   },
-  "dependencies": {
-    "@govai/core-audit": "workspace:*",
-    "@govai/core-types": "workspace:*",
-    "pg": "8.20.0",
-    "zod": "4.4.2"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/pg": "8.15.6",
     "typescript": "5.9.3"
   }
 }
