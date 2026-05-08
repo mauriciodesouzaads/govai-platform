@@ -17,7 +17,9 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     tool_type: '',
     tool_type_observed: 'empty_string',
     classification: 'anthropic_typed_unknown',
-    reason: 'tool.type was an empty string; classification typed_unknown blocks before invoke',
+    reason: 'typed_unknown',
+    reason_detail:
+      'tool.type was an empty string; classification typed_unknown blocks before invoke',
     tools_taxonomy_version: 'anthropic.tools_taxonomy@2026-05-04',
     audit_event_id: randomUUID(),
     chain_id: 'run',
@@ -61,5 +63,53 @@ describe('ToolValidationBlockedSchema v1', () => {
         }),
       ).success,
     ).toBe(true);
+  });
+
+  // HAE-001 — reason enum hardening (Batch A do PR2).
+  it('rejects free-text reason outside the 4-value enum', () => {
+    expect(
+      ToolValidationBlockedSchema.safeParse(
+        baseEvent({ reason: 'because_the_emitter_decided' }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it('accepts reason=capability_planned', () => {
+    expect(
+      ToolValidationBlockedSchema.safeParse(
+        baseEvent({
+          classification: 'anthropic_provider_hosted_code_execution',
+          reason: 'capability_planned',
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('accepts reason=capability_blocked_via_token', () => {
+    expect(
+      ToolValidationBlockedSchema.safeParse(
+        baseEvent({
+          classification: 'anthropic_provider_hosted_computer_use',
+          reason: 'capability_blocked_via_token',
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('accepts reason=hard_denied_beta', () => {
+    expect(
+      ToolValidationBlockedSchema.safeParse(
+        baseEvent({
+          classification: 'anthropic_provider_hosted_computer_use',
+          reason: 'hard_denied_beta',
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('reason_detail is optional', () => {
+    const ev = baseEvent();
+    delete (ev as Record<string, unknown>)['reason_detail'];
+    expect(ToolValidationBlockedSchema.safeParse(ev).success).toBe(true);
   });
 });

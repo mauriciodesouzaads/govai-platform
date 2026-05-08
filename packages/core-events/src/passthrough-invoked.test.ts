@@ -16,6 +16,8 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     provider: 'anthropic',
     capability_id: 'anthropic.messages.create',
     capability_level: 'passthrough_audited',
+    // HAE-002: provider-namespaced capability_id requires this field (Rule 6).
+    capability_canonical_level: 'policy_governed',
     native_endpoint: '/v1/messages',
     native_method: 'POST',
     is_stream: false,
@@ -157,5 +159,61 @@ describe('PassthroughInvokedSchema v3 — superRefine rules', () => {
 
   it('rule 5: no tools, no tools_taxonomy_version → accepts', () => {
     expect(PassthroughInvokedSchema.safeParse(baseEvent()).success).toBe(true);
+  });
+
+  // HAE-002 Rule 6 — capability_canonical_level required for provider-namespaced ids.
+
+  it('rule 6: anthropic.* without capability_canonical_level → rejects', () => {
+    const ev = baseEvent();
+    delete (ev as Record<string, unknown>)['capability_canonical_level'];
+    const r = PassthroughInvokedSchema.safeParse(ev);
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('capability_canonical_level');
+  });
+
+  it('rule 6: anthropic.* with capability_canonical_level=policy_governed → accepts', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(
+        baseEvent({
+          capability_id: 'anthropic.messages.create',
+          capability_level: 'passthrough_audited',
+          capability_canonical_level: 'policy_governed',
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('rule 6: legacy non-namespaced capability_id (e.g., test.placeholder) without canonical_level → accepts', () => {
+    const ev = baseEvent({ capability_id: 'test.placeholder' });
+    delete (ev as Record<string, unknown>)['capability_canonical_level'];
+    expect(PassthroughInvokedSchema.safeParse(ev).success).toBe(true);
+  });
+
+  it('rule 6: /passthrough/anthropic/v1/messages — anthropic.messages.create operational=passthrough_audited canonical=policy_governed', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(
+        baseEvent({
+          provider: 'anthropic',
+          capability_id: 'anthropic.messages.create',
+          capability_level: 'passthrough_audited',
+          capability_canonical_level: 'policy_governed',
+          native_endpoint: '/v1/messages',
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('rule 6: /passthrough/anthropic/v1/messages/count_tokens — messages_meta both levels passthrough_audited', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(
+        baseEvent({
+          provider: 'anthropic',
+          capability_id: 'anthropic.messages_meta',
+          capability_level: 'passthrough_audited',
+          capability_canonical_level: 'passthrough_audited',
+          native_endpoint: '/v1/messages/count_tokens',
+        }),
+      ).success,
+    ).toBe(true);
   });
 });

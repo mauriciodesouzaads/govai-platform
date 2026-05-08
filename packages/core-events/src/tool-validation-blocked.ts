@@ -1,9 +1,20 @@
 // ToolValidationBlockedSchema v1 — emitted when a tool fails pre-invoke validation.
 // Drivers: typed_unknown classification (Matrix v2.0.1 P3: type:'' or type:null is NOT
 // client_defined — it must be flagged as typed_unknown and blocked at validation).
+//
+// HAE-001 (Batch A do PR2): `reason` field tightened from free-text string to
+// 4-value enum so emitters can no longer drift into ad-hoc reason copy.
 
 import { z } from 'zod';
 import { ToolClassificationEnum } from './passthrough-invoked.js';
+
+export const ToolValidationBlockedReason = z.enum([
+  'typed_unknown',
+  'capability_planned',
+  'capability_blocked_via_token',
+  'hard_denied_beta',
+]);
+export type ToolValidationBlockedReason = z.infer<typeof ToolValidationBlockedReason>;
 
 const TenantContextSchema = z.object({
   org_id: z.string().uuid(),
@@ -28,7 +39,9 @@ export const ToolValidationBlockedSchema = z.object({
     .enum(['empty_string', 'null', 'missing', 'other_typed_unknown'])
     .optional(),
   classification: ToolClassificationEnum,
-  reason: z.string().min(1),
+  reason: ToolValidationBlockedReason,
+  /** Human-readable detail; complements the `reason` enum. */
+  reason_detail: z.string().min(1).optional(),
 
   tools_taxonomy_version: z.string().min(1),
 

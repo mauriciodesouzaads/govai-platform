@@ -1,4 +1,6 @@
-// NI.1, NI.2 — 501 schema for the four routes that defer to PR2/PR3.
+// NI.1, NI.2 — 501 schema for routes that still defer to PR2/PR3.
+// /passthrough/anthropic/v1/messages was a 501 stub in PR1; PR2 Batch A replaced
+// it with the real implementation, so it is no longer in this list.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startStack, stopStack, inject, type Stack } from './helpers/server-fixture.js';
@@ -19,7 +21,6 @@ const ROUTES: Array<{
   capability: string;
   phase: 'PR2' | 'PR3';
 }> = [
-  { method: 'POST', url: '/passthrough/anthropic/v1/messages', capability: 'passthrough.anthropic', phase: 'PR2' },
   { method: 'POST', url: '/passthrough/openai/v1/chat/completions', capability: 'passthrough.openai', phase: 'PR2' },
   { method: 'POST', url: '/v1/admin/audit-events/00000000-0000-0000-0000-000000000000/crypto-shred', capability: 'admin.audit_event.crypto_shred', phase: 'PR3' },
   { method: 'POST', url: '/v1/admin/dlp-detectors', capability: 'admin.dlp_detectors.crud', phase: 'PR3' },

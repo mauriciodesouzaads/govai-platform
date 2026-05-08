@@ -68,7 +68,24 @@ export const PassthroughInvokedSchema = z
 
     provider: z.enum(['anthropic', 'openai']),
     capability_id: z.string().min(1),
+    /**
+     * Operational mode under which the route processed the call.
+     * Drives `body_forward_mode` invariants in superRefine Rules 3 and 4.
+     * Distinct from `capability_canonical_level` (added under HAE-002 Batch A
+     * do PR2): a `policy_governed` capability such as `anthropic.messages.create`
+     * may be exercised via `/passthrough/anthropic/*` in `passthrough_audited`
+     * operational mode.
+     */
     capability_level: z.enum(['passthrough_audited', 'policy_governed', 'evidence_grade']),
+    /**
+     * HAE-002 (Batch A do PR2): canonical level declared in the registry for
+     * the capability, independent of the route's operational mode. Required
+     * (via superRefine Rule 6) when `capability_id` is provider-namespaced
+     * (`anthropic.*` or `openai.*`).
+     */
+    capability_canonical_level: z
+      .enum(['passthrough_audited', 'policy_governed', 'evidence_grade'])
+      .optional(),
 
     native_endpoint: z.string().min(1),
     native_method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']),
@@ -221,6 +238,24 @@ export const PassthroughInvokedSchema = z
         message:
           'detected_tool_classifications.length > 0 requires tools_taxonomy_version to be populated',
         path: ['tools_taxonomy_version'],
+      });
+    }
+
+    // Rule 6 (HAE-002 Batch A do PR2): provider-namespaced capability_id requires
+    // capability_canonical_level so audit events distinguish registry-canonical
+    // level from operational mode. Pre-existing test fixtures using non-namespaced
+    // ids (e.g. 'test.placeholder') remain valid without the field.
+    if (
+      typeof data.capability_id === 'string' &&
+      (data.capability_id.startsWith('anthropic.') ||
+        data.capability_id.startsWith('openai.')) &&
+      !data.capability_canonical_level
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'capability_canonical_level required when capability_id is provider-namespaced (Decisão 4)',
+        path: ['capability_canonical_level'],
       });
     }
   });

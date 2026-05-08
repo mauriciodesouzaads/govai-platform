@@ -70,6 +70,65 @@ export function classifyAnthropicError(err: unknown): AnthropicErrorClass {
  */
 export const ANTHROPIC_BETA_ALLOWLIST: ReadonlyArray<string> = Object.freeze([]);
 
+// =============================================================================
+// PR2 Batch A — Native Provider Substrate exports.
+// (PR0 inline code below preserved for backwards compat.)
+// =============================================================================
+export {
+  ANTHROPIC_BETA_POLICY,
+  ANTHROPIC_BETA_POLICY_VERSION,
+} from './beta-policy.js';
+export {
+  classifyAnthropicTool,
+  decideAnthropicTool,
+  type AnthropicToolClassification,
+  type AnthropicToolDecision,
+} from './tool-classifier.js';
+export { KNOWN_ANTHROPIC_TAXONOMY_VERSION } from './tool-taxonomy-version.js';
+export {
+  ANTHROPIC_CAPABILITIES,
+  ANTHROPIC_MESSAGES_CREATE,
+  ANTHROPIC_MESSAGES_STREAM,
+  ANTHROPIC_MESSAGES_META,
+  ANTHROPIC_MODELS,
+  ANTHROPIC_FILES,
+  ANTHROPIC_WEB_SEARCH_TOOL,
+  resolveAnthropicCapabilityForRequest,
+  matchAnthropicPath,
+} from './capabilities/index.js';
+export {
+  buildPassthroughInvoked,
+  buildPassthroughBetaDenied,
+  buildToolValidationBlocked,
+  type TenantContext,
+  type BuildPassthroughInvokedInput,
+  type BuildPassthroughBetaDeniedInput,
+  type BuildToolValidationBlockedInput,
+} from './passthrough/audit-emit.js';
+export {
+  handleAnthropicBetaHeader,
+  type BetaHandlerInput,
+  type BetaHandlerResult,
+} from './passthrough/beta-header-handler.js';
+export {
+  classifyTools,
+  type ToolHookResult,
+} from './passthrough/tool-classifier-hook.js';
+export { forwardRaw, type ForwardInput, type ForwardResult } from './passthrough/forward.js';
+export {
+  forwardStream,
+  type StreamForwardInput,
+  type StreamForwardResult,
+} from './passthrough/stream-forward.js';
+export {
+  registerAnthropicPassthrough,
+  type AnthropicPassthroughDeps,
+} from './routes/register-passthrough.js';
+
+// =============================================================================
+// PR0 inline (preserved).
+// =============================================================================
+
 export function rewritePassthroughHeaders(
   inboundHeaders: Record<string, string | string[] | undefined>,
   providerKey: string,
