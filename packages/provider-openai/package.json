@@ -11,8 +11,12 @@
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
+    "openai": "6.35.0",
+    "@govai/config": "workspace:*",
     "@govai/core-events": "workspace:*",
-    "openai": "6.35.0"
+    "@govai/core-types": "workspace:*",
+    "@govai/core-governance": "workspace:*",
+    "fastify": "5.8.5"
   },
   "devDependencies": { "typescript": "5.9.3" }
 }

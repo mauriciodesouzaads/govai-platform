@@ -216,4 +216,139 @@ describe('PassthroughInvokedSchema v3 — superRefine rules', () => {
       ).success,
     ).toBe(true);
   });
+
+  // HAE-003 Rule 7 — purpose_deprecated coherence (Batch C do PR2).
+
+  it('rule 7 (HAE-003): legacy event without purpose_deprecated/sunset/migration_target → accepts', () => {
+    // Equivalent to "evento antigo sem esses campos continua válido".
+    expect(PassthroughInvokedSchema.safeParse(baseEvent()).success).toBe(true);
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecated=true with sunset_at + migration_target → accepts', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(
+        baseEvent({
+          provider: 'openai',
+          capability_id: 'openai.files',
+          capability_level: 'passthrough_audited',
+          capability_canonical_level: 'passthrough_audited',
+          native_endpoint: '/v1/files',
+          purpose_deprecated: true,
+          purpose_deprecation_sunset_at: '2026-08-26T00:00:00.000Z',
+          purpose_deprecation_migration_target: 'responses_api+conversations_api',
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecation_sunset_at requires datetime format', () => {
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({
+        provider: 'openai',
+        capability_id: 'openai.files',
+        capability_level: 'passthrough_audited',
+        capability_canonical_level: 'passthrough_audited',
+        native_endpoint: '/v1/files',
+        purpose_deprecated: true,
+        purpose_deprecation_sunset_at: 'not-a-datetime',
+        purpose_deprecation_migration_target: 'responses_api',
+      }),
+    );
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('purpose_deprecation_sunset_at');
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecation_migration_target requires non-empty string', () => {
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({
+        provider: 'openai',
+        capability_id: 'openai.files',
+        capability_level: 'passthrough_audited',
+        capability_canonical_level: 'passthrough_audited',
+        native_endpoint: '/v1/files',
+        purpose_deprecated: true,
+        purpose_deprecation_sunset_at: '2026-08-26T00:00:00.000Z',
+        purpose_deprecation_migration_target: '',
+      }),
+    );
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('purpose_deprecation_migration_target');
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecated=true without sunset_at → rejects', () => {
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({
+        provider: 'openai',
+        capability_id: 'openai.files',
+        capability_level: 'passthrough_audited',
+        capability_canonical_level: 'passthrough_audited',
+        native_endpoint: '/v1/files',
+        purpose_deprecated: true,
+        purpose_deprecation_migration_target: 'responses_api',
+      }),
+    );
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('purpose_deprecation_sunset_at');
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecated=true without migration_target → rejects', () => {
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({
+        provider: 'openai',
+        capability_id: 'openai.files',
+        capability_level: 'passthrough_audited',
+        capability_canonical_level: 'passthrough_audited',
+        native_endpoint: '/v1/files',
+        purpose_deprecated: true,
+        purpose_deprecation_sunset_at: '2026-08-26T00:00:00.000Z',
+      }),
+    );
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('purpose_deprecation_migration_target');
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecated absent but sunset_at present → rejects', () => {
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({
+        provider: 'openai',
+        capability_id: 'openai.files',
+        capability_level: 'passthrough_audited',
+        capability_canonical_level: 'passthrough_audited',
+        native_endpoint: '/v1/files',
+        purpose_deprecation_sunset_at: '2026-08-26T00:00:00.000Z',
+      }),
+    );
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('purpose_deprecation_sunset_at');
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecated absent but migration_target present → rejects', () => {
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({
+        provider: 'openai',
+        capability_id: 'openai.files',
+        capability_level: 'passthrough_audited',
+        capability_canonical_level: 'passthrough_audited',
+        native_endpoint: '/v1/files',
+        purpose_deprecation_migration_target: 'responses_api',
+      }),
+    );
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('purpose_deprecation_migration_target');
+  });
+
+  it('rule 7 (HAE-003): purpose_deprecated=false explicit + other fields undefined → accepts', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(
+        baseEvent({
+          provider: 'openai',
+          capability_id: 'openai.files',
+          capability_level: 'passthrough_audited',
+          capability_canonical_level: 'passthrough_audited',
+          native_endpoint: '/v1/files',
+          purpose_deprecated: false,
+        }),
+      ).success,
+    ).toBe(true);
+  });
 });

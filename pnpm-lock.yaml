@@ -266,9 +266,21 @@ importers:
 
   packages/provider-openai:
     dependencies:
+      '@govai/config':
+        specifier: workspace:*
+        version: link:../config
       '@govai/core-events':
         specifier: workspace:*
         version: link:../core-events
+      '@govai/core-governance':
+        specifier: workspace:*
+        version: link:../core-governance
+      '@govai/core-types':
+        specifier: workspace:*
+        version: link:../core-types
+      fastify:
+        specifier: 5.8.5
+        version: 5.8.5
       openai:
         specifier: 6.35.0
         version: 6.35.0(zod@4.4.2)

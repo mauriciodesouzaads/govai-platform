@@ -165,8 +165,18 @@ export const PassthroughInvokedSchema = z
 
     tools_taxonomy_version: z.string().optional(),
 
-    /** OpenAI Files: legacy purpose=assistants signal — see Matrix §18.6. */
+    /**
+     * HAE-003 (Batch C do PR2): OpenAI Files purpose=assistants deprecation signal.
+     * Set when a request used a deprecated `purpose` body parameter (Matrix §18.8.1).
+     * Coherence enforced by superRefine Rule 7: when true, both `_sunset_at` and
+     * `_migration_target` must also be set; when false/undefined, the other two
+     * must be undefined.
+     */
     purpose_deprecated: z.boolean().optional(),
+    /** ISO-8601 datetime at which the deprecated purpose stops being accepted by GovAI. */
+    purpose_deprecation_sunset_at: z.string().datetime().optional(),
+    /** Free-form migration target hint (e.g. `responses_api+conversations_api`). */
+    purpose_deprecation_migration_target: z.string().min(1).optional(),
 
     audit_event_id: z.string().uuid(),
     chain_id: z.literal('run'),
@@ -257,6 +267,45 @@ export const PassthroughInvokedSchema = z
           'capability_canonical_level required when capability_id is provider-namespaced (Decisão 4)',
         path: ['capability_canonical_level'],
       });
+    }
+
+    // Rule 7 (HAE-003 Batch C do PR2): purpose_deprecated coherence.
+    // If purpose_deprecated is true, both sunset_at and migration_target must be set.
+    // If purpose_deprecated is false/undefined, the other two fields must be undefined.
+    if (data.purpose_deprecated === true) {
+      if (!data.purpose_deprecation_sunset_at) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['purpose_deprecation_sunset_at'],
+          message:
+            'purpose_deprecation_sunset_at required when purpose_deprecated=true (HAE-003)',
+        });
+      }
+      if (!data.purpose_deprecation_migration_target) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['purpose_deprecation_migration_target'],
+          message:
+            'purpose_deprecation_migration_target required when purpose_deprecated=true (HAE-003)',
+        });
+      }
+    } else {
+      if (data.purpose_deprecation_sunset_at !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['purpose_deprecation_sunset_at'],
+          message:
+            'purpose_deprecation_sunset_at requires purpose_deprecated=true (HAE-003)',
+        });
+      }
+      if (data.purpose_deprecation_migration_target !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['purpose_deprecation_migration_target'],
+          message:
+            'purpose_deprecation_migration_target requires purpose_deprecated=true (HAE-003)',
+        });
+      }
     }
   });
 

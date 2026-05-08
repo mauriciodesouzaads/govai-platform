@@ -263,6 +263,133 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
     },
   );
 
+  // ============================================================================
+  // OpenAI Batch C — additional fixture endpoints for /passthrough/openai/* tests.
+  // These shapes are minimal but deterministic; they are NOT exhaustive contracts.
+  // ============================================================================
+
+  // /v1/embeddings
+  app.post<{ Body: { input?: string | string[]; model?: string } }>(
+    '/v1/embeddings',
+    async (req, reply) => {
+      const wsErr = workspaceErrorFor(req);
+      if (wsErr) {
+        reply.code(wsErr.status);
+        return wsErr.body;
+      }
+      reply.header('openai-request-id', randomUUID());
+      const body = req.body ?? {};
+      const inputs = Array.isArray(body.input) ? body.input : [body.input ?? ''];
+      return {
+        object: 'list',
+        model: body.model ?? 'text-embedding-3-small',
+        data: inputs.map((_, i) => ({
+          object: 'embedding',
+          index: i,
+          embedding: [0.1, 0.2, 0.3],
+        })),
+        usage: { prompt_tokens: 1, total_tokens: 1 },
+      };
+    },
+  );
+
+  // /v1/models (list + retrieve + delete)
+  app.get('/v1/models', async (req, reply) => {
+    const wsErr = workspaceErrorFor(req);
+    if (wsErr) {
+      reply.code(wsErr.status);
+      return wsErr.body;
+    }
+    reply.header('openai-request-id', randomUUID());
+    return {
+      object: 'list',
+      data: [
+        { id: 'gpt-fixture-1', object: 'model', created: 0, owned_by: 'fixture' },
+        { id: 'gpt-fixture-2', object: 'model', created: 0, owned_by: 'fixture' },
+      ],
+    };
+  });
+  app.get<{ Params: { model_id: string } }>('/v1/models/:model_id', async (req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { id: req.params.model_id, object: 'model', created: 0, owned_by: 'fixture' };
+  });
+  app.delete<{ Params: { model_id: string } }>('/v1/models/:model_id', async (req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { id: req.params.model_id, object: 'model', deleted: true };
+  });
+
+  // /v1/files — POST accepts multipart but we don't fully parse here; we just echo.
+  app.post('/v1/files', async (req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return {
+      id: `file-${randomUUID()}`,
+      object: 'file',
+      purpose: 'fine-tune',
+      filename: 'fixture.txt',
+      bytes: 0,
+      created_at: 0,
+    };
+  });
+  app.get('/v1/files', async (_req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { object: 'list', data: [] };
+  });
+  app.get<{ Params: { file_id: string } }>('/v1/files/:file_id', async (req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { id: req.params.file_id, object: 'file', purpose: 'fine-tune', bytes: 0 };
+  });
+  app.delete<{ Params: { file_id: string } }>('/v1/files/:file_id', async (req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { id: req.params.file_id, object: 'file', deleted: true };
+  });
+  app.get<{ Params: { file_id: string } }>(
+    '/v1/files/:file_id/content',
+    async (_req, reply) => {
+      reply.header('openai-request-id', randomUUID());
+      reply.header('content-type', 'application/octet-stream');
+      return Buffer.from('fixture-file-content');
+    },
+  );
+
+  // /v1/vector_stores
+  app.post('/v1/vector_stores', async (_req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { id: `vs-${randomUUID()}`, object: 'vector_store', name: 'fixture' };
+  });
+  app.get('/v1/vector_stores', async (_req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { object: 'list', data: [] };
+  });
+  app.get<{ Params: { vs_id: string } }>('/v1/vector_stores/:vs_id', async (req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { id: req.params.vs_id, object: 'vector_store' };
+  });
+  app.post<{ Params: { vs_id: string } }>(
+    '/v1/vector_stores/:vs_id/files',
+    async (req, reply) => {
+      reply.header('openai-request-id', randomUUID());
+      return { id: `vsf-${randomUUID()}`, object: 'vector_store.file', vector_store_id: req.params.vs_id };
+    },
+  );
+  app.get<{ Params: { vs_id: string } }>(
+    '/v1/vector_stores/:vs_id/files',
+    async (_req, reply) => {
+      reply.header('openai-request-id', randomUUID());
+      return { object: 'list', data: [] };
+    },
+  );
+  app.delete<{ Params: { vs_id: string } }>('/v1/vector_stores/:vs_id', async (req, reply) => {
+    reply.header('openai-request-id', randomUUID());
+    return { id: req.params.vs_id, object: 'vector_store', deleted: true };
+  });
+  app.delete<{ Params: { vs_id: string; file_id: string } }>(
+    '/v1/vector_stores/:vs_id/files/:file_id',
+    async (req, reply) => {
+      reply.header('openai-request-id', randomUUID());
+      return { id: req.params.file_id, object: 'vector_store.file', deleted: true };
+    },
+  );
+
   app.get('/health', async () => ({ status: 'ok', service: 'provider-protocol-test-server' }));
 
   const port = opts.port ?? 0;
