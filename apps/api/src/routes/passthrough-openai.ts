@@ -9,6 +9,7 @@ import {
   type TenantContext,
 } from '@govai/provider-openai';
 import { authenticateApiKey } from '../pipeline/auth.js';
+import { resolveOpenAIProviderKey } from '../pipeline/provider-credentials.js';
 
 export async function passthroughOpenaiRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -27,16 +28,13 @@ export async function passthroughOpenaiRoute(app: FastifyInstance): Promise<void
     const client = await app.govai.pool.connect();
     try {
       const identity = await authenticateApiKey(client, apiKey ?? '');
+      // Real values from HAE-004 (orgs.tier + orgs.operational_mode); no
+      // hardcoded literals at runtime per the macro realignment directive.
       return {
         org_id: identity.org_id,
         user_id: identity.user_id,
-        tier: 'enterprise',
-        operational_mode:
-          env.NODE_ENV === 'production'
-            ? 'production'
-            : env.NODE_ENV === 'test'
-              ? 'test'
-              : 'dev',
+        tier: identity.tier,
+        operational_mode: identity.operational_mode,
       };
     } finally {
       client.release();
@@ -44,11 +42,7 @@ export async function passthroughOpenaiRoute(app: FastifyInstance): Promise<void
   };
 
   const resolveProviderKey = async (_req: FastifyRequest): Promise<string> => {
-    // Tenant-resolved provider credentials are PR3+. For PR2 hermetic, use a
-    // deterministic placeholder; the test fixture accepts any string.
-    return env.OPENAI_API_KEY && env.OPENAI_API_KEY.length > 0
-      ? env.OPENAI_API_KEY
-      : 'sk-openai-test-hermetic';
+    return resolveOpenAIProviderKey(env);
   };
 
   const activeOverridesLoader = async (

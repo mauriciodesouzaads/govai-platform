@@ -161,3 +161,26 @@ export {
   registerOpenAIPassthrough,
   type OpenAIPassthroughDeps,
 } from './routes/register-passthrough.js';
+
+// =============================================================================
+// PR2 Batch G — Macro Architecture Realignment: governed-native OpenAI.
+// =============================================================================
+export {
+  handleOpenAIGovernedResponses,
+  type GovernedHandleDeps as OpenAIGovernedHandleDeps,
+  type GovernedHandleInput as OpenAIGovernedHandleInput,
+  type GovernedTenant as OpenAIGovernedTenant,
+  type GovernedNonStreamResult as OpenAIGovernedNonStreamResult,
+  type GovernedStreamResult as OpenAIGovernedStreamResult,
+  type GovernedBlockedResult as OpenAIGovernedBlockedResult,
+  type DlpScanFn as OpenAIDlpScanFn,
+} from './governed/handle-responses.js';
+export { handleOpenAIGovernedChatCompletions } from './governed/handle-chat-completions.js';
+export {
+  registerOpenAIGoverned,
+  type OpenAIGovernedDeps,
+} from './governed/register-governed.js';
+export {
+  extractOpenAIResponsesText,
+  extractOpenAIChatCompletionsText,
+} from './governed/extract-text.js';

@@ -59,7 +59,9 @@ describe('Governed Run E2E', () => {
       const chain = await verifyFullChain(c, kms, chainIdFor(org.org_id, 'run'));
       await c.query('COMMIT');
       expect(chain.valid).toBe(true);
-      expect(chain.events).toBe(1);
+      // Batch G: completed governed run emits 2 events on the chain —
+      // `run.completed` (legacy lifecycle) + `passthrough.invoked v3` (canonical).
+      expect(chain.events).toBe(2);
     } finally {
       c.release();
     }

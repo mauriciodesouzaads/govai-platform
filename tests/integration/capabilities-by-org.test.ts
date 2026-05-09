@@ -71,11 +71,14 @@ describe('GET /v1/capabilities by-org resolution', () => {
     const facet = cap!.facets.find((f) => f.id === 'pre_dlp');
     expect(facet?.level).toBe(0);
     expect(facet?.status).toBe('blocked');
-    expect(facet?.baseline_status).toBe('planned');
+    // Batch G: anthropic.messages.create baseline_status is now `supported`
+    // (its governed-run pipeline is implemented). The org-level override
+    // still surfaces effective status=blocked via downgrade.
+    expect(facet?.baseline_status).toBe('supported');
     expect(facet?.override_applied).toBe(true);
     // capability-level effective status rolls up to blocked.
     expect(cap!.status).toBe('blocked');
-    expect(cap!.baseline_status).toBe('planned');
+    expect(cap!.baseline_status).toBe('supported');
 
     // Execution is blocked: POST /v1/runs returns 403 capability_not_supported.
     const run = await inject(stack, 'POST', '/v1/runs', org.api_key, {

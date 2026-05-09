@@ -11,3 +11,4 @@ coverage/
 .idea/
 *.tsbuildinfo
 .pnpm-store/
+.env.loca

@@ -3,12 +3,17 @@
 // Audit emit always sets BOTH for provider-namespaced capabilities.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { BetaTokenPolicyEntry } from '@govai/core-types';
+import type { BetaTokenPolicyEntry, Capability } from '@govai/core-types';
+import { resolveGovernance } from '@govai/core-governance';
 import {
   ANTHROPIC_BETA_POLICY,
   ANTHROPIC_BETA_POLICY_VERSION,
 } from '../beta-policy.js';
-import { matchAnthropicPath, resolveAnthropicCapabilityForRequest } from '../capabilities/index.js';
+import {
+  ANTHROPIC_CAPABILITIES,
+  matchAnthropicPath,
+  resolveAnthropicCapabilityForRequest,
+} from '../capabilities/index.js';
 import { handleAnthropicBetaHeader } from '../passthrough/beta-header-handler.js';
 import { classifyTools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
@@ -124,6 +129,19 @@ export async function registerAnthropicPassthrough(
         pathTemplate: matched.pathTemplate,
         isStream,
       });
+      // `matchAnthropicPath` already returned 404 above if the path was unknown,
+      // so resolveAnthropicCapabilityForRequest MUST return a registered id here.
+      // Fail loudly instead of falling back to a fake default risk/enforcement.
+      const capabilityRegistryEntry: Capability | undefined = ANTHROPIC_CAPABILITIES.find(
+        (c) => c.id === resolved.capability_id,
+      );
+      if (!capabilityRegistryEntry) {
+        reply.code(500);
+        return {
+          error: 'capability_registry_missing',
+          message: `path matched but capability ${resolved.capability_id} not in registry`,
+        };
+      }
 
       // Tenant context (auth happens here; deps decides how).
       let tenant: TenantContext;
@@ -258,6 +276,24 @@ export async function registerAnthropicPassthrough(
         reply.raw.end();
 
         const final = await streamRes.finalize();
+        // Passthrough is the explicit AUDIT-ONLY surface: the route forwards
+        // byte-perfect and never enforces, so `enforcement_decision='observe'`
+        // is the truthful semantic of this code path — NOT a fallback default.
+        // base_risk_class / effective_risk_class / risk_escalation_reasons are
+        // still computed honestly so the audit event reflects what governance
+        // would say if this same request were sent through /governed/* —
+        // observers can compare and tell which tenants would be enforced upon.
+        const govStream = resolveGovernance({
+          capability: capabilityRegistryEntry,
+          tenant_tier: tenant.tier,
+          operational_mode: tenant.operational_mode,
+          tool_classifications: toolClassifications.map((c) => ({
+            tool_index: c.tool_index,
+            classification: c.classification,
+            contributed_risk_class: c.contributed_risk_class,
+          })),
+          dlp_findings: [],
+        });
         await deps.emitAuditEvent(
           buildPassthroughInvoked({
             tenant,
@@ -268,8 +304,10 @@ export async function registerAnthropicPassthrough(
             native_method: 'POST',
             is_stream: true,
             is_multipart: false,
-            base_risk_class: 'A',
-            effective_risk_class: 'A',
+            base_risk_class: govStream.base_risk_class,
+            effective_risk_class: govStream.effective_risk_class,
+            risk_escalation_reasons: govStream.risk_escalation_reasons,
+            // Audit-only surface: enforcement is intentionally `observe`.
             enforcement_decision: 'observe',
             native_request_hash: streamRes.native_request_hash,
             stream_final_hash: final.stream_final_hash,
@@ -305,6 +343,21 @@ export async function registerAnthropicPassthrough(
       }
       reply.code(fwd.status);
 
+      const isMultipartReq =
+        typeof req.headers['content-type'] === 'string' &&
+        req.headers['content-type'].toLowerCase().startsWith('multipart/form-data');
+      const govNonStream = resolveGovernance({
+        capability: capabilityRegistryEntry,
+        tenant_tier: tenant.tier,
+        operational_mode: tenant.operational_mode,
+        tool_classifications: toolClassifications.map((c) => ({
+          tool_index: c.tool_index,
+          classification: c.classification,
+          contributed_risk_class: c.contributed_risk_class,
+        })),
+        dlp_findings: [],
+        is_multipart: isMultipartReq,
+      });
       await deps.emitAuditEvent(
         buildPassthroughInvoked({
           tenant,
@@ -314,11 +367,11 @@ export async function registerAnthropicPassthrough(
           native_endpoint: matched.pathTemplate,
           native_method: req.method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
           is_stream: false,
-          is_multipart:
-            typeof req.headers['content-type'] === 'string' &&
-            req.headers['content-type'].toLowerCase().startsWith('multipart/form-data'),
-          base_risk_class: 'A',
-          effective_risk_class: 'A',
+          is_multipart: isMultipartReq,
+          base_risk_class: govNonStream.base_risk_class,
+          effective_risk_class: govNonStream.effective_risk_class,
+          risk_escalation_reasons: govNonStream.risk_escalation_reasons,
+          // Audit-only surface: enforcement is intentionally `observe`.
           enforcement_decision: 'observe',
           native_request_hash: fwd.native_request_hash,
           native_response_hash: fwd.native_response_hash,

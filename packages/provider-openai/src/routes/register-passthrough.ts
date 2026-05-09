@@ -6,9 +6,14 @@
 // event — Issue [PR3/pre-sunset] tracks final audit semantics for that case.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { BetaTokenPolicyEntry } from '@govai/core-types';
+import type { BetaTokenPolicyEntry, Capability } from '@govai/core-types';
+import { resolveGovernance } from '@govai/core-governance';
 import { OPENAI_BETA_POLICY, OPENAI_BETA_POLICY_VERSION } from '../beta-policy.js';
-import { matchOpenAIPath, resolveOpenAICapabilityForRequest } from '../capabilities/index.js';
+import {
+  OPENAI_CAPABILITIES,
+  matchOpenAIPath,
+  resolveOpenAICapabilityForRequest,
+} from '../capabilities/index.js';
 import { handleOpenAIBetaHeader } from '../passthrough/beta-header-handler.js';
 import { classifyOpenAITools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
@@ -140,6 +145,16 @@ export async function registerOpenAIPassthrough(
         pathTemplate: matched.pathTemplate,
         isStream,
       });
+      const capabilityRegistryEntry: Capability | undefined = OPENAI_CAPABILITIES.find(
+        (c) => c.id === resolved.capability_id,
+      );
+      if (!capabilityRegistryEntry) {
+        reply.code(500);
+        return {
+          error: 'capability_registry_missing',
+          message: `path matched but capability ${resolved.capability_id} not in registry`,
+        };
+      }
 
       // Tenant context (auth happens here; deps decides how).
       let tenant: TenantContext;
@@ -332,6 +347,20 @@ export async function registerOpenAIPassthrough(
         reply.raw.end();
 
         const final = await streamRes.finalize();
+        // Passthrough is the explicit AUDIT-ONLY surface (see Anthropic
+        // register-passthrough.ts comment): risk fields are computed honestly,
+        // enforcement_decision is intentionally `observe`.
+        const govStream = resolveGovernance({
+          capability: capabilityRegistryEntry,
+          tenant_tier: tenant.tier,
+          operational_mode: tenant.operational_mode,
+          tool_classifications: toolClassifications.map((c) => ({
+            tool_index: c.tool_index,
+            classification: c.classification,
+            contributed_risk_class: c.contributed_risk_class,
+          })),
+          dlp_findings: [],
+        });
         await deps.emitAuditEvent(
           buildPassthroughInvoked({
             tenant,
@@ -342,8 +371,10 @@ export async function registerOpenAIPassthrough(
             native_method: 'POST',
             is_stream: true,
             is_multipart: false,
-            base_risk_class: 'A',
-            effective_risk_class: 'A',
+            base_risk_class: govStream.base_risk_class,
+            effective_risk_class: govStream.effective_risk_class,
+            risk_escalation_reasons: govStream.risk_escalation_reasons,
+            // Audit-only surface: enforcement is intentionally `observe`.
             enforcement_decision: 'observe',
             native_request_hash: streamRes.native_request_hash,
             stream_final_hash: final.stream_final_hash,
@@ -378,6 +409,23 @@ export async function registerOpenAIPassthrough(
       }
       reply.code(fwd.status);
 
+      const isMultipartReq =
+        typeof req.headers['content-type'] === 'string' &&
+        (req.headers['content-type'] as string)
+          .toLowerCase()
+          .startsWith('multipart/form-data');
+      const govNonStream = resolveGovernance({
+        capability: capabilityRegistryEntry,
+        tenant_tier: tenant.tier,
+        operational_mode: tenant.operational_mode,
+        tool_classifications: toolClassifications.map((c) => ({
+          tool_index: c.tool_index,
+          classification: c.classification,
+          contributed_risk_class: c.contributed_risk_class,
+        })),
+        dlp_findings: [],
+        is_multipart: isMultipartReq,
+      });
       await deps.emitAuditEvent(
         buildPassthroughInvoked({
           tenant,
@@ -387,13 +435,11 @@ export async function registerOpenAIPassthrough(
           native_endpoint: matched.pathTemplate,
           native_method: req.method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
           is_stream: false,
-          is_multipart:
-            typeof req.headers['content-type'] === 'string' &&
-            (req.headers['content-type'] as string)
-              .toLowerCase()
-              .startsWith('multipart/form-data'),
-          base_risk_class: 'A',
-          effective_risk_class: 'A',
+          is_multipart: isMultipartReq,
+          base_risk_class: govNonStream.base_risk_class,
+          effective_risk_class: govNonStream.effective_risk_class,
+          risk_escalation_reasons: govNonStream.risk_escalation_reasons,
+          // Audit-only surface: enforcement is intentionally `observe`.
           enforcement_decision: 'observe',
           native_request_hash: fwd.native_request_hash,
           native_response_hash: fwd.native_response_hash,

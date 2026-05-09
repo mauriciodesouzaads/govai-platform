@@ -14,6 +14,8 @@ import { adminAuditShredRoute } from './routes/admin-audit-shred.js';
 import { adminDlpRoute } from './routes/admin-dlp.js';
 import { passthroughAnthropicRoute } from './routes/passthrough-anthropic.js';
 import { passthroughOpenaiRoute } from './routes/passthrough-openai.js';
+import { governedAnthropicRoute } from './routes/governed-anthropic.js';
+import { governedOpenaiRoute } from './routes/governed-openai.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -70,6 +72,8 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(adminDlpRoute);
   await app.register(passthroughAnthropicRoute);
   await app.register(passthroughOpenaiRoute);
+  await app.register(governedAnthropicRoute);
+  await app.register(governedOpenaiRoute);
 
   app.addHook('onClose', async () => {
     if (!overrides.pool) {

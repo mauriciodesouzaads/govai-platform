@@ -126,6 +126,25 @@ export {
 } from './routes/register-passthrough.js';
 
 // =============================================================================
+// PR2 Batch G — Macro Architecture Realignment: governed-native Anthropic.
+// =============================================================================
+export {
+  handleAnthropicGovernedMessages,
+  type GovernedHandleDeps as AnthropicGovernedHandleDeps,
+  type GovernedHandleInput as AnthropicGovernedHandleInput,
+  type GovernedTenant as AnthropicGovernedTenant,
+  type GovernedNonStreamResult as AnthropicGovernedNonStreamResult,
+  type GovernedStreamResult as AnthropicGovernedStreamResult,
+  type GovernedBlockedResult as AnthropicGovernedBlockedResult,
+  type DlpScanFn as AnthropicDlpScanFn,
+} from './governed/handle-messages.js';
+export {
+  registerAnthropicGoverned,
+  type AnthropicGovernedDeps,
+} from './governed/register-governed.js';
+export { extractAnthropicText } from './governed/extract-text.js';
+
+// =============================================================================
 // PR0 inline (preserved).
 // =============================================================================
 

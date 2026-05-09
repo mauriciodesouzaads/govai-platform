@@ -9,6 +9,7 @@ import {
   type TenantContext,
 } from '@govai/provider-anthropic';
 import { authenticateApiKey } from '../pipeline/auth.js';
+import { resolveAnthropicProviderKey } from '../pipeline/provider-credentials.js';
 
 export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -27,16 +28,13 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
     const client = await app.govai.pool.connect();
     try {
       const identity = await authenticateApiKey(client, apiKey ?? '');
+      // Real values from HAE-004 (orgs.tier + orgs.operational_mode); no
+      // hardcoded literals at runtime per the macro realignment directive.
       return {
         org_id: identity.org_id,
         user_id: identity.user_id,
-        tier: 'enterprise',
-        operational_mode:
-          env.NODE_ENV === 'production'
-            ? 'production'
-            : env.NODE_ENV === 'test'
-              ? 'test'
-              : 'dev',
+        tier: identity.tier,
+        operational_mode: identity.operational_mode,
       };
     } finally {
       client.release();
@@ -44,11 +42,10 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
   };
 
   const resolveProviderKey = async (_req: FastifyRequest): Promise<string> => {
-    // Tenant-resolved provider credentials are PR3+. For PR2 hermetic, use a
-    // deterministic placeholder; the test fixture accepts any string.
-    return env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY.length > 0
-      ? env.ANTHROPIC_API_KEY
-      : 'sk-ant-test-hermetic';
+    // Real env key is required outside hermetic test (NODE_ENV=test + loopback).
+    // Tenant-scoped credentials are PR3+ — for now ANTHROPIC_API_KEY at the
+    // platform level is the source of truth.
+    return resolveAnthropicProviderKey(env);
   };
 
   const activeOverridesLoader = async (
