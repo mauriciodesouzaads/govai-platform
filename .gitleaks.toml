@@ -23,8 +23,8 @@ paths = [
   '''docs/.*''',
 ]
 regexes = [
-  '''sk-ant-leak-canary-XYZABC123-DO-NOT-LEAK''',
-  '''sk-proj-leak-canary-XYZABC123-DO-NOT-LEAK''',
+  '''sk-ant-leak-canary-XYZABC123(-DO-NOT-LEAK)?''',
+  '''sk-proj-leak-canary-XYZABC123(-DO-NOT-LEAK)?''',
   '''sk-ant-tenant-matrix-test-PLAINTEXT''',
   '''sk-ant-env-matrix-test-EEEE''',
   '''sk-ant-tenant-A-isolation-test-AAAA''',
