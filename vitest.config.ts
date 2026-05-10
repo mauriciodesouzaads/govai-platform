@@ -25,6 +25,9 @@ export default defineConfig({
         'packages/core-governance/src/**/*.ts',
         'packages/core-identity/src/**/*.ts',
         'packages/dlp-br/src/**/*.ts',
+        // PR3.1a — tenant provider credential bridge code + resolver.
+        'apps/api/src/scripts/**/*.ts',
+        'apps/api/src/pipeline/provider-credentials.ts',
       ],
       exclude: ['**/*.test.ts', '**/*.d.ts', 'packages/dlp-br/scripts/**'],
       thresholds: {

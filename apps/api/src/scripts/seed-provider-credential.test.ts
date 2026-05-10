@@ -135,4 +135,28 @@ describe('seed-provider-credential / readKeyFromStdin', () => {
     const out = await readKeyFromStdin(s);
     expect(out).toBe('');
   });
+
+  it('preserves a single trailing newline if there are two (only the outermost LF is trimmed)', async () => {
+    const s = Readable.from([Buffer.from('abc\n\n')]);
+    const out = await readKeyFromStdin(s);
+    expect(out).toBe('abc\n');
+  });
+
+  it('does not trim trailing spaces or tabs', async () => {
+    const s = Readable.from([Buffer.from('abc \t')]);
+    const out = await readKeyFromStdin(s);
+    expect(out).toBe('abc \t');
+  });
+
+  it('does not trim leading whitespace', async () => {
+    const s = Readable.from([Buffer.from('   sk-ant-x\n')]);
+    const out = await readKeyFromStdin(s);
+    expect(out).toBe('   sk-ant-x');
+  });
+
+  it('treats lone CR (no LF) as a regular character — not trimmed', async () => {
+    const s = Readable.from([Buffer.from('abc\r')]);
+    const out = await readKeyFromStdin(s);
+    expect(out).toBe('abc\r');
+  });
 });

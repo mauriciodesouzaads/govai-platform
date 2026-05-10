@@ -1,23 +1,67 @@
-// Provider credential resolution for governed-native + passthrough routes.
+// Provider credential resolution — PR3.1a Checkpoint 2 (issue #13).
 //
-// Production / non-loopback: the env-supplied real key is required. Throws if
-// missing. NEVER falls back to a hermetic placeholder in production.
+// Tenant-scoped resolver. Looks up an active credential row in
+// govai.provider_credentials, decrypts via KMS envelope, and returns the
+// plaintext only in memory. Falls back to the platform env key ONLY in
+// `dev` operational mode, and to a hermetic placeholder ONLY in
+// NODE_ENV='test' AND loopback baseUrl. In `production` and `pilot` the
+// resolver fails closed when no tenant credential exists, regardless of
+// whether platform env keys are set.
 //
-// Hermetic test env (NODE_ENV='test' AND loopback baseUrl): if the env-supplied
-// key exists it is used; otherwise a deterministic hermetic placeholder is
-// returned so the test fixture (provider-protocol-server) can accept any
-// non-empty key without leaking secrets into the test suite.
+// Memory hygiene:
+// - The plaintext is held only across the synchronous handoff to the caller.
+// - No log path emits the plaintext.
+// - The thrown MissingProviderKeyError carries only safe metadata
+//   (provider, org id, reason); plaintext NEVER appears in the error message,
+//   stack, or cause chain.
+// - The DB row is never logged or stringified into errors.
+//
+// Fallback matrix (executable spec lives in
+// tests/integration/provider-credentials-operational-mode-matrix.test.ts):
+//
+//   tenant credential present         → tenant credential (always wins)
+//   production + no tenant            → THROW (no env fallback)
+//   pilot + no tenant                 → THROW (no env fallback)
+//   dev + no tenant + env present     → env key
+//   dev + no tenant + no env          → THROW
+//   test + loopback + no tenant + env → env key
+//   test + loopback + no tenant + ø   → hermetic placeholder
+//   test + non-loopback + no tenant + env → env key
+//   test + non-loopback + no tenant + ø  → THROW
 
+import type { Pool } from 'pg';
 import type { GovAIEnv } from '@govai/config';
+import type { Kms } from '@govai/core-identity';
+import { setLocalAppOrgId } from '@govai/core-tenant';
 import { isLoopbackUrl } from './capability-resolution.js';
+import type { OperationalMode } from './auth.js';
+
+export type ProviderName = 'anthropic' | 'openai';
+
+export interface ProviderCredentialResolverDeps {
+  env: GovAIEnv;
+  pool: Pool;
+  kms: Kms;
+}
+
+export interface ProviderCredentialResolverContext {
+  orgId: string;
+  operationalMode: OperationalMode;
+}
 
 export class MissingProviderKeyError extends Error {
-  constructor(provider: 'anthropic' | 'openai') {
+  public readonly provider: ProviderName;
+  public readonly org_id: string;
+  public readonly reason: string;
+  constructor(provider: ProviderName, orgId: string, reason: string) {
+    // The message intentionally omits any credential body; only safe metadata.
     super(
-      `${provider.toUpperCase()}_API_KEY is required at runtime for non-loopback or non-test deployments; ` +
-        `set the env variable or restrict the deployment to NODE_ENV=test with a loopback GOVAI_PROVIDER_BASE_URL`,
+      `provider credential not resolvable for provider=${provider} org_id=${orgId} reason=${reason}`,
     );
     this.name = 'MissingProviderKeyError';
+    this.provider = provider;
+    this.org_id = orgId;
+    this.reason = reason;
   }
 }
 
@@ -30,16 +74,149 @@ function isHermetic(env: GovAIEnv): boolean {
   return isLoopbackUrl(baseUrl);
 }
 
-export function resolveAnthropicProviderKey(env: GovAIEnv): string {
-  const real = env.ANTHROPIC_API_KEY;
-  if (real && real.length > 0) return real;
-  if (isHermetic(env)) return HERMETIC_ANTHROPIC;
-  throw new MissingProviderKeyError('anthropic');
+interface CredentialRow {
+  ciphertext: Buffer;
+  dek_wrapped: Buffer;
+  kms_key_id: string;
+  kms_key_version: number;
 }
 
-export function resolveOpenAIProviderKey(env: GovAIEnv): string {
-  const real = env.OPENAI_API_KEY;
-  if (real && real.length > 0) return real;
-  if (isHermetic(env)) return HERMETIC_OPENAI;
-  throw new MissingProviderKeyError('openai');
+/**
+ * Look up the active provider credential for (orgId, provider). Returns null if
+ * no active row exists. Decrypts and returns the plaintext otherwise.
+ */
+async function tryLoadTenantKey(
+  deps: ProviderCredentialResolverDeps,
+  orgId: string,
+  provider: ProviderName,
+): Promise<string | null> {
+  const client = await deps.pool.connect();
+  let row: CredentialRow | null = null;
+  try {
+    await client.query('BEGIN');
+    await setLocalAppOrgId(client, orgId);
+    const result = await client.query<CredentialRow>(
+      `SELECT ciphertext, dek_wrapped, kms_key_id, kms_key_version
+         FROM govai.provider_credentials
+        WHERE org_id   = $1::uuid
+          AND provider = $2::text
+          AND status   = 'active'
+        LIMIT 1`,
+      [orgId, provider],
+    );
+    row = result.rows[0] ?? null;
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    // Wrap with a safe-by-construction code; do not pass row content.
+    throw new MissingProviderKeyError(
+      provider,
+      orgId,
+      `db_lookup_failed:${err instanceof Error ? err.name : 'unknown'}`,
+    );
+  } finally {
+    client.release();
+  }
+  if (!row) return null;
+  try {
+    const plaintextBytes = await deps.kms.envelopeDecrypt({
+      orgId,
+      keyId: row.kms_key_id,
+      version: row.kms_key_version,
+      ciphertext: new Uint8Array(row.ciphertext),
+      dekWrapped: new Uint8Array(row.dek_wrapped),
+    });
+    return Buffer.from(plaintextBytes).toString('utf8');
+  } catch (err) {
+    throw new MissingProviderKeyError(
+      provider,
+      orgId,
+      `kms_decrypt_failed:${err instanceof Error ? err.name : 'unknown'}`,
+    );
+  }
+}
+
+async function resolveProviderKey(
+  deps: ProviderCredentialResolverDeps,
+  ctx: ProviderCredentialResolverContext,
+  provider: ProviderName,
+  envKey: string | undefined,
+  hermeticPlaceholder: string,
+): Promise<string> {
+  // Tenant credential always wins.
+  const tenant = await tryLoadTenantKey(deps, ctx.orgId, provider);
+  if (tenant) return tenant;
+
+  // No tenant credential — apply the operational-mode matrix.
+  const mode = ctx.operationalMode;
+
+  if (mode === 'production' || mode === 'pilot') {
+    throw new MissingProviderKeyError(
+      provider,
+      ctx.orgId,
+      `no_tenant_credential_in_${mode}_mode`,
+    );
+  }
+
+  if (mode === 'dev') {
+    if (envKey && envKey.length > 0) return envKey;
+    throw new MissingProviderKeyError(
+      provider,
+      ctx.orgId,
+      'no_tenant_credential_no_env_in_dev_mode',
+    );
+  }
+
+  // mode === 'test'
+  if (envKey && envKey.length > 0) return envKey;
+  if (isHermetic(deps.env)) return hermeticPlaceholder;
+  throw new MissingProviderKeyError(
+    provider,
+    ctx.orgId,
+    'no_tenant_credential_no_env_test_non_loopback',
+  );
+}
+
+export async function resolveAnthropicProviderKey(
+  deps: ProviderCredentialResolverDeps,
+  ctx: ProviderCredentialResolverContext,
+): Promise<string> {
+  return resolveProviderKey(deps, ctx, 'anthropic', deps.env.ANTHROPIC_API_KEY, HERMETIC_ANTHROPIC);
+}
+
+export async function resolveOpenAIProviderKey(
+  deps: ProviderCredentialResolverDeps,
+  ctx: ProviderCredentialResolverContext,
+): Promise<string> {
+  return resolveProviderKey(deps, ctx, 'openai', deps.env.OPENAI_API_KEY, HERMETIC_OPENAI);
+}
+
+/**
+ * Reverse lookup of operational mode by org id. Used by the passthrough route
+ * closures, where the provider package signature `resolveProviderKey(orgId)`
+ * does not carry the operational mode and we cannot rely on a request-scoped
+ * cache. Uses the SECURITY DEFINER helper added by HAE-004 / migration 0008.
+ */
+export async function lookupOperationalMode(
+  pool: Pool,
+  orgId: string,
+): Promise<OperationalMode> {
+  const client = await pool.connect();
+  try {
+    const r = await client.query<{ operational_mode: OperationalMode }>(
+      'SELECT operational_mode FROM govai.org_tier_lookup($1::uuid)',
+      [orgId],
+    );
+    const row = r.rows[0];
+    if (!row) {
+      throw new MissingProviderKeyError(
+        'anthropic',
+        orgId,
+        'org_tier_lookup_returned_no_row',
+      );
+    }
+    return row.operational_mode;
+  } finally {
+    client.release();
+  }
 }

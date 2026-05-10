@@ -4,7 +4,9 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from '../../../apps/api/src/server.js';
-import { generateApiKey } from '@govai/core-identity';
+import { generateApiKey, DevKms } from '@govai/core-identity';
+import { setLocalAppOrgId } from '@govai/core-tenant';
+import { createProviderCredential } from '@govai/core-governance';
 import { startPostgres, stopPostgres, freshSeedHex, type TestDb } from '../setup.js';
 import {
   startProviderProtocolServer,
@@ -86,6 +88,12 @@ export async function stopStack(stack: Stack): Promise<void> {
 /**
  * Seed an org + user + active API key into the test DB. Returns the plaintext key
  * (only available at creation time).
+ *
+ * The org is created with `operational_mode='test'` by default — this matches
+ * NODE_ENV='test' usage in the integration suite and lets the PR3.1a tenant
+ * provider credential resolver fall back to the hermetic placeholder when no
+ * `provider_credentials` row is seeded. Tests that need a different mode call
+ * `setOrgOperationalMode(stack, orgId, mode)` after seeding.
  */
 export async function seedOrg(stack: Stack, name = `org-${randomUUID().slice(0, 8)}`): Promise<SeededOrg> {
   const orgId = randomUUID();
@@ -99,7 +107,10 @@ export async function seedOrg(stack: Stack, name = `org-${randomUUID().slice(0, 
     await c.query('BEGIN');
     await c.query('SET LOCAL ROLE govai_audit_writer');
     await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
-    await c.query(`INSERT INTO govai.orgs (id, name) VALUES ($1::uuid, $2::text)`, [orgId, name]);
+    await c.query(
+      `INSERT INTO govai.orgs (id, name, operational_mode) VALUES ($1::uuid, $2::text, 'test')`,
+      [orgId, name],
+    );
     await c.query(
       `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status)
        VALUES ($1, $2, $3::uuid, $4::uuid, 'active')`,
@@ -164,6 +175,112 @@ export async function insertCapabilityOverride(
       [orgId, capabilityId, facetId, levelOverride, statusOverride, userId],
     );
     await c.query('COMMIT');
+  } finally {
+    c.release();
+  }
+}
+
+/**
+ * Opt-in helper: seed an active provider_credentials row for the given org.
+ * Uses the canonical setProviderCredential helper so the KMS envelope encryption
+ * boundary is exercised. seedOrg() does NOT call this — tests that need
+ * tenant-scoped credentials must invoke this explicitly.
+ */
+export async function seedProviderCredential(
+  stack: Stack,
+  opts: {
+    orgId: string;
+    provider: 'anthropic' | 'openai';
+    plaintextKey: string;
+    setByUserId: string;
+  },
+): Promise<{ id: string; key_prefix: string; key_last4: string }> {
+  const kms = new DevKms(stack.seed);
+  const c = await stack.db.appPool.connect();
+  try {
+    await c.query('BEGIN');
+    await setLocalAppOrgId(c, opts.orgId);
+    const r = await createProviderCredential({
+      db: c,
+      kms,
+      org_id: opts.orgId,
+      provider: opts.provider,
+      plaintext_key: opts.plaintextKey,
+      set_by_user_id: opts.setByUserId,
+    });
+    await c.query('COMMIT');
+    return { id: r.id, key_prefix: r.key_prefix, key_last4: r.key_last4 };
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
+/**
+ * Opt-in helper: revoke the active credential for (orgId, provider) directly via SQL.
+ * Mirrors what revokeProviderCredential() does but allows tests to set a custom reason.
+ */
+export async function revokeActiveProviderCredential(
+  stack: Stack,
+  opts: { orgId: string; provider: 'anthropic' | 'openai'; revokedByUserId: string; reason: string },
+): Promise<void> {
+  const c = await stack.db.appPool.connect();
+  try {
+    await c.query('BEGIN');
+    await setLocalAppOrgId(c, opts.orgId);
+    await c.query(
+      `UPDATE govai.provider_credentials
+          SET status='revoked', revoked_at=now(), revoked_by_user_id=$3::uuid, revocation_reason=$4::text
+        WHERE org_id=$1::uuid AND provider=$2::text AND status='active'`,
+      [opts.orgId, opts.provider, opts.revokedByUserId, opts.reason],
+    );
+    await c.query('COMMIT');
+  } finally {
+    c.release();
+  }
+}
+
+/**
+ * Opt-in helper: tamper a credential row's dek_wrapped to force decrypt failure
+ * (used by the plaintext-leak canary test to exercise the kms_decrypt_failed path).
+ */
+export async function tamperCredentialDekWrapped(
+  stack: Stack,
+  opts: { orgId: string; provider: 'anthropic' | 'openai' },
+): Promise<void> {
+  const c = await stack.db.adminPool.connect();
+  try {
+    // Run as superuser bypasses RLS + the no-revoke UPDATE policy so we can
+    // mutate dek_wrapped directly for a fault-injection test.
+    await c.query(
+      `UPDATE govai.provider_credentials
+          SET dek_wrapped = '\\x00000000000000000000000000000000'::bytea
+        WHERE org_id=$1::uuid AND provider=$2::text AND status='active'`,
+      [opts.orgId, opts.provider],
+    );
+  } finally {
+    c.release();
+  }
+}
+
+/**
+ * Mutate the org's operational_mode for tests. The govai_app role does NOT
+ * have UPDATE on govai.orgs.tier/operational_mode (PR3.1a deliberately did not
+ * grant it); test runs go through adminPool's superuser to bypass RLS.
+ */
+export async function setOrgOperationalMode(
+  stack: Stack,
+  orgId: string,
+  mode: 'production' | 'pilot' | 'dev' | 'test',
+): Promise<void> {
+  const c = await stack.db.adminPool.connect();
+  try {
+    await c.query(
+      `UPDATE govai.orgs SET operational_mode = $2 WHERE id = $1::uuid`,
+      [orgId, mode],
+    );
   } finally {
     c.release();
   }
