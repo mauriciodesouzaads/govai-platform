@@ -10,12 +10,18 @@ import { setLocalAppOrgId } from '@govai/core-tenant';
 import { DevKms } from '@govai/core-identity';
 import { chainIdFor } from '@govai/core-events';
 import { startPostgres, stopPostgres, freshSeedHex, type TestDb } from './setup.js';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FALLBACK_RUNBOOK = join(__dirname, '..', '..', 'docs', 'runbooks', 'canonical-reconstruction-fallback.md');
+// Runtime CR.1 telemetry is written to a tmp file. The committed runbook
+// (`docs/runbooks/canonical-reconstruction-fallback.md`) is the authored
+// document and MUST stay byte-stable across test runs — appending PASS/FAIL
+// footers to it dirties the working tree on every test run (Issue #5).
+const TELEMETRY_FILE = join(tmpdir(), 'govai-cr1-telemetry.md');
+const COMMITTED_RUNBOOK = join(__dirname, '..', '..', 'docs', 'runbooks', 'canonical-reconstruction-fallback.md');
 
 let db: TestDb;
 const seed = freshSeedHex();
@@ -125,7 +131,9 @@ describe('canonical reconstruction (informative)', () => {
         new Uint8Array(row.hmac),
       );
 
-      // Informative: write outcome to runbook footer.
+      // Informative telemetry: write outcome to a tmp file (NOT the committed
+      // runbook). Best-effort write — failure is not load-bearing.
+      const runbookBefore = readFileSync(COMMITTED_RUNBOOK);
       let outcome: string;
       if (hashMatch && hmacMatch) {
         outcome = `## CR.1 outcome (run on ${new Date().toISOString()})\n\n**Native reconstruction PASSED.** \`canonical_bytes\` is redundant but kept as defense.\n`;
@@ -133,10 +141,13 @@ describe('canonical reconstruction (informative)', () => {
         outcome = `## CR.1 outcome (run on ${new Date().toISOString()})\n\n**Native reconstruction FAILED** (hashMatch=${hashMatch}, hmacMatch=${hmacMatch}). \`canonical_bytes\` is load-bearing.\n`;
       }
       try {
-        writeFileSync(FALLBACK_RUNBOOK, `${outcome}\n`, { flag: 'a' });
+        writeFileSync(TELEMETRY_FILE, `${outcome}\n`, { flag: 'a' });
       } catch {
-        /* runbook write is best-effort */
+        /* tmp write is best-effort */
       }
+      const runbookAfter = readFileSync(COMMITTED_RUNBOOK);
+      // Lock-in: CR.1 must NEVER mutate the committed runbook (Issue #5).
+      expect(runbookAfter.equals(runbookBefore)).toBe(true);
 
       // Always assert the stored canonical_bytes path works (this IS load-bearing).
       const storedHash = Buffer.from(sha256(new Uint8Array(storedCanonicalBytes)));
