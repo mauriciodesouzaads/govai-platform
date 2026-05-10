@@ -2,12 +2,14 @@ node_modules/
 dist/
 .turbo/
 coverage/
-.env
-.env.local
-.env.*.local
 *.log
 .DS_Store
 .vscode/
 .idea/
 *.tsbuildinfo
 .pnpm-store/
+
+# Local secrets
+.env
+.env.*
+!.env.example

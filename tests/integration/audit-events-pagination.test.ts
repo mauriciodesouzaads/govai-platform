@@ -16,8 +16,10 @@ afterAll(async () => {
 describe('GET /v1/audit-events pagination', () => {
   it('limit caps result count and before_seq paginates older entries', async () => {
     const org = await seedOrg(stack);
-    // Append five run events.
-    for (let i = 0; i < 5; i++) {
+    // Each completed governed run emits 2 audit events: `run.completed` (legacy)
+    // + `passthrough.invoked v3` (Batch G canonical fact). Three runs yield 6
+    // total events (sequences 1..6) on the org's run chain.
+    for (let i = 0; i < 3; i++) {
       const r = await inject(stack, 'POST', '/v1/runs', org.api_key, {
         workspace_id: org.workspace_id,
         capability: 'anthropic.messages.create',
@@ -32,10 +34,10 @@ describe('GET /v1/audit-events pagination', () => {
     expect(p1.statusCode).toBe(200);
     const b1 = p1.body as { events: Array<{ sequence_number: number }> };
     expect(b1.events.length).toBe(2);
-    expect(b1.events[0]!.sequence_number).toBe(5);
-    expect(b1.events[1]!.sequence_number).toBe(4);
+    expect(b1.events[0]!.sequence_number).toBe(6);
+    expect(b1.events[1]!.sequence_number).toBe(5);
 
-    // Page 2: before_seq=4 → next two.
+    // Page 2: before_seq=5 → next two.
     const p2 = await inject(
       stack,
       'GET',
@@ -45,10 +47,10 @@ describe('GET /v1/audit-events pagination', () => {
     expect(p2.statusCode).toBe(200);
     const b2 = p2.body as { events: Array<{ sequence_number: number }> };
     expect(b2.events.length).toBe(2);
-    expect(b2.events[0]!.sequence_number).toBe(3);
-    expect(b2.events[1]!.sequence_number).toBe(2);
+    expect(b2.events[0]!.sequence_number).toBe(4);
+    expect(b2.events[1]!.sequence_number).toBe(3);
 
-    // Page 3: only one remaining.
+    // Page 3: last two.
     const p3 = await inject(
       stack,
       'GET',
@@ -57,7 +59,8 @@ describe('GET /v1/audit-events pagination', () => {
     );
     expect(p3.statusCode).toBe(200);
     const b3 = p3.body as { events: Array<{ sequence_number: number }> };
-    expect(b3.events.length).toBe(1);
-    expect(b3.events[0]!.sequence_number).toBe(1);
+    expect(b3.events.length).toBe(2);
+    expect(b3.events[0]!.sequence_number).toBe(2);
+    expect(b3.events[1]!.sequence_number).toBe(1);
   });
 });

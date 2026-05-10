@@ -12,7 +12,12 @@
   },
   "dependencies": {
     "@govai/core-audit": "workspace:*",
+    "@govai/core-types": "workspace:*",
+    "pg": "8.20.0",
     "zod": "4.4.2"
   },
-  "devDependencies": { "typescript": "5.9.3" }
+  "devDependencies": {
+    "@types/pg": "8.15.6",
+    "typescript": "5.9.3"
+  }
 }

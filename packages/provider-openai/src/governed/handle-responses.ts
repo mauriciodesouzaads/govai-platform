@@ -1,0 +1,383 @@
+// Governed-native handler for `openai.responses.create` / `.stream`.
+// Same pattern as Anthropic handle-messages: real governance, no simulations.
+
+import { createHash, randomUUID } from 'node:crypto';
+import type { Capability } from '@govai/core-types';
+import {
+  resolveGovernance,
+  type DlpFindingLite,
+  type ToolClassificationLite,
+} from '@govai/core-governance';
+import {
+  PassthroughInvokedSchema,
+  type PassthroughInvoked,
+} from '@govai/core-events';
+import {
+  OPENAI_RESPONSES_CREATE,
+  OPENAI_RESPONSES_STREAM,
+} from '../capabilities/index.js';
+import { OPENAI_BETA_POLICY_VERSION } from '../beta-policy.js';
+import { classifyOpenAITools } from '../passthrough/tool-classifier-hook.js';
+import { forwardRaw } from '../passthrough/forward.js';
+import { forwardStream } from '../passthrough/stream-forward.js';
+import { KNOWN_OPENAI_TAXONOMY_VERSION } from '../tool-taxonomy-version.js';
+import { extractOpenAIResponsesText } from './extract-text.js';
+
+export type GovernedTenant = {
+  org_id: string;
+  user_id?: string;
+  tenant_id?: string;
+  tier: 'starter' | 'business' | 'enterprise' | 'regulated';
+  operational_mode: 'production' | 'pilot' | 'dev' | 'test';
+};
+
+export type DlpScanFn = (text: string) => Promise<{
+  findings: ReadonlyArray<DlpFindingLite & { detector: string }>;
+}>;
+
+export type GovernedHandleDeps = {
+  upstreamBaseUrl: string;
+  resolveProviderKey: (orgId: string) => Promise<string>;
+  resolveProviderOrganization?: (orgId: string) => Promise<string | undefined>;
+  dlpScan: DlpScanFn;
+  emitAuditEvent: (event: PassthroughInvoked) => Promise<void> | void;
+  now?: () => Date;
+};
+
+export type GovernedNonStreamResult = {
+  kind: 'non_stream';
+  status_code: number;
+  response_headers: Record<string, string>;
+  response_body_raw: Buffer;
+  native_request_hash_hex: string;
+  native_response_hash_hex: string;
+  provider_request_id: string | null;
+  latency_ms: number;
+  audit_event: PassthroughInvoked;
+  governance: {
+    base_risk_class: string;
+    effective_risk_class: string;
+    risk_escalation_reasons: string[];
+    enforcement_decision: string;
+  };
+};
+
+export type GovernedStreamResult = {
+  kind: 'stream';
+  status_code: number;
+  response_headers: Record<string, string>;
+  body: ReadableStream<Uint8Array>;
+  native_request_hash_hex: string;
+  provider_request_id: string | null;
+  finalize: () => Promise<{
+    stream_final_hash_hex: string;
+    bytes_streamed: number;
+    latency_ms: number;
+    audit_event: PassthroughInvoked;
+  }>;
+  governance: {
+    base_risk_class: string;
+    effective_risk_class: string;
+    risk_escalation_reasons: string[];
+    enforcement_decision: string;
+  };
+};
+
+export type GovernedBlockedResult = {
+  kind: 'blocked';
+  status_code: 403;
+  reason: string;
+  audit_event: PassthroughInvoked;
+  governance: {
+    base_risk_class: string;
+    effective_risk_class: string;
+    risk_escalation_reasons: string[];
+    enforcement_decision: string;
+  };
+};
+
+export type GovernedHandleInput = {
+  tenant: GovernedTenant;
+  rawBody: Buffer;
+  inboundHeaders: Record<string, string>;
+  isStream: boolean;
+  isMultipart?: boolean;
+};
+
+const HOP_BY_HOP = new Set([
+  'host',
+  'connection',
+  'content-length',
+  'keep-alive',
+  'transfer-encoding',
+  'upgrade',
+  'proxy-authorization',
+  'proxy-authenticate',
+  'te',
+  'trailer',
+]);
+
+const STRIP_INBOUND_AUTH = new Set([
+  'authorization',
+  'x-api-key',
+  'x-govai-api-key',
+]);
+
+function buildOutboundHeaders(
+  inbound: Record<string, string>,
+  providerKey: string,
+  organization?: string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(inbound)) {
+    const key = k.toLowerCase();
+    if (HOP_BY_HOP.has(key) || STRIP_INBOUND_AUTH.has(key)) continue;
+    out[k] = v;
+  }
+  out['authorization'] = `Bearer ${providerKey}`;
+  if (organization) out['openai-organization'] = organization;
+  return out;
+}
+
+function sha256Hex(buf: Buffer): string {
+  return createHash('sha256').update(buf).digest('hex');
+}
+
+function selectCapability(isStream: boolean): Capability {
+  return isStream ? OPENAI_RESPONSES_STREAM : OPENAI_RESPONSES_CREATE;
+}
+
+export async function handleOpenAIGovernedResponses(
+  input: GovernedHandleInput,
+  deps: GovernedHandleDeps,
+): Promise<GovernedNonStreamResult | GovernedStreamResult | GovernedBlockedResult> {
+  const capability = selectCapability(input.isStream);
+  const capabilityId = capability.id;
+
+  let parsedBody: Record<string, unknown> | null = null;
+  try {
+    parsedBody = JSON.parse(input.rawBody.toString('utf8')) as Record<string, unknown>;
+  } catch {
+    parsedBody = null;
+  }
+
+  const detectedTools: ToolClassificationLite[] = [];
+  let toolBlock: { tool_index: number; reason: string; classification: string } | null = null;
+  let toolClassificationsForAudit: PassthroughInvoked['detected_tool_classifications'] = [];
+  if (parsedBody && Array.isArray(parsedBody['tools']) && (parsedBody['tools'] as unknown[]).length > 0) {
+    const result = classifyOpenAITools(parsedBody['tools'] as unknown[], 'responses');
+    toolClassificationsForAudit = result.classifications;
+    for (const c of result.classifications) {
+      detectedTools.push({
+        tool_index: c.tool_index,
+        classification: c.classification,
+        contributed_risk_class: c.contributed_risk_class,
+      });
+    }
+    if (result.decision === 'block' && result.blocked.length > 0) {
+      const first = result.blocked[0]!;
+      toolBlock = {
+        tool_index: first.tool_index,
+        reason: first.reason,
+        classification: first.classification,
+      };
+    }
+  }
+
+  const segments = extractOpenAIResponsesText(parsedBody);
+  const concatenated = segments.map((s) => s.text).join('\n');
+  const dlpFindings: DlpFindingLite[] = [];
+  if (concatenated.length > 0) {
+    const r = await deps.dlpScan(concatenated);
+    for (const f of r.findings) {
+      dlpFindings.push({ detector: f.detector, ...(f.signal_class ? { signal_class: f.signal_class } : {}) });
+    }
+  }
+  const dlpDecisions: PassthroughInvoked['dlp_decisions'] =
+    dlpFindings.length > 0
+      ? [
+          {
+            phase: 'pre_request',
+            findings_count: dlpFindings.length,
+            finding_classes: Array.from(new Set(dlpFindings.map((f) => f.detector))),
+            action: 'warn',
+          },
+        ]
+      : [];
+
+  const governance = resolveGovernance({
+    capability,
+    tenant_tier: input.tenant.tier,
+    operational_mode: input.tenant.operational_mode,
+    tool_classifications: detectedTools,
+    dlp_findings: dlpFindings,
+    is_multipart: input.isMultipart === true,
+  });
+
+  if (toolBlock !== null || governance.enforcement_decision === 'blocked') {
+    const reason = toolBlock
+      ? `tool_blocked:${toolBlock.classification}:${toolBlock.reason}`
+      : `enforcement_blocked:${governance.effective_risk_class}`;
+    const ev = PassthroughInvokedSchema.parse({
+      event_type: 'passthrough.invoked',
+      schema_version: 3,
+      tenant_context: input.tenant,
+      provider: 'openai',
+      capability_id: capabilityId,
+      capability_level: 'policy_governed',
+      capability_canonical_level: capability.level,
+      native_endpoint: '/v1/responses',
+      native_method: 'POST',
+      is_stream: input.isStream,
+      is_multipart: input.isMultipart === true,
+      base_risk_class: governance.base_risk_class,
+      effective_risk_class: governance.effective_risk_class,
+      risk_escalation_reasons: governance.risk_escalation_reasons,
+      enforcement_decision: 'blocked',
+      native_request_hash: sha256Hex(input.rawBody),
+      latency_ms: 0,
+      status_code: 403,
+      credential_source: 'tenant_provider_credential',
+      allowlist_version: OPENAI_BETA_POLICY_VERSION,
+      body_forward_mode: 'blocked',
+      dlp_decisions: dlpDecisions,
+      beta_allowlist_sources: [],
+      detected_tool_classifications: toolClassificationsForAudit,
+      ...(toolClassificationsForAudit.length > 0
+        ? { tools_taxonomy_version: KNOWN_OPENAI_TAXONOMY_VERSION }
+        : {}),
+      audit_event_id: randomUUID(),
+      chain_id: 'run',
+    });
+    await deps.emitAuditEvent(ev);
+    return { kind: 'blocked', status_code: 403, reason, audit_event: ev, governance };
+  }
+
+  const providerKey = await deps.resolveProviderKey(input.tenant.org_id);
+  const organization = deps.resolveProviderOrganization
+    ? await deps.resolveProviderOrganization(input.tenant.org_id)
+    : undefined;
+  const outHeaders = buildOutboundHeaders(input.inboundHeaders, providerKey, organization);
+
+  if (input.isStream) {
+    const stream = await forwardStream({
+      baseUrl: deps.upstreamBaseUrl,
+      concretePath: '/v1/responses',
+      method: 'POST',
+      headers: outHeaders,
+      body: input.rawBody,
+    });
+
+    const finalize = async () => {
+      const final = await stream.finalize();
+      const ev = PassthroughInvokedSchema.parse({
+        event_type: 'passthrough.invoked',
+        schema_version: 3,
+        tenant_context: input.tenant,
+        provider: 'openai',
+        capability_id: capabilityId,
+        capability_level: 'policy_governed',
+        capability_canonical_level: capability.level,
+        native_endpoint: '/v1/responses',
+        native_method: 'POST',
+        is_stream: true,
+        is_multipart: input.isMultipart === true,
+        base_risk_class: governance.base_risk_class,
+        effective_risk_class: governance.effective_risk_class,
+        risk_escalation_reasons: governance.risk_escalation_reasons,
+        enforcement_decision: governance.enforcement_decision,
+        native_request_hash: stream.native_request_hash,
+        stream_final_hash: final.stream_final_hash,
+        latency_ms: final.latency_ms,
+        status_code: stream.status,
+        credential_source: 'tenant_provider_credential',
+        allowlist_version: OPENAI_BETA_POLICY_VERSION,
+        ...(stream.provider_request_id ? { provider_request_id: stream.provider_request_id } : {}),
+        body_forward_mode: 'raw',
+        dlp_decisions: dlpDecisions,
+        beta_allowlist_sources: [],
+        detected_tool_classifications: toolClassificationsForAudit,
+        ...(toolClassificationsForAudit.length > 0
+          ? { tools_taxonomy_version: KNOWN_OPENAI_TAXONOMY_VERSION }
+          : {}),
+        audit_event_id: randomUUID(),
+        chain_id: 'run',
+      });
+      await deps.emitAuditEvent(ev);
+      return {
+        stream_final_hash_hex: final.stream_final_hash,
+        bytes_streamed: final.bytes_streamed,
+        latency_ms: final.latency_ms,
+        audit_event: ev,
+      };
+    };
+
+    return {
+      kind: 'stream',
+      status_code: stream.status,
+      response_headers: stream.responseHeaders,
+      body: stream.body,
+      native_request_hash_hex: stream.native_request_hash,
+      provider_request_id: stream.provider_request_id,
+      finalize,
+      governance,
+    };
+  }
+
+  const fwd = await forwardRaw({
+    baseUrl: deps.upstreamBaseUrl,
+    pathTemplate: '/v1/responses',
+    concretePath: '/v1/responses',
+    method: 'POST',
+    headers: outHeaders,
+    body: input.rawBody,
+  });
+
+  const ev = PassthroughInvokedSchema.parse({
+    event_type: 'passthrough.invoked',
+    schema_version: 3,
+    tenant_context: input.tenant,
+    provider: 'openai',
+    capability_id: capabilityId,
+    capability_level: 'policy_governed',
+    capability_canonical_level: capability.level,
+    native_endpoint: '/v1/responses',
+    native_method: 'POST',
+    is_stream: false,
+    is_multipart: input.isMultipart === true,
+    base_risk_class: governance.base_risk_class,
+    effective_risk_class: governance.effective_risk_class,
+    risk_escalation_reasons: governance.risk_escalation_reasons,
+    enforcement_decision: governance.enforcement_decision,
+    native_request_hash: fwd.native_request_hash,
+    native_response_hash: fwd.native_response_hash,
+    latency_ms: fwd.latency_ms,
+    status_code: fwd.status,
+    credential_source: 'tenant_provider_credential',
+    allowlist_version: OPENAI_BETA_POLICY_VERSION,
+    ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
+    body_forward_mode: 'raw',
+    dlp_decisions: dlpDecisions,
+    beta_allowlist_sources: [],
+    detected_tool_classifications: toolClassificationsForAudit,
+    ...(toolClassificationsForAudit.length > 0
+      ? { tools_taxonomy_version: KNOWN_OPENAI_TAXONOMY_VERSION }
+      : {}),
+    audit_event_id: randomUUID(),
+    chain_id: 'run',
+  });
+  await deps.emitAuditEvent(ev);
+
+  return {
+    kind: 'non_stream',
+    status_code: fwd.status,
+    response_headers: fwd.responseHeaders,
+    response_body_raw: fwd.responseBody,
+    native_request_hash_hex: fwd.native_request_hash,
+    native_response_hash_hex: fwd.native_response_hash,
+    provider_request_id: fwd.provider_request_id,
+    latency_ms: fwd.latency_ms,
+    audit_event: ev,
+    governance,
+  };
+}

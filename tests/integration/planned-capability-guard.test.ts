@@ -31,8 +31,12 @@ describe('planned-capability guard', () => {
     expect(r.statusCode).toBe(200);
   });
 
+  // Batch G turned anthropic.messages.create into status=supported, so the guard
+  // no longer applies there. PCG.2 and PCG.3 use `anthropic.messages.tools`,
+  // which remains `planned` in BASELINE_REGISTRY (tool-only capability deferred
+  // per the Provider Completion Backlog).
   it('PCG.2 — NODE_ENV=development without flag → CapabilityNotSupportedError', () => {
-    const cap = findCapability('anthropic.messages.create');
+    const cap = findCapability('anthropic.messages.tools');
     expect(cap).toBeDefined();
     expect(() =>
       assertCapabilityExecutable(cap!, {
@@ -44,7 +48,7 @@ describe('planned-capability guard', () => {
   });
 
   it('PCG.3 — non-loopback GOVAI_PROVIDER_BASE_URL → CapabilityNotSupportedError', () => {
-    const cap = findCapability('anthropic.messages.create');
+    const cap = findCapability('anthropic.messages.tools');
     expect(cap).toBeDefined();
     expect(() =>
       assertCapabilityExecutable(cap!, {

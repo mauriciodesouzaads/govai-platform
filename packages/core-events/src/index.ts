@@ -92,3 +92,10 @@ export type ChainCategory = z.infer<typeof ChainCategory>;
 export function chainIdFor(orgId: string, category: ChainCategory): string {
   return `${orgId}:${category}`;
 }
+
+// PR2 Batch F audit event schemas (Peça A v2 §6.2 / §13).
+export * from './passthrough-invoked.js';
+export * from './passthrough-beta-denied.js';
+export * from './tool-validation-blocked.js';
+export * from './org-beta-override-set.js';
+export * from './org-beta-override-revoked.js';

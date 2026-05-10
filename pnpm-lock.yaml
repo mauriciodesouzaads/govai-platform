@@ -168,10 +168,19 @@ importers:
       '@govai/core-audit':
         specifier: workspace:*
         version: link:../core-audit
+      '@govai/core-types':
+        specifier: workspace:*
+        version: link:../core-types
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
       zod:
         specifier: 4.4.2
         version: 4.4.2
     devDependencies:
+      '@types/pg':
+        specifier: 8.15.6
+        version: 8.15.6
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -205,6 +214,12 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  packages/core-types:
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
   packages/dlp-br:
     dependencies:
       re2:
@@ -229,9 +244,21 @@ importers:
       '@anthropic-ai/sdk':
         specifier: 0.92.0
         version: 0.92.0(zod@4.4.2)
+      '@govai/config':
+        specifier: workspace:*
+        version: link:../config
       '@govai/core-events':
         specifier: workspace:*
         version: link:../core-events
+      '@govai/core-governance':
+        specifier: workspace:*
+        version: link:../core-governance
+      '@govai/core-types':
+        specifier: workspace:*
+        version: link:../core-types
+      fastify:
+        specifier: 5.8.5
+        version: 5.8.5
     devDependencies:
       typescript:
         specifier: 5.9.3
@@ -239,9 +266,21 @@ importers:
 
   packages/provider-openai:
     dependencies:
+      '@govai/config':
+        specifier: workspace:*
+        version: link:../config
       '@govai/core-events':
         specifier: workspace:*
         version: link:../core-events
+      '@govai/core-governance':
+        specifier: workspace:*
+        version: link:../core-governance
+      '@govai/core-types':
+        specifier: workspace:*
+        version: link:../core-types
+      fastify:
+        specifier: 5.8.5
+        version: 5.8.5
       openai:
         specifier: 6.35.0
         version: 6.35.0(zod@4.4.2)

@@ -1,23 +1,27 @@
 import { Capability, CapabilityRegistry } from './capability.js';
 
+// PR2 Batch G: the 6 policy_governed inference capabilities are now `supported`
+// because their governed-run pipeline is implemented (provider invoke + DLP +
+// classifier + enforcement + audit emit). Tool-only entries stay `planned` —
+// they are tracked under the Provider Completion Backlog for future batches.
 export const BASELINE_REGISTRY: ReadonlyArray<Capability> = Object.freeze([
   Capability.parse({
     id: 'anthropic.messages.create',
     provider: 'anthropic',
-    status: 'planned',
+    status: 'supported',
     facets: [
-      { id: 'pre_dlp', level: 2, status: 'planned' },
-      { id: 'final_hash', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
+      { id: 'pre_dlp', level: 2, status: 'supported' },
+      { id: 'final_hash', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
     ],
   }),
   Capability.parse({
     id: 'anthropic.messages.stream',
     provider: 'anthropic',
-    status: 'planned',
+    status: 'supported',
     facets: [
-      { id: 'pre_dlp', level: 2, status: 'planned' },
-      { id: 'final_hash', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
-      { id: 'realtime_audit', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
+      { id: 'pre_dlp', level: 2, status: 'supported' },
+      { id: 'final_hash', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
+      { id: 'realtime_audit', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
     ],
   }),
   Capability.parse({
@@ -29,38 +33,38 @@ export const BASELINE_REGISTRY: ReadonlyArray<Capability> = Object.freeze([
   Capability.parse({
     id: 'openai.responses.create',
     provider: 'openai',
-    status: 'planned',
+    status: 'supported',
     facets: [
-      { id: 'pre_dlp', level: 2, status: 'planned' },
-      { id: 'final_hash', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
+      { id: 'pre_dlp', level: 2, status: 'supported' },
+      { id: 'final_hash', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
     ],
   }),
   Capability.parse({
     id: 'openai.responses.stream',
     provider: 'openai',
-    status: 'planned',
+    status: 'supported',
     facets: [
-      { id: 'pre_dlp', level: 2, status: 'planned' },
-      { id: 'final_hash', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
-      { id: 'realtime_audit', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
+      { id: 'pre_dlp', level: 2, status: 'supported' },
+      { id: 'final_hash', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
+      { id: 'realtime_audit', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
     ],
   }),
   Capability.parse({
     id: 'openai.chat.completions.create',
     provider: 'openai',
-    status: 'planned',
+    status: 'supported',
     facets: [
-      { id: 'pre_dlp', level: 2, status: 'planned' },
-      { id: 'final_hash', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
+      { id: 'pre_dlp', level: 2, status: 'supported' },
+      { id: 'final_hash', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
     ],
   }),
   Capability.parse({
     id: 'openai.chat.completions.stream',
     provider: 'openai',
-    status: 'planned',
+    status: 'supported',
     facets: [
-      { id: 'pre_dlp', level: 2, status: 'planned' },
-      { id: 'final_hash', level: 3, status: 'planned', evidence_strength: 'hmac_internal' },
+      { id: 'pre_dlp', level: 2, status: 'supported' },
+      { id: 'final_hash', level: 3, status: 'supported', evidence_strength: 'hmac_internal' },
     ],
   }),
   Capability.parse({

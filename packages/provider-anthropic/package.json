@@ -12,7 +12,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.92.0",
-    "@govai/core-events": "workspace:*"
+    "@govai/config": "workspace:*",
+    "@govai/core-events": "workspace:*",
+    "@govai/core-types": "workspace:*",
+    "@govai/core-governance": "workspace:*",
+    "fastify": "5.8.5"
   },
   "devDependencies": { "typescript": "5.9.3" }
 }

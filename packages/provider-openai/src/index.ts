@@ -91,3 +91,96 @@ export function rewritePassthroughHeaders(
   if (organization) out['openai-organization'] = organization;
   return { outbound: out };
 }
+
+// =============================================================================
+// PR2 Batch C — Native Provider Substrate exports.
+// (PR0 inline code above preserved for backwards compat.)
+// =============================================================================
+export {
+  OPENAI_BETA_POLICY,
+  OPENAI_BETA_POLICY_VERSION,
+} from './beta-policy.js';
+export {
+  classifyOpenAITool,
+  decideOpenAITool,
+  type OpenAIToolClassification,
+  type OpenAIToolDecision,
+  type OpenAISurface,
+} from './tool-classifier.js';
+export { KNOWN_OPENAI_TAXONOMY_VERSION } from './tool-taxonomy-version.js';
+export {
+  OPENAI_CAPABILITIES,
+  OPENAI_RESPONSES_CREATE,
+  OPENAI_RESPONSES_STREAM,
+  OPENAI_CHAT_COMPLETIONS_CREATE,
+  OPENAI_CHAT_COMPLETIONS_STREAM,
+  OPENAI_MODELS,
+  OPENAI_MODELS_DELETE,
+  OPENAI_EMBEDDINGS,
+  OPENAI_FILES,
+  OPENAI_VECTOR_STORES,
+  OPENAI_VECTOR_STORES_DELETE,
+  OPENAI_VECTOR_STORES_FILES_DELETE,
+  OPENAI_WEB_SEARCH_TOOL,
+  OPENAI_FILE_SEARCH_TOOL,
+  resolveOpenAICapabilityForRequest,
+  matchOpenAIPath,
+} from './capabilities/index.js';
+export {
+  buildPassthroughInvoked,
+  buildPassthroughBetaDenied,
+  buildToolValidationBlocked,
+  type TenantContext,
+  type BuildPassthroughInvokedInput,
+  type BuildPassthroughBetaDeniedInput,
+  type BuildToolValidationBlockedInput,
+} from './passthrough/audit-emit.js';
+export {
+  handleOpenAIBetaHeader,
+  type BetaHandlerInput,
+  type BetaHandlerResult,
+} from './passthrough/beta-header-handler.js';
+export {
+  classifyOpenAITools,
+  type ToolHookResult,
+} from './passthrough/tool-classifier-hook.js';
+export { forwardRaw, type ForwardInput, type ForwardResult } from './passthrough/forward.js';
+export {
+  forwardStream,
+  type StreamForwardInput,
+  type StreamForwardResult,
+} from './passthrough/stream-forward.js';
+export {
+  validateFilesPurpose,
+  extractMultipartPurpose,
+  OPENAI_ASSISTANTS_SUNSET_AT,
+  OPENAI_ASSISTANTS_MIGRATION_TARGET,
+  type FilesPurposeValidationResult,
+} from './passthrough/files-purpose-validator.js';
+export {
+  registerOpenAIPassthrough,
+  type OpenAIPassthroughDeps,
+} from './routes/register-passthrough.js';
+
+// =============================================================================
+// PR2 Batch G — Macro Architecture Realignment: governed-native OpenAI.
+// =============================================================================
+export {
+  handleOpenAIGovernedResponses,
+  type GovernedHandleDeps as OpenAIGovernedHandleDeps,
+  type GovernedHandleInput as OpenAIGovernedHandleInput,
+  type GovernedTenant as OpenAIGovernedTenant,
+  type GovernedNonStreamResult as OpenAIGovernedNonStreamResult,
+  type GovernedStreamResult as OpenAIGovernedStreamResult,
+  type GovernedBlockedResult as OpenAIGovernedBlockedResult,
+  type DlpScanFn as OpenAIDlpScanFn,
+} from './governed/handle-responses.js';
+export { handleOpenAIGovernedChatCompletions } from './governed/handle-chat-completions.js';
+export {
+  registerOpenAIGoverned,
+  type OpenAIGovernedDeps,
+} from './governed/register-governed.js';
+export {
+  extractOpenAIResponsesText,
+  extractOpenAIChatCompletionsText,
+} from './governed/extract-text.js';

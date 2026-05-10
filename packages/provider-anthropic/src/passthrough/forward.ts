@@ -1,0 +1,66 @@
+// Raw HTTP forward to Anthropic API (or a hermetic test server).
+// Preserves request body byte-for-byte; computes native_request_hash + native_response_hash.
+// Stream variant lives in stream-forward.ts.
+
+import { createHash } from 'node:crypto';
+
+export type ForwardInput = {
+  baseUrl: string;
+  pathTemplate: string; // logical template (e.g. /v1/messages); used to construct concrete URL
+  concretePath: string; // actual path with concrete IDs filled in (used as URL)
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+  headers: Record<string, string>;
+  body?: Buffer;
+};
+
+export type ForwardResult = {
+  status: number;
+  responseHeaders: Record<string, string>;
+  responseBody: Buffer;
+  native_request_hash: string;
+  native_response_hash: string;
+  provider_request_id: string | null;
+  latency_ms: number;
+};
+
+function sha256Hex(buf: Buffer): string {
+  return createHash('sha256').update(buf).digest('hex');
+}
+
+export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
+  const url = `${input.baseUrl.replace(/\/$/, '')}${input.concretePath}`;
+  const t0 = Date.now();
+  const requestBody = input.body ?? Buffer.alloc(0);
+  const native_request_hash = sha256Hex(requestBody);
+
+  const init: RequestInit = {
+    method: input.method,
+    headers: input.headers,
+  };
+  if (input.method !== 'GET' && requestBody.length > 0) {
+    init.body = requestBody;
+  }
+
+  const res = await fetch(url, init);
+  const latency_ms = Date.now() - t0;
+  const responseBuf = Buffer.from(await res.arrayBuffer());
+  const native_response_hash = sha256Hex(responseBuf);
+
+  const responseHeaders: Record<string, string> = {};
+  res.headers.forEach((value, key) => {
+    responseHeaders[key.toLowerCase()] = value;
+  });
+
+  const provider_request_id =
+    responseHeaders['anthropic-request-id'] ?? responseHeaders['x-request-id'] ?? null;
+
+  return {
+    status: res.status,
+    responseHeaders,
+    responseBody: responseBuf,
+    native_request_hash,
+    native_response_hash,
+    provider_request_id,
+    latency_ms,
+  };
+}
