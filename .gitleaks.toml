@@ -17,7 +17,16 @@ description = "OpenAI API key"
 regex = '''sk-[A-Za-z0-9_-]{32,}'''
 
 [allowlist]
+description = "PR3.1a deterministic provider-key-shaped canaries used by plaintext-leak and tenant-isolation tests; these are NEVER real credentials. The canaries intentionally preserve the sk-ant-/sk-proj- prefix shape so the leak tests exercise realistic provider key formats."
 paths = [
   '''\.env\.example$''',
   '''docs/.*''',
+]
+regexes = [
+  '''sk-ant-leak-canary-XYZABC123-DO-NOT-LEAK''',
+  '''sk-proj-leak-canary-XYZABC123-DO-NOT-LEAK''',
+  '''sk-ant-tenant-matrix-test-PLAINTEXT''',
+  '''sk-ant-env-matrix-test-EEEE''',
+  '''sk-ant-tenant-A-isolation-test-AAAA''',
+  '''sk-ant-tenant-B-isolation-test-BBBB''',
 ]
