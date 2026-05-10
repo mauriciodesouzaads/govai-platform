@@ -3,6 +3,12 @@ on:
   workflow_dispatch:
 jobs:
   bump-pinning:
+    # Issue #12: explicit job-level guard prevents the GitHub workflow-indexing
+    # pass (which fires on push events that touch this file) from registering
+    # the run as a failed/empty job. Skipped jobs do not surface as failures
+    # in the run list, so this guard removes the recurring phantom while
+    # preserving manual-dispatch behavior.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

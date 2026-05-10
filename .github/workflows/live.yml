@@ -1,7 +1,15 @@
 name: live-tests
+# Issue #20: live provider tests require ANTHROPIC_API_KEY + OPENAI_API_KEY
+# GitHub secrets. When secrets are absent, the scheduled cron run was producing
+# a daily failure on main, which trains reviewers to ignore CI signals.
+#
+# GitHub Actions does NOT support `secrets.*` references inside job-level `if:`
+# conditions, so we cannot make the schedule self-skip when secrets are missing
+# without restructuring the workflow. Until live-test budgets and secrets are
+# explicitly configured, live-tests is opt-in via manual `workflow_dispatch:`
+# only. Re-enable the cron once secrets + budget guards are in place
+# (PR3.x or later).
 on:
-  schedule:
-    - cron: '0 6 * * *'
   workflow_dispatch:
 jobs:
   live:
