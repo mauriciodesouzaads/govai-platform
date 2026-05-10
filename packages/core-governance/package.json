@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@govai/core-audit": "workspace:*",
+    "@govai/core-identity": "workspace:*",
     "@govai/core-types": "workspace:*",
     "pg": "8.20.0",
     "zod": "4.4.2"

@@ -168,6 +168,9 @@ importers:
       '@govai/core-audit':
         specifier: workspace:*
         version: link:../core-audit
+      '@govai/core-identity':
+        specifier: workspace:*
+        version: link:../core-identity
       '@govai/core-types':
         specifier: workspace:*
         version: link:../core-types
