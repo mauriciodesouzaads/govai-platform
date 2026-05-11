@@ -10,6 +10,7 @@ import {
 } from '@govai/provider-openai';
 import { authenticateApiKey } from '../pipeline/auth.js';
 import { resolveOpenAIProviderKey } from '../pipeline/provider-credentials.js';
+import type { OperationalMode } from '../pipeline/auth.js';
 
 export async function passthroughOpenaiRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -17,6 +18,14 @@ export async function passthroughOpenaiRoute(app: FastifyInstance): Promise<void
     env.GOVAI_PROVIDER_BASE_URL && env.GOVAI_PROVIDER_BASE_URL.length > 0
       ? env.GOVAI_PROVIDER_BASE_URL
       : 'https://api.openai.com';
+
+  const requestIdentities = new WeakMap<
+    FastifyRequest,
+    { orgId: string; operationalMode: OperationalMode }
+  >();
+  app.addHook('onResponse', async (req) => {
+    requestIdentities.delete(req);
+  });
 
   const resolveTenant = async (req: FastifyRequest): Promise<TenantContext> => {
     const apiKey =
@@ -30,6 +39,10 @@ export async function passthroughOpenaiRoute(app: FastifyInstance): Promise<void
       const identity = await authenticateApiKey(client, apiKey ?? '');
       // Real values from HAE-004 (orgs.tier + orgs.operational_mode); no
       // hardcoded literals at runtime per the macro realignment directive.
+      requestIdentities.set(req, {
+        orgId: identity.org_id,
+        operationalMode: identity.operational_mode,
+      });
       return {
         org_id: identity.org_id,
         user_id: identity.user_id,
@@ -41,8 +54,15 @@ export async function passthroughOpenaiRoute(app: FastifyInstance): Promise<void
     }
   };
 
-  const resolveProviderKey = async (_req: FastifyRequest): Promise<string> => {
-    return resolveOpenAIProviderKey(env);
+  const resolveProviderKey = async (req: FastifyRequest): Promise<string> => {
+    const cached = requestIdentities.get(req);
+    if (!cached) {
+      throw new Error('passthrough resolveProviderKey called before resolveTenant');
+    }
+    return resolveOpenAIProviderKey(
+      { env, pool: app.govai.pool, kms: app.govai.kms },
+      cached,
+    );
   };
 
   const activeOverridesLoader = async (

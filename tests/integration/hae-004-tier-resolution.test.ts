@@ -1,7 +1,9 @@
 // HAE-004: tier + operational_mode columns on govai.orgs + authenticateApiKey extension.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { setLocalAppOrgId } from '@govai/core-tenant';
+import { generateApiKey } from '@govai/core-identity';
 import { authenticateApiKey } from '../../apps/api/src/pipeline/auth.js';
 import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
 
@@ -15,9 +17,42 @@ afterAll(async () => {
   if (stack) await stopStack(stack);
 });
 
+/**
+ * Insert an org WITHOUT touching the operational_mode column so the SQL DEFAULT
+ * clause is what determines the value. Mirrors what seedOrg does but does NOT
+ * pin operational_mode='test' (PR3.1a test-fixture default), so this test can
+ * verify the canonical DB DEFAULT='production' invariant from migration 0008.
+ */
+async function seedOrgWithDbDefaults(
+  s: Stack,
+): Promise<{ org_id: string; api_key: string }> {
+  const orgId = randomUUID();
+  const userId = randomUUID();
+  const key = await generateApiKey();
+  const c = await s.db.adminPool.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query('SET LOCAL ROLE govai_audit_writer');
+    await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
+    await c.query(
+      `INSERT INTO govai.orgs (id, name) VALUES ($1::uuid, 'hae004-default')`,
+      [orgId],
+    );
+    await c.query(
+      `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status)
+       VALUES ($1, $2, $3::uuid, $4::uuid, 'active')`,
+      [key.prefix, key.hash, orgId, userId],
+    );
+    await c.query('COMMIT');
+  } finally {
+    c.release();
+  }
+  return { org_id: orgId, api_key: key.plaintext };
+}
+
 describe('HAE-004 — tier_resolution_primitive', () => {
-  it('seeded org has default tier=starter and operational_mode=production', async () => {
-    const org = await seedOrg(stack);
+  it('DB defaults: tier=starter and operational_mode=production', async () => {
+    const org = await seedOrgWithDbDefaults(stack);
     const c = await stack.db.appPool.connect();
     try {
       await c.query('BEGIN');
@@ -34,8 +69,8 @@ describe('HAE-004 — tier_resolution_primitive', () => {
     }
   });
 
-  it('authenticateApiKey returns tier + operational_mode from DB', async () => {
-    const org = await seedOrg(stack);
+  it('authenticateApiKey returns DB default tier=starter and operational_mode=production', async () => {
+    const org = await seedOrgWithDbDefaults(stack);
     const c = await stack.db.appPool.connect();
     try {
       const id = await authenticateApiKey(c, org.api_key);

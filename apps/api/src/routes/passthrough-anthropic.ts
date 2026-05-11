@@ -10,6 +10,7 @@ import {
 } from '@govai/provider-anthropic';
 import { authenticateApiKey } from '../pipeline/auth.js';
 import { resolveAnthropicProviderKey } from '../pipeline/provider-credentials.js';
+import type { OperationalMode } from '../pipeline/auth.js';
 
 export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -17,6 +18,18 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
     env.GOVAI_PROVIDER_BASE_URL && env.GOVAI_PROVIDER_BASE_URL.length > 0
       ? env.GOVAI_PROVIDER_BASE_URL
       : 'https://api.anthropic.com';
+
+  // Per-request cache: keep the AuthIdentity from resolveTenant so the
+  // matching resolveProviderKey(req) call does not re-authenticate. The
+  // map is keyed by the FastifyRequest reference and cleaned up on
+  // onResponse so it cannot grow unbounded.
+  const requestIdentities = new WeakMap<
+    FastifyRequest,
+    { orgId: string; operationalMode: OperationalMode }
+  >();
+  app.addHook('onResponse', async (req) => {
+    requestIdentities.delete(req);
+  });
 
   const resolveTenant = async (req: FastifyRequest): Promise<TenantContext> => {
     const apiKey =
@@ -30,6 +43,10 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
       const identity = await authenticateApiKey(client, apiKey ?? '');
       // Real values from HAE-004 (orgs.tier + orgs.operational_mode); no
       // hardcoded literals at runtime per the macro realignment directive.
+      requestIdentities.set(req, {
+        orgId: identity.org_id,
+        operationalMode: identity.operational_mode,
+      });
       return {
         org_id: identity.org_id,
         user_id: identity.user_id,
@@ -41,11 +58,16 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
     }
   };
 
-  const resolveProviderKey = async (_req: FastifyRequest): Promise<string> => {
-    // Real env key is required outside hermetic test (NODE_ENV=test + loopback).
-    // Tenant-scoped credentials are PR3+ — for now ANTHROPIC_API_KEY at the
-    // platform level is the source of truth.
-    return resolveAnthropicProviderKey(env);
+  const resolveProviderKey = async (req: FastifyRequest): Promise<string> => {
+    const cached = requestIdentities.get(req);
+    if (!cached) {
+      // Defensive: should always be cached since resolveTenant runs first.
+      throw new Error('passthrough resolveProviderKey called before resolveTenant');
+    }
+    return resolveAnthropicProviderKey(
+      { env, pool: app.govai.pool, kms: app.govai.kms },
+      cached,
+    );
   };
 
   const activeOverridesLoader = async (

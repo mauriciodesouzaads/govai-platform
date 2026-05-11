@@ -8,7 +8,10 @@ import {
   type OpenAIGovernedTenant,
 } from '@govai/provider-openai';
 import { authenticateApiKey } from '../pipeline/auth.js';
-import { resolveOpenAIProviderKey } from '../pipeline/provider-credentials.js';
+import {
+  resolveOpenAIProviderKey,
+  lookupOperationalMode,
+} from '../pipeline/provider-credentials.js';
 
 export async function governedOpenaiRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -38,8 +41,12 @@ export async function governedOpenaiRoute(app: FastifyInstance): Promise<void> {
     }
   };
 
-  const resolveProviderKey = async (_orgId: string): Promise<string> => {
-    return resolveOpenAIProviderKey(env);
+  const resolveProviderKey = async (orgId: string): Promise<string> => {
+    const operationalMode = await lookupOperationalMode(app.govai.pool, orgId);
+    return resolveOpenAIProviderKey(
+      { env, pool: app.govai.pool, kms: app.govai.kms },
+      { orgId, operationalMode },
+    );
   };
 
   const dlpScan = async (

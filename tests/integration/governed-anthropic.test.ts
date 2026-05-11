@@ -1,7 +1,13 @@
 // /governed/anthropic/* — governed-native Anthropic surface.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
+import {
+  startStack,
+  stopStack,
+  seedOrg,
+  seedProviderCredential,
+  type Stack,
+} from './helpers/server-fixture.js';
 
 let stack: Stack;
 const auditEvents: unknown[] = [];
@@ -176,6 +182,14 @@ describe('Batch G — /governed/anthropic/v1/messages', () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
     await setOrgTier(stack, org.org_id, 'regulated', 'production');
+    // operational_mode='production' requires a tenant provider credential
+    // (PR3.1a). Seed one so the resolver returns it instead of failing closed.
+    await seedProviderCredential(stack, {
+      orgId: org.org_id,
+      provider: 'anthropic',
+      plaintextKey: 'sk-ant-prod-fixture-AAAA',
+      setByUserId: org.user_id,
+    });
     const res = await stack.app.inject({
       method: 'POST',
       url: '/governed/anthropic/v1/messages',

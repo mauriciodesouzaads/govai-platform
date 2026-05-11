@@ -289,7 +289,11 @@ export async function executeGovernedRun(
             },
             {
               upstreamBaseUrl: baseUrl,
-              resolveProviderKey: async () => resolveAnthropicProviderKey(deps.env),
+              resolveProviderKey: async () =>
+                resolveAnthropicProviderKey(
+                  { env: deps.env, pool: deps.pool, kms: deps.kms },
+                  { orgId: identity.org_id, operationalMode: identity.operational_mode },
+                ),
               dlpScan: inMemoryDlpScan,
               emitAuditEvent: captureAudit,
             },
@@ -304,7 +308,11 @@ export async function executeGovernedRun(
             },
             {
               upstreamBaseUrl: baseUrl,
-              resolveProviderKey: async () => resolveOpenAIProviderKey(deps.env),
+              resolveProviderKey: async () =>
+                resolveOpenAIProviderKey(
+                  { env: deps.env, pool: deps.pool, kms: deps.kms },
+                  { orgId: identity.org_id, operationalMode: identity.operational_mode },
+                ),
               dlpScan: inMemoryDlpScan,
               emitAuditEvent: captureAudit,
             },
@@ -319,7 +327,11 @@ export async function executeGovernedRun(
             },
             {
               upstreamBaseUrl: baseUrl,
-              resolveProviderKey: async () => resolveOpenAIProviderKey(deps.env),
+              resolveProviderKey: async () =>
+                resolveOpenAIProviderKey(
+                  { env: deps.env, pool: deps.pool, kms: deps.kms },
+                  { orgId: identity.org_id, operationalMode: identity.operational_mode },
+                ),
               dlpScan: inMemoryDlpScan,
               emitAuditEvent: captureAudit,
             },

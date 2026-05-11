@@ -10,7 +10,10 @@ import {
   type AnthropicGovernedTenant,
 } from '@govai/provider-anthropic';
 import { authenticateApiKey } from '../pipeline/auth.js';
-import { resolveAnthropicProviderKey } from '../pipeline/provider-credentials.js';
+import {
+  resolveAnthropicProviderKey,
+  lookupOperationalMode,
+} from '../pipeline/provider-credentials.js';
 
 export async function governedAnthropicRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -40,8 +43,12 @@ export async function governedAnthropicRoute(app: FastifyInstance): Promise<void
     }
   };
 
-  const resolveProviderKey = async (_orgId: string): Promise<string> => {
-    return resolveAnthropicProviderKey(env);
+  const resolveProviderKey = async (orgId: string): Promise<string> => {
+    const operationalMode = await lookupOperationalMode(app.govai.pool, orgId);
+    return resolveAnthropicProviderKey(
+      { env, pool: app.govai.pool, kms: app.govai.kms },
+      { orgId, operationalMode },
+    );
   };
 
   const dlpScan = async (

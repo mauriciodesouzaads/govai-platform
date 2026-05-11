@@ -9,5 +9,9 @@ export * from './enforcement.js';
 export * from './admin/create-org-beta-override.js';
 export * from './admin/revoke-org-beta-override.js';
 
+// PR3.1a — tenant-scoped provider credentials (issue #13).
+export * from './admin/create-provider-credential.js';
+export * from './admin/revoke-provider-credential.js';
+
 // PR2 Batch G — Macro Architecture Realignment (governed-native).
 export * from './governed-native/resolve-governance.js';
