@@ -130,6 +130,53 @@ export async function seedOrg(stack: Stack, name = `org-${randomUUID().slice(0, 
   };
 }
 
+/**
+ * Add an additional API key for an existing org, with optional RBAC roles.
+ * Useful for tests that need both an admin and a non-admin key on the same
+ * tenant (e.g. negative-test the 403 path while keeping the org reusable).
+ */
+export async function addApiKey(
+  stack: Stack,
+  orgId: string,
+  userId: string,
+  roles: ReadonlyArray<
+    'admin' | 'data_protection_officer' | 'dlp_admin' | 'developer' | 'auditor'
+  > = [],
+): Promise<{ api_key: string; api_key_prefix: string }> {
+  const key = await generateApiKey();
+  const c = await stack.db.adminPool.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query('SET LOCAL ROLE govai_audit_writer');
+    await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
+    await c.query(
+      `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status, roles)
+       VALUES ($1, $2, $3::uuid, $4::uuid, 'active', $5::text[])`,
+      [key.prefix, key.hash, orgId, userId, roles as string[]],
+    );
+    await c.query('COMMIT');
+  } finally {
+    c.release();
+  }
+  return { api_key: key.plaintext, api_key_prefix: key.prefix };
+}
+
+/**
+ * Promote an existing seeded API key (by prefix) to the admin role. Convenient
+ * for tests that already have an org from seedOrg and want to elevate its key.
+ */
+export async function grantAdminRole(stack: Stack, apiKeyPrefix: string): Promise<void> {
+  const c = await stack.db.adminPool.connect();
+  try {
+    await c.query(
+      `UPDATE govai.api_keys SET roles = ARRAY['admin']::text[] WHERE prefix = $1`,
+      [apiKeyPrefix],
+    );
+  } finally {
+    c.release();
+  }
+}
+
 export async function setBaselineDlpAction(
   stack: Stack,
   orgId: string,

@@ -16,6 +16,7 @@ import { passthroughAnthropicRoute } from './routes/passthrough-anthropic.js';
 import { passthroughOpenaiRoute } from './routes/passthrough-openai.js';
 import { governedAnthropicRoute } from './routes/governed-anthropic.js';
 import { governedOpenaiRoute } from './routes/governed-openai.js';
+import { adminProviderCredentialsRoute } from './routes/admin-provider-credentials.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -74,6 +75,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(passthroughOpenaiRoute);
   await app.register(governedAnthropicRoute);
   await app.register(governedOpenaiRoute);
+  await app.register(adminProviderCredentialsRoute);
 
   app.addHook('onClose', async () => {
     if (!overrides.pool) {
