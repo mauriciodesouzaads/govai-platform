@@ -9,7 +9,8 @@
     "typecheck": "tsc -p . --noEmit",
     "dev": "tsx src/server.ts",
     "migrate": "tsx src/db/migrate.ts",
-    "seed:provider-credential": "tsx src/scripts/seed-provider-credential.ts"
+    "seed:provider-credential": "tsx src/scripts/seed-provider-credential.ts",
+    "grant:api-key-role": "tsx src/scripts/grant-api-key-role.ts"
   },
   "dependencies": {
     "@fastify/cors": "11.2.0",

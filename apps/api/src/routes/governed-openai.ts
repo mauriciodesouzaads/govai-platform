@@ -1,4 +1,8 @@
 // /governed/openai/* — primary governed-native OpenAI surface.
+//
+// resolveProviderKey calls lookupOperationalMode(pool, orgId) which adds one
+// SECURITY DEFINER DB roundtrip per governed request. Optimizing this safely
+// is tracked separately — see the PR3.x optimization issue.
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { detectAllBaseline } from '@govai/dlp-br';

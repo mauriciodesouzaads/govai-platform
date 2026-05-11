@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
-import { parseArgs, readKeyFromStdin } from './seed-provider-credential.js';
+import { parseArgs, readKeyFromStdin, DEPRECATION_NOTICE } from './seed-provider-credential.js';
 
 const CANARY = 'sk-ant-leak-canary-XYZABC123-DO-NOT-LEAK';
 
@@ -158,5 +158,16 @@ describe('seed-provider-credential / readKeyFromStdin', () => {
     const s = Readable.from([Buffer.from('abc\r')]);
     const out = await readKeyFromStdin(s);
     expect(out).toBe('abc\r');
+  });
+});
+
+describe('seed-provider-credential / deprecation', () => {
+  it('exports DEPRECATION_NOTICE referencing the HTTP admin endpoint', () => {
+    expect(DEPRECATION_NOTICE).toContain('deprecated');
+    expect(DEPRECATION_NOTICE).toContain('/v1/admin/provider-credentials');
+  });
+
+  it('deprecation notice has no plaintext canary substring', () => {
+    expect(DEPRECATION_NOTICE).not.toContain('leak-canary');
   });
 });

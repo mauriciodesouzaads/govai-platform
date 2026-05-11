@@ -1,9 +1,14 @@
 // seed-provider-credential — PR3.1a (issue #13).
 //
-// BRIDGE CODE. This CLI exists ONLY to seed tenant provider credentials before
-// the secure HTTP admin endpoint lands in PR3.1b (issue #22). It is NOT the
-// permanent operational path. Operators should migrate to the HTTP admin
-// endpoint as soon as PR3.1b is merged.
+// @deprecated since PR3.1b (issue #22). The canonical operational path is now
+// the secure HTTP admin endpoint at POST /v1/admin/provider-credentials. This
+// CLI remains available as emergency break-glass only — it bypasses HTTP RBAC
+// and audit trails for the request layer.
+//
+// BRIDGE CODE. This CLI was originally created to seed tenant provider
+// credentials before the HTTP admin endpoint landed. It is NOT the permanent
+// operational path. Operators must migrate to the HTTP admin endpoint as the
+// default operational flow.
 //
 // Security properties:
 //   - The plaintext key is read from stdin only. argv NEVER carries the secret.
@@ -98,6 +103,9 @@ export async function readKeyFromStdin(stream: NodeJS.ReadableStream): Promise<s
   return out;
 }
 
+export const DEPRECATION_NOTICE =
+  '[deprecated] seed-provider-credential CLI: the canonical path is now POST /v1/admin/provider-credentials. This CLI remains available as emergency break-glass only.';
+
 export async function runSeed(deps: {
   argv: string[];
   stdin: NodeJS.ReadableStream;
@@ -105,6 +113,11 @@ export async function runSeed(deps: {
   stderr: NodeJS.WritableStream;
   env: NodeJS.ProcessEnv;
 }): Promise<number> {
+  // Emit the deprecation notice once per invocation. Operators see it on
+  // stderr so it doesn't pollute the metadata JSON on stdout. The notice is
+  // a fixed string with no credential material.
+  deps.stderr.write(`${DEPRECATION_NOTICE}\n`);
+
   let parsed: ParsedArgs;
   try {
     parsed = parseArgs(deps.argv);

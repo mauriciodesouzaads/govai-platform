@@ -1,6 +1,12 @@
 // /governed/anthropic/* — primary governed-native Anthropic surface.
 // Wires the per-org tenant resolution + DLP + provider key lookup into the
 // reusable handler from @govai/provider-anthropic.
+//
+// resolveProviderKey calls lookupOperationalMode(pool, orgId) which adds one
+// SECURITY DEFINER DB roundtrip per governed request in addition to the
+// authentication roundtrip in resolveTenant. Eliminating that extra
+// roundtrip safely (without introducing stale cross-request cache risk) is
+// tracked separately — see the PR3.x optimization issue.
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { detectAllBaseline } from '@govai/dlp-br';

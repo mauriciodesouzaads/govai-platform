@@ -7,7 +7,7 @@
 // no governance field is ever hardcoded at runtime.
 
 import type { PoolClient } from 'pg';
-import { lookupPrefix, verifyApiKey } from '@govai/core-identity';
+import { lookupPrefix, verifyApiKey, ALL_ROLES, type Role } from '@govai/core-identity';
 
 export type Tier = 'starter' | 'business' | 'enterprise' | 'regulated';
 export type OperationalMode = 'production' | 'pilot' | 'dev' | 'test';
@@ -18,6 +18,13 @@ export type AuthIdentity = {
   api_key_prefix: string;
   tier: Tier;
   operational_mode: OperationalMode;
+  /**
+   * RBAC roles granted to this API key (PR3.1b / migration 0010). Empty array
+   * for keys created before PR3.1b; admin endpoints require ['admin'] via
+   * the requireAdmin helper. The DB CHECK constraint guarantees only canonical
+   * Role enum values reach this field, but we still filter defensively below.
+   */
+  roles: readonly Role[];
 };
 
 export class AuthError extends Error {
@@ -44,7 +51,8 @@ export async function authenticateApiKey(
     org_id: string;
     user_id: string;
     status: string;
-  }>('SELECT * FROM govai.api_key_lookup($1)', [prefix]);
+    roles: string[] | null;
+  }>('SELECT * FROM govai.api_key_lookup_v2($1)', [prefix]);
   const row = lookup.rows[0];
   if (!row) {
     throw new AuthError('invalid api key', 401);
@@ -53,6 +61,14 @@ export async function authenticateApiKey(
   if (!ok) {
     throw new AuthError('invalid api key', 401);
   }
+  // Defensive role filter. The DB CHECK constraint on api_keys.roles guarantees
+  // only canonical Role values reach this query, but if a future migration ever
+  // relaxes the constraint, we silently drop unknown roles instead of granting
+  // unintended privileges. Empty array means "no special grants".
+  const rawRoles = row.roles ?? [];
+  const roles: Role[] = rawRoles.filter((r): r is Role =>
+    (ALL_ROLES as readonly string[]).includes(r),
+  );
   // HAE-004: resolve tier + operational_mode from govai.orgs (HAE-004 added
   // these columns with defaults `starter` / `pilot`). The lookup runs through
   // a SECURITY DEFINER helper so RLS does not require a tenant context yet —
@@ -71,5 +87,6 @@ export async function authenticateApiKey(
     api_key_prefix: row.prefix,
     tier: orgTier.tier,
     operational_mode: orgTier.operational_mode,
+    roles,
   };
 }
