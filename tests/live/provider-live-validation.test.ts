@@ -351,24 +351,19 @@ describeLive('live provider validation (GOVAI_LIVE_TESTS=1)', () => {
     expect(openaiChatCall.rawBody).not.toContain(OPENAI_CANARY);
 
     // ── J. Secondary /v1/runs smoke (shortcut delegation — NOT primary validation).
-    // Per the architectural decision: `/v1/runs` is the GovAI shortcut and is
-    // validated only as a secondary smoke. The primary provider-native proof
-    // sits in steps D / E / F above (the `/governed/{provider}/*` routes).
-    // If the shortcut fails, we still consider the live validation successful
-    // because the primary surfaces all returned 200 from real providers; the
-    // shortcut failure is reported as a non-blocking observation.
+    // /v1/runs remains secondary for provider-native validation, but it is
+    // still a real GovAI entry point and must work. PR3.1e fixed issue #31
+    // (orchestrator was passing an empty upstreamBaseUrl when
+    // GOVAI_PROVIDER_BASE_URL was unset) so we can now assert hard success
+    // here instead of merely logging the status.
     const runsSmoke = await inject('POST', '/v1/runs', orgA.api_key, {
       workspace_id: orgA.workspace_id,
       capability: 'anthropic.messages.create',
       model: ANTHROPIC_MODEL,
       input: 'Reply with OK only.',
     });
-    // Soft assertion: log the secondary outcome, but only require leak safety.
-    // The primary governed surfaces (above) are the source of truth.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[live] /v1/runs secondary smoke: status=${runsSmoke.statusCode}`,
-    );
+    expect(runsSmoke.statusCode).toBe(200);
+    expect((runsSmoke.body as { status?: string }).status).toBe('completed');
     expect(runsSmoke.rawBody).not.toContain(ANTHROPIC_CANARY);
     expect(runsSmoke.rawBody).not.toContain(ANTHROPIC_KEY);
 
