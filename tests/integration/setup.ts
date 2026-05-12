@@ -19,7 +19,78 @@ export type TestDb = {
   appPool: Pool;
   /** Per-container random password for govai_app — needed by tests that re-run migrate. */
   appPassword: string;
+  /**
+   * Teardown coordination flag (issue #28). When true, expected Postgres
+   * disconnect errors emitted by the pg client during testcontainer shutdown
+   * are swallowed by the pool error handlers installed in startPostgres.
+   * Set by stopPostgres before any pool.end()/container.stop() call.
+   */
+  shuttingDown: { value: boolean };
 };
+
+/**
+ * Classifier for the expected Postgres teardown disconnect (issue #28).
+ *
+ * When Testcontainers stops the Postgres container, any pg client still
+ * holding an open connection receives:
+ *   - code: '57P01'
+ *   - message: 'terminating connection due to administrator command'
+ *
+ * In a normal/healthy test run this error fires AFTER all tests complete,
+ * during the afterAll teardown sequence. The error is then surfaced to
+ * Vitest's unhandled-error reporter, which flips the suite to failed even
+ * though every test passed.
+ *
+ * This classifier is INTENTIONALLY NARROW: it matches ONLY the exact code
+ * + message pair emitted on container shutdown. Any other error — even
+ * another fatal Postgres error — is left to propagate. Pool handlers must
+ * also gate this swallow on `shuttingDown.value === true` so the same
+ * disconnect during normal test execution would still surface.
+ */
+export function isExpectedPostgresTeardownError(error: unknown): boolean {
+  if (error === null || error === undefined || typeof error !== 'object') return false;
+  const e = error as { code?: unknown; message?: unknown };
+  return (
+    e.code === '57P01' &&
+    typeof e.message === 'string' &&
+    e.message.includes('terminating connection due to administrator command')
+  );
+}
+
+/**
+ * Install a pool-scoped error listener that swallows expected Postgres
+ * teardown disconnects when the stack is in the shutdown phase. Errors
+ * outside the shutdown phase, and any error that does not match the exact
+ * 57P01 + message signature, are re-thrown so they remain visible.
+ *
+ * Called once per pool from startPostgres after pool creation so the
+ * listener is installed before any teardown begins.
+ */
+export function installPostgresPoolShutdownGuard(
+  pool: Pool,
+  shuttingDown: { value: boolean },
+  poolName: string,
+): void {
+  pool.on('error', (error) => {
+    if (shuttingDown.value && isExpectedPostgresTeardownError(error)) {
+      // Expected: Postgres container is being torn down. Swallowing this
+      // exact error prevents Vitest from flipping the suite to failed.
+      return;
+    }
+    // Anything else is a real error and must remain visible. We re-emit
+    // synchronously as an uncaughtException so Vitest sees it the same way
+    // it would if no handler had been attached.
+    process.nextTick(() => {
+      const wrapped = new Error(
+        `[testcontainers] unexpected ${poolName} pool error during ${
+          shuttingDown.value ? 'shutdown' : 'normal execution'
+        }: ${(error as Error)?.message ?? String(error)}`,
+      );
+      (wrapped as Error & { cause?: unknown }).cause = error;
+      throw wrapped;
+    });
+  });
+}
 
 /**
  * Migrate runs bootstrap.sql + 0001..NNNN against the admin connection.
@@ -75,10 +146,20 @@ export async function startPostgres(): Promise<TestDb> {
   const adminPool = new Pool({ connectionString: adminUrl });
   const appPool = new Pool({ connectionString: appUrl });
 
-  return { container, adminUrl, appUrl, adminPool, appPool, appPassword };
+  // Issue #28: install shutdown-scoped error handlers on both setup pools.
+  // The flag is a shared object so the same reference can be passed to other
+  // pools (e.g. the Fastify app's pool) that the stack also tears down.
+  const shuttingDown: { value: boolean } = { value: false };
+  installPostgresPoolShutdownGuard(adminPool, shuttingDown, 'admin');
+  installPostgresPoolShutdownGuard(appPool, shuttingDown, 'app');
+
+  return { container, adminUrl, appUrl, adminPool, appPool, appPassword, shuttingDown };
 }
 
 export async function stopPostgres(db: TestDb): Promise<void> {
+  // Mark shutdown BEFORE any pool.end()/container.stop() so the pool error
+  // guards (installed by startPostgres) recognize the next 57P01 as expected.
+  db.shuttingDown.value = true;
   await db.adminPool.end().catch(() => undefined);
   await db.appPool.end().catch(() => undefined);
   await db.container.stop().catch(() => undefined);

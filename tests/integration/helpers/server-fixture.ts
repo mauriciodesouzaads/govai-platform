@@ -7,7 +7,13 @@ import { buildServer } from '../../../apps/api/src/server.js';
 import { generateApiKey, DevKms } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
 import { createProviderCredential } from '@govai/core-governance';
-import { startPostgres, stopPostgres, freshSeedHex, type TestDb } from '../setup.js';
+import {
+  startPostgres,
+  stopPostgres,
+  freshSeedHex,
+  installPostgresPoolShutdownGuard,
+  type TestDb,
+} from '../setup.js';
 import {
   startProviderProtocolServer,
   setErrorOverride,
@@ -76,10 +82,22 @@ export async function startStack(envOverrides: Partial<GovAIEnv> = {}): Promise<
   // App owns the pool so we let buildServer create it from DATABASE_URL.
   const app = await buildServer({ env });
 
+  // Issue #28: the Fastify app creates its own pg Pool (not the test setup
+  // pools), and that pool participates in the same teardown race when
+  // testcontainers stops Postgres. Install the same shutdown-scoped 57P01
+  // guard on it so its idle clients don't surface unhandled errors during
+  // Vitest's afterAll sequence. We share the TestDb shuttingDown flag so
+  // all three pools (admin, app-test, app-fastify) flip together.
+  installPostgresPoolShutdownGuard(app.govai.pool, db.shuttingDown, 'app-fastify');
+
   return { db, provider, app, env, seed };
 }
 
 export async function stopStack(stack: Stack): Promise<void> {
+  // Flip the shutdown flag BEFORE we close anything — Fastify's onClose
+  // hook will call app.govai.pool.end() inside stack.app.close(), and that
+  // pool's shutdown guard needs to recognize the next 57P01 as expected.
+  stack.db.shuttingDown.value = true;
   await stack.app.close().catch(() => undefined);
   await stack.provider.close().catch(() => undefined);
   await stopPostgres(stack.db);
