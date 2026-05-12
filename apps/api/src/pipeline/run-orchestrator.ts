@@ -80,6 +80,32 @@ export type OrchestratorDeps = {
   policyCommitSha: string;
 };
 
+/**
+ * Resolve the upstream provider base URL the orchestrator should pass to the
+ * governed handler. Mirrors the fallback behavior of the direct governed
+ * routes (apps/api/src/routes/governed-{anthropic,openai}.ts):
+ *
+ * - If GOVAI_PROVIDER_BASE_URL is set and non-empty, use it (preserves
+ *   hermetic loopback test behavior and any operator-pinned proxy).
+ * - Otherwise, fall back to the canonical provider production URL.
+ *
+ * The previous orchestrator code defaulted to `'' (empty string)` when
+ * GOVAI_PROVIDER_BASE_URL was unset — which caused the governed handler to
+ * attempt `fetch('' + '/v1/messages')` and throw a URL parse error before
+ * any network call, producing a fast pre-network 502 on /v1/runs in live
+ * mode. The hermetic test fixture always sets GOVAI_PROVIDER_BASE_URL to a
+ * loopback URL, so the bug was latent until PR3.1d live validation. See
+ * issue #31.
+ */
+function providerUpstreamBaseUrl(env: GovAIEnv, provider: 'anthropic' | 'openai'): string {
+  if (env.GOVAI_PROVIDER_BASE_URL && env.GOVAI_PROVIDER_BASE_URL.length > 0) {
+    return env.GOVAI_PROVIDER_BASE_URL;
+  }
+  return provider === 'anthropic'
+    ? 'https://api.anthropic.com'
+    : 'https://api.openai.com';
+}
+
 function buildAnthropicMessagesBody(model: string, inputText: string): Buffer {
   return Buffer.from(
     JSON.stringify({
@@ -235,13 +261,18 @@ export async function executeGovernedRun(
         [runId],
       );
 
-      const baseUrl = deps.env.GOVAI_PROVIDER_BASE_URL ?? '';
+      // The env baseUrl (possibly unset/empty) drives ONLY the hermetic
+      // test-workspace-id injection below. The actual upstream URL passed to
+      // the governed handler is resolved per-provider via
+      // providerUpstreamBaseUrl() so the orchestrator's fallback matches the
+      // direct routes' canonical production URLs.
+      const envBaseUrl = deps.env.GOVAI_PROVIDER_BASE_URL ?? '';
       // Forward the test-only workspace discriminator only on hermetic loopback
       // (mirrors the PR1 pattern from the legacy provider-invoke). This lets
       // tests inject per-workspace upstream errors (HTTP 429/500/etc.) without
       // leaking the header in any real environment.
       const inboundHeaders: Record<string, string> = { 'content-type': 'application/json' };
-      if (deps.env.NODE_ENV === 'test' && isLoopbackUrl(baseUrl)) {
+      if (deps.env.NODE_ENV === 'test' && isLoopbackUrl(envBaseUrl)) {
         inboundHeaders['x-test-workspace-id'] = body.workspace_id;
       }
 
@@ -288,7 +319,7 @@ export async function executeGovernedRun(
               isStream: false,
             },
             {
-              upstreamBaseUrl: baseUrl,
+              upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'anthropic'),
               resolveProviderKey: async () =>
                 resolveAnthropicProviderKey(
                   { env: deps.env, pool: deps.pool, kms: deps.kms },
@@ -307,7 +338,7 @@ export async function executeGovernedRun(
               isStream: false,
             },
             {
-              upstreamBaseUrl: baseUrl,
+              upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'openai'),
               resolveProviderKey: async () =>
                 resolveOpenAIProviderKey(
                   { env: deps.env, pool: deps.pool, kms: deps.kms },
@@ -326,7 +357,7 @@ export async function executeGovernedRun(
               isStream: false,
             },
             {
-              upstreamBaseUrl: baseUrl,
+              upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'openai'),
               resolveProviderKey: async () =>
                 resolveOpenAIProviderKey(
                   { env: deps.env, pool: deps.pool, kms: deps.kms },
@@ -628,3 +659,8 @@ export {
   CapabilityNotRegisteredError,
 };
 export type { AuthIdentity };
+
+// Internal helper exported for unit testing only (run-orchestrator.test.ts).
+// Not part of the public API; the double-underscore prefix marks it as
+// test-only and discourages external consumption.
+export { providerUpstreamBaseUrl as __test_providerUpstreamBaseUrl };
