@@ -22,8 +22,10 @@ export default defineConfig({
       reporter: ['text', 'lcov'],
       include: [
         'packages/core-audit/src/**/*.ts',
+        'packages/core-events/src/**/*.ts',
         'packages/core-governance/src/**/*.ts',
         'packages/core-identity/src/**/*.ts',
+        'packages/core-types/src/**/*.ts',
         'packages/dlp-br/src/**/*.ts',
         // PR3.1a — tenant provider credential bridge code + resolver.
         'apps/api/src/scripts/**/*.ts',
