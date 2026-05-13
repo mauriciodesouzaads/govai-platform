@@ -2,7 +2,7 @@
 // Same pattern as Anthropic handle-messages: real governance, no simulations.
 
 import { createHash, randomUUID } from 'node:crypto';
-import type { Capability } from '@govai/core-types';
+import type { Capability, OperationalMode } from '@govai/core-types';
 import {
   resolveGovernance,
   type DlpFindingLite,
@@ -37,7 +37,12 @@ export type DlpScanFn = (text: string) => Promise<{
 
 export type GovernedHandleDeps = {
   upstreamBaseUrl: string;
-  resolveProviderKey: (orgId: string) => Promise<string>;
+  /**
+   * Returns the OpenAI API key for this tenant. The caller passes the
+   * operational mode already resolved at auth time so the resolver does NOT
+   * need to re-query `govai.org_tier_lookup` (issue #25).
+   */
+  resolveProviderKey: (orgId: string, operationalMode: OperationalMode) => Promise<string>;
   resolveProviderOrganization?: (orgId: string) => Promise<string | undefined>;
   dlpScan: DlpScanFn;
   emitAuditEvent: (event: PassthroughInvoked) => Promise<void> | void;
@@ -253,7 +258,10 @@ export async function handleOpenAIGovernedResponses(
     return { kind: 'blocked', status_code: 403, reason, audit_event: ev, governance };
   }
 
-  const providerKey = await deps.resolveProviderKey(input.tenant.org_id);
+  const providerKey = await deps.resolveProviderKey(
+    input.tenant.org_id,
+    input.tenant.operational_mode,
+  );
   const organization = deps.resolveProviderOrganization
     ? await deps.resolveProviderOrganization(input.tenant.org_id)
     : undefined;

@@ -2,11 +2,11 @@
 // Wires the per-org tenant resolution + DLP + provider key lookup into the
 // reusable handler from @govai/provider-anthropic.
 //
-// resolveProviderKey calls lookupOperationalMode(pool, orgId) which adds one
-// SECURITY DEFINER DB roundtrip per governed request in addition to the
-// authentication roundtrip in resolveTenant. Eliminating that extra
-// roundtrip safely (without introducing stale cross-request cache risk) is
-// tracked separately — see the PR3.x optimization issue.
+// PR3.1k (#25): the governed handler now passes `tenant.operational_mode`
+// through `resolveProviderKey`, so this closure no longer re-queries
+// `govai.org_tier_lookup`. The single authoritative lookup happens once in
+// `authenticateApiKey` and the resolved mode is threaded down via the
+// handler's tenant context.
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { detectAllBaseline } from '@govai/dlp-br';
@@ -16,10 +16,7 @@ import {
   type AnthropicGovernedTenant,
 } from '@govai/provider-anthropic';
 import { authenticateApiKey } from '../pipeline/auth.js';
-import {
-  resolveAnthropicProviderKey,
-  lookupOperationalMode,
-} from '../pipeline/provider-credentials.js';
+import { resolveAnthropicProviderKey } from '../pipeline/provider-credentials.js';
 
 export async function governedAnthropicRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -49,13 +46,14 @@ export async function governedAnthropicRoute(app: FastifyInstance): Promise<void
     }
   };
 
-  const resolveProviderKey = async (orgId: string): Promise<string> => {
-    const operationalMode = await lookupOperationalMode(app.govai.pool, orgId);
-    return resolveAnthropicProviderKey(
+  const resolveProviderKey: AnthropicGovernedDeps['resolveProviderKey'] = async (
+    orgId,
+    operationalMode,
+  ) =>
+    resolveAnthropicProviderKey(
       { env, pool: app.govai.pool, kms: app.govai.kms },
       { orgId, operationalMode },
     );
-  };
 
   const dlpScan = async (
     text: string,
