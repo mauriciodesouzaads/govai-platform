@@ -103,7 +103,7 @@ export function buildPassthroughInvoked(
     purpose_deprecation_sunset_at: input.purpose_deprecation_sunset_at,
     purpose_deprecation_migration_target: input.purpose_deprecation_migration_target,
     audit_event_id: randomUUID(),
-    chain_id: 'run' as const,
+    chain_category: 'run' as const,
   };
   return PassthroughInvokedSchema.parse(ev);
 }
@@ -129,7 +129,7 @@ export function buildPassthroughBetaDenied(
     policy_at_resolution: input.policy_at_resolution,
     reason_code: input.reason_code,
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
   });
 }
 
@@ -161,6 +161,6 @@ export function buildToolValidationBlocked(
     reason_detail: input.reason_detail,
     tools_taxonomy_version: KNOWN_OPENAI_TAXONOMY_VERSION,
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
   });
 }

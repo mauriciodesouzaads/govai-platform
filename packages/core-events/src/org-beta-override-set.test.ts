@@ -24,7 +24,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     expires_at: future.toISOString(),
     policy_at_resolution: 'org_override_allowed',
     audit_event_id: randomUUID(),
-    chain_id: 'admin',
+    chain_category: 'admin',
     ...overrides,
   };
 }
@@ -65,9 +65,9 @@ describe('OrgBetaOverrideSetSchema v1', () => {
     ).toBe(false);
   });
 
-  it('chain_id locked to admin', () => {
+  it('chain_category locked to admin', () => {
     expect(
-      OrgBetaOverrideSetSchema.safeParse(baseEvent({ chain_id: 'run' })).success,
+      OrgBetaOverrideSetSchema.safeParse(baseEvent({ chain_category: 'run' })).success,
     ).toBe(false);
   });
 

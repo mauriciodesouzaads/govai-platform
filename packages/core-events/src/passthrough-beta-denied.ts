@@ -33,7 +33,7 @@ export const PassthroughBetaDeniedSchema = z.object({
   ]),
 
   audit_event_id: z.string().uuid(),
-  chain_id: z.literal('run'),
+  chain_category: z.literal('run'),
 });
 
 export type PassthroughBetaDenied = z.infer<typeof PassthroughBetaDeniedSchema>;

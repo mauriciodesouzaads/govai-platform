@@ -23,7 +23,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     set_at: new Date().toISOString(),
     replaced_credential_id: null,
     audit_event_id: randomUUID(),
-    chain_id: 'admin',
+    chain_category: 'admin',
     ...overrides,
   };
 }
@@ -79,9 +79,9 @@ describe('ProviderCredentialSetSchema v1', () => {
     ).toBe(false);
   });
 
-  it('chain_id locked to admin', () => {
+  it('chain_category locked to admin', () => {
     expect(
-      ProviderCredentialSetSchema.safeParse(baseEvent({ chain_id: 'run' })).success,
+      ProviderCredentialSetSchema.safeParse(baseEvent({ chain_category: 'run' })).success,
     ).toBe(false);
   });
 

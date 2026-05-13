@@ -37,7 +37,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     beta_allowlist_sources: [],
     detected_tool_classifications: [],
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
     ...overrides,
   };
 }

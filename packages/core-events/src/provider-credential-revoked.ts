@@ -29,7 +29,7 @@ export const ProviderCredentialRevokedSchema = z.object({
   revocation_reason: z.string().min(1),
 
   audit_event_id: z.string().uuid(),
-  chain_id: z.literal('admin'),
+  chain_category: z.literal('admin'),
 });
 
 export type ProviderCredentialRevoked = z.infer<typeof ProviderCredentialRevokedSchema>;

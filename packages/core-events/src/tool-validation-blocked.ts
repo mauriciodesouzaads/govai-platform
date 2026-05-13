@@ -46,7 +46,7 @@ export const ToolValidationBlockedSchema = z.object({
   tools_taxonomy_version: z.string().min(1),
 
   audit_event_id: z.string().uuid(),
-  chain_id: z.literal('run'),
+  chain_category: z.literal('run'),
 });
 
 export type ToolValidationBlocked = z.infer<typeof ToolValidationBlockedSchema>;

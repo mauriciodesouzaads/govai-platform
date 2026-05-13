@@ -146,7 +146,7 @@ describe('admin-chain mixed-events integrity', () => {
       expires_at: expiresAt.toISOString(),
       policy_at_resolution: 'org_override_allowed' as const,
       audit_event_id: randomUUID(),
-      chain_id: 'admin' as const,
+      chain_category: 'admin' as const,
     };
     const overridePayloadJson = JSON.stringify(overridePayload);
     const c = await stack.db.appPool.connect();

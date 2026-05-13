@@ -19,7 +19,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     policy_at_resolution: 'hard_denied',
     reason_code: 'hard_denied',
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
     ...overrides,
   };
 }
@@ -61,9 +61,9 @@ describe('PassthroughBetaDeniedSchema v1', () => {
     ).toBe(false);
   });
 
-  it('chain_id locked to run', () => {
+  it('chain_category locked to run', () => {
     expect(
-      PassthroughBetaDeniedSchema.safeParse(baseEvent({ chain_id: 'admin' })).success,
+      PassthroughBetaDeniedSchema.safeParse(baseEvent({ chain_category: 'admin' })).success,
     ).toBe(false);
   });
 

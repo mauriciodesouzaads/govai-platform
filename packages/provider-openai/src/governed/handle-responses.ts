@@ -252,7 +252,7 @@ export async function handleOpenAIGovernedResponses(
         ? { tools_taxonomy_version: KNOWN_OPENAI_TAXONOMY_VERSION }
         : {}),
       audit_event_id: randomUUID(),
-      chain_id: 'run',
+      chain_category: 'run',
     });
     await deps.emitAuditEvent(ev);
     return { kind: 'blocked', status_code: 403, reason, audit_event: ev, governance };
@@ -309,7 +309,7 @@ export async function handleOpenAIGovernedResponses(
           ? { tools_taxonomy_version: KNOWN_OPENAI_TAXONOMY_VERSION }
           : {}),
         audit_event_id: randomUUID(),
-        chain_id: 'run',
+        chain_category: 'run',
       });
       await deps.emitAuditEvent(ev);
       return {
@@ -372,7 +372,7 @@ export async function handleOpenAIGovernedResponses(
       ? { tools_taxonomy_version: KNOWN_OPENAI_TAXONOMY_VERSION }
       : {}),
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
   });
   await deps.emitAuditEvent(ev);
 
