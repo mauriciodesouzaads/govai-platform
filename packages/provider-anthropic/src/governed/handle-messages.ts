@@ -276,7 +276,7 @@ export async function handleAnthropicGovernedMessages(
         ? { tools_taxonomy_version: KNOWN_ANTHROPIC_TAXONOMY_VERSION }
         : {}),
       audit_event_id: randomUUID(),
-      chain_id: 'run',
+      chain_category: 'run',
     });
     await deps.emitAuditEvent(ev);
     return {
@@ -342,7 +342,7 @@ export async function handleAnthropicGovernedMessages(
           ? { tools_taxonomy_version: KNOWN_ANTHROPIC_TAXONOMY_VERSION }
           : {}),
         audit_event_id: randomUUID(),
-        chain_id: 'run',
+        chain_category: 'run',
       });
       await deps.emitAuditEvent(ev);
       return {
@@ -406,7 +406,7 @@ export async function handleAnthropicGovernedMessages(
       ? { tools_taxonomy_version: KNOWN_ANTHROPIC_TAXONOMY_VERSION }
       : {}),
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
   });
   await deps.emitAuditEvent(ev);
 

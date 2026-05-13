@@ -38,7 +38,7 @@ export const ProviderCredentialSetSchema = z.object({
   replaced_credential_id: z.string().uuid().nullable(),
 
   audit_event_id: z.string().uuid(),
-  chain_id: z.literal('admin'),
+  chain_category: z.literal('admin'),
 });
 
 export type ProviderCredentialSet = z.infer<typeof ProviderCredentialSetSchema>;

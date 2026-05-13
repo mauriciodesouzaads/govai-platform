@@ -30,7 +30,7 @@ export const OrgBetaOverrideSetSchema = z.object({
   policy_at_resolution: BetaPolicyAtResolutionEnum,
 
   audit_event_id: z.string().uuid(),
-  chain_id: z.literal('admin'),
+  chain_category: z.literal('admin'),
 });
 
 export type OrgBetaOverrideSet = z.infer<typeof OrgBetaOverrideSetSchema>;

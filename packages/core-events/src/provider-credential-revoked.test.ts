@@ -21,7 +21,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     revoked_by_user_id: randomUUID(),
     revocation_reason: 'rotated',
     audit_event_id: randomUUID(),
-    chain_id: 'admin',
+    chain_category: 'admin',
     ...overrides,
   };
 }
@@ -70,9 +70,9 @@ describe('ProviderCredentialRevokedSchema v1', () => {
     ).toBe(false);
   });
 
-  it('chain_id locked to admin', () => {
+  it('chain_category locked to admin', () => {
     expect(
-      ProviderCredentialRevokedSchema.safeParse(baseEvent({ chain_id: 'run' })).success,
+      ProviderCredentialRevokedSchema.safeParse(baseEvent({ chain_category: 'run' })).success,
     ).toBe(false);
   });
 

@@ -26,7 +26,7 @@ export const OrgBetaOverrideRevokedSchema = z.object({
   reason: z.string().min(1),
 
   audit_event_id: z.string().uuid(),
-  chain_id: z.literal('admin'),
+  chain_category: z.literal('admin'),
 });
 
 export type OrgBetaOverrideRevoked = z.infer<typeof OrgBetaOverrideRevokedSchema>;

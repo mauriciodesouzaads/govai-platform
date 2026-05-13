@@ -179,7 +179,7 @@ export const PassthroughInvokedSchema = z
     purpose_deprecation_migration_target: z.string().min(1).optional(),
 
     audit_event_id: z.string().uuid(),
-    chain_id: z.literal('run'),
+    chain_category: z.literal('run'),
   })
   .superRefine((data, ctx) => {
     // Rule 1 (P2 v2.0.1): hash invariants for stream vs non-stream raw responses.

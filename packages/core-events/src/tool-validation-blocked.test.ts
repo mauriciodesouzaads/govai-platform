@@ -22,7 +22,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
       'tool.type was an empty string; classification typed_unknown blocks before invoke',
     tools_taxonomy_version: 'anthropic.tools_taxonomy@2026-05-04',
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
     ...overrides,
   };
 }
@@ -47,9 +47,9 @@ describe('ToolValidationBlockedSchema v1', () => {
     ).toBe(false);
   });
 
-  it('chain_id is locked to run', () => {
+  it('chain_category is locked to run', () => {
     expect(
-      ToolValidationBlockedSchema.safeParse(baseEvent({ chain_id: 'admin' })).success,
+      ToolValidationBlockedSchema.safeParse(baseEvent({ chain_category: 'admin' })).success,
     ).toBe(false);
   });
 

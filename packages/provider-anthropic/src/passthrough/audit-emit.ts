@@ -97,7 +97,7 @@ export function buildPassthroughInvoked(
         ? KNOWN_ANTHROPIC_TAXONOMY_VERSION
         : undefined,
     audit_event_id: randomUUID(),
-    chain_id: 'run' as const,
+    chain_category: 'run' as const,
   };
   return PassthroughInvokedSchema.parse(ev);
 }
@@ -123,7 +123,7 @@ export function buildPassthroughBetaDenied(
     policy_at_resolution: input.policy_at_resolution,
     reason_code: input.reason_code,
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
   });
 }
 
@@ -155,6 +155,6 @@ export function buildToolValidationBlocked(
     reason_detail: input.reason_detail,
     tools_taxonomy_version: KNOWN_ANTHROPIC_TAXONOMY_VERSION,
     audit_event_id: randomUUID(),
-    chain_id: 'run',
+    chain_category: 'run',
   });
 }

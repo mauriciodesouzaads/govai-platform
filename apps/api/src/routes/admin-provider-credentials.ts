@@ -157,7 +157,7 @@ export async function adminProviderCredentialsRoute(app: FastifyInstance): Promi
           set_at: result.set_at.toISOString(),
           replaced_credential_id: result.replaced_credential_id,
           audit_event_id: randomUUID(),
-          chain_id: 'admin' as const,
+          chain_category: 'admin' as const,
         };
         const auditPayloadJson = JSON.stringify(auditPayload);
 
@@ -282,7 +282,7 @@ export async function adminProviderCredentialsRoute(app: FastifyInstance): Promi
             revoked_by_user_id: result.revoked_by_user_id,
             revocation_reason: result.revocation_reason,
             audit_event_id: randomUUID(),
-            chain_id: 'admin' as const,
+            chain_category: 'admin' as const,
           };
           const auditPayloadJson = JSON.stringify(auditPayload);
 
