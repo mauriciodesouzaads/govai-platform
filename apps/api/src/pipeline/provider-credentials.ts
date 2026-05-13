@@ -190,33 +190,3 @@ export async function resolveOpenAIProviderKey(
 ): Promise<string> {
   return resolveProviderKey(deps, ctx, 'openai', deps.env.OPENAI_API_KEY, HERMETIC_OPENAI);
 }
-
-/**
- * Reverse lookup of operational mode by org id. Used by the passthrough route
- * closures, where the provider package signature `resolveProviderKey(orgId)`
- * does not carry the operational mode and we cannot rely on a request-scoped
- * cache. Uses the SECURITY DEFINER helper added by HAE-004 / migration 0008.
- */
-export async function lookupOperationalMode(
-  pool: Pool,
-  orgId: string,
-): Promise<OperationalMode> {
-  const client = await pool.connect();
-  try {
-    const r = await client.query<{ operational_mode: OperationalMode }>(
-      'SELECT operational_mode FROM govai.org_tier_lookup($1::uuid)',
-      [orgId],
-    );
-    const row = r.rows[0];
-    if (!row) {
-      throw new MissingProviderKeyError(
-        'anthropic',
-        orgId,
-        'org_tier_lookup_returned_no_row',
-      );
-    }
-    return row.operational_mode;
-  } finally {
-    client.release();
-  }
-}

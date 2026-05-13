@@ -189,7 +189,10 @@ export async function handleOpenAIGovernedChatCompletions(
     return { kind: 'blocked', status_code: 403, reason, audit_event: ev, governance };
   }
 
-  const providerKey = await deps.resolveProviderKey(input.tenant.org_id);
+  const providerKey = await deps.resolveProviderKey(
+    input.tenant.org_id,
+    input.tenant.operational_mode,
+  );
   const organization = deps.resolveProviderOrganization
     ? await deps.resolveProviderOrganization(input.tenant.org_id)
     : undefined;

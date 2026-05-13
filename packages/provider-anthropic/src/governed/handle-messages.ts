@@ -7,7 +7,7 @@
 // capability from registry, computeEffectiveRiskClass + computeEnforcement).
 
 import { createHash, randomUUID } from 'node:crypto';
-import type { Capability } from '@govai/core-types';
+import type { Capability, OperationalMode } from '@govai/core-types';
 import {
   resolveGovernance,
   type DlpFindingLite,
@@ -42,8 +42,12 @@ export type DlpScanFn = (text: string) => Promise<{
 
 export type GovernedHandleDeps = {
   upstreamBaseUrl: string;
-  /** Returns the Anthropic API key for this tenant. */
-  resolveProviderKey: (orgId: string) => Promise<string>;
+  /**
+   * Returns the Anthropic API key for this tenant. The caller passes the
+   * operational mode already resolved at auth time so the resolver does NOT
+   * need to re-query `govai.org_tier_lookup` (issue #25).
+   */
+  resolveProviderKey: (orgId: string, operationalMode: OperationalMode) => Promise<string>;
   /** DLP pre-scan (org-aware via the caller). Returns findings only. */
   dlpScan: DlpScanFn;
   /** Audit sink: caller persists into the audit chain. */
@@ -285,7 +289,10 @@ export async function handleAnthropicGovernedMessages(
   }
 
   // Forward.
-  const providerKey = await deps.resolveProviderKey(input.tenant.org_id);
+  const providerKey = await deps.resolveProviderKey(
+    input.tenant.org_id,
+    input.tenant.operational_mode,
+  );
   const outHeaders = buildOutboundHeaders(input.inboundHeaders, providerKey);
 
   if (input.isStream) {

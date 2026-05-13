@@ -320,10 +320,10 @@ export async function executeGovernedRun(
             },
             {
               upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'anthropic'),
-              resolveProviderKey: async () =>
+              resolveProviderKey: async (orgId, operationalMode) =>
                 resolveAnthropicProviderKey(
                   { env: deps.env, pool: deps.pool, kms: deps.kms },
-                  { orgId: identity.org_id, operationalMode: identity.operational_mode },
+                  { orgId, operationalMode },
                 ),
               dlpScan: inMemoryDlpScan,
               emitAuditEvent: captureAudit,
@@ -339,10 +339,10 @@ export async function executeGovernedRun(
             },
             {
               upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'openai'),
-              resolveProviderKey: async () =>
+              resolveProviderKey: async (orgId, operationalMode) =>
                 resolveOpenAIProviderKey(
                   { env: deps.env, pool: deps.pool, kms: deps.kms },
-                  { orgId: identity.org_id, operationalMode: identity.operational_mode },
+                  { orgId, operationalMode },
                 ),
               dlpScan: inMemoryDlpScan,
               emitAuditEvent: captureAudit,
@@ -358,10 +358,10 @@ export async function executeGovernedRun(
             },
             {
               upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'openai'),
-              resolveProviderKey: async () =>
+              resolveProviderKey: async (orgId, operationalMode) =>
                 resolveOpenAIProviderKey(
                   { env: deps.env, pool: deps.pool, kms: deps.kms },
-                  { orgId: identity.org_id, operationalMode: identity.operational_mode },
+                  { orgId, operationalMode },
                 ),
               dlpScan: inMemoryDlpScan,
               emitAuditEvent: captureAudit,
