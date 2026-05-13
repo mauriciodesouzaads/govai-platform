@@ -372,15 +372,11 @@ describeLive('live passthrough validation (GOVAI_LIVE_TESTS=1)', () => {
     expect(openaiChatNon.rawBody).not.toContain(OPENAI_KEY);
 
     // ── D. Anthropic passthrough — streaming POST /v1/messages with stream:true.
-    //       Passthrough streaming is already implemented (forwardStream) and emits
-    //       a passthrough.invoked v3 event with stream_final_hash.
-    //
-    //       Note: we intentionally do NOT assert content-type here. The
-    //       passthrough streaming plugins call reply.hijack() without
-    //       reply.raw.writeHead(), so upstream response headers (including
-    //       Content-Type) are not flushed to the client. Tracked as issue #38.
-    //       The streaming BYTES are forwarded byte-perfect; the audit event is
-    //       correct; only the response header surface is affected.
+    //       Passthrough streaming is implemented (forwardStream) and emits a
+    //       passthrough.invoked v3 event with stream_final_hash. Content-Type
+    //       propagation was fixed in PR3.1j (#38) by switching the streaming
+    //       branch to `reply.hijack()` + `reply.raw.writeHead(status, headers)`,
+    //       mirroring the governed pattern.
     const anthropicStream = await injectStream(
       '/passthrough/anthropic/v1/messages',
       orgA.api_key,
@@ -392,6 +388,7 @@ describeLive('live passthrough validation (GOVAI_LIVE_TESTS=1)', () => {
       },
     );
     expect(anthropicStream.statusCode).toBe(200);
+    expect(anthropicStream.contentType.toLowerCase()).toContain('text/event-stream');
     expect(anthropicStream.rawPayloadLength).toBeGreaterThan(0);
     // SSE frame regex — what the user-required assertion ("chunks/events") looks
     // like at the byte level for a successful Anthropic streamed message.
@@ -400,7 +397,7 @@ describeLive('live passthrough validation (GOVAI_LIVE_TESTS=1)', () => {
     expect(anthropicStream.rawPayload).not.toContain(ANTHROPIC_KEY);
 
     // ── E. OpenAI Responses passthrough — streaming POST /v1/responses with stream:true.
-    //       Same header note as (D) — see issue #38. We assert chunks + audit only.
+    //       Content-Type propagation also fixed in PR3.1j (#38).
     const openaiResponsesStream = await injectStream(
       '/passthrough/openai/v1/responses',
       orgA.api_key,
@@ -412,6 +409,7 @@ describeLive('live passthrough validation (GOVAI_LIVE_TESTS=1)', () => {
       },
     );
     expect(openaiResponsesStream.statusCode).toBe(200);
+    expect(openaiResponsesStream.contentType.toLowerCase()).toContain('text/event-stream');
     expect(openaiResponsesStream.rawPayloadLength).toBeGreaterThan(0);
     expect(openaiResponsesStream.rawPayload).toMatch(/data:\s*\{/);
     expect(openaiResponsesStream.rawPayload).not.toContain(OPENAI_CANARY);

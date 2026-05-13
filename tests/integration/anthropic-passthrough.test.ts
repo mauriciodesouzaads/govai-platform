@@ -148,6 +148,46 @@ describe('Batch A — /passthrough/anthropic/*', () => {
     expect(blocked[0]!['classification']).toBe('anthropic_typed_unknown');
   });
 
+  it('POST /v1/messages with stream:true → 200 + Content-Type text/event-stream + is_stream audit (regression for #38)', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    // Stream requests go through the hijack/writeHead path. Pre-#38 the route
+    // called reply.header() before reply.hijack() without ever flushing headers
+    // to reply.raw, so the client received Node's defaults and the upstream
+    // Content-Type was dropped. PR3.1j fixed this by mirroring the governed
+    // pattern (reply.hijack() + reply.raw.writeHead(status, headers)).
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/anthropic/v1/messages',
+      headers: {
+        'content-type': 'application/json',
+        'x-govai-api-key': org.api_key,
+      },
+      payload: JSON.stringify({
+        model: 'claude-fixture-1',
+        max_tokens: 100,
+        stream: true,
+        messages: [{ role: 'user', content: 'hi' }],
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const contentType = (res.headers['content-type'] as string | undefined) ?? '';
+    expect(contentType.toLowerCase()).toContain('text/event-stream');
+    expect(res.body).toMatch(/data:\s*\{/);
+
+    const invokedEvents = auditEvents.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && (e as Record<string, unknown>).event_type === 'passthrough.invoked',
+    );
+    expect(invokedEvents.length).toBe(1);
+    const ev = invokedEvents[0]!;
+    expect(ev['capability_id']).toBe('anthropic.messages.stream');
+    expect(ev['is_stream']).toBe(true);
+    expect(ev['body_forward_mode']).toBe('raw');
+    expect(ev['enforcement_decision']).toBe('observe');
+    expect(typeof ev['stream_final_hash']).toBe('string');
+  });
+
   it('files-api-2025-04-14 → allow + invoked event sources global_allowlist', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);

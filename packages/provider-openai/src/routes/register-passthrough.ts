@@ -326,11 +326,18 @@ export async function registerOpenAIPassthrough(
           headers,
           body: requestBody,
         });
+        // Hijack first, then flush upstream status + headers via writeHead
+        // before any raw.write — otherwise the implicit writeHead on first
+        // chunk drops everything set via reply.header() (e.g. Content-Type:
+        // text/event-stream). Matches the governed pattern in
+        // packages/provider-openai/src/governed/register-governed.ts.
+        reply.hijack();
+        const respHeaders: Record<string, string> = {};
         for (const [k, v] of Object.entries(streamRes.responseHeaders)) {
           if (HOP_BY_HOP.has(k.toLowerCase())) continue;
-          reply.header(k, v);
+          respHeaders[k] = v;
         }
-        reply.code(streamRes.status);
+        reply.raw.writeHead(streamRes.status, respHeaders);
 
         const reader = streamRes.body.getReader();
         const nodeStream = (async function* () {
@@ -340,7 +347,6 @@ export async function registerOpenAIPassthrough(
             if (value) yield Buffer.from(value);
           }
         })();
-        reply.hijack();
         for await (const chunk of nodeStream) {
           reply.raw.write(chunk);
         }
