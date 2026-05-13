@@ -109,6 +109,38 @@ describe('Batch C — /passthrough/openai/*', () => {
     expect(ev['capability_canonical_level']).toBe('passthrough_audited');
   });
 
+  it('POST /v1/responses with stream:true → 200 + Content-Type text/event-stream + is_stream audit (regression for #38)', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    // Stream requests go through the hijack/writeHead path. Pre-#38 the route
+    // called reply.header() before reply.hijack() without ever flushing headers
+    // to reply.raw, so the client received Node's defaults and the upstream
+    // Content-Type was dropped. PR3.1j fixed this by mirroring the governed
+    // pattern (reply.hijack() + reply.raw.writeHead(status, headers)).
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/openai/v1/responses',
+      headers: {
+        'content-type': 'application/json',
+        'x-govai-api-key': org.api_key,
+      },
+      payload: JSON.stringify({ model: 'gpt-fixture-1', input: 'hi', stream: true }),
+    });
+    expect(res.statusCode).toBe(200);
+    const contentType = (res.headers['content-type'] as string | undefined) ?? '';
+    expect(contentType.toLowerCase()).toContain('text/event-stream');
+    expect(res.body).toMatch(/data:\s*\{/);
+
+    const invoked = takeInvoked();
+    expect(invoked.length).toBe(1);
+    const ev = invoked[0]!;
+    expect(ev['capability_id']).toBe('openai.responses.stream');
+    expect(ev['is_stream']).toBe(true);
+    expect(ev['body_forward_mode']).toBe('raw');
+    expect(ev['enforcement_decision']).toBe('observe');
+    expect(typeof ev['stream_final_hash']).toBe('string');
+  });
+
   it('OpenAI-Beta hard_denied (assistants=v2) → 403 + passthrough.beta_denied', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
