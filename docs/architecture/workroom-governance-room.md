@@ -96,6 +96,100 @@ A **Workroom** is a tenant-scoped, durable, append-only-by-default coordination 
 
 A workroom is **the only place** where a multi-agent loop is allowed to execute inside the platform. Calling a governed/passthrough provider surface remains permissible without a workroom (existing single-call flows), but **any multi-agent orchestration must happen inside a workroom or be denied at admission.**
 
+### 4.1 Workroom governance modes
+
+Every Workroom is created in exactly one of two **governance modes**. The mode is a first-class property of the Workroom — recorded at creation, surfaced in every event/run/approval/evidence record, and visible in the UI at all times. The mode is the analogue at the *collaboration* layer of the existing `/governed` vs `/passthrough` split at the *provider-native* layer.
+
+```ts
+type WorkroomGovernanceMode =
+  | 'governance_active'
+  | 'audit_only';
+```
+
+#### governance_active (default)
+
+- **Default mode** for every newly created Workroom.
+- Policy can **block**: `policy_decisions.decision ∈ {deny, ask, mutate}` actually halt or rewrite execution.
+- Approvals are **enforced** at admission, not after-the-fact.
+- High-risk actions (`risk_class ∈ {C, D, E}`) and any regulated-data action (`pii_strong`) require HITL per §8.2.
+- Provider calls default to `/governed/{provider}/*`.
+- Appropriate for production, regulated, enterprise, customer-facing, or high-risk work.
+
+#### audit_only (explicit opt-in)
+
+- Explicit opt-in mode; never auto-selected.
+- Policy **observes and records**, but does not block low/medium-risk actions.
+- Provider calls may default to `/passthrough/{provider}/*`.
+- Evidence chain, audit metadata, tenant isolation, RBAC, no-leak invariants, and cost/rate limits are **fully preserved**.
+- Hard-deny boundaries (§4.2) remain enforced regardless.
+- Appropriate for research, experimentation, development, exploratory analysis, internal labs, and power-user workflows.
+
+> **Default mode is `governance_active`. Audit-only is a first-class product option, not a loophole or a bypass.**
+
+### 4.2 Audit-only is not ungoverned
+
+The `audit_only` mode is **never** a path to:
+
+- no audit;
+- no evidence;
+- no tenant isolation;
+- no RBAC;
+- no cost controls;
+- no secret handling;
+- no safety floor;
+- no accountability;
+- direct provider access outside GovAI's resolver;
+- unbounded autonomous agent action.
+
+Every Workroom — regardless of governance mode — enforces the following **hard-deny floor**:
+
+- Secret and credential exfiltration is denied.
+- Destructive system actions outside the participant's `tool_grants` are denied.
+- Malware-authoring and abuse workflows are denied.
+- Production-impacting actions outside the workroom's `workspace_id` are denied.
+- Regulated data above the org's configured policy ceiling is denied (DPO escalation path applies).
+- Autonomous browser/system actions above the configured risk class are denied.
+- External integrations above the configured risk/cost limits are denied.
+- Any attempt to bypass tenant provider credential resolution is denied.
+- Any attempt to disable, mute, or weaken evidence/audit capture is denied.
+
+Operational principle:
+
+> **audit_only = observe-first, block-only-for-hard-boundaries.**
+
+The difference between `governance_active` and `audit_only` is **how aggressively policy intervenes on the soft-deny / advisory boundary**, not whether the hard floor exists. The hard floor is invariant.
+
+### 4.3 Mode selection and mode changes
+
+- `governance_mode` is selected at Workroom creation and persisted on the `Workroom` row.
+- **Upgrade (`audit_only → governance_active`)** is allowed for any participant with `human_owner` role and is audit-recorded. No cool-down.
+- **Downgrade (`governance_active → audit_only`)** is a risk downgrade and requires:
+  - an explicit `ApprovalRequest{subject_kind: workroom_state}`,
+  - granted by `human_owner` AND (where org policy mandates segregation of duties) a second human approver,
+  - audit-recorded as a typed `WorkroomPolicyChanged` event (Phase-4 detail; defined here only conceptually — no event schema in this PR).
+- **Active runs do not silently inherit a downgraded mode mid-flight.** An in-flight run records the mode it started under; the downgrade applies only to runs created after the transition.
+- The org-level admin policy may **disable audit-only entirely** for a tenant (e.g. regulated tier). When disabled, `POST /v1/workrooms` rejects `governance_mode: audit_only` at admission.
+- The UI and the `GET /v1/workrooms/{id}` response must expose the current mode and the most recent transition.
+
+Conceptual `WorkroomPolicyProfile` shape (the field-level entity is defined in §13; this is the typed view from the architecture):
+
+```ts
+type WorkroomPolicyProfile = {
+  governance_mode: 'governance_active' | 'audit_only';
+  default_provider_surface: 'governed' | 'passthrough';
+  max_risk_without_approval: 'A' | 'B' | 'C' | 'D' | 'E';
+  hard_denies_enabled: true;  // invariant: always true; not a togglable boolean
+  approval_policy_id?: string;
+};
+```
+
+Notes:
+- `hard_denies_enabled` is shown above for clarity, but it is **not a configurable field** — it is an invariant of every profile. It is documented in the conceptual type so future migrations don't accidentally model it as optional.
+- Whether a tenant may create audit-only Workrooms is an **org-level** policy decision (admin endpoint), not a per-Workroom toggle.
+- Regulated/production tiers may seed a stricter default profile (e.g. `max_risk_without_approval = 'B'`, `audit_only` disallowed).
+
+**Invariant:** Every Workroom-created run, approval request, policy decision, evidence artifact, tool invocation, and audit event carries the Workroom's `governance_mode` in its audit context. There is no log line or evidence row in which the mode is implicit.
+
 ---
 
 ## 5. Control plane vs data plane
@@ -125,14 +219,19 @@ Mapping existing surfaces:
 
 `/governed/{provider}/*` remains the enforcement-active provider-native surface. Workroom-owned runs hit it the same way `/v1/runs` does today (the governed handler is reused via `handleAnthropicGovernedMessages` / `handleOpenAIGovernedResponses` / `handleOpenAIGovernedChatCompletions`). PR3.1k's contract (`resolveProviderKey(orgId, operationalMode)`) requires nothing new from Workroom — the workroom-owned run still authenticates via API key, builds an `AuthIdentity`, and threads operational mode through.
 
-### 6.2 `/passthrough/{provider}/*` — admitted only by policy
+A `governance_active` Workroom **defaults** to this surface for every provider call. An `audit_only` Workroom may still call this surface freely — using `/governed/*` from inside an audit-only Workroom is a stricter execution choice (see §6.5).
 
-`/passthrough/{provider}/*` is audit-only and **never** the default surface for workrooms. A workroom-owned run may target passthrough only if:
+### 6.2 `/passthrough/{provider}/*` — surface choice depends on Workroom mode
 
-1. the tenant has a `WorkroomPolicy.allow_passthrough_runs = true`, AND
-2. an explicit `ApprovalDecision{scope: passthrough_run}` is recorded for that run, OR the workroom's `auto_approval_ceiling` includes passthrough (regulated tenants will not).
+`/passthrough/{provider}/*` continues to be the audit-only provider-native compatibility surface. Its admission into a Workroom now depends on the Workroom's `governance_mode` (see §4.1):
 
-This preserves the existing semantic that passthrough is for SDK compatibility / lower-governance observation. It does not become a backdoor inside workrooms.
+- In a **`governance_active` Workroom**, passthrough is **never** the default. A workroom-owned run may target passthrough only if:
+  1. the tenant's `WorkroomPolicyProfile.default_provider_surface` or a per-task override allows it, **and**
+  2. an explicit `ApprovalDecision{subject_kind: passthrough_run}` is recorded for that run, OR the profile's `max_risk_without_approval` ceiling explicitly admits this combination (regulated tenants will not).
+
+- In an **`audit_only` Workroom**, passthrough **may be the default**, controlled by `WorkroomPolicyProfile.default_provider_surface`. Per-run upgrade to `/governed/*` is always allowed without extra approval (stricter execution is never gated). Per-run downgrade is not possible (`audit_only` is already the relaxed mode at the Workroom layer).
+
+In both cases, passthrough invocations preserve the existing semantics validated by PR3.1i/j: byte-perfect forwarding, the `passthrough.invoked` v3 audit event with `enforcement_decision='observe'`, `credential_source='tenant_provider_credential'`, `body_forward_mode='raw'`, and (for streams) `stream_final_hash`. Passthrough is not a route to bypass evidence — it is a route to bypass enforcement *intervention*, which the Workroom's audit chain records exactly as today.
 
 ### 6.3 `/v1/runs` — explicit resolution
 
@@ -151,6 +250,33 @@ Concretely:
 
 Admin endpoints stay the way they are. Workroom-level admin (e.g. tenant-wide `WorkroomPolicy` configuration) is exposed via `/v1/admin/workroom-policies/*` when Phase 4 lands; it does not retroactively rename existing admin routes.
 
+### 6.5 `Workroom.governance_mode` × `runs.mode` — orthogonal axes
+
+`Workroom.governance_mode` (per collaboration room) and `runs.mode` (per execution, already shipped in `govai.runs.mode ∈ {governed, passthrough, shadow}`) are **orthogonal**. One does not replace the other. The Workroom mode controls the *defaults* and the *approval ceiling*; the run mode is still the per-execution choice.
+
+| Workroom mode | Run mode | Meaning | Approval status | Audit annotation |
+|---|---|---|---|---|
+| `governance_active` | `governed` | Default enforcement-active execution inside an enforcement-active room. | Default, no extra mode-related approval. | `mode_match=true` |
+| `governance_active` | `passthrough` | Audit-only execution inside an enforcement-active room. | **Exception** — explicit `ApprovalDecision{subject_kind: passthrough_run}` required (or org-level policy exception). | `mode_override=true` |
+| `audit_only` | `passthrough` | Default audit-only execution inside an audit-only room. | Default, no extra mode-related approval. | `mode_match=true` |
+| `audit_only` | `governed` | Enforcement-active execution inside an audit-only room. | Always allowed; never requires extra approval (stricter execution is never gated). | `mode_upgrade=true` |
+
+Operational rules:
+
+- The Workroom's `governance_mode` controls the **default** `runs.mode` for runs created inside that Workroom, via `WorkroomPolicyProfile.default_provider_surface`.
+- `runs.mode` remains the per-execution choice. It is set at run creation and never mutated thereafter.
+- A `governance_active` Workroom may admit `passthrough` runs only by policy exception, explicit task override, or human approval.
+- An `audit_only` Workroom may always admit `governed` runs — stricter execution is never gated.
+- An in-flight run does **not** change its `runs.mode` if the Workroom's `governance_mode` changes mid-flight. The run carries the mode it started with for its entire lifetime.
+- Every Workroom-created run records **both**:
+  - `workroom.governance_mode` (a snapshot at run creation),
+  - `runs.mode` (the per-execution choice),
+  - and the audit annotation (`mode_match`, `mode_override`, `mode_upgrade`) for forensic clarity.
+- Every `EvidenceArtifact`, `PolicyDecision`, `ApprovalRequest`, and `ApprovalDecision` emitted in the run also includes both values in its audit context. There is no event that records `runs.mode` without `workroom.governance_mode` once the run belongs to a Workroom.
+- Standalone runs (`workroom_id IS NULL`) retain the existing audit shape; the new annotations apply only to Workroom-owned runs.
+
+This matrix is the single source of truth for how the Workroom mode and run mode interact. Future ADRs that change either axis must update this matrix.
+
 ---
 
 ## 7. Domain model
@@ -165,14 +291,15 @@ The following entities are defined at field-level detail so DB migrations can be
 - `name: text`
 - `purpose: text` (free-form goal statement; immutable after first message — see §10)
 - `status: WorkroomStatus` (see §10.1)
-- `policy_profile_id: uuid` (FK → `WorkroomPolicyProfile`; defines approval ceilings, allowed surfaces, default risk class)
+- `governance_mode: 'governance_active' | 'audit_only'` (see §4.1; selected at creation, mutable only via §4.3 transition rules)
+- `policy_profile_id: uuid` (FK → `WorkroomPolicyProfile`; defines approval ceilings, allowed surfaces, default risk class, and is consistent with `governance_mode`)
 - `created_by_user_id: uuid`
 - `created_at, updated_at: timestamptz`
 - `closed_at, archived_at: timestamptz NULL`
 - `retention_class: text` (see §13 — retention/erasure)
 - `metadata: jsonb` (free-form, audited)
 
-Ownership: org-scoped. RLS by `org_id`. Append-only-by-default — status transitions are the only mutations allowed after creation, with the exception of `metadata` extension (additive, audited).
+Ownership: org-scoped. RLS by `org_id`. Append-only-by-default — status transitions and `governance_mode` transitions (§4.3) are the only mutations allowed after creation, with the exception of `metadata` extension (additive, audited). Every `governance_mode` change emits a typed audit event (Phase-4 detail).
 
 ### 7.2 `WorkroomParticipant`
 
@@ -248,8 +375,9 @@ Existing `govai.runs` row, extended (proposed):
 - `+ workroom_task_id: uuid NULL`
 - `+ created_by_participant_id: uuid NULL`
 - `+ approval_policy_id: uuid NULL`
+- `+ workroom_governance_mode: 'governance_active' | 'audit_only' NULL` — snapshotted from `Workroom.governance_mode` at run creation; immutable thereafter; NULL for standalone runs. Combined with the existing `runs.mode` column, this gives the forensic axes documented in §6.5 (`mode_match` / `mode_override` / `mode_upgrade`).
 
-No change to `mode`, `status`, `risk_level`, or any other existing column. The new columns are nullable so existing rows and standalone-run flows continue to work.
+No change to `mode`, `status`, `risk_level`, or any other existing column. The new columns are nullable so existing rows and standalone-run flows continue to work. The existing `runs.mode ∈ {governed, passthrough, shadow}` remains the per-execution choice; the new `workroom_governance_mode` is the parent Workroom's mode snapshot at creation.
 
 ### 7.9 `RunStep`
 
@@ -366,21 +494,28 @@ External system writes go through `ToolInvocation` (i.e. a `github.pr.merge` cap
 
 ### 8.2 Approval policy rules (default ceiling)
 
-| Action | Default required approval |
-|---|---|
-| agent emits a `ConversationMessage` | none |
-| agent requests a `Run` against `/governed/*` with `risk_class ∈ {A,B}` | none |
-| agent requests a `Run` against `/governed/*` with `risk_class ∈ {C,D,E}` | `human_owner` OR `human_approver` |
-| agent requests a `Run` against `/passthrough/*` | `human_owner` OR `human_approver` (always) |
-| agent requests a `ToolInvocation` reading the repository | none |
-| agent requests a `ToolInvocation` writing a file in the repository | `human_owner` OR `human_approver` |
-| agent requests `git commit` | `human_owner` OR `human_approver` |
-| agent requests `git push` | `human_owner` (always; never auto) |
-| agent requests `gh pr create` | `human_owner` OR `human_approver` |
-| agent requests `gh pr merge` | `human_owner` AND CI green AND `auditor_agent` finding `severity != blocker` |
-| agent requests action on regulated data (`pii_strong` finding) | `dpo_reviewer` (always) |
-| agent requests use of `passthrough` instead of `governed` for the same model | `human_approver` (always) |
-| agent requests an external integration (Slack, WhatsApp, browser, system command) | `human_owner` (always) AND the action must map to a registered `tool_agent` capability |
+The default ceiling depends on the Workroom's `governance_mode`. The columns below give the **default** approval requirement for each mode; an org-level admin policy may tighten any cell but never loosen the hard-deny floor (§4.2).
+
+| Action | `governance_active` default | `audit_only` default |
+|---|---|---|
+| agent emits a `ConversationMessage` | none | none |
+| agent requests a `Run` against `/governed/*` with `risk_class ∈ {A,B}` | none | none |
+| agent requests a `Run` against `/governed/*` with `risk_class ∈ {C,D,E}` | `human_owner` OR `human_approver` | `human_owner` OR `human_approver` (unchanged — stricter execution is never gated below `governance_active` rules) |
+| agent requests a `Run` against `/passthrough/*` with `risk_class ∈ {A,B}` | `human_owner` OR `human_approver` (always — `mode_override`) | none (default surface in audit-only) |
+| agent requests a `Run` against `/passthrough/*` with `risk_class ∈ {C,D,E}` | `human_owner` OR `human_approver` (always — `mode_override`) | `human_owner` OR `human_approver` |
+| agent requests a `ToolInvocation` reading the repository | none | none |
+| agent requests a `ToolInvocation` writing a file in the repository | `human_owner` OR `human_approver` | advisory `ReviewFinding`; approval not required (subject to per-tool `tool_grants`) |
+| agent requests `git commit` | `human_owner` OR `human_approver` | `human_owner` OR `human_approver` (commits are not soft-deny territory even in audit-only) |
+| agent requests `git push` | `human_owner` (always; never auto) | `human_owner` (always; never auto — hard floor) |
+| agent requests `gh pr create` | `human_owner` OR `human_approver` | advisory; approval not required (still recorded as evidence) |
+| agent requests `gh pr merge` | `human_owner` AND CI green AND `auditor_agent` finding `severity != blocker` | `human_owner` (always — merges affect shared state; hard floor) |
+| agent requests action on regulated data (`pii_strong` finding) | `dpo_reviewer` (always) | `dpo_reviewer` (always — regulated data is hard floor regardless of mode) |
+| agent requests an external integration (Slack, WhatsApp, browser, system command) | `human_owner` (always) AND the action must map to a registered `tool_agent` capability | `human_owner` (always) — external integrations remain hard floor |
+| autonomous browser/system action (class D/E, including external agents) | `human_owner` (always) | `human_owner` (always — autonomy at risk D/E is hard floor) |
+
+Summary of the audit-only delta: `audit_only` reduces approval friction for **low/medium-risk soft-deny territory** (file edits, PR creation, low-risk passthrough). It does **not** loosen the hard floor (push, merge, external integrations, regulated data, class D/E autonomy). The hard floor is invariant across modes.
+
+> **Audit-only mode may reduce approval friction for low/medium-risk actions, but must not bypass approvals for destructive, external, privileged, regulated, or high-cost actions.**
 
 ### 8.3 Conflict resolution
 
@@ -613,8 +748,8 @@ Workroom streaming is **not** a new transport — it reuses the existing pattern
 | `govai.workroom_review_findings` | `org_id` | `id` | `(workroom_id, severity)` | yes | append-only except `resolved_by_decision_id` | `workroom.review_finding` |
 | `govai.workroom_evidence_artifacts` | `org_id` | `id` | `(workroom_id, artifact_kind)`, `(payload_ref)` | yes | append-only except `status` (tombstone/shred) | `workroom.evidence` |
 | `govai.workroom_external_links` | `org_id` | `id` | `(workroom_id, external_system, external_id)` unique | yes | append-only except `verified_at`, `status` | `workroom.evidence{kind: external_artifact}` |
-| `govai.workroom_policy_profiles` | `org_id` | `id` | `(org_id, name)` unique | yes | append-only except `is_disabled` | `workroom.policy_profile` (admin chain) |
-| `govai.runs` (existing) | `org_id` | `id` | extends existing indexes with `(workroom_id)` | yes | unchanged | unchanged |
+| `govai.workroom_policy_profiles` | `org_id` | `id` | `(org_id, name)` unique | yes | append-only except `is_disabled`; profile-level fields (`governance_mode`, `default_provider_surface`, `max_risk_without_approval`, `approval_policy_id`) are versioned via new-row-replacement, not mutation | `workroom.policy_profile` (admin chain) |
+| `govai.runs` (existing) | `org_id` | `id` | extends existing indexes with `(workroom_id)` | yes | adds `workroom_id`, `workroom_task_id`, `created_by_participant_id`, `approval_policy_id`, `workroom_governance_mode` (all NULL for standalone runs); `runs.mode` column unchanged | unchanged |
 
 RLS predicates copy the existing pattern verbatim: `org_id::text = current_setting('app.org_id', true)`.
 
@@ -641,17 +776,34 @@ RLS predicates copy the existing pattern verbatim: `org_id::text = current_setti
 - Every action above the workroom's `auto_approval_ceiling` requires explicit `ApprovalDecision`.
 - Browser/system/24x7 actions are class `D` or `E` by default → always require `human_owner` approval until per-tenant policy elevates the ceiling.
 
-### 14.4 Adapter boundary
+### 14.4 Mode-awareness for external agents
+
+External agents are **mode-aware** — their participation in an `audit_only` Workroom is allowed only under stricter preconditions than in-platform agents:
+
+- The org's `WorkroomPolicyProfile` must explicitly permit `external_agent` participation in audit-only mode (default: not permitted for regulated tier; opt-in for business/enterprise).
+- The agent's `AgentProfile.tool_grants` must be **bounded** by:
+  - risk class (max class `C` unless per-tenant policy elevates with `human_owner` approval),
+  - cost (per-turn and per-session budgets enforced at admission, not after the fact),
+  - time (every external-agent session has an expiry; 24/7 autonomy is opt-in and revocable),
+  - tool scope (no wildcard capability grants; every capability is explicit).
+- All actions are recorded as `ToolInvocation` + `EvidenceArtifact` regardless of Workroom mode.
+- Provider calls still flow through GovAI's `/governed/*` or `/passthrough/*` (never direct), with the Workroom's mode controlling which surface is the default per §6.5.
+- High-risk browser/system/file-system actions (class `D` or `E`) still require `human_owner` approval **regardless of Workroom mode**. The audit-only relaxation never applies to these. This is part of the §4.2 hard-deny floor.
+- 24/7 autonomy must carry explicit revocation, expiry, and spend/rate limits per session; an audit-only Workroom does not relax any of these.
+
+### 14.5 Adapter boundary
 
 - There is **one** adapter shape (an "agent runtime adapter") that translates a workroom turn into a runtime invocation and back. OpenClaw and NemoClaw each ship a thin adapter; the workroom does not learn their internals.
 - The adapter is responsible for: signing requests with the agent's API key, mapping the runtime's tool taxonomy onto the GovAI capability registry, and emitting `ToolInvocation` and `EvidenceArtifact` records faithfully.
+- The adapter must read the Workroom's `governance_mode` from the run context and refuse to invoke actions that the mode does not permit (defense-in-depth on top of the admission check).
 
-### 14.5 What is forbidden
+### 14.6 What is forbidden
 
 - No external agent can register a new capability at runtime. Capabilities are admin-managed (existing capability registry).
 - No external agent can bypass approval policy.
 - No external agent's request reaches an upstream provider without going through GovAI's governed/passthrough surfaces (i.e. no "let the agent use its own API key").
 - No external agent runs on a Workroom unless its `AgentProfile` has been added as a participant.
+- No external agent may execute class `D`/`E` actions without explicit per-invocation `human_owner` approval, regardless of Workroom mode.
 
 ---
 
@@ -666,6 +818,16 @@ UI is out of scope for this blueprint. The architecture only states what the UI 
 - Auditor findings appear in the transcript, anchored to the artifact under review, and may carry `blocker` severity that disables downstream actions.
 - The UI must never hide what is in the audit chain. A "compact" view may collapse turns, but a "full" view always exists, and the API exposes the full ordered transcript regardless of UI state.
 - Streaming output from `/governed/*` is rendered inline in the workroom for the originating run, with the same byte-perfect semantics governed has today.
+
+### 15.1 Governance mode in the UI
+
+- The Workroom's current `governance_mode` is **visible at all times** in the workroom header — there is no "subtle indicator." A user must understand instantly whether GovAI is enforcing or observing.
+- **`governance_active` and `audit_only` Workrooms must not look identical.** Distinct visual treatment (color band, icon, header label) communicates the mode without requiring the user to dig.
+- Every `governance_mode` transition appears in the timeline/evidence view as a typed event (the `WorkroomPolicyChanged` event from §4.3) with actor, previous mode, new mode, reason, and approval reference.
+- `audit_only` Workrooms carry a persistent "Audit-only" indicator in the header and in any summary surface (lists, search results, exported reports). The indicator is non-dismissable.
+- When a per-run `runs.mode` differs from the Workroom's default (i.e. `mode_override` or `mode_upgrade` per §6.5), the run row in the UI surfaces that annotation alongside `risk_class` and `status`.
+- When the agent proposes a passthrough run inside a `governance_active` Workroom, the resulting `ApprovalRequest` UI must explicitly state that this is a `mode_override` and call out the audit-only semantics the request would entail.
+- Streaming output from `/passthrough/*` is rendered inline exactly like `/governed/*`, but the run-row annotation makes the surface choice visible at-a-glance.
 
 ---
 
@@ -684,56 +846,63 @@ Each phase implements a coherent slice of the target architecture. **No phase in
 ### Phase 1 — Domain skeleton + control plane contracts
 
 - Objective: persist workrooms, participants, policy profiles, and turns; expose `POST /v1/workrooms`, `GET /v1/workrooms/{id}`, `POST /v1/workrooms/{id}/participants`, `DELETE /v1/workrooms/{id}/participants/{participant_id}`.
-- Files: new migration `0011_workrooms.sql` (workrooms, workroom_participants, agent_profiles, workroom_policy_profiles, workroom_turns); new core-events files (`workroom-lifecycle.ts`, `workroom-participant.ts`); new routes under `apps/api/src/routes/workrooms.ts`.
-- Acceptance: a workroom can be created, participants added/removed; every transition writes the right `workroom.*` event; RLS enforced; admin tests cover RBAC.
-- Tests: new integration `workroom-lifecycle.test.ts`, `workroom-participants-rbac.test.ts`. No live providers.
-- What must NOT be faked: every endpoint returns a real persisted row; no in-memory state; full audit emission from day one.
+- Mode awareness: `Workroom.governance_mode` and `WorkroomPolicyProfile.governance_mode` ship in this phase. `POST /v1/workrooms` accepts the mode at creation, defaults to `governance_active`, and rejects `audit_only` if org policy disallows. The `GET /v1/workrooms/{id}` response always returns the current mode.
+- Files: new migration `0011_workrooms.sql` (workrooms with `governance_mode`, workroom_participants, agent_profiles, workroom_policy_profiles with `governance_mode` + `default_provider_surface` + `max_risk_without_approval`, workroom_turns); new core-events files (`workroom-lifecycle.ts`, `workroom-participant.ts`, `workroom-policy-changed.ts`); new routes under `apps/api/src/routes/workrooms.ts`.
+- Acceptance: a workroom can be created with both modes; participants added/removed; every transition writes the right `workroom.*` event including `governance_mode` in the audit context; RLS enforced; admin tests cover RBAC and the org-level "audit-only disallowed" toggle.
+- Tests: new integration `workroom-lifecycle.test.ts`, `workroom-participants-rbac.test.ts`, `workroom-governance-mode.test.ts` (covers create-with-mode, upgrade, downgrade-requires-approval, org-level disallow). No live providers.
+- What must NOT be faked: every endpoint returns a real persisted row; no in-memory state; full audit emission from day one; `governance_mode` is real, not stub-defaulted to active.
 
 ### Phase 2 — Messages, tasks, and evidence index
 
 - Objective: append-only transcript + evidence index. `POST /v1/workrooms/{id}/messages`, `POST /v1/workrooms/{id}/tasks`, `GET /v1/workrooms/{id}/evidence`, `GET /v1/workrooms/{id}/audit`.
+- Mode awareness: every message, task, and evidence row records the Workroom's `governance_mode` in its audit context. The `/audit` and `/evidence` query responses include the mode for forensic filtering.
 - Files: migration `0012_workroom_messages_tasks_evidence.sql`; core-events `workroom-message.ts`, `workroom-task.ts`, `workroom-evidence.ts`; routes extended.
-- Acceptance: messages and tasks land in `workroom_turns` with correct `turn_number` monotonicity under `pg_advisory_xact_lock`; evidence index is queryable; audit subview returns the right chain anchors.
-- Tests: integration tests covering turn ordering under concurrency, evidence query RLS, payload encryption-at-rest.
-- What must NOT be faked: turn ordering is real (no client-supplied turn numbers); evidence rows are real; encryption happens on the write path, not on retrieval.
+- Acceptance: messages and tasks land in `workroom_turns` with correct `turn_number` monotonicity under `pg_advisory_xact_lock`; evidence index is queryable; audit subview returns the right chain anchors **and** the mode annotation.
+- Tests: integration tests covering turn ordering under concurrency, evidence query RLS, payload encryption-at-rest, and mode annotation on every artifact emitted in both `governance_active` and `audit_only` Workrooms.
+- What must NOT be faked: turn ordering is real (no client-supplied turn numbers); evidence rows are real; encryption happens on the write path, not on retrieval; the mode annotation comes from the parent Workroom, never a default.
 
 ### Phase 3 — Workroom-owned runs
 
 - Objective: `POST /v1/workrooms/{id}/runs` and the optional `workroom_id` field on existing `POST /v1/runs`. The run orchestrator threads workroom context.
-- Files: migration `0013_runs_workroom_link.sql` (add `workroom_id`, `workroom_task_id`, `created_by_participant_id`, `approval_policy_id` to `govai.runs`); `apps/api/src/pipeline/run-orchestrator.ts` extended to accept and persist the parent edge; new turn type `run_event` in workroom transcript.
-- Acceptance: a workroom-owned run is created, executes against `/governed/*` or `/passthrough/*` exactly as standalone runs do today, and its lifecycle emits both the existing `run.*` events and the workroom-level `workroom.evidence{run_ref}` event; standalone runs continue to work unchanged.
-- Tests: integration `workroom-runs-e2e.test.ts` using the hermetic provider fixture; regression on `governed-org-tier-lookup-count.test.ts` ensures the new path still issues exactly one `org_tier_lookup` per request.
-- What must NOT be faked: the workroom-owned run is the *same* run row; it goes through the *same* orchestrator; it emits the *same* audit events plus the new envelope.
+- Mode awareness: the orchestrator reads the Workroom's `governance_mode` and the `WorkroomPolicyProfile.default_provider_surface` and computes the default `runs.mode` per §6.5. A request that asks for `runs.mode = passthrough` inside a `governance_active` Workroom triggers a `mode_override` approval flow (deferred admission until Phase 4 ships approvals — until then, such requests are rejected at admission). A request for `runs.mode = governed` inside an `audit_only` Workroom is always allowed (`mode_upgrade`).
+- Files: migration `0013_runs_workroom_link.sql` (add `workroom_id`, `workroom_task_id`, `created_by_participant_id`, `approval_policy_id`, `workroom_governance_mode` to `govai.runs`); `apps/api/src/pipeline/run-orchestrator.ts` extended to accept and persist the parent edge and the mode snapshot; new turn type `run_event` in workroom transcript.
+- Acceptance: a workroom-owned run is created, executes against `/governed/*` or `/passthrough/*` exactly as standalone runs do today, and its lifecycle emits both the existing `run.*` events and the workroom-level `workroom.evidence{run_ref}` event; the audit context includes both `workroom_governance_mode` and `runs.mode` with the correct `mode_match` / `mode_override` / `mode_upgrade` annotation; standalone runs continue to work unchanged.
+- Tests: integration `workroom-runs-e2e.test.ts` covering all four cells of the §6.5 matrix against the hermetic provider fixture; regression on `governed-org-tier-lookup-count.test.ts` ensures the new path still issues exactly one `org_tier_lookup` per request.
+- What must NOT be faked: the workroom-owned run is the *same* run row; it goes through the *same* orchestrator; it emits the *same* audit events plus the new envelope; mode annotations are computed, not hard-coded.
 
 ### Phase 4 — Approvals / HITL enforcement
 
 - Objective: `ApprovalRequest`, `ApprovalDecision`, `WorkroomPolicyProfile` enforcement on the run/tool-invocation admission path.
+- Mode awareness: the approval ceiling table from §8.2 is applied as written — `audit_only` reduces friction only for soft-deny territory; the hard floor (§4.2) is invariant. The `mode_override` flow (passthrough request in a `governance_active` Workroom) becomes a typed approval subject. The `WorkroomPolicyChanged` event (mode downgrade) goes through this same approval path.
 - Files: migration `0014_workroom_approvals.sql`; core-events `workroom-approval-request.ts`, `workroom-approval-decision.ts`, `workroom-policy-profile.ts`; orchestrator + admission middleware.
-- Acceptance: a run/tool invocation requiring approval is blocked until granted; a denied approval is final until a new request is opened; expiry and revocation work; SoD enforced where policy dictates; auditor `blocker` findings prevent state advance.
-- Tests: integration covering the full approval lifecycle including expiry, revocation, multi-approver, SoD, and DPO escalation for `pii_strong` findings.
-- What must NOT be faked: enforcement runs on the *admission* path, not as a post-hoc check; a missing approval means the action does not happen.
+- Acceptance: a run/tool invocation requiring approval is blocked until granted; a denied approval is final until a new request is opened; expiry and revocation work; SoD enforced where policy dictates; auditor `blocker` findings prevent state advance; the mode-aware ceiling matrix from §8.2 is enforced in both modes; `mode_override` and `WorkroomPolicyChanged` (downgrade) approvals are tested end-to-end.
+- Tests: integration covering the full approval lifecycle including expiry, revocation, multi-approver, SoD, DPO escalation for `pii_strong` findings, mode-aware ceiling for both `governance_active` and `audit_only`, and the mode-downgrade approval flow.
+- What must NOT be faked: enforcement runs on the *admission* path, not as a post-hoc check; a missing approval means the action does not happen; the hard floor is enforced for both modes.
 
 ### Phase 5 — Agent participants + tool invocations
 
 - Objective: typed `ToolInvocation` admission and execution; `architect_agent` / `auditor_agent` / `executor_agent` participation; `tool_agent` capabilities for in-platform tools (commits, PR creation, CI watch). Sandbox boundaries defined here.
+- Mode awareness: agents read the Workroom's `governance_mode` from the run context and emit tool-invocation requests with mode-appropriate approval expectations. The capability registry's risk class still drives admission; the Workroom mode controls the friction below the hard floor.
 - Files: migration `0015_workroom_tool_invocations.sql`; capability registry extensions for `git.*`, `gh.*`, `fs.*` (where introduced); sandbox runtime design doc (its own PR before this phase merges).
-- Acceptance: a workroom with `architect_agent + auditor_agent + executor_agent + human_owner` can produce a real PR end-to-end with every action audited and every risky step approved.
-- Tests: integration with full multi-agent loop against the hermetic stack; no live external systems in CI (CI runs against fake GitHub adapter — fake at the network boundary, not at the audit boundary).
+- Acceptance: a workroom with `architect_agent + auditor_agent + executor_agent + human_owner` can produce a real PR end-to-end with every action audited and every risky step approved, in both `governance_active` and `audit_only` modes (the audit-only run exercises the soft-deny relaxation; the hard-floor actions still require approval).
+- Tests: integration with full multi-agent loop against the hermetic stack in both modes; no live external systems in CI (CI runs against fake GitHub adapter — fake at the network boundary, not at the audit boundary).
 - What must NOT be faked: tool invocations must be real on the agent side; the GitHub adapter is fake only as a network mock — its emission of `ExternalSystemLink` rows and `EvidenceArtifact`s is real.
 
 ### Phase 6 — UI
 
 - Objective: surface the workroom in the GovAI UI: transcript, evidence pane, approvals dialog, auditor findings, run timeline.
+- Mode awareness: §15.1 applies. `governance_active` and `audit_only` Workrooms are visually distinct at-a-glance; the mode is in the header at all times; mode transitions appear as typed timeline entries; per-run `mode_override` / `mode_upgrade` annotations appear in the run row.
 - Files: separate `apps/ui-*` or equivalent.
-- Acceptance: a human owner can drive a complete loop entirely in-product without leaving for GitHub, ChatGPT, or Claude.
-- What must NOT be faked: the UI binds 1:1 to the API; no fields are invented client-side; no "draft" state lives only in localStorage.
+- Acceptance: a human owner can drive a complete loop entirely in-product without leaving for GitHub, ChatGPT, or Claude, in either mode, with the mode unmistakably visible.
+- What must NOT be faked: the UI binds 1:1 to the API; no fields are invented client-side; no "draft" state lives only in localStorage; the mode indicator is not dismissable in `audit_only`.
 
 ### Phase 7 — External autonomous agents
 
 - Objective: adapter for OpenClaw, NemoClaw, and an MCP-host pattern. Browser/system capabilities (class D/E) gated behind tenant opt-in and human approval.
+- Mode awareness: §14.4 applies. External agents participate in `audit_only` Workrooms only under the stricter preconditions listed there; the hard floor on class D/E actions is never relaxed by Workroom mode, regardless of tenant settings.
 - Files: new adapter packages; capability registry extensions for the new capability families.
-- Acceptance: an external agent runtime can participate in a workroom, propose actions, and execute them — all bound by the same approval/audit/evidence rules in-platform agents already follow.
-- What must NOT be faked: external action receipts (browser screenshots, OS exit codes) become `EvidenceArtifact`s; nothing the agent does is auditless.
+- Acceptance: an external agent runtime can participate in a workroom, propose actions, and execute them — all bound by the same approval/audit/evidence rules in-platform agents already follow, in both Workroom modes, with the mode visible in every audit row the adapter emits.
+- What must NOT be faked: external action receipts (browser screenshots, OS exit codes) become `EvidenceArtifact`s; nothing the agent does is auditless; the adapter's defense-in-depth mode check is real, not stubbed.
 
 ---
 
@@ -751,6 +920,22 @@ For this CP1 document:
 - No WhatsApp/Telegram connectors.
 - No `lookupOperationalMode` reintroduction (PR3.1k stays in force).
 - No changes to `/governed/*`, `/passthrough/*`, `/v1/runs`, `/v1/admin/*`, capability registry, KMS, or audit chain semantics.
+
+### 17.1 Audit-only Workroom is NOT
+
+To remove any ambiguity introduced by exposing `audit_only` as a first-class mode, the following are explicitly **not** what audit-only means. Each item is enforced by the hard-deny floor (§4.2) or by the invariants stated in §4.1 / §6.5:
+
+- Audit-only is **not** an "unsafe mode" — the hard floor applies regardless.
+- Audit-only is **not** a direct-provider bypass — provider calls still flow through GovAI's `/governed/*` or `/passthrough/*`, and the tenant-scoped credential resolver still owns provider keys.
+- Audit-only is **not** a tenant isolation bypass — RLS, `org_id` scoping, and cross-tenant denial remain invariant.
+- Audit-only is **not** a secret-handling bypass — no-leak invariants from PR3.1d/h/i/j still apply on every provider invocation.
+- Audit-only is **not** an unbounded autonomous-execution mode — class D/E actions (browser, shell, file-system, external integrations) still require explicit `human_owner` approval.
+- Audit-only is **not** a bypass for the evidence chain — every artifact still anchors to `audit_events`; no event is implicit.
+- Audit-only is **not** a bypass for RBAC — `Role` + `WorkroomParticipantRole` enforcement is unchanged.
+- Audit-only is **not** a bypass for cost/rate limits — per-org budgets and per-participant rate limits still apply.
+- Audit-only is **not** a replacement for `/passthrough/{provider}/*` — passthrough remains the byte-perfect provider-native compatibility surface; the Workroom mode controls only the **default surface choice** and the **approval ceiling**.
+- Audit-only is **not** a replacement for `/governed/{provider}/*` — governed remains the enforcement-active provider-native surface and is always available (even from an `audit_only` Workroom as a stricter execution upgrade per §6.5).
+- Audit-only is **not** automatically available to every tenant — org-level admin policy may disable it entirely (regulated tier default).
 
 For Phase 1:
 
