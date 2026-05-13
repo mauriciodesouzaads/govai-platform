@@ -1,0 +1,252 @@
+import { describe, it, expect } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import type { BetaTokenPolicyEntry } from '@govai/core-types';
+import { handleAnthropicBetaHeader } from './beta-header-handler.js';
+
+const noOverrides = async () => [];
+
+const policy = (entries: BetaTokenPolicyEntry[]) => Object.freeze(entries);
+
+describe('handleAnthropicBetaHeader — allow paths', () => {
+  it('allows when header_value is undefined (no beta requested)', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: undefined,
+      policy_table: policy([]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('allow');
+    if (r.decision === 'allow') {
+      expect(r.sources).toEqual([]);
+      expect(r.forward_header).toBeUndefined();
+    }
+  });
+
+  it('allows when header_value is empty string', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: '   ',
+      policy_table: policy([]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('allow');
+  });
+
+  it('allows a token resolved via global_allowlist', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'allow-tok',
+      policy_table: policy([
+        {
+          beta_token: 'allow-tok',
+          policy: 'global_allowlist',
+          reason: 'test',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('allow');
+    if (r.decision === 'allow') {
+      expect(r.sources).toEqual([
+        {
+          beta_token: 'allow-tok',
+          source: 'global_allowlist',
+          policy_at_resolution: 'global_allowlist',
+        },
+      ]);
+      expect(r.forward_header).toBe('allow-tok');
+    }
+  });
+
+  it('allows a token resolved via org_override and surfaces override_id', async () => {
+    const orgId = randomUUID();
+    const overrideId = randomUUID();
+    const r = await handleAnthropicBetaHeader({
+      org_id: orgId,
+      header_value: 'oa-tok',
+      policy_table: policy([
+        {
+          beta_token: 'oa-tok',
+          policy: 'org_override_allowed',
+          reason: 'test',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: async () => [{ beta_token: 'oa-tok', id: overrideId }],
+    });
+    expect(r.decision).toBe('allow');
+    if (r.decision === 'allow') {
+      expect(r.sources[0]?.source).toBe('org_override');
+      expect(r.sources[0]?.override_id).toBe(overrideId);
+      expect(r.sources[0]?.policy_at_resolution).toBe('org_override_allowed');
+    }
+  });
+
+  it('allows a token resolved via legacy_no_longer_needed (removed_as_no_longer_needed)', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'legacy-tok',
+      policy_table: policy([
+        {
+          beta_token: 'legacy-tok',
+          policy: 'removed_as_no_longer_needed',
+          reason: 'test',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('allow');
+    if (r.decision === 'allow') {
+      expect(r.sources[0]?.source).toBe('legacy_no_longer_needed');
+      expect(r.sources[0]?.policy_at_resolution).toBe('removed_as_no_longer_needed');
+      expect(r.sources[0]?.override_id).toBeUndefined();
+    }
+  });
+
+  it('forwards joined header when multiple tokens all allow', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: ' a-tok , b-tok ',
+      policy_table: policy([
+        {
+          beta_token: 'a-tok',
+          policy: 'global_allowlist',
+          reason: 't',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+        {
+          beta_token: 'b-tok',
+          policy: 'global_allowlist',
+          reason: 't',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('allow');
+    if (r.decision === 'allow') {
+      expect(r.forward_header).toBe('a-tok, b-tok');
+    }
+  });
+});
+
+describe('handleAnthropicBetaHeader — deny reason_code derivation', () => {
+  it('returns unknown_token when the token has no policy entry', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'mystery',
+      policy_table: policy([]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.denied[0]?.reason_code).toBe('unknown_token');
+      expect(r.denied[0]?.policy_at_resolution).toBe('unknown');
+    }
+  });
+
+  it('returns hard_denied when policy=hard_denied', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'no-go',
+      policy_table: policy([
+        {
+          beta_token: 'no-go',
+          policy: 'hard_denied',
+          reason: 't',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.denied[0]?.reason_code).toBe('hard_denied');
+    }
+  });
+
+  it('returns denied_until_decision when policy=denied_until_decision', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'pending',
+      policy_table: policy([
+        {
+          beta_token: 'pending',
+          policy: 'denied_until_decision',
+          reason: 't',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.denied[0]?.reason_code).toBe('denied_until_decision');
+    }
+  });
+
+  it('returns verification_required_without_override when verification_required has no active override', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'verify-me',
+      policy_table: policy([
+        {
+          beta_token: 'verify-me',
+          policy: 'verification_required',
+          reason: 't',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.denied[0]?.reason_code).toBe('verification_required_without_override');
+    }
+  });
+
+  it('returns org_override_required_but_absent when org_override_allowed has no active override', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'needs-override',
+      policy_table: policy([
+        {
+          beta_token: 'needs-override',
+          policy: 'org_override_allowed',
+          reason: 't',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.denied[0]?.reason_code).toBe('org_override_required_but_absent');
+    }
+  });
+
+  it('returns ALL denials when multiple tokens fail (any deny → request deny)', async () => {
+    const r = await handleAnthropicBetaHeader({
+      org_id: randomUUID(),
+      header_value: 'mystery, no-go',
+      policy_table: policy([
+        {
+          beta_token: 'no-go',
+          policy: 'hard_denied',
+          reason: 't',
+          pinned_at: '2026-05-13T00:00:00Z',
+        },
+      ]),
+      active_overrides_loader: noOverrides,
+    });
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.denied).toHaveLength(2);
+      expect(r.denied.map((d) => d.reason_code).sort()).toEqual(
+        ['hard_denied', 'unknown_token'].sort(),
+      );
+    }
+  });
+});
