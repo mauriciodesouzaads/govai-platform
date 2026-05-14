@@ -154,6 +154,7 @@ export function matchAnthropicPath(rawPath: string): {
   pathTemplate: string;
 } | null {
   // Normalize: strip query string + trailing slash + leading /passthrough/anthropic prefix.
+  /* c8 ignore next -- String.prototype.split always returns at least 1 element; defensive null-coalesce */
   const noQuery = rawPath.split('?')[0] ?? '';
   const stripped = noQuery.replace(/^\/passthrough\/anthropic/, '');
   const normalized = stripped.replace(/\/+$/, '') || '/';
