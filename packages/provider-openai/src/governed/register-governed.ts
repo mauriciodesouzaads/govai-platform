@@ -30,6 +30,7 @@ function inboundHeadersFromReq(req: FastifyRequest): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
     if (Array.isArray(v)) out[k] = v.join(', ');
+    /* c8 ignore next -- FastifyRequest header types are string|string[]|undefined; after Array.isArray, undefined is filtered by typeof, making the else-false branch structurally unreachable */
     else if (typeof v === 'string') out[k] = v;
   }
   return out;
@@ -87,6 +88,7 @@ async function pumpResult(
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
+        /* c8 ignore next -- WHATWG Streams: reader.read() with done:false always yields a value chunk; defensive guard */
         if (value) reply.raw.write(Buffer.from(value));
       }
     } finally {

@@ -28,6 +28,7 @@ export default defineConfig({
         'packages/core-types/src/**/*.ts',
         'packages/dlp-br/src/**/*.ts',
         'packages/provider-anthropic/src/**/*.ts',
+        'packages/provider-openai/src/**/*.ts',
         // PR3.1a — tenant provider credential bridge code + resolver.
         'apps/api/src/scripts/**/*.ts',
         'apps/api/src/pipeline/provider-credentials.ts',
