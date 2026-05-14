@@ -77,6 +77,7 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
+          /* c8 ignore next 4 -- WHATWG Streams: reader.read() with done:false always yields a value chunk; defensive guard */
           if (value) {
             bytes_streamed += value.byteLength;
             hasher.update(Buffer.from(value));
