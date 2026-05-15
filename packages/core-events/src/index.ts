@@ -103,3 +103,7 @@ export * from './org-beta-override-revoked.js';
 // PR3.1a — tenant-scoped provider credentials (issue #13).
 export * from './provider-credential-set.js';
 export * from './provider-credential-revoked.js';
+
+// PR3.x — Workroom Phase 1 domain skeleton (issue #49).
+export * from './workroom-lifecycle.js';
+export * from './workroom-participant.js';
