@@ -351,14 +351,82 @@ export async function setOrgOperationalMode(
   }
 }
 
+/**
+ * Workroom Phase 1 (issue #49): flip the org-level audit-only admission gate.
+ * govai_app has no UPDATE grant on govai.orgs, so this goes through the
+ * superuser adminPool, mirroring setOrgOperationalMode.
+ */
+export async function setOrgWorkroomAuditOnlyDisallowed(
+  stack: Stack,
+  orgId: string,
+  value: boolean,
+): Promise<void> {
+  const c = await stack.db.adminPool.connect();
+  try {
+    await c.query('UPDATE govai.orgs SET workroom_audit_only_disallowed = $2 WHERE id = $1::uuid', [
+      orgId,
+      value,
+    ]);
+  } finally {
+    c.release();
+  }
+}
+
+/**
+ * Workroom Phase 1 (issue #49): seed an agent_profile row directly. Phase 1
+ * ships no public CRUD for agent profiles, so tests that need an agent
+ * participant insert the profile through this test-only helper. Uses the app
+ * pool with tenant context so the govai_app INSERT policy is exercised.
+ */
+export async function seedAgentProfile(
+  stack: Stack,
+  opts: {
+    orgId: string;
+    name?: string;
+    provider?: 'anthropic' | 'openai' | 'external';
+    defaultRole?: string;
+    isDisabled?: boolean;
+  },
+): Promise<{ id: string }> {
+  const c = await stack.db.appPool.connect();
+  try {
+    await c.query('BEGIN');
+    await setLocalAppOrgId(c, opts.orgId);
+    const r = await c.query<{ id: string }>(
+      `INSERT INTO govai.agent_profiles (org_id, name, provider, default_role, is_disabled)
+       VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::boolean)
+       RETURNING id`,
+      [
+        opts.orgId,
+        opts.name ?? `agent-${randomUUID().slice(0, 8)}`,
+        opts.provider ?? 'anthropic',
+        opts.defaultRole ?? 'executor_agent',
+        opts.isDisabled ?? false,
+      ],
+    );
+    await c.query('COMMIT');
+    return { id: r.rows[0]!.id };
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+}
+
 export async function inject(
   stack: Stack,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   url: string,
   apiKey: string | undefined,
   payload?: unknown,
 ): Promise<{ statusCode: number; body: unknown; rawBody: string }> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const headers: Record<string, string> = {};
+  // Only declare a JSON content-type when a body is actually sent. A
+  // bodyless request (GET, or a DELETE) carrying `content-type: application/json`
+  // trips Fastify's JSON body parser ("body cannot be empty") before the route
+  // handler runs.
+  if (payload !== undefined) headers['content-type'] = 'application/json';
   if (apiKey) headers['x-govai-api-key'] = apiKey;
   const res = await stack.app.inject({ method, url, headers, payload: payload ?? undefined });
   let body: unknown;
