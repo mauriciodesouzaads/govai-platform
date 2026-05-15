@@ -107,3 +107,8 @@ export * from './provider-credential-revoked.js';
 // PR3.x — Workroom Phase 1 domain skeleton (issue #49).
 export * from './workroom-lifecycle.js';
 export * from './workroom-participant.js';
+
+// PR3.x — Workroom Phase 2 transcript + evidence (issue #51).
+export * from './workroom-message.js';
+export * from './workroom-task.js';
+export * from './workroom-evidence.js';

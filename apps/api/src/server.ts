@@ -18,6 +18,7 @@ import { governedAnthropicRoute } from './routes/governed-anthropic.js';
 import { governedOpenaiRoute } from './routes/governed-openai.js';
 import { adminProviderCredentialsRoute } from './routes/admin-provider-credentials.js';
 import { workroomsRoute } from './routes/workrooms.js';
+import { workroomTranscriptRoute } from './routes/workroom-transcript.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -78,6 +79,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(governedOpenaiRoute);
   await app.register(adminProviderCredentialsRoute);
   await app.register(workroomsRoute);
+  await app.register(workroomTranscriptRoute);
 
   app.addHook('onClose', async () => {
     if (!overrides.pool) {
