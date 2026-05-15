@@ -22,12 +22,16 @@ import type { GovAIEnv } from '@govai/config';
 import { detectAllBaseline } from '@govai/dlp-br';
 import {
   handleAnthropicGovernedMessages,
+  forwardRaw as forwardRawAnthropic,
+  rewritePassthroughHeaders as rewriteAnthropicPassthroughHeaders,
   type AnthropicGovernedTenant,
   type AnthropicDlpScanFn,
 } from '@govai/provider-anthropic';
 import {
   handleOpenAIGovernedResponses,
   handleOpenAIGovernedChatCompletions,
+  forwardRaw as forwardRawOpenai,
+  rewritePassthroughHeaders as rewriteOpenaiPassthroughHeaders,
   type OpenAIGovernedTenant,
   type OpenAIDlpScanFn,
 } from '@govai/provider-openai';
@@ -58,6 +62,14 @@ export type RunRequest = {
   capability: string;
   model: string;
   input: string;
+  /**
+   * Execution mode for the run. Omitted / 'governed' → the enforcement-active
+   * governed path (executeGovernedRun). 'passthrough' → the observe-only
+   * provider-native forward path (executePassthroughRun). 'shadow' is admitted
+   * by the DB enum but has no `/v1/runs` execution path and is rejected by the
+   * route.
+   */
+  mode?: 'governed' | 'passthrough' | 'shadow';
   metadata?: Record<string, unknown>;
 };
 
@@ -643,6 +655,327 @@ export async function executeGovernedRun(
         provider_invocation_id: invocationId,
         ...(v3EventId ? { passthrough_invoked_event_id: v3EventId } : {}),
         status: 'completed',
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
+  } finally {
+    client.release();
+  }
+}
+
+// =============================================================================
+// Passthrough run execution path (issue #54).
+//
+// `executeGovernedRun` is the enforcement-active path. `executePassthroughRun`
+// is the observe-only counterpart: it performs the SAME provider call against
+// the SAME provider-native upstream, but via the raw passthrough forwarder
+// (`forwardRaw`) instead of the governed handler — no DLP redaction-mutation,
+// no policy deny/mutate, no tool-classification block. It reuses the existing
+// capability registry gating, credential resolver, body builders, and audit
+// chain; it does not fork provider execution (forwardRaw is the shared,
+// already-exported forwarder used by the `/passthrough/*` routes).
+// =============================================================================
+
+export type PassthroughRunResponse = {
+  run_id: string;
+  audit_chain_id: string;
+  audit_event_id: string;
+  mode: 'passthrough';
+  status: 'completed' | 'failed';
+  provider_invocation_id: string;
+  native_request_hash: string;
+  native_response_hash?: string;
+  provider_request_id?: string;
+  output?: unknown;
+};
+
+type PassthroughPlan = {
+  provider: 'anthropic' | 'openai';
+  nativeEndpoint: string;
+  body: Buffer;
+};
+
+function passthroughPlanFor(capability: string, model: string, input: string): PassthroughPlan {
+  switch (capability) {
+    case 'anthropic.messages.create':
+      return {
+        provider: 'anthropic',
+        nativeEndpoint: '/v1/messages',
+        body: buildAnthropicMessagesBody(model, input),
+      };
+    case 'openai.responses.create':
+      return {
+        provider: 'openai',
+        nativeEndpoint: '/v1/responses',
+        body: buildOpenAIResponsesBody(model, input),
+      };
+    case 'openai.chat.completions.create':
+      return {
+        provider: 'openai',
+        nativeEndpoint: '/v1/chat/completions',
+        body: buildOpenAIChatCompletionsBody(model, input),
+      };
+    default:
+      throw new CapabilityNotSupportedError(capability, 'planned');
+  }
+}
+
+/**
+ * Execute a standalone `/v1/runs` request in passthrough mode. Creates a real
+ * `govai.runs` row with `mode='passthrough'`, forwards the provider-native call
+ * raw (observe-only), persists a real `provider_invocations` row, and emits a
+ * real `run.completed` / `run.failed` audit event on the existing `run` chain.
+ * No governed enforcement/mutation is applied. No new audit chain.
+ */
+export async function executePassthroughRun(
+  deps: OrchestratorDeps,
+  apiKey: string,
+  body: RunRequest,
+): Promise<PassthroughRunResponse> {
+  const client = await deps.pool.connect();
+  try {
+    const identity = await authenticateApiKey(client, apiKey);
+
+    await client.query('BEGIN');
+    try {
+      await setLocalAppOrgId(client, identity.org_id);
+
+      // Same capability-registry gating the governed path applies — planned
+      // capabilities still cannot execute outside the hermetic environment.
+      const overrides = await loadOrgOverrides(client, body.capability);
+      const resolved = resolveCapability(body.capability, overrides);
+      assertCapabilityExecutable(resolved, deps.env);
+
+      const plan = passthroughPlanFor(body.capability, body.model, body.input);
+      const chainId = chainIdFor(identity.org_id, 'run');
+
+      // The provider-native request body is known up front, so compute its
+      // sha256 once. Every record of this run — the provider_invocations row,
+      // the API response, and the run.failed audit metadata on the
+      // network/fetch failure path — carries this same real hash, never a
+      // placeholder. (forwardRaw computes the identical hash on the success
+      // path; using the precomputed value everywhere avoids future drift.)
+      const nativeRequestHash = Buffer.from(sha256(plan.body));
+      const nativeRequestHashHex = nativeRequestHash.toString('hex');
+
+      // Resolve the tenant provider key BEFORE inserting the run row: if no
+      // credential is available the provider call is never attempted, and no
+      // `govai.runs` row should be persisted for it.
+      const providerKey =
+        plan.provider === 'anthropic'
+          ? await resolveAnthropicProviderKey(
+              { env: deps.env, pool: deps.pool, kms: deps.kms },
+              { orgId: identity.org_id, operationalMode: identity.operational_mode },
+            )
+          : await resolveOpenAIProviderKey(
+              { env: deps.env, pool: deps.pool, kms: deps.kms },
+              { orgId: identity.org_id, operationalMode: identity.operational_mode },
+            );
+
+      const runId = randomUUID();
+      await client.query(
+        `INSERT INTO govai.runs (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text, 'passthrough', 'queued', $7::jsonb)`,
+        [
+          runId,
+          identity.org_id,
+          body.workspace_id,
+          identity.user_id,
+          plan.provider,
+          body.model,
+          JSON.stringify(body.metadata ?? {}),
+        ],
+      );
+
+      const envBaseUrl = deps.env.GOVAI_PROVIDER_BASE_URL ?? '';
+      const inboundHeaders: Record<string, string> = { 'content-type': 'application/json' };
+      // Hermetic loopback only: forward the test workspace discriminator so
+      // tests can inject per-workspace upstream errors. Mirrors the governed path.
+      if (deps.env.NODE_ENV === 'test' && isLoopbackUrl(envBaseUrl)) {
+        inboundHeaders['x-test-workspace-id'] = body.workspace_id;
+      }
+      const outboundHeaders =
+        plan.provider === 'anthropic'
+          ? rewriteAnthropicPassthroughHeaders(inboundHeaders, providerKey).outbound
+          : rewriteOpenaiPassthroughHeaders(inboundHeaders, providerKey).outbound;
+
+      await client.query(
+        `UPDATE govai.runs SET status = 'running', started_at = now() WHERE id = $1::uuid`,
+        [runId],
+      );
+
+      const forwardRaw = plan.provider === 'anthropic' ? forwardRawAnthropic : forwardRawOpenai;
+      let fwd: Awaited<ReturnType<typeof forwardRawAnthropic>>;
+      try {
+        fwd = await forwardRaw({
+          baseUrl: providerUpstreamBaseUrl(deps.env, plan.provider),
+          pathTemplate: plan.nativeEndpoint,
+          concretePath: plan.nativeEndpoint,
+          method: 'POST',
+          headers: outboundHeaders,
+          body: plan.body,
+        });
+      } catch (err) {
+        // Network / fetch failure → the provider call was attempted, so the
+        // run row persists with status='failed'.
+        const message = err instanceof Error ? err.message : String(err);
+        const failedInvocationId = randomUUID();
+        await client.query(
+          `INSERT INTO govai.provider_invocations (
+             id, run_id, org_id, provider, native_endpoint, native_method,
+             native_request_hash, native_response_hash, streaming, usage_json,
+             latency_ms, status_code, provider_request_id, error_class
+           ) VALUES (
+             $1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, 'POST',
+             $6::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
+             NULL, 0, NULL, 'network_error'
+           )`,
+          [
+            failedInvocationId,
+            runId,
+            identity.org_id,
+            plan.provider,
+            plan.nativeEndpoint,
+            nativeRequestHash,
+          ],
+        );
+        await client.query(
+          `UPDATE govai.runs SET status = 'failed', completed_at = now() WHERE id = $1::uuid`,
+          [runId],
+        );
+        const failAudit = await auditAppend(client, deps.kms, {
+          orgId: identity.org_id,
+          chainId,
+          eventType: 'run.failed',
+          eventVersion: '1',
+          subjectType: 'run',
+          subjectId: runId,
+          occurredAt: new Date(),
+          payloadHash: sha256(Buffer.from(`passthrough_network_error:${message}`)),
+          keyId: 'audit-1',
+          keyVersion: 1,
+          redactionMetadata: {
+            actor_user_id: identity.user_id,
+            run_mode: 'passthrough',
+            enforcement: 'observe',
+            provider: plan.provider,
+            capability: body.capability,
+            provider_invocation_id: failedInvocationId,
+            native_request_hash: nativeRequestHashHex,
+            error_class: 'network_error',
+            error_message: message.slice(0, 200),
+          },
+        });
+        await client.query('COMMIT');
+        return {
+          run_id: runId,
+          audit_chain_id: chainId,
+          audit_event_id: failAudit.eventId,
+          mode: 'passthrough',
+          status: 'failed',
+          provider_invocation_id: failedInvocationId,
+          native_request_hash: nativeRequestHashHex,
+        };
+      }
+
+      let responseBodyParsed: unknown = null;
+      if (fwd.responseBody.length > 0) {
+        try {
+          responseBodyParsed = JSON.parse(fwd.responseBody.toString('utf8'));
+        } catch {
+          responseBodyParsed = { raw: fwd.responseBody.toString('utf8') };
+        }
+      }
+      const ok = fwd.status >= 200 && fwd.status < 300;
+      const invocationId = randomUUID();
+      await client.query(
+        `INSERT INTO govai.provider_invocations (
+           id, run_id, org_id, provider, native_endpoint, native_method,
+           native_request_hash, native_response_hash, streaming, usage_json,
+           latency_ms, status_code, provider_request_id, error_class
+         ) VALUES (
+           $1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, 'POST',
+           $6::bytea, $7::bytea, false, $8::jsonb,
+           $9::integer, $10::integer, $11::text, $12::text
+         )`,
+        [
+          invocationId,
+          runId,
+          identity.org_id,
+          plan.provider,
+          plan.nativeEndpoint,
+          nativeRequestHash,
+          Buffer.from(fwd.native_response_hash, 'hex'),
+          JSON.stringify({
+            provider_native:
+              responseBodyParsed && typeof responseBodyParsed === 'object'
+                ? (responseBodyParsed as { usage?: unknown }).usage ?? null
+                : null,
+            normalized: null,
+            source: 'provider_direct',
+            pricing_table_version: 'v0',
+          }),
+          fwd.latency_ms,
+          fwd.status,
+          fwd.provider_request_id,
+          ok ? null : 'provider_error',
+        ],
+      );
+
+      await client.query(
+        `UPDATE govai.runs SET status = $2::text, completed_at = now() WHERE id = $1::uuid`,
+        [runId, ok ? 'completed' : 'failed'],
+      );
+
+      const runAudit = await auditAppend(client, deps.kms, {
+        orgId: identity.org_id,
+        chainId,
+        eventType: ok ? 'run.completed' : 'run.failed',
+        eventVersion: '1',
+        subjectType: 'run',
+        subjectId: runId,
+        occurredAt: new Date(),
+        payloadHash: sha256(
+          Buffer.from(
+            JSON.stringify({
+              run_id: runId,
+              provider_invocation_id: invocationId,
+              status_code: fwd.status,
+              native_request_hash: nativeRequestHashHex,
+              native_response_hash: fwd.native_response_hash,
+            }),
+          ),
+        ),
+        keyId: 'audit-1',
+        keyVersion: 1,
+        redactionMetadata: {
+          actor_user_id: identity.user_id,
+          run_mode: 'passthrough',
+          enforcement: 'observe',
+          provider: plan.provider,
+          capability: body.capability,
+          provider_invocation_id: invocationId,
+          status_code: fwd.status,
+          native_request_hash: nativeRequestHashHex,
+          native_response_hash: fwd.native_response_hash,
+          ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
+        },
+      });
+
+      await client.query('COMMIT');
+      return {
+        run_id: runId,
+        audit_chain_id: chainId,
+        audit_event_id: runAudit.eventId,
+        mode: 'passthrough',
+        status: ok ? 'completed' : 'failed',
+        provider_invocation_id: invocationId,
+        native_request_hash: nativeRequestHashHex,
+        native_response_hash: fwd.native_response_hash,
+        ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
+        output: responseBodyParsed,
       };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);

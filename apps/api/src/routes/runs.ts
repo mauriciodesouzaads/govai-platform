@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   executeGovernedRun,
+  executePassthroughRun,
   AuthError,
   CapabilityNotSupportedError,
   CapabilityNotRegisteredError,
@@ -10,11 +11,17 @@ import {
 
 // Accept any non-empty capability string and let resolveCapability map unknown ids
 // to CapabilityNotRegisteredError → 404. Zod enum would short-circuit to 400.
+//
+// `mode` is optional: omitted or 'governed' → the enforcement-active governed
+// path; 'passthrough' → the observe-only provider-native forward path. 'shadow'
+// is admitted by the Zod enum so the route can return a specific
+// `run_mode_not_supported` error rather than a generic validation failure.
 const RunBody = z.object({
   workspace_id: z.string().uuid(),
   capability: z.string().min(1).max(200),
   model: z.string().min(1),
   input: z.string().min(1).max(50_000),
+  mode: z.enum(['governed', 'passthrough', 'shadow']).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -35,17 +42,29 @@ export async function runsRoute(app: FastifyInstance): Promise<void> {
       };
     }
 
+    // Omitted mode defaults to governed — the existing /v1/runs behavior.
+    const mode = parsed.data.mode ?? 'governed';
+    if (mode === 'shadow') {
+      reply.code(400);
+      return {
+        error: 'run_mode_not_supported',
+        mode: 'shadow',
+        supported_modes: ['governed', 'passthrough'],
+      };
+    }
+
+    const deps = {
+      pool: app.govai.pool,
+      kms: app.govai.kms,
+      env: app.govai.env,
+      policyCommitSha: app.govai.policyCommitSha,
+    };
+
     try {
-      const result = await executeGovernedRun(
-        {
-          pool: app.govai.pool,
-          kms: app.govai.kms,
-          env: app.govai.env,
-          policyCommitSha: app.govai.policyCommitSha,
-        },
-        apiKey ?? '',
-        parsed.data as RunRequest,
-      );
+      const result =
+        mode === 'passthrough'
+          ? await executePassthroughRun(deps, apiKey ?? '', parsed.data as RunRequest)
+          : await executeGovernedRun(deps, apiKey ?? '', parsed.data as RunRequest);
 
       if (result.status === 'denied') {
         reply.code(403);
