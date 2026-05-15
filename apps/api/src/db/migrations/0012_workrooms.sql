@@ -189,6 +189,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS workroom_participants_active_agent_unique
 ALTER TABLE govai.workroom_participants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE govai.workroom_participants FORCE  ROW LEVEL SECURITY;
 
+-- Participant rows are append-only except for the soft-remove transition: the
+-- only legal UPDATE flips an active/invited participant to status='removed'
+-- and stamps removed_at. govai_app holds an UPDATE grant for that route path,
+-- so this trigger is the defense-in-depth backstop that rejects any UPDATE
+-- touching identity/role/scope columns — direct or otherwise — regardless of
+-- role. role, kind, user_id, agent_profile_id, permission_scope, and the added
+-- metadata are immutable in Phase 1.
+CREATE OR REPLACE FUNCTION govai.workroom_participants_soft_remove_only() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF
+    OLD.status IN ('active', 'invited')
+    AND NEW.status = 'removed'
+    AND OLD.removed_at IS NULL
+    AND NEW.removed_at IS NOT NULL
+    AND NEW.id IS NOT DISTINCT FROM OLD.id
+    AND NEW.org_id IS NOT DISTINCT FROM OLD.org_id
+    AND NEW.workroom_id IS NOT DISTINCT FROM OLD.workroom_id
+    AND NEW.kind IS NOT DISTINCT FROM OLD.kind
+    AND NEW.role IS NOT DISTINCT FROM OLD.role
+    AND NEW.user_id IS NOT DISTINCT FROM OLD.user_id
+    AND NEW.agent_profile_id IS NOT DISTINCT FROM OLD.agent_profile_id
+    AND NEW.permission_scope IS NOT DISTINCT FROM OLD.permission_scope
+    AND NEW.added_by_participant_id IS NOT DISTINCT FROM OLD.added_by_participant_id
+    AND NEW.added_at IS NOT DISTINCT FROM OLD.added_at
+  THEN
+    RETURN NEW;
+  END IF;
+
+  RAISE EXCEPTION 'workroom_participants update is restricted to soft-remove only'
+    USING ERRCODE = 'insufficient_privilege';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS workroom_participants_soft_remove_only_trg ON govai.workroom_participants;
+CREATE TRIGGER workroom_participants_soft_remove_only_trg
+  BEFORE UPDATE ON govai.workroom_participants
+  FOR EACH ROW EXECUTE FUNCTION govai.workroom_participants_soft_remove_only();
+
 -- ===========================================================================
 -- F. govai.workroom_turns — append-only timeline anchoring audit events
 -- ===========================================================================

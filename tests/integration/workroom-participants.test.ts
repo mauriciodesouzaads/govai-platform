@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { setLocalAppOrgId } from '@govai/core-tenant';
 import {
   startStack,
   stopStack,
@@ -358,5 +359,138 @@ describe('workroom-participants / remove', () => {
       org.api_key,
     );
     expect(second.statusCode).toBe(409);
+  });
+});
+
+describe('workroom-participants / update guard', () => {
+  // Run a single UPDATE as the govai_app role with tenant context set — the
+  // same role + RLS context the route uses. Returns whether the DB rejected it.
+  async function attemptUpdateAsOrg(
+    orgId: string,
+    sql: string,
+    params: unknown[],
+  ): Promise<{ blocked: boolean; message: string }> {
+    const c = await stack.db.appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await setLocalAppOrgId(c, orgId);
+      await c.query(sql, params);
+      await c.query('COMMIT');
+      return { blocked: false, message: '' };
+    } catch (err) {
+      await c.query('ROLLBACK').catch(() => undefined);
+      return { blocked: true, message: (err as Error).message };
+    } finally {
+      c.release();
+    }
+  }
+
+  it('rejects direct govai_app UPDATE that mutates participant identity/role/scope', async () => {
+    const org = await devOrg();
+    const workroomId = await createWorkroom(org);
+    const add = await inject(
+      stack,
+      'POST',
+      `/v1/workrooms/${workroomId}/participants`,
+      org.api_key,
+      { kind: 'human', role: 'human_reviewer', user_id: randomUUID() },
+    );
+    expect(add.statusCode).toBe(201);
+    const participantId = (
+      (add.body as Record<string, unknown>)['participant'] as Record<string, unknown>
+    )['id'] as string;
+
+    const before = await queryAsOrg<{
+      role: string;
+      permission_scope: Record<string, unknown>;
+      status: string;
+      removed_at: Date | null;
+    }>(
+      org.org_id,
+      'SELECT role, permission_scope, status, removed_at FROM govai.workroom_participants WHERE id = $1::uuid',
+      [participantId],
+    );
+    expect(before[0]!.status).toBe('active');
+
+    // Forbidden mutations — each must be rejected by the soft-remove-only
+    // trigger, even when the attacker also supplies a valid soft-remove
+    // transition to piggyback on (third case).
+    const forbidden: Array<{ label: string; sql: string }> = [
+      {
+        label: 'role escalation',
+        sql: "UPDATE govai.workroom_participants SET role = 'observer_agent' WHERE id = $1::uuid",
+      },
+      {
+        label: 'permission_scope escalation',
+        sql: `UPDATE govai.workroom_participants SET permission_scope = '{"escalated":true}'::jsonb WHERE id = $1::uuid`,
+      },
+      {
+        label: 'role change piggybacked on a soft-remove',
+        sql: `UPDATE govai.workroom_participants
+                 SET status = 'removed', removed_at = now(), role = 'observer_agent'
+               WHERE id = $1::uuid`,
+      },
+    ];
+    for (const attempt of forbidden) {
+      const result = await attemptUpdateAsOrg(org.org_id, attempt.sql, [participantId]);
+      expect(result.blocked, `${attempt.label} must be blocked`).toBe(true);
+      expect(result.message).toContain('soft-remove only');
+    }
+
+    // The participant row is byte-for-byte unchanged after the rejected writes.
+    const after = await queryAsOrg<{
+      role: string;
+      permission_scope: Record<string, unknown>;
+      status: string;
+      removed_at: Date | null;
+    }>(
+      org.org_id,
+      'SELECT role, permission_scope, status, removed_at FROM govai.workroom_participants WHERE id = $1::uuid',
+      [participantId],
+    );
+    expect(after[0]!.role).toBe(before[0]!.role);
+    expect(after[0]!.permission_scope).toEqual(before[0]!.permission_scope);
+    expect(after[0]!.status).toBe('active');
+    expect(after[0]!.removed_at).toBeNull();
+  });
+
+  it('still allows the legitimate soft-remove UPDATE through the public route', async () => {
+    const org = await devOrg();
+    const workroomId = await createWorkroom(org);
+    const add = await inject(
+      stack,
+      'POST',
+      `/v1/workrooms/${workroomId}/participants`,
+      org.api_key,
+      { kind: 'human', role: 'human_reviewer', user_id: randomUUID() },
+    );
+    const participantId = (
+      (add.body as Record<string, unknown>)['participant'] as Record<string, unknown>
+    )['id'] as string;
+    const del = await inject(
+      stack,
+      'DELETE',
+      `/v1/workrooms/${workroomId}/participants/${participantId}`,
+      org.api_key,
+    );
+    expect(del.statusCode).toBe(204);
+
+    const rows = await queryAsOrg<{ status: string; removed_at: Date | null }>(
+      org.org_id,
+      'SELECT status, removed_at FROM govai.workroom_participants WHERE id = $1::uuid',
+      [participantId],
+    );
+    expect(rows[0]!.status).toBe('removed');
+    expect(rows[0]!.removed_at).not.toBeNull();
+
+    const events = await queryAsOrg<{ transition: string }>(
+      org.org_id,
+      `SELECT (redaction_metadata->'workroom_participant'->>'transition') AS transition
+         FROM govai.audit_events
+        WHERE event_type = 'workroom.participant' AND subject_id = $1::uuid
+        ORDER BY sequence_number`,
+      [participantId],
+    );
+    expect(events.map((e) => e.transition)).toContain('removed');
   });
 });
