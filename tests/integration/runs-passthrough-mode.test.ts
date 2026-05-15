@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { sha256 } from '@govai/core-audit';
 import {
   startStack,
   stopStack,
@@ -266,4 +267,90 @@ describe('runs-passthrough-mode / unsupported modes', () => {
     });
     expect(res.statusCode).toBe(401);
   });
+});
+
+describe('runs-passthrough-mode / network failure hash consistency', () => {
+  it("mode='passthrough' network/fetch failure persists the real request hash everywhere", async () => {
+    // A fresh stack pointed at a closed loopback port: forwardRaw's fetch
+    // throws a connection error (a true network/fetch failure, not a provider
+    // HTTP non-2xx response).
+    const failStack = await startStack({
+      GOVAI_PROVIDER_BASE_URL: 'http://127.0.0.1:1' as unknown as string,
+    });
+    try {
+      const org = await seedOrg(failStack);
+      const input = 'this passthrough run reaches an unreachable upstream';
+      // The Anthropic provider-native body the orchestrator forwards for this
+      // capability — its sha256 is the expected native_request_hash.
+      const expectedBody = JSON.stringify({
+        model: 'claude-fixture-1',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: input }],
+      });
+      const expectedHash = Buffer.from(sha256(Buffer.from(expectedBody, 'utf8'))).toString('hex');
+
+      const res = await inject(failStack, 'POST', '/v1/runs', org.api_key, {
+        workspace_id: org.workspace_id,
+        capability: 'anthropic.messages.create',
+        model: 'claude-fixture-1',
+        input,
+        mode: 'passthrough',
+      });
+      expect(res.statusCode).toBe(502);
+      const body = res.body as Record<string, unknown>;
+      expect(body['mode']).toBe('passthrough');
+      expect(body['status']).toBe('failed');
+      // API response carries the real request hash, not a placeholder.
+      expect(body['native_request_hash']).toBe(expectedHash);
+
+      const runId = body['run_id'] as string;
+      const provInvId = body['provider_invocation_id'] as string;
+      const auditEventId = body['audit_event_id'] as string;
+
+      const c = await failStack.db.appPool.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query("SELECT set_config('app.org_id', $1, true)", [org.org_id]);
+
+        // The provider call was attempted → the run row persists, failed.
+        const runRows = await c.query<{ mode: string; status: string }>(
+          'SELECT mode, status FROM govai.runs WHERE id = $1::uuid',
+          [runId],
+        );
+        expect(runRows.rows[0]!.mode).toBe('passthrough');
+        expect(runRows.rows[0]!.status).toBe('failed');
+
+        // provider_invocations.native_request_hash is the real sha256 — never
+        // the old '\x00' placeholder.
+        const invRows = await c.query<{ native_request_hash: Buffer; error_class: string }>(
+          `SELECT native_request_hash, error_class FROM govai.provider_invocations
+            WHERE id = $1::uuid AND run_id = $2::uuid`,
+          [provInvId, runId],
+        );
+        expect(invRows.rows.length).toBe(1);
+        expect(invRows.rows[0]!.error_class).toBe('network_error');
+        const dbHashHex = invRows.rows[0]!.native_request_hash.toString('hex');
+        expect(dbHashHex).toBe(expectedHash);
+        expect(dbHashHex.length).toBe(64);
+        expect(dbHashHex).not.toBe('00');
+
+        // run.failed audit metadata carries the same real hash.
+        const auditRows = await c.query<{
+          event_type: string;
+          redaction_metadata: { native_request_hash?: string };
+        }>(
+          'SELECT event_type, redaction_metadata FROM govai.audit_events WHERE id = $1::uuid',
+          [auditEventId],
+        );
+        expect(auditRows.rows[0]!.event_type).toBe('run.failed');
+        expect(auditRows.rows[0]!.redaction_metadata.native_request_hash).toBe(expectedHash);
+
+        await c.query('COMMIT');
+      } finally {
+        c.release();
+      }
+    } finally {
+      await stopStack(failStack);
+    }
+  }, 240_000);
 });

@@ -751,6 +751,15 @@ export async function executePassthroughRun(
       const plan = passthroughPlanFor(body.capability, body.model, body.input);
       const chainId = chainIdFor(identity.org_id, 'run');
 
+      // The provider-native request body is known up front, so compute its
+      // sha256 once. Every record of this run — the provider_invocations row,
+      // the API response, and the run.failed audit metadata on the
+      // network/fetch failure path — carries this same real hash, never a
+      // placeholder. (forwardRaw computes the identical hash on the success
+      // path; using the precomputed value everywhere avoids future drift.)
+      const nativeRequestHash = Buffer.from(sha256(plan.body));
+      const nativeRequestHashHex = nativeRequestHash.toString('hex');
+
       // Resolve the tenant provider key BEFORE inserting the run row: if no
       // credential is available the provider call is never attempted, and no
       // `govai.runs` row should be persisted for it.
@@ -820,10 +829,17 @@ export async function executePassthroughRun(
              latency_ms, status_code, provider_request_id, error_class
            ) VALUES (
              $1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, 'POST',
-             '\\x00'::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
+             $6::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
              NULL, 0, NULL, 'network_error'
            )`,
-          [failedInvocationId, runId, identity.org_id, plan.provider, plan.nativeEndpoint],
+          [
+            failedInvocationId,
+            runId,
+            identity.org_id,
+            plan.provider,
+            plan.nativeEndpoint,
+            nativeRequestHash,
+          ],
         );
         await client.query(
           `UPDATE govai.runs SET status = 'failed', completed_at = now() WHERE id = $1::uuid`,
@@ -847,6 +863,7 @@ export async function executePassthroughRun(
             provider: plan.provider,
             capability: body.capability,
             provider_invocation_id: failedInvocationId,
+            native_request_hash: nativeRequestHashHex,
             error_class: 'network_error',
             error_message: message.slice(0, 200),
           },
@@ -859,7 +876,7 @@ export async function executePassthroughRun(
           mode: 'passthrough',
           status: 'failed',
           provider_invocation_id: failedInvocationId,
-          native_request_hash: Buffer.from(sha256(plan.body)).toString('hex'),
+          native_request_hash: nativeRequestHashHex,
         };
       }
 
@@ -889,7 +906,7 @@ export async function executePassthroughRun(
           identity.org_id,
           plan.provider,
           plan.nativeEndpoint,
-          Buffer.from(fwd.native_request_hash, 'hex'),
+          nativeRequestHash,
           Buffer.from(fwd.native_response_hash, 'hex'),
           JSON.stringify({
             provider_native:
@@ -926,7 +943,7 @@ export async function executePassthroughRun(
               run_id: runId,
               provider_invocation_id: invocationId,
               status_code: fwd.status,
-              native_request_hash: fwd.native_request_hash,
+              native_request_hash: nativeRequestHashHex,
               native_response_hash: fwd.native_response_hash,
             }),
           ),
@@ -941,7 +958,7 @@ export async function executePassthroughRun(
           capability: body.capability,
           provider_invocation_id: invocationId,
           status_code: fwd.status,
-          native_request_hash: fwd.native_request_hash,
+          native_request_hash: nativeRequestHashHex,
           native_response_hash: fwd.native_response_hash,
           ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
         },
@@ -955,7 +972,7 @@ export async function executePassthroughRun(
         mode: 'passthrough',
         status: ok ? 'completed' : 'failed',
         provider_invocation_id: invocationId,
-        native_request_hash: fwd.native_request_hash,
+        native_request_hash: nativeRequestHashHex,
         native_response_hash: fwd.native_response_hash,
         ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
         output: responseBodyParsed,
