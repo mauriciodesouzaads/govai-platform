@@ -31,6 +31,7 @@ import {
   executePassthroughRun,
   CapabilityNotSupportedError,
   CapabilityNotRegisteredError,
+  WorkroomRunContextInvalidError,
   type RunRequest,
   type WorkroomRunContext,
 } from '../pipeline/run-orchestrator.js';
@@ -48,13 +49,22 @@ const CreateRunBody = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
-const ListRunsQuery = z.object({
-  status: RunStatus.optional(),
-  mode: z.enum(['governed', 'passthrough', 'shadow']).optional(),
-  workroom_task_id: z.string().uuid().optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50),
-  before_created_at: z.string().datetime().optional(),
-});
+// Keyset pagination is deterministic: the cursor is the (created_at, id) of the
+// last returned row. Both cursor fields are required together — a created_at
+// alone is non-deterministic when rows share a timestamp.
+const ListRunsQuery = z
+  .object({
+    status: RunStatus.optional(),
+    mode: z.enum(['governed', 'passthrough', 'shadow']).optional(),
+    workroom_task_id: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    before_created_at: z.string().datetime().optional(),
+    before_id: z.string().uuid().optional(),
+  })
+  .refine((d) => (d.before_created_at === undefined) === (d.before_id === undefined), {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
 
 type GovernanceMode = 'governance_active' | 'audit_only';
 type ModeRelation = 'defaulted' | 'explicit' | 'upgrade' | 'override_denied';
@@ -331,6 +341,12 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: 'capability_not_registered', capability: err.capabilityId };
       }
+      // TOCTOU: the Workroom context went stale between preflight and the run
+      // write transaction. No run row and no turn were committed.
+      if (err instanceof WorkroomRunContextInvalidError) {
+        reply.code(err.code === 'workroom_task_not_found' ? 404 : 403);
+        return { error: err.code };
+      }
       req.log.error(
         { err_name: err instanceof Error ? err.name : 'unknown', org_id: identity.org_id },
         'workroom-owned run creation failed',
@@ -399,9 +415,16 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
           params.push(parsed.data.workroom_task_id);
           where += ` AND r.workroom_task_id = $${params.length}::uuid`;
         }
-        if (parsed.data.before_created_at) {
+        // Deterministic keyset cursor: (created_at, id) tiebreaker so rows that
+        // share a created_at remain reachable and never duplicate across pages.
+        if (parsed.data.before_created_at && parsed.data.before_id) {
           params.push(parsed.data.before_created_at);
-          where += ` AND r.created_at < $${params.length}::timestamptz`;
+          const tsIdx = params.length;
+          params.push(parsed.data.before_id);
+          const idIdx = params.length;
+          where +=
+            ` AND (r.created_at < $${tsIdx}::timestamptz` +
+            ` OR (r.created_at = $${tsIdx}::timestamptz AND r.id < $${idIdx}::uuid))`;
         }
         params.push(parsed.data.limit);
         const r = await client.query<{
@@ -433,7 +456,7 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
                ON wt.payload_ref = r.id AND wt.kind = 'run_event'
               AND wt.workroom_id = r.workroom_id
             WHERE ${where}
-            ORDER BY r.created_at DESC
+            ORDER BY r.created_at DESC, r.id DESC
             LIMIT $${params.length}`,
           params,
         );
@@ -458,14 +481,18 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
           created_at: row.created_at.toISOString(),
           completed_at: row.completed_at ? row.completed_at.toISOString() : null,
         }));
-        const nextBeforeCreatedAt =
-          runs.length === parsed.data.limit ? runs[runs.length - 1]!.created_at : null;
+        // More rows likely remain when the page is full; the cursor is the
+        // (created_at, id) of the last returned row.
+        const lastRun = runs.length === parsed.data.limit ? runs[runs.length - 1]! : null;
+        const nextCursor = lastRun
+          ? { before_created_at: lastRun.created_at, before_id: lastRun.run_id }
+          : null;
 
         return {
           workroom_id: workroomId,
           workroom_governance_mode: workroom.governance_mode,
           runs,
-          next_before_created_at: nextBeforeCreatedAt,
+          next_cursor: nextCursor,
         };
       } catch (err) {
         await client.query('ROLLBACK').catch(() => undefined);

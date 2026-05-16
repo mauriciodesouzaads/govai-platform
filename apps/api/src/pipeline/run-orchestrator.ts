@@ -145,6 +145,55 @@ async function insertRunEventTurn(
 }
 
 /**
+ * Raised when a WorkroomRunContext that passed the route preflight is no longer
+ * valid at run write time (TOCTOU): the participant was removed, or a linked
+ * task is gone / cross-workroom / cross-org. The route maps `code` to 403/404.
+ */
+export class WorkroomRunContextInvalidError extends Error {
+  constructor(
+    public readonly code: 'workroom_participant_not_active' | 'workroom_task_not_found',
+  ) {
+    super(code);
+    this.name = 'WorkroomRunContextInvalidError';
+  }
+}
+
+/**
+ * Re-validate a WorkroomRunContext inside the run write transaction, before any
+ * Workroom column or `workroom_turns` row is written. This closes the TOCTOU
+ * gap between the route's preflight check and the orchestrator's own
+ * transaction: a participant removed (or a task made stale) in that window must
+ * not yield a committed Workroom-owned run. Throwing here triggers the
+ * orchestrator's ROLLBACK, so no run row and no turn are committed.
+ */
+async function assertWorkroomRunContextStillValid(
+  client: PoolClient,
+  identity: AuthIdentity,
+  workroomContext: WorkroomRunContext,
+): Promise<void> {
+  const participant = await client.query(
+    `SELECT 1 FROM govai.workroom_participants
+      WHERE id = $1::uuid AND org_id = $2::uuid AND workroom_id = $3::uuid AND status = 'active'
+      LIMIT 1`,
+    [workroomContext.created_by_participant_id, identity.org_id, workroomContext.workroom_id],
+  );
+  if (participant.rows.length === 0) {
+    throw new WorkroomRunContextInvalidError('workroom_participant_not_active');
+  }
+  if (workroomContext.workroom_task_id) {
+    const task = await client.query(
+      `SELECT 1 FROM govai.workroom_tasks
+        WHERE id = $1::uuid AND org_id = $2::uuid AND workroom_id = $3::uuid
+        LIMIT 1`,
+      [workroomContext.workroom_task_id, identity.org_id, workroomContext.workroom_id],
+    );
+    if (task.rows.length === 0) {
+      throw new WorkroomRunContextInvalidError('workroom_task_not_found');
+    }
+  }
+}
+
+/**
  * Resolve the upstream provider base URL the orchestrator should pass to the
  * governed handler. Mirrors the fallback behavior of the direct governed
  * routes (apps/api/src/routes/governed-{anthropic,openai}.ts):
@@ -240,6 +289,12 @@ export async function executeGovernedRun(
     await client.query('BEGIN');
     try {
       await setLocalAppOrgId(client, identity.org_id);
+
+      // Re-validate the Workroom context inside the write transaction (TOCTOU):
+      // the participant/task must still be valid now, not just at route preflight.
+      if (workroomContext) {
+        await assertWorkroomRunContextStillValid(client, identity, workroomContext);
+      }
 
       const overrides = await loadOrgOverrides(client, body.capability);
       const resolved = resolveCapability(body.capability, overrides);
@@ -338,6 +393,22 @@ export async function executeGovernedRun(
 
       const effectiveInput = needsRedaction ? redactFindings(body.input, dlp.findings) : body.input;
 
+      // The provider-native request body is known before dispatch — build it
+      // and hash it once so the network/fetch failure path persists a real
+      // native_request_hash, never a placeholder.
+      let nativeRequestBody: Buffer;
+      if (body.capability === 'anthropic.messages.create') {
+        nativeRequestBody = buildAnthropicMessagesBody(body.model, effectiveInput);
+      } else if (body.capability === 'openai.responses.create') {
+        nativeRequestBody = buildOpenAIResponsesBody(body.model, effectiveInput);
+      } else if (body.capability === 'openai.chat.completions.create') {
+        nativeRequestBody = buildOpenAIChatCompletionsBody(body.model, effectiveInput);
+      } else {
+        throw new CapabilityNotSupportedError(body.capability, 'planned');
+      }
+      const nativeRequestHash = Buffer.from(sha256(nativeRequestBody));
+      const nativeRequestHashHex = nativeRequestHash.toString('hex');
+
       await client.query(
         `UPDATE govai.runs SET status = 'running', started_at = now() WHERE id = $1::uuid`,
         [runId],
@@ -396,7 +467,7 @@ export async function executeGovernedRun(
           result = await handleAnthropicGovernedMessages(
             {
               tenant: buildAnthropicTenant(identity),
-              rawBody: buildAnthropicMessagesBody(body.model, effectiveInput),
+              rawBody: nativeRequestBody,
               inboundHeaders,
               isStream: false,
             },
@@ -415,7 +486,7 @@ export async function executeGovernedRun(
           result = await handleOpenAIGovernedResponses(
             {
               tenant: buildOpenAITenant(identity),
-              rawBody: buildOpenAIResponsesBody(body.model, effectiveInput),
+              rawBody: nativeRequestBody,
               inboundHeaders,
               isStream: false,
             },
@@ -434,7 +505,7 @@ export async function executeGovernedRun(
           result = await handleOpenAIGovernedChatCompletions(
             {
               tenant: buildOpenAITenant(identity),
-              rawBody: buildOpenAIChatCompletionsBody(body.model, effectiveInput),
+              rawBody: nativeRequestBody,
               inboundHeaders,
               isStream: false,
             },
@@ -467,7 +538,7 @@ export async function executeGovernedRun(
              latency_ms, status_code, provider_request_id, error_class
            ) VALUES (
              $1::uuid, $2::uuid, $3::uuid, $4::text, '/error', 'POST',
-             '\\x00'::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
+             $5::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
              NULL, 0, NULL, 'network_error'
            )`,
           [
@@ -475,6 +546,7 @@ export async function executeGovernedRun(
             runId,
             identity.org_id,
             body.capability.split('.')[0],
+            nativeRequestHash,
           ],
         );
         await client.query(
@@ -496,6 +568,7 @@ export async function executeGovernedRun(
             actor_user_id: identity.user_id,
             policy_decision_id: decision.id,
             provider_invocation_id: failedInvocationId,
+            native_request_hash: nativeRequestHashHex,
             error_class: 'network_error',
             error_message: message.slice(0, 200),
           },
@@ -844,6 +917,12 @@ export async function executePassthroughRun(
     await client.query('BEGIN');
     try {
       await setLocalAppOrgId(client, identity.org_id);
+
+      // Re-validate the Workroom context inside the write transaction (TOCTOU):
+      // the participant/task must still be valid now, not just at route preflight.
+      if (workroomContext) {
+        await assertWorkroomRunContextStillValid(client, identity, workroomContext);
+      }
 
       // Same capability-registry gating the governed path applies — planned
       // capabilities still cannot execute outside the hermetic environment.
