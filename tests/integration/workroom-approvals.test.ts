@@ -569,3 +569,124 @@ describe('workroom-approvals / pagination + audit subview', () => {
     }
   });
 });
+
+describe('workroom-approvals / semantic-expiry status filtering', () => {
+  // A request created with a past expires_at is stored `pending` but is
+  // effectively expired — read-time semantics, no sweeper, no mutation.
+  const past = (): string => new Date(Date.now() - 3_600_000).toISOString();
+
+  function listIds(body: unknown): string[] {
+    return (body as { approvals: Array<Record<string, unknown>> }).approvals.map(
+      (a) => a['id'] as string,
+    );
+  }
+
+  it('status=expired includes a semantic-expired pending request, with no read mutation', async () => {
+    const org = await devOrg();
+    const wid = await createWorkroom(org);
+    const id = approvalId(await createApproval(org.api_key, wid, { expires_at: past() }));
+
+    const list = await inject(
+      stack,
+      'GET',
+      `/v1/workrooms/${wid}/approvals?status=expired`,
+      org.api_key,
+    );
+    expect(list.statusCode).toBe(200);
+    const approvals = (list.body as { approvals: Array<Record<string, unknown>> }).approvals;
+    const found = approvals.find((a) => a['id'] === id);
+    expect(found).toBeDefined();
+    // The filter and the rendered status agree.
+    expect(found!['status']).toBe('expired');
+    for (const a of approvals) expect(a['status']).toBe('expired');
+
+    // Reading did not mutate the stored status — it remains 'pending'.
+    const rows = await queryAsOrg<{ status: string }>(
+      org.org_id,
+      'SELECT status FROM govai.workroom_approval_requests WHERE id = $1::uuid',
+      [id],
+    );
+    expect(rows[0]!.status).toBe('pending');
+  });
+
+  it('status=pending excludes a semantic-expired pending request', async () => {
+    const org = await devOrg();
+    const wid = await createWorkroom(org);
+    const expiredId = approvalId(await createApproval(org.api_key, wid, { expires_at: past() }));
+    const freshId = approvalId(await createApproval(org.api_key, wid));
+
+    const list = await inject(
+      stack,
+      'GET',
+      `/v1/workrooms/${wid}/approvals?status=pending`,
+      org.api_key,
+    );
+    expect(list.statusCode).toBe(200);
+    const ids = listIds(list.body);
+    expect(ids).toContain(freshId);
+    expect(ids).not.toContain(expiredId);
+    for (const a of (list.body as { approvals: Array<Record<string, unknown>> }).approvals) {
+      expect(a['status']).toBe('pending');
+    }
+  });
+
+  it('a non-expired pending request appears under status=pending and not status=expired', async () => {
+    const org = await devOrg();
+    const wid = await createWorkroom(org);
+    const id = approvalId(await createApproval(org.api_key, wid));
+
+    const pending = await inject(
+      stack,
+      'GET',
+      `/v1/workrooms/${wid}/approvals?status=pending`,
+      org.api_key,
+    );
+    expect(listIds(pending.body)).toContain(id);
+
+    const expired = await inject(
+      stack,
+      'GET',
+      `/v1/workrooms/${wid}/approvals?status=expired`,
+      org.api_key,
+    );
+    expect(listIds(expired.body)).not.toContain(id);
+  });
+
+  it('status=expired pagination is deterministic with no duplicates', async () => {
+    const org = await devOrg();
+    const wid = await createWorkroom(org);
+    const created = new Set<string>();
+    for (let i = 0; i < 3; i += 1) {
+      created.add(approvalId(await createApproval(org.api_key, wid, { expires_at: past() })));
+    }
+
+    const page1 = await inject(
+      stack,
+      'GET',
+      `/v1/workrooms/${wid}/approvals?status=expired&limit=2`,
+      org.api_key,
+    );
+    expect(page1.statusCode).toBe(200);
+    const b1 = page1.body as { approvals: Array<Record<string, unknown>>; next_cursor: unknown };
+    expect(b1.approvals.length).toBe(2);
+    expect(b1.next_cursor).not.toBeNull();
+    const cur = b1.next_cursor as { before_created_at: string; before_id: string };
+    expect(typeof cur.before_created_at).toBe('string');
+    expect(typeof cur.before_id).toBe('string');
+
+    const page2 = await inject(
+      stack,
+      'GET',
+      `/v1/workrooms/${wid}/approvals?status=expired&limit=2` +
+        `&before_created_at=${encodeURIComponent(cur.before_created_at)}&before_id=${cur.before_id}`,
+      org.api_key,
+    );
+    const b2 = page2.body as { approvals: Array<Record<string, unknown>> };
+    expect(b2.approvals.length).toBe(1);
+
+    const seen = [...listIds(page1.body), ...listIds(page2.body)];
+    expect(new Set(seen).size).toBe(seen.length); // no duplicates across pages
+    for (const id of created) expect(seen).toContain(id); // every expired row reachable
+    for (const a of [...b1.approvals, ...b2.approvals]) expect(a['status']).toBe('expired');
+  });
+});

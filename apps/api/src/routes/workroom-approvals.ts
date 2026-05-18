@@ -483,11 +483,21 @@ export async function workroomApprovalsRoute(app: FastifyInstance): Promise<void
           };
         }
 
-        // `status` filters the stored column; the response renders read-time
-        // semantic expiry on top (a pending+past-expiry row shows as expired).
+        // Status filtering applies the SAME read-time expiry semantics as the
+        // rendered response: a still-`pending` request past its `expires_at` is
+        // effectively `expired`. Filtering the stored column alone would
+        // disagree with the rendered status, so `pending` / `expired` are
+        // expanded here against now(). No stored status is mutated on read.
         const params: unknown[] = [workroomId];
         let where = 'workroom_id = $1::uuid';
-        if (parsed.data.status) {
+        if (parsed.data.status === 'expired') {
+          where +=
+            " AND (status = 'expired'" +
+            " OR (status = 'pending' AND expires_at IS NOT NULL AND expires_at <= now()))";
+        } else if (parsed.data.status === 'pending') {
+          where += " AND status = 'pending' AND (expires_at IS NULL OR expires_at > now())";
+        } else if (parsed.data.status) {
+          // granted / denied / revoked — terminal stored statuses.
           params.push(parsed.data.status);
           where += ` AND status = $${params.length}`;
         }
