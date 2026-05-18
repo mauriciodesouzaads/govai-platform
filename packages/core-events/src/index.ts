@@ -112,3 +112,7 @@ export * from './workroom-participant.js';
 export * from './workroom-message.js';
 export * from './workroom-task.js';
 export * from './workroom-evidence.js';
+
+// PR3.x — Workroom Phase 4 approvals / HITL (issue #57).
+export * from './workroom-approval-request.js';
+export * from './workroom-approval-decision.js';

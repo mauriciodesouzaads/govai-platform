@@ -29,11 +29,17 @@ import { authenticateApiKey, AuthError, type AuthIdentity } from '../pipeline/au
 import {
   executeGovernedRun,
   executePassthroughRun,
+  validateApprovalForRun,
   CapabilityNotSupportedError,
   CapabilityNotRegisteredError,
   WorkroomRunContextInvalidError,
+  WorkroomApprovalInvalidError,
   type RunRequest,
   type WorkroomRunContext,
+  type ApprovalConsumptionContext,
+  type ApprovalRowForValidation,
+  type IntendedPassthroughAction,
+  type WorkroomApprovalInvalidCode,
 } from '../pipeline/run-orchestrator.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -46,6 +52,9 @@ const CreateRunBody = z.object({
   input: z.string().min(1).max(50_000),
   mode: z.enum(['governed', 'passthrough', 'shadow']).optional(),
   workroom_task_id: z.string().uuid().optional(),
+  // Workroom Phase 4: authorizes a `governance_active` passthrough override.
+  // Consulted only on that path; ignored for governed / audit_only runs.
+  approval_request_id: z.string().uuid().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -67,7 +76,12 @@ const ListRunsQuery = z
   });
 
 type GovernanceMode = 'governance_active' | 'audit_only';
-type ModeRelation = 'defaulted' | 'explicit' | 'upgrade' | 'override_denied';
+type ModeRelation =
+  | 'defaulted'
+  | 'explicit'
+  | 'upgrade'
+  | 'override_denied'
+  | 'override_approved';
 
 function extractApiKey(req: FastifyRequest): string {
   const header = req.headers['x-govai-api-key'];
@@ -129,14 +143,22 @@ async function getActiveParticipant(
 }
 
 /**
- * Apply the Phase 3 mode matrix. Returns the resolved run mode + the single
- * `mode_relation` annotation, or a rejection for an out-of-scope override.
+ * Apply the Phase 3 mode matrix, extended by Phase 4. Returns the resolved run
+ * mode + the single `mode_relation` annotation, or a rejection.
+ *
+ * Phase 4 changes ONE cell: a `passthrough` override in a `governance_active`
+ * Workroom. Without an `approval_request_id` the Phase 3 rejection
+ * (`override_denied`) still stands; with one it resolves to `override_approved`
+ * and the caller validates + consumes the approval. Every other cell —
+ * defaulted / explicit / upgrade / shadow rejection — is unchanged.
  */
 function resolveRunMode(
   governanceMode: GovernanceMode,
   requestedMode: 'governed' | 'passthrough' | 'shadow' | undefined,
+  hasApprovalRequestId: boolean,
 ):
   | { ok: true; mode: 'governed' | 'passthrough'; mode_relation: 'defaulted' | 'explicit' | 'upgrade' }
+  | { ok: true; mode: 'passthrough'; mode_relation: 'override_approved' }
   | { ok: false; error: string; mode_relation: 'override_denied' } {
   if (requestedMode === 'shadow') {
     return {
@@ -148,12 +170,16 @@ function resolveRunMode(
   if (governanceMode === 'governance_active') {
     if (requestedMode === undefined) return { ok: true, mode: 'governed', mode_relation: 'defaulted' };
     if (requestedMode === 'governed') return { ok: true, mode: 'governed', mode_relation: 'explicit' };
-    // requestedMode === 'passthrough' — a mode override; approvals are Phase 4.
-    return {
-      ok: false,
-      error: 'workroom_run_mode_override_requires_approval',
-      mode_relation: 'override_denied',
-    };
+    // requestedMode === 'passthrough' — a mode override. Phase 4: admitted only
+    // when an approval is presented; without one the Phase 3 rejection stands.
+    if (!hasApprovalRequestId) {
+      return {
+        ok: false,
+        error: 'workroom_run_mode_override_requires_approval',
+        mode_relation: 'override_denied',
+      };
+    }
+    return { ok: true, mode: 'passthrough', mode_relation: 'override_approved' };
   }
   // audit_only
   if (requestedMode === undefined) return { ok: true, mode: 'passthrough', mode_relation: 'defaulted' };
@@ -162,6 +188,41 @@ function resolveRunMode(
   }
   // requestedMode === 'governed' — a stricter execution choice, always allowed.
   return { ok: true, mode: 'governed', mode_relation: 'upgrade' };
+}
+
+/**
+ * Preliminary approval validation, in its own read transaction — a fast clean
+ * 4xx before the orchestrator is invoked. The orchestrator re-validates the
+ * same row under a `FOR UPDATE` lock (TOCTOU) and is the authoritative gate;
+ * this preflight never mutates anything.
+ */
+async function preflightApproval(
+  app: FastifyInstance,
+  orgId: string,
+  approvalRequestId: string,
+  workroomId: string,
+  action: IntendedPassthroughAction,
+): Promise<{ ok: true } | { ok: false; code: WorkroomApprovalInvalidCode }> {
+  const client = await app.govai.pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      await setLocalAppOrgId(client, orgId);
+      const r = await client.query<ApprovalRowForValidation>(
+        `SELECT status, subject_kind, workroom_id, consumed_at, expires_at, intended_action_hash
+           FROM govai.workroom_approval_requests
+          WHERE id = $1::uuid AND org_id = $2::uuid`,
+        [approvalRequestId, orgId],
+      );
+      await client.query('COMMIT');
+      return validateApprovalForRun(r.rows[0] ?? null, { workroomId, action });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
+  } finally {
+    client.release();
+  }
 }
 
 export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
@@ -237,9 +298,13 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // Phase 3 mode matrix. Rejected overrides return before any run/turn is
-    // created — no `govai.runs` row, no `workroom_turns` row.
-    const modeDecision = resolveRunMode(workroom.governance_mode, body.mode);
+    // Phase 3 mode matrix (Phase 4-extended). Rejected overrides return before
+    // any run/turn is created — no `govai.runs` row, no `workroom_turns` row.
+    const modeDecision = resolveRunMode(
+      workroom.governance_mode,
+      body.mode,
+      body.approval_request_id !== undefined,
+    );
     if (!modeDecision.ok) {
       reply.code(403);
       return {
@@ -248,6 +313,32 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
         workroom_id: workroomId,
         workroom_governance_mode: workroom.governance_mode,
       };
+    }
+
+    // Workroom Phase 4: an `override_approved` decision must present a valid
+    // approval. The preflight gives a fast clean 4xx; the orchestrator then
+    // re-validates under a row lock and consumes the approval atomically with
+    // the run. An invalid approval here means no run row and no turn.
+    let approvalContext: ApprovalConsumptionContext | undefined;
+    if (modeDecision.mode_relation === 'override_approved') {
+      const approvalRequestId = body.approval_request_id!;
+      const preflight = await preflightApproval(app, identity.org_id, approvalRequestId, workroomId, {
+        mode: 'passthrough',
+        capability: body.capability,
+        model: body.model,
+        input: body.input,
+        workspace_id: workroom.workspace_id,
+      });
+      if (!preflight.ok) {
+        reply.code(preflight.code === 'workroom_approval_not_found' ? 404 : 403);
+        return {
+          error: preflight.code,
+          mode_relation: 'override_denied' satisfies ModeRelation,
+          workroom_id: workroomId,
+          workroom_governance_mode: workroom.governance_mode,
+        };
+      }
+      approvalContext = { approval_request_id: approvalRequestId };
     }
 
     const runRequest: RunRequest = {
@@ -277,7 +368,7 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
       const result =
         modeDecision.mode === 'governed'
           ? await executeGovernedRun(deps, apiKey, runRequest, workroomContext)
-          : await executePassthroughRun(deps, apiKey, runRequest, workroomContext);
+          : await executePassthroughRun(deps, apiKey, runRequest, workroomContext, approvalContext);
 
       // Read back the run_event turn the orchestrator created in the run
       // transaction — exactly one exists per Workroom-owned run.
@@ -322,6 +413,9 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
         turn_number: turnNumber,
         audit_event_id: result.audit_event_id,
         audit_chain_id: result.audit_chain_id,
+        ...(approvalContext
+          ? { approval_request_id: approvalContext.approval_request_id }
+          : {}),
         ...('policy_decision' in result ? { policy_decision: result.policy_decision } : {}),
         ...(result.provider_invocation_id
           ? { provider_invocation_id: result.provider_invocation_id }
@@ -346,6 +440,18 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
       if (err instanceof WorkroomRunContextInvalidError) {
         reply.code(err.code === 'workroom_task_not_found' ? 404 : 403);
         return { error: err.code };
+      }
+      // TOCTOU: the authorizing approval changed (consumed / revoked / expired)
+      // between the route preflight and the run write transaction. ROLLBACK
+      // committed no run row and no turn, and the approval was not consumed.
+      if (err instanceof WorkroomApprovalInvalidError) {
+        reply.code(err.code === 'workroom_approval_not_found' ? 404 : 403);
+        return {
+          error: err.code,
+          mode_relation: 'override_denied' satisfies ModeRelation,
+          workroom_id: workroomId,
+          workroom_governance_mode: workroom.governance_mode,
+        };
       }
       req.log.error(
         { err_name: err instanceof Error ? err.name : 'unknown', org_id: identity.org_id },
