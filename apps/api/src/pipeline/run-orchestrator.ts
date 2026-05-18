@@ -13,7 +13,7 @@
 // valid; the canonical fact is the v3 event.
 
 import { randomUUID } from 'node:crypto';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { auditAppend, sha256 } from '@govai/core-audit';
 import type { Kms } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
@@ -91,6 +91,107 @@ export type OrchestratorDeps = {
   env: GovAIEnv;
   policyCommitSha: string;
 };
+
+/**
+ * Optional Workroom context threaded into a run executor (Workroom Phase 3,
+ * issue #53). When present, the run is a Workroom-owned run: the orchestrator
+ * persists the Workroom-linkage columns on `govai.runs` and creates exactly
+ * one `workroom_turns` row of kind `run_event` — both inside the same run
+ * transaction, so a Workroom-owned run is never committed without its turn,
+ * and a turn is never created without a real run row + real audit event.
+ * When absent, standalone `/v1/runs` behavior is unchanged.
+ */
+export type WorkroomRunContext = {
+  workroom_id: string;
+  workroom_task_id?: string | null;
+  created_by_participant_id: string;
+  workroom_governance_mode: 'governance_active' | 'audit_only';
+  approval_policy_id?: string | null;
+};
+
+/**
+ * Append one `run_event` Workroom turn for a Workroom-owned run, anchored to
+ * the run's real terminal audit event (`run.completed` / `run.failed` /
+ * `run.denied`). Must be called inside the run transaction, before COMMIT, so
+ * it shares the run's atomicity. The advisory xact lock serializes per-workroom
+ * turn numbering; the (workroom_id, turn_number) unique index is the backstop.
+ */
+async function insertRunEventTurn(
+  client: PoolClient,
+  input: { orgId: string; workroomContext: WorkroomRunContext; runId: string; auditEventId: string },
+): Promise<void> {
+  const { orgId, workroomContext, runId, auditEventId } = input;
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('workroom_turn:' || $1)::bigint)", [
+    workroomContext.workroom_id,
+  ]);
+  const r = await client.query<{ next: string }>(
+    'SELECT COALESCE(MAX(turn_number), 0) + 1 AS next FROM govai.workroom_turns WHERE workroom_id = $1',
+    [workroomContext.workroom_id],
+  );
+  await client.query(
+    `INSERT INTO govai.workroom_turns
+       (id, org_id, workroom_id, turn_number, actor_participant_id, kind, audit_event_id, payload_ref)
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::bigint, $5::uuid, 'run_event', $6::uuid, $7::uuid)`,
+    [
+      randomUUID(),
+      orgId,
+      workroomContext.workroom_id,
+      Number(r.rows[0]?.next ?? 1),
+      workroomContext.created_by_participant_id,
+      auditEventId,
+      runId,
+    ],
+  );
+}
+
+/**
+ * Raised when a WorkroomRunContext that passed the route preflight is no longer
+ * valid at run write time (TOCTOU): the participant was removed, or a linked
+ * task is gone / cross-workroom / cross-org. The route maps `code` to 403/404.
+ */
+export class WorkroomRunContextInvalidError extends Error {
+  constructor(
+    public readonly code: 'workroom_participant_not_active' | 'workroom_task_not_found',
+  ) {
+    super(code);
+    this.name = 'WorkroomRunContextInvalidError';
+  }
+}
+
+/**
+ * Re-validate a WorkroomRunContext inside the run write transaction, before any
+ * Workroom column or `workroom_turns` row is written. This closes the TOCTOU
+ * gap between the route's preflight check and the orchestrator's own
+ * transaction: a participant removed (or a task made stale) in that window must
+ * not yield a committed Workroom-owned run. Throwing here triggers the
+ * orchestrator's ROLLBACK, so no run row and no turn are committed.
+ */
+async function assertWorkroomRunContextStillValid(
+  client: PoolClient,
+  identity: AuthIdentity,
+  workroomContext: WorkroomRunContext,
+): Promise<void> {
+  const participant = await client.query(
+    `SELECT 1 FROM govai.workroom_participants
+      WHERE id = $1::uuid AND org_id = $2::uuid AND workroom_id = $3::uuid AND status = 'active'
+      LIMIT 1`,
+    [workroomContext.created_by_participant_id, identity.org_id, workroomContext.workroom_id],
+  );
+  if (participant.rows.length === 0) {
+    throw new WorkroomRunContextInvalidError('workroom_participant_not_active');
+  }
+  if (workroomContext.workroom_task_id) {
+    const task = await client.query(
+      `SELECT 1 FROM govai.workroom_tasks
+        WHERE id = $1::uuid AND org_id = $2::uuid AND workroom_id = $3::uuid
+        LIMIT 1`,
+      [workroomContext.workroom_task_id, identity.org_id, workroomContext.workroom_id],
+    );
+    if (task.rows.length === 0) {
+      throw new WorkroomRunContextInvalidError('workroom_task_not_found');
+    }
+  }
+}
 
 /**
  * Resolve the upstream provider base URL the orchestrator should pass to the
@@ -179,6 +280,7 @@ export async function executeGovernedRun(
   deps: OrchestratorDeps,
   apiKey: string,
   body: RunRequest,
+  workroomContext?: WorkroomRunContext,
 ): Promise<RunResponse> {
   const client = await deps.pool.connect();
   try {
@@ -188,6 +290,12 @@ export async function executeGovernedRun(
     try {
       await setLocalAppOrgId(client, identity.org_id);
 
+      // Re-validate the Workroom context inside the write transaction (TOCTOU):
+      // the participant/task must still be valid now, not just at route preflight.
+      if (workroomContext) {
+        await assertWorkroomRunContextStillValid(client, identity, workroomContext);
+      }
+
       const overrides = await loadOrgOverrides(client, body.capability);
       const resolved = resolveCapability(body.capability, overrides);
       assertCapabilityExecutable(resolved, deps.env);
@@ -196,8 +304,12 @@ export async function executeGovernedRun(
       const chainId = chainIdFor(identity.org_id, 'run');
 
       await client.query(
-        `INSERT INTO govai.runs (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata)
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text, 'governed', 'queued', $7::jsonb)`,
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            workroom_id, workroom_task_id, created_by_participant_id, approval_policy_id,
+            workroom_governance_mode)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text, 'governed', 'queued',
+            $7::jsonb, $8::uuid, $9::uuid, $10::uuid, $11::uuid, $12::text)`,
         [
           runId,
           identity.org_id,
@@ -206,6 +318,11 @@ export async function executeGovernedRun(
           body.capability.split('.')[0],
           body.model,
           JSON.stringify(body.metadata ?? {}),
+          workroomContext?.workroom_id ?? null,
+          workroomContext?.workroom_task_id ?? null,
+          workroomContext?.created_by_participant_id ?? null,
+          workroomContext?.approval_policy_id ?? null,
+          workroomContext?.workroom_governance_mode ?? null,
         ],
       );
 
@@ -242,6 +359,14 @@ export async function executeGovernedRun(
             dlp_finding_count: dlp.findings.length,
           },
         });
+        if (workroomContext) {
+          await insertRunEventTurn(client, {
+            orgId: identity.org_id,
+            workroomContext,
+            runId,
+            auditEventId: denyAudit.eventId,
+          });
+        }
         await client.query('COMMIT');
         return {
           run_id: runId,
@@ -267,6 +392,22 @@ export async function executeGovernedRun(
       }
 
       const effectiveInput = needsRedaction ? redactFindings(body.input, dlp.findings) : body.input;
+
+      // The provider-native request body is known before dispatch — build it
+      // and hash it once so the network/fetch failure path persists a real
+      // native_request_hash, never a placeholder.
+      let nativeRequestBody: Buffer;
+      if (body.capability === 'anthropic.messages.create') {
+        nativeRequestBody = buildAnthropicMessagesBody(body.model, effectiveInput);
+      } else if (body.capability === 'openai.responses.create') {
+        nativeRequestBody = buildOpenAIResponsesBody(body.model, effectiveInput);
+      } else if (body.capability === 'openai.chat.completions.create') {
+        nativeRequestBody = buildOpenAIChatCompletionsBody(body.model, effectiveInput);
+      } else {
+        throw new CapabilityNotSupportedError(body.capability, 'planned');
+      }
+      const nativeRequestHash = Buffer.from(sha256(nativeRequestBody));
+      const nativeRequestHashHex = nativeRequestHash.toString('hex');
 
       await client.query(
         `UPDATE govai.runs SET status = 'running', started_at = now() WHERE id = $1::uuid`,
@@ -326,7 +467,7 @@ export async function executeGovernedRun(
           result = await handleAnthropicGovernedMessages(
             {
               tenant: buildAnthropicTenant(identity),
-              rawBody: buildAnthropicMessagesBody(body.model, effectiveInput),
+              rawBody: nativeRequestBody,
               inboundHeaders,
               isStream: false,
             },
@@ -345,7 +486,7 @@ export async function executeGovernedRun(
           result = await handleOpenAIGovernedResponses(
             {
               tenant: buildOpenAITenant(identity),
-              rawBody: buildOpenAIResponsesBody(body.model, effectiveInput),
+              rawBody: nativeRequestBody,
               inboundHeaders,
               isStream: false,
             },
@@ -364,7 +505,7 @@ export async function executeGovernedRun(
           result = await handleOpenAIGovernedChatCompletions(
             {
               tenant: buildOpenAITenant(identity),
-              rawBody: buildOpenAIChatCompletionsBody(body.model, effectiveInput),
+              rawBody: nativeRequestBody,
               inboundHeaders,
               isStream: false,
             },
@@ -397,7 +538,7 @@ export async function executeGovernedRun(
              latency_ms, status_code, provider_request_id, error_class
            ) VALUES (
              $1::uuid, $2::uuid, $3::uuid, $4::text, '/error', 'POST',
-             '\\x00'::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
+             $5::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
              NULL, 0, NULL, 'network_error'
            )`,
           [
@@ -405,6 +546,7 @@ export async function executeGovernedRun(
             runId,
             identity.org_id,
             body.capability.split('.')[0],
+            nativeRequestHash,
           ],
         );
         await client.query(
@@ -426,10 +568,19 @@ export async function executeGovernedRun(
             actor_user_id: identity.user_id,
             policy_decision_id: decision.id,
             provider_invocation_id: failedInvocationId,
+            native_request_hash: nativeRequestHashHex,
             error_class: 'network_error',
             error_message: message.slice(0, 200),
           },
         });
+        if (workroomContext) {
+          await insertRunEventTurn(client, {
+            orgId: identity.org_id,
+            workroomContext,
+            runId,
+            auditEventId: failAudit.eventId,
+          });
+        }
         await client.query('COMMIT');
         return {
           run_id: runId,
@@ -484,6 +635,14 @@ export async function executeGovernedRun(
             governed_block_reason: result.reason,
           },
         });
+        if (workroomContext) {
+          await insertRunEventTurn(client, {
+            orgId: identity.org_id,
+            workroomContext,
+            runId,
+            auditEventId: denyAudit.eventId,
+          });
+        }
         await client.query('COMMIT');
         return {
           run_id: runId,
@@ -564,6 +723,14 @@ export async function executeGovernedRun(
             error_class: 'provider_error',
           },
         });
+        if (workroomContext) {
+          await insertRunEventTurn(client, {
+            orgId: identity.org_id,
+            workroomContext,
+            runId,
+            auditEventId: failAudit.eventId,
+          });
+        }
         await client.query('COMMIT');
         return {
           run_id: runId,
@@ -645,6 +812,14 @@ export async function executeGovernedRun(
         },
       });
 
+      if (workroomContext) {
+        await insertRunEventTurn(client, {
+          orgId: identity.org_id,
+          workroomContext,
+          runId,
+          auditEventId: completeAudit.eventId,
+        });
+      }
       await client.query('COMMIT');
       return {
         run_id: runId,
@@ -733,6 +908,7 @@ export async function executePassthroughRun(
   deps: OrchestratorDeps,
   apiKey: string,
   body: RunRequest,
+  workroomContext?: WorkroomRunContext,
 ): Promise<PassthroughRunResponse> {
   const client = await deps.pool.connect();
   try {
@@ -741,6 +917,12 @@ export async function executePassthroughRun(
     await client.query('BEGIN');
     try {
       await setLocalAppOrgId(client, identity.org_id);
+
+      // Re-validate the Workroom context inside the write transaction (TOCTOU):
+      // the participant/task must still be valid now, not just at route preflight.
+      if (workroomContext) {
+        await assertWorkroomRunContextStillValid(client, identity, workroomContext);
+      }
 
       // Same capability-registry gating the governed path applies — planned
       // capabilities still cannot execute outside the hermetic environment.
@@ -776,8 +958,12 @@ export async function executePassthroughRun(
 
       const runId = randomUUID();
       await client.query(
-        `INSERT INTO govai.runs (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata)
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text, 'passthrough', 'queued', $7::jsonb)`,
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            workroom_id, workroom_task_id, created_by_participant_id, approval_policy_id,
+            workroom_governance_mode)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text, 'passthrough', 'queued',
+            $7::jsonb, $8::uuid, $9::uuid, $10::uuid, $11::uuid, $12::text)`,
         [
           runId,
           identity.org_id,
@@ -786,6 +972,11 @@ export async function executePassthroughRun(
           plan.provider,
           body.model,
           JSON.stringify(body.metadata ?? {}),
+          workroomContext?.workroom_id ?? null,
+          workroomContext?.workroom_task_id ?? null,
+          workroomContext?.created_by_participant_id ?? null,
+          workroomContext?.approval_policy_id ?? null,
+          workroomContext?.workroom_governance_mode ?? null,
         ],
       );
 
@@ -868,6 +1059,14 @@ export async function executePassthroughRun(
             error_message: message.slice(0, 200),
           },
         });
+        if (workroomContext) {
+          await insertRunEventTurn(client, {
+            orgId: identity.org_id,
+            workroomContext,
+            runId,
+            auditEventId: failAudit.eventId,
+          });
+        }
         await client.query('COMMIT');
         return {
           run_id: runId,
@@ -964,6 +1163,14 @@ export async function executePassthroughRun(
         },
       });
 
+      if (workroomContext) {
+        await insertRunEventTurn(client, {
+          orgId: identity.org_id,
+          workroomContext,
+          runId,
+          auditEventId: runAudit.eventId,
+        });
+      }
       await client.query('COMMIT');
       return {
         run_id: runId,
