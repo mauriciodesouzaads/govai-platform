@@ -20,6 +20,7 @@ import { adminProviderCredentialsRoute } from './routes/admin-provider-credentia
 import { workroomsRoute } from './routes/workrooms.js';
 import { workroomTranscriptRoute } from './routes/workroom-transcript.js';
 import { workroomRunsRoute } from './routes/workroom-runs.js';
+import { workroomApprovalsRoute } from './routes/workroom-approvals.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -62,7 +63,13 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
     origin: origins.length === 0 ? false : origins,
     credentials: env.API_CORS_CREDENTIALS,
   });
-  await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
+  // The integration suite drives many requests per process; the in-memory
+  // limiter would otherwise throttle a test file. Production is unaffected —
+  // it keeps the 100/min limit.
+  await app.register(rateLimit, {
+    max: env.NODE_ENV === 'test' ? 1_000_000 : 100,
+    timeWindow: '1 minute',
+  });
 
   const policyCommitSha = process.env['GOVAI_POLICY_COMMIT_SHA'] ?? 'runtime-patch-1';
 
@@ -82,6 +89,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(workroomsRoute);
   await app.register(workroomTranscriptRoute);
   await app.register(workroomRunsRoute);
+  await app.register(workroomApprovalsRoute);
 
   app.addHook('onClose', async () => {
     if (!overrides.pool) {

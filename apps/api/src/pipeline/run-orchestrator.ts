@@ -193,6 +193,187 @@ async function assertWorkroomRunContextStillValid(
   }
 }
 
+// =============================================================================
+// Workroom Phase 4 (issue #57) — passthrough-override approval enforcement.
+//
+// A passthrough run requested inside a `governance_active` Workroom is a mode
+// override. It is admitted only when a human-approved, unconsumed,
+// parameter-matched `workroom_approval_requests` row authorizes it. The grant is
+// bound to the exact run parameters via a canonical sha256; the approval is
+// one-time-use, consumed atomically with the authorized run.
+// =============================================================================
+
+/** The provider-semantic parameters an approval is bound to. */
+export type IntendedPassthroughAction = {
+  mode: 'passthrough';
+  capability: string;
+  model: string;
+  input: string;
+  workspace_id: string;
+};
+
+/**
+ * Deterministic JSON serialization: object keys sorted recursively, array order
+ * preserved. Independent of JavaScript object insertion order, so the same
+ * semantic value always yields the same string (and thus the same hash).
+ */
+function stableStringify(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
+    .join(',')}}`;
+}
+
+/**
+ * Canonical string for an intended passthrough action. Only the parameters that
+ * affect provider-native execution are included; `approval_request_id` and
+ * non-semantic metadata are intentionally excluded so a grant binds to the
+ * action, not to the request that carried it.
+ */
+export function canonicalizeIntendedAction(action: IntendedPassthroughAction): string {
+  return stableStringify({
+    capability: action.capability,
+    input: action.input,
+    mode: action.mode,
+    model: action.model,
+    workspace_id: action.workspace_id,
+  });
+}
+
+/** sha256 of the canonical intended action — the binding hash stored on a request. */
+export function intendedActionHash(action: IntendedPassthroughAction): Buffer {
+  return Buffer.from(sha256(Buffer.from(canonicalizeIntendedAction(action), 'utf8')));
+}
+
+export type WorkroomApprovalInvalidCode =
+  | 'workroom_approval_not_found'
+  | 'workroom_approval_wrong_workroom'
+  | 'workroom_approval_subject_mismatch'
+  | 'workroom_approval_already_consumed'
+  | 'workroom_approval_revoked'
+  | 'workroom_approval_denied'
+  | 'workroom_approval_expired'
+  | 'workroom_approval_not_granted';
+
+/**
+ * Raised when an `approval_request_id` supplied to authorize a passthrough
+ * override is not in a state that can authorize the run. Thrown inside the run
+ * write transaction, so it triggers ROLLBACK — no run row, no turn, and the
+ * approval is left unconsumed. The route maps `code` to 404 (not_found) / 403.
+ */
+export class WorkroomApprovalInvalidError extends Error {
+  constructor(public readonly code: WorkroomApprovalInvalidCode) {
+    super(code);
+    this.name = 'WorkroomApprovalInvalidError';
+  }
+}
+
+/** A `workroom_approval_requests` row — the subset needed to authorize a run. */
+export type ApprovalRowForValidation = {
+  status: string;
+  subject_kind: string;
+  workroom_id: string;
+  consumed_at: Date | null;
+  expires_at: Date | null;
+  intended_action_hash: Buffer;
+};
+
+/**
+ * Pure validation: can this approval row authorize this passthrough run? The
+ * single source of truth shared by the route preflight (fast clean 4xx) and the
+ * orchestrator's transaction-local revalidation (the authoritative check under
+ * a row lock). Read-time expiry is applied here — a granted approval past its
+ * `expires_at` is not honorable; no background sweeper is involved.
+ */
+export function validateApprovalForRun(
+  row: ApprovalRowForValidation | null,
+  expected: { workroomId: string; action: IntendedPassthroughAction },
+): { ok: true } | { ok: false; code: WorkroomApprovalInvalidCode } {
+  if (!row) return { ok: false, code: 'workroom_approval_not_found' };
+  if (row.workroom_id !== expected.workroomId) {
+    return { ok: false, code: 'workroom_approval_wrong_workroom' };
+  }
+  if (row.subject_kind !== 'passthrough_run') {
+    return { ok: false, code: 'workroom_approval_subject_mismatch' };
+  }
+  if (row.consumed_at !== null) {
+    return { ok: false, code: 'workroom_approval_already_consumed' };
+  }
+  if (row.status === 'revoked') return { ok: false, code: 'workroom_approval_revoked' };
+  if (row.status === 'denied') return { ok: false, code: 'workroom_approval_denied' };
+  if (row.status === 'expired') return { ok: false, code: 'workroom_approval_expired' };
+  if (row.status !== 'granted') return { ok: false, code: 'workroom_approval_not_granted' };
+  if (row.expires_at !== null && row.expires_at.getTime() <= Date.now()) {
+    return { ok: false, code: 'workroom_approval_expired' };
+  }
+  if (!row.intended_action_hash.equals(intendedActionHash(expected.action))) {
+    return { ok: false, code: 'workroom_approval_subject_mismatch' };
+  }
+  return { ok: true };
+}
+
+/** Context threaded into a passthrough run to consume an authorizing approval. */
+export type ApprovalConsumptionContext = {
+  approval_request_id: string;
+};
+
+/**
+ * Re-validate the authorizing approval inside the run write transaction, under
+ * a `FOR UPDATE` row lock. The lock serializes concurrent consumption: a second
+ * run racing for the same approval blocks here until the first commits, then
+ * sees `consumed_at` set and is rejected. Throwing triggers ROLLBACK.
+ */
+async function assertApprovalConsumable(
+  client: PoolClient,
+  identity: AuthIdentity,
+  input: { workroomContext: WorkroomRunContext; approvalRequestId: string; body: RunRequest },
+): Promise<void> {
+  const r = await client.query<ApprovalRowForValidation>(
+    `SELECT status, subject_kind, workroom_id, consumed_at, expires_at, intended_action_hash
+       FROM govai.workroom_approval_requests
+      WHERE id = $1::uuid AND org_id = $2::uuid
+      FOR UPDATE`,
+    [input.approvalRequestId, identity.org_id],
+  );
+  const v = validateApprovalForRun(r.rows[0] ?? null, {
+    workroomId: input.workroomContext.workroom_id,
+    action: {
+      mode: 'passthrough',
+      capability: input.body.capability,
+      model: input.body.model,
+      input: input.body.input,
+      workspace_id: input.body.workspace_id,
+    },
+  });
+  if (!v.ok) throw new WorkroomApprovalInvalidError(v.code);
+}
+
+/**
+ * Consume the authorizing approval — the one-time-use binding to the run the
+ * grant authorized. Runs inside the run write transaction after the run row
+ * exists, so it shares the run's atomicity. The `consumed_at IS NULL` guard plus
+ * the `FOR UPDATE` lock taken by assertApprovalConsumable make consumption
+ * exactly-once.
+ */
+async function consumeApproval(
+  client: PoolClient,
+  input: { approvalRequestId: string; runId: string },
+): Promise<void> {
+  const r = await client.query(
+    `UPDATE govai.workroom_approval_requests
+        SET consumed_run_id = $2::uuid, consumed_at = now()
+      WHERE id = $1::uuid AND consumed_at IS NULL`,
+    [input.approvalRequestId, input.runId],
+  );
+  if (r.rowCount !== 1) {
+    throw new WorkroomApprovalInvalidError('workroom_approval_already_consumed');
+  }
+}
+
 /**
  * Resolve the upstream provider base URL the orchestrator should pass to the
  * governed handler. Mirrors the fallback behavior of the direct governed
@@ -909,6 +1090,7 @@ export async function executePassthroughRun(
   apiKey: string,
   body: RunRequest,
   workroomContext?: WorkroomRunContext,
+  approval?: ApprovalConsumptionContext,
 ): Promise<PassthroughRunResponse> {
   const client = await deps.pool.connect();
   try {
@@ -922,6 +1104,19 @@ export async function executePassthroughRun(
       // the participant/task must still be valid now, not just at route preflight.
       if (workroomContext) {
         await assertWorkroomRunContextStillValid(client, identity, workroomContext);
+      }
+
+      // Workroom Phase 4: re-validate the authorizing approval under a row lock
+      // before any run work. An invalid approval throws here → ROLLBACK → no run
+      // row, no turn, and the approval is left unconsumed. The capability gate
+      // below likewise rejects a hard-denied capability before the run row, so
+      // an approval can never authorize a capability/policy bypass.
+      if (approval && workroomContext) {
+        await assertApprovalConsumable(client, identity, {
+          workroomContext,
+          approvalRequestId: approval.approval_request_id,
+          body,
+        });
       }
 
       // Same capability-registry gating the governed path applies — planned
@@ -1067,6 +1262,14 @@ export async function executePassthroughRun(
             auditEventId: failAudit.eventId,
           });
         }
+        // The provider call was attempted and a (failed) run row exists, so the
+        // authorizing approval is consumed — one-time-use, no replay.
+        if (approval) {
+          await consumeApproval(client, {
+            approvalRequestId: approval.approval_request_id,
+            runId,
+          });
+        }
         await client.query('COMMIT');
         return {
           run_id: runId,
@@ -1169,6 +1372,13 @@ export async function executePassthroughRun(
           workroomContext,
           runId,
           auditEventId: runAudit.eventId,
+        });
+      }
+      // The authorized run committed — consume the approval (one-time-use).
+      if (approval) {
+        await consumeApproval(client, {
+          approvalRequestId: approval.approval_request_id,
+          runId,
         });
       }
       await client.query('COMMIT');

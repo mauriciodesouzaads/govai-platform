@@ -216,3 +216,60 @@ describe('workroom-runs-mode / rejected overrides create nothing', () => {
     expect((r.body as { error?: string }).error).toBe('run_mode_not_supported');
   });
 });
+
+describe('workroom-runs-mode / approved override (Phase 4)', () => {
+  it('governance_active + passthrough + granted approval → 201 override_approved', async () => {
+    const org = await devOrg();
+    const wid = await createWorkroom(org, 'governance_active');
+
+    // A second participant (human_approver) satisfies separation of duties.
+    const approverUserId = randomUUID();
+    const approver = await addApiKey(stack, org.org_id, approverUserId, ['developer']);
+    const addPart = await inject(stack, 'POST', `/v1/workrooms/${wid}/participants`, org.api_key, {
+      kind: 'human',
+      role: 'human_approver',
+      user_id: approverUserId,
+    });
+    expect(addPart.statusCode).toBe(201);
+
+    const intendedRun = { ...ANTHROPIC_RUN, input: 'phase 4 override' };
+    const created = await inject(stack, 'POST', `/v1/workrooms/${wid}/approvals`, org.api_key, {
+      subject_kind: 'passthrough_run',
+      intended_run: intendedRun,
+    });
+    expect(created.statusCode).toBe(201);
+    const approvalReqId = (
+      (created.body as Record<string, unknown>)['approval_request'] as Record<string, unknown>
+    )['id'] as string;
+
+    const granted = await inject(
+      stack,
+      'POST',
+      `/v1/workrooms/${wid}/approvals/${approvalReqId}/decisions`,
+      approver.api_key,
+      { decision: 'granted' },
+    );
+    expect(granted.statusCode).toBe(201);
+
+    const run = await inject(stack, 'POST', `/v1/workrooms/${wid}/runs`, org.api_key, {
+      ...intendedRun,
+      mode: 'passthrough',
+      approval_request_id: approvalReqId,
+    });
+    expect(run.statusCode).toBe(201);
+    expect((run.body as Record<string, unknown>)['mode']).toBe('passthrough');
+    expect((run.body as Record<string, unknown>)['mode_relation']).toBe('override_approved');
+
+    // Regression: the same override path without an approval is still rejected.
+    const denied = await inject(stack, 'POST', `/v1/workrooms/${wid}/runs`, org.api_key, {
+      ...ANTHROPIC_RUN,
+      input: 'no approval here',
+      mode: 'passthrough',
+    });
+    expect(denied.statusCode).toBe(403);
+    expect((denied.body as { error?: string }).error).toBe(
+      'workroom_run_mode_override_requires_approval',
+    );
+    expect((denied.body as Record<string, unknown>)['mode_relation']).toBe('override_denied');
+  });
+});
