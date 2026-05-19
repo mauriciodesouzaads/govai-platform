@@ -105,7 +105,7 @@ Notes:
 |---|---|---|---|---|
 | BR-JUD-01 | CNJ Resolução 332/2020 — AI in the Judiciary | CNJ | HISTORICAL / REVOKED | https://atos.cnj.jus.br/atos/detalhar/3429 |
 | BR-JUD-02 | CNJ Resolução 615/2025 — AI development, use, governance | CNJ | CONFIRMED_PRIMARY_SOURCE | https://atos.cnj.jus.br/atos/detalhar/6001 |
-| BR-JUD-03 | CNJ Resolução 674/2026 — amendment to Resolução 615/2025 | CNJ | CONFIRMED_PRIMARY_SOURCE | https://atos.cnj.jus.br/ |
+| BR-JUD-03 | CNJ Resolução 674/2026 — amendment to Resolução 615/2025 | CNJ | PARTIAL_PRIMARY_SOURCE | https://atos.cnj.jus.br/ |
 | BR-JUD-04 | "CNJ 605" — claimed CNJ act | CNJ (claimed) | NEEDS_SOURCE_VERIFICATION | https://atos.cnj.jus.br/ |
 | BR-JUD-05 | CNIAJ — National Committee on Judiciary AI | CNJ | CONFIRMED_PRIMARY_SOURCE | https://www.cnj.jus.br/sistemas/plataforma-sinapses/comite-nacional-de-inteligencia-artificial-do-judiciario-cniaj/ |
 | BR-JUD-06 | Judiciary AI ecosystem — DataJud, Codex, Sinapses, PJe, Justiça 4.0 | CNJ | PARTIAL_PRIMARY_SOURCE | https://www.cnj.jus.br/ |
@@ -120,10 +120,12 @@ Notes:
   transparency, privacy by design and by default, impact assessments, and the
   CNIAJ. Relevance: the judiciary mapping (file 05). Next action: cite the
   official CNJ resolution text in PR-C.
-- **BR-JUD-03** — CP1 finding: confirmed; de 25 March 2026; amends Resolução
-  615/2025, changing the CNIAJ composition. Limitations: the specific amended
-  article number was not confirmed. Next action: confirm the CNJ atos detail
-  URL and the exact amended article in PR-C.
+- **BR-JUD-03** — CP1 finding: existence and amendment relationship to
+  Resolução 615/2025 identified; de 25 March 2026; changes the CNIAJ
+  composition. Limitations: the CNJ atos detail URL and the exact amended
+  article number were not confirmed. Next action: confirm the CNJ atos detail
+  URL and the exact amended article in PR-C before downstream judiciary
+  mapping treats this source as fully verified.
 - **BR-JUD-04** — CP1 finding: no CNJ act numbered 605 was confirmed as an
   AI-governance norm. It must not be treated as applicable AI-governance law.
   Next action: search the CNJ atos system for any act numbered 605 and confirm
