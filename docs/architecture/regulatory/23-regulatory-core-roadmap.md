@@ -1,0 +1,672 @@
+# Regulatory Core Roadmap
+
+## Purpose
+
+Turn known gaps and target capabilities from `18-competitive-benchmark.md`,
+`19-build-vs-integrate-strategy.md`, `20-target-control-catalog.md`,
+`21-regulatory-intelligence-operating-model.md`,
+`22-certification-and-audit-readiness.md`,
+`24-sensitive-data-operating-model.md`, and `25-cnj-sinapses-readiness.md`
+into a prioritized roadmap that precedes the next heavier agent, tool,
+and connector implementation phases.
+
+This is target architecture and sequencing. It does not implement issues,
+does not create GitHub issues in this PR, and does not assert any
+implementation timeline.
+
+## Why Regulatory Core precedes heavier agent, tool, and connector phases
+
+- Without native registries, control catalog, classification, and
+  evidence schemas, future agent and tool work cannot record defensible
+  evidence.
+- Without sensitive-data, judicial-secrecy, and privilege classifiers,
+  future connectors risk ingesting or leaking protected data without
+  governance.
+- Without the regulatory source registry and change-monitor model, mapped
+  controls drift silently and audit-readiness erodes.
+- Without the evidence bundle and TSA integration, judiciary, OAB, and
+  audit deliverables remain undifferentiated.
+- Connector enrichment is most valuable on top of a stable native core;
+  building connectors before the core multiplies normalization work.
+
+## Roadmap principles
+
+- BR-first regulatory posture remains the anchor.
+- Native completeness comes before connector enrichment.
+- No item is marked done without code, schema, evidence, and tests cited
+  in framework mapping docs.
+- Items move mapping status from `REQUIRED_NATIVE_CAPABILITY` toward
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` and then toward `COVERED` only when
+  concrete evidence exists.
+- Items that depend on external services (RFC 3161, ICP-Brasil) integrate
+  the dependency rather than reimplement it.
+
+## Priority model
+
+- P0 — Native Regulatory Core Foundations. Build the controls, registries,
+  classifiers, and source-monitor groundwork that all later items depend
+  on.
+- P1 — Legal, Sensitive, and Evidence Workflows. Build the workflows and
+  exports that make the core operational for regulated customers.
+- P2 — Connector Enrichment. Integrate external systems as enrichment
+  without making them prerequisites.
+- P3 — Advanced AI Quality and Runtime. Build bias, fairness, drift,
+  performance, runtime enforcement, and red-team evidence records, plus
+  international expansion overlays.
+
+## Dependency model
+
+- P1 items generally depend on P0 registries, control catalog,
+  classifiers, and source register.
+- P2 items depend on P0 registries and the unified evidence layer; they
+  enrich existing native controls.
+- P3 items depend on P0 and P1 foundations and on connector evidence
+  flow.
+- Cross-cutting evidence requirements (audit chain, tenant isolation,
+  envelope encryption) are already `IMPLEMENTED_FOUNDATIONAL_CONTROL` and
+  do not block items.
+
+## PR sequencing
+
+- Docs-only PRs continue to refine architecture and mappings.
+- Implementation PRs follow the priority order with one P0 item per PR
+  where feasible.
+- Each implementation PR must update the relevant framework mapping doc
+  and the control state in `20-target-control-catalog.md`.
+- Implementation PRs do not create new regulatory mapping claims without
+  matching evidence.
+
+## P0 — Native Regulatory Core Foundations
+
+### Regulatory Source Registry
+
+- Why it matters: every downstream control depends on an authoritative
+  source registry with verification status and versioning.
+- Native vs integration: native; optional vendor enrichment.
+- Dependencies: extends `15-source-register.md`.
+- Evidence produced: source records, version records, change events,
+  review tasks.
+- Frameworks served: all listed frameworks.
+- Done when: schema, routes, evidence, and tests exist and `15-source-register.md` cites them.
+- Mapping update triggered: all framework mappings that depend on the
+  source.
+- Tests expected: unit tests for version creation and verification status,
+  integration tests for change-event emission.
+
+### Unified Control Catalog
+
+- Why it matters: future PRs must reference a single catalog rather than
+  ad hoc mapping per framework.
+- Native vs integration: native.
+- Dependencies: `20-target-control-catalog.md` as the contract.
+- Evidence produced: control records, mapping bindings, state-transition
+  events.
+- Frameworks served: all listed frameworks.
+- Done when: schema, routes, evidence, and tests exist and framework
+  mapping docs cite control identifiers.
+- Mapping update triggered: all framework mappings.
+- Tests expected: unit tests for control records, integration tests for
+  state transitions.
+
+### AI System Registry
+
+- Why it matters: regulators expect a documented AI inventory.
+- Native vs integration: native; optional CMDB enrichment.
+- Dependencies: tenant isolation primitives.
+- Evidence produced: registry records, lifecycle events, ownership
+  history.
+- Frameworks served: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI
+  Act, GDPR.
+- Done when: schema, routes, audit events, and tests exist and framework
+  mappings cite the registry.
+- Mapping update triggered: control 2 in `20-target-control-catalog.md`.
+- Tests expected: unit tests for registry records, integration tests for
+  lifecycle events.
+
+### Model Registry
+
+- Why it matters: model identity and version provenance are required for
+  any regulator-shaped evidence.
+- Native vs integration: native; optional ModelOps and provider
+  enrichment.
+- Dependencies: AI System Registry and Provider Registry.
+- Evidence produced: model lifecycle events, approval evidence.
+- Frameworks served: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI
+  Act.
+- Done when: schema, routes, audit events, and tests exist and framework
+  mappings cite the registry.
+- Mapping update triggered: control 3 in `20-target-control-catalog.md`.
+- Tests expected: unit tests for model records, integration tests for
+  approvals.
+
+### Agent Registry
+
+- Why it matters: agents must be inventoried with capability bindings to
+  the hard-deny floor.
+- Native vs integration: native.
+- Dependencies: existing capability-assertion primitive.
+- Evidence produced: agent identity records, capability bindings, change
+  events.
+- Frameworks served: CNJ 615, ISO 42001, NIST AI RMF, EU AI Act.
+- Done when: schema, routes, audit events, and tests exist.
+- Mapping update triggered: control 2 and 3 in `20-target-control-catalog.md`.
+- Tests expected: unit tests for agent records, integration tests for
+  capability binding changes.
+
+### Use-case Registry
+
+- Why it matters: regulators require documented intended purpose and
+  ownership.
+- Native vs integration: native; optional GRC enrichment.
+- Dependencies: AI System Registry and Risk Engine.
+- Evidence produced: use-case records, periodic-review events.
+- Frameworks served: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI
+  Act.
+- Done when: schema, routes, evidence, and tests exist.
+- Mapping update triggered: control 4 in `20-target-control-catalog.md`.
+- Tests expected: unit and integration tests for use-case lifecycle and
+  review.
+
+### Provider Registry
+
+- Why it matters: provider posture must be tracked and tied to
+  shared-responsibility decisions.
+- Native vs integration: native; optional vendor-side enrichment.
+- Dependencies: provider credential storage with envelope encryption.
+- Evidence produced: provider records, credential lifecycle events,
+  posture attestations.
+- Frameworks served: LGPD, ANPD, Marco Civil, CNJ 615, sector overlays.
+- Done when: schema, routes, evidence, and tests exist.
+- Mapping update triggered: control 15 in `20-target-control-catalog.md`.
+- Tests expected: unit and integration tests for posture records.
+
+### Risk Classification Engine
+
+- Why it matters: high-risk, prohibited-use, and Workroom triggers all
+  depend on classification.
+- Native vs integration: native; optional external scoring enrichment.
+- Dependencies: AI System, Model, Use-case registries.
+- Evidence produced: classification records, rationales, re-classification
+  events.
+- Frameworks served: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI
+  Act.
+- Done when: engine, schema, routes, evidence, and tests exist.
+- Mapping update triggered: control 5 in `20-target-control-catalog.md`.
+- Tests expected: rule and scoring tests, integration tests for
+  re-classification triggers.
+
+### High-risk workflow
+
+- Why it matters: high-risk classification must produce approval and
+  evidence records.
+- Native vs integration: native; ITSM enrichment.
+- Dependencies: Risk Engine and Workroom approval loop.
+- Evidence produced: high-risk approval records, supporting evidence,
+  audit events.
+- Frameworks served: ANPD, CNJ 615, ISO 42001, EU AI Act.
+- Done when: workflow, schema, evidence, and tests exist.
+- Mapping update triggered: control 6 in `20-target-control-catalog.md`.
+- Tests expected: workflow tests for approval, SoD, expiry, and one-time
+  consumption.
+
+### Prohibited-use workflow
+
+- Why it matters: prohibited-use registry must drive hard-deny outcomes
+  with full audit.
+- Native vs integration: native; optional gateway and AI-security
+  enrichment.
+- Dependencies: existing hard-deny floor and capability assertion.
+- Evidence produced: prohibited-use registry, hard-deny events.
+- Frameworks served: LGPD, ANPD, CNJ 615, EU AI Act.
+- Done when: registry, workflow, evidence, and tests exist.
+- Mapping update triggered: control 6 in `20-target-control-catalog.md`.
+- Tests expected: registry tests, hard-deny integration tests.
+
+### CNJ and Sinapses data model
+
+- Why it matters: judiciary deployment requires schema fields that match
+  CNJ atos and Sinapses expectations as defined in
+  `25-cnj-sinapses-readiness.md`.
+- Native vs integration: native.
+- Dependencies: AI System, Model, Use-case, Agent registries; Risk
+  Engine; sensitive-data classifiers.
+- Evidence produced: judiciary AI records, risk classifications,
+  human-supervision evidence.
+- Frameworks served: CNJ 615.
+- Done when: schema, evidence, and tests exist and are cited in
+  `05-cnj-judiciary-mapping.md` and `25-cnj-sinapses-readiness.md`.
+- Mapping update triggered: judiciary controls in
+  `20-target-control-catalog.md`.
+- Tests expected: schema tests and integration tests for judiciary
+  workflow.
+
+### Native sensitive-data expanded taxonomy
+
+- Why it matters: the current baseline detects cpf, cnpj, email, and
+  phone_br only; the target taxonomy in
+  `24-sensitive-data-operating-model.md` is much broader.
+- Native vs integration: native; optional DLP enrichment.
+- Dependencies: detector framework.
+- Evidence produced: classification events, redaction events.
+- Frameworks served: LGPD, ANPD, CNJ 615, GDPR, sector overlays.
+- Done when: detectors per category exist with tests and citation in
+  `24-sensitive-data-operating-model.md`.
+- Mapping update triggered: control 8 in `20-target-control-catalog.md`.
+- Tests expected: per-category detector tests.
+
+### Segredo de justiça classifier
+
+- Why it matters: the judiciary mapping is incomplete without segredo de
+  justiça handling.
+- Native vs integration: native; optional court-system connector.
+- Dependencies: sensitive-data framework and access control posture.
+- Evidence produced: classification events, restricted-access decisions.
+- Frameworks served: CNJ 615, Marco Civil, OAB sector.
+- Done when: classifier, access posture, and tests exist.
+- Mapping update triggered: control 9 in `20-target-control-catalog.md`.
+- Tests expected: classifier tests and access posture tests.
+
+### Attorney-client privilege classifier
+
+- Why it matters: privilege protection is non-optional for legal-sector
+  customers.
+- Native vs integration: native; optional legal-tech connector.
+- Dependencies: sensitive-data framework and access control posture.
+- Evidence produced: classification events, handling decisions.
+- Frameworks served: OAB sector, LGPD.
+- Done when: classifier, handling rules, and tests exist.
+- Mapping update triggered: control 9 in `20-target-control-catalog.md`.
+- Tests expected: classifier tests and handling tests.
+
+## P1 — Legal, Sensitive, and Evidence Workflows
+
+### DSR workflow
+
+- Why it matters: LGPD and GDPR require operational DSR handling with
+  evidence.
+- Native vs integration: native; CRM, identity, and ITSM enrichment.
+- Dependencies: AI System and Use-case registries; sensitive-data
+  classifiers.
+- Evidence produced: DSR request records, decisions, exports.
+- Frameworks served: LGPD, ANPD, GDPR.
+- Done when: workflow, schema, evidence, and tests exist.
+- Mapping update triggered: control 10 in `20-target-control-catalog.md`.
+- Tests expected: workflow tests and evidence tests.
+
+### RIPD, DPIA, AIA workflow
+
+- Why it matters: impact assessments are key to ANPD and EU AI Act
+  posture.
+- Native vs integration: native; GRC and AI-governance enrichment.
+- Dependencies: AI System, Use-case registries, Risk Engine.
+- Evidence produced: assessment records, version history, approval
+  events.
+- Frameworks served: LGPD, ANPD, GDPR, EU AI Act, CNJ 615.
+- Done when: workflow, schema, evidence, and tests exist.
+- Mapping update triggered: control 11 in `20-target-control-catalog.md`.
+- Tests expected: workflow tests and versioning tests.
+
+### Incident and adverse-event workflow
+
+- Why it matters: regulators expect documented incidents and timely
+  notifications.
+- Native vs integration: native; SIEM and ITSM enrichment.
+- Dependencies: AI System and Provider registries.
+- Evidence produced: incident records, timelines, notifications.
+- Frameworks served: LGPD, ANPD, CNJ 615, sector overlays.
+- Done when: workflow, schema, evidence, and tests exist.
+- Mapping update triggered: control 12 in `20-target-control-catalog.md`.
+- Tests expected: workflow tests and notification tests.
+
+### Retention engine
+
+- Why it matters: retention bound to sensitive categories supports LGPD
+  and sector overlays.
+- Native vs integration: native; storage and DLP enrichment.
+- Dependencies: sensitive-data framework, control catalog.
+- Evidence produced: retention decisions, retention events.
+- Frameworks served: LGPD, ANPD, Marco Civil, sector overlays.
+- Done when: engine, schema, evidence, and tests exist.
+- Mapping update triggered: control 14 in `20-target-control-catalog.md`.
+- Tests expected: engine tests and decision tests.
+
+### Legal hold engine
+
+- Why it matters: legal hold must override retention with audit.
+- Native vs integration: native; ITSM and storage enrichment.
+- Dependencies: Retention engine and audit chain.
+- Evidence produced: hold artifacts, override events.
+- Frameworks served: Marco Civil, OAB sector, sector overlays.
+- Done when: engine, schema, evidence, and tests exist.
+- Mapping update triggered: control 14 in `20-target-control-catalog.md`.
+- Tests expected: hold lifecycle and override tests.
+
+### Evidence bundle and court export
+
+- Why it matters: native bundle generation differentiates GovAI for
+  judiciary and legal customers.
+- Native vs integration: native; RFC 3161 and ICP-Brasil external
+  services.
+- Dependencies: audit chain, control catalog, retention, legal hold.
+- Evidence produced: evidence bundles, integrity proofs, exports.
+- Frameworks served: Marco Civil, CNJ 615, OAB sector.
+- Done when: bundle and export generation, schema, evidence, and tests
+  exist.
+- Mapping update triggered: control 13 in `20-target-control-catalog.md`.
+- Tests expected: bundle generation tests and integrity tests.
+
+### RFC 3161 TSA integration
+
+- Why it matters: timestamp authority strengthens evidence and supports
+  court-bound bundles.
+- Native vs integration: external service integrated by GovAI.
+- Dependencies: Evidence bundle.
+- Evidence produced: timestamp tokens linked to bundles.
+- Frameworks served: Marco Civil, CNJ 615.
+- Done when: integration, schema, evidence, and tests exist.
+- Mapping update triggered: control 13 in `20-target-control-catalog.md`.
+- Tests expected: integration tests and token validation tests.
+
+### ICP-Brasil signature readiness
+
+- Why it matters: ICP-Brasil signatures support BR-specific evidence
+  acceptance contexts.
+- Native vs integration: external service integrated by GovAI.
+- Dependencies: Evidence bundle and provider connectivity.
+- Evidence produced: signature artifacts and chain-of-trust evidence.
+- Frameworks served: Marco Civil, CNJ 615.
+- Done when: integration, schema, evidence, and tests exist.
+- Mapping update triggered: control 13 in `20-target-control-catalog.md`.
+- Tests expected: integration tests and trust chain tests.
+
+### Native reports and dashboards
+
+- Why it matters: customers, auditors, and reviewers need consumable
+  views over the control catalog.
+- Native vs integration: native; external BI enrichment optional.
+- Dependencies: Unified Control Catalog and control evidence.
+- Evidence produced: report snapshots and dashboard configurations.
+- Frameworks served: all listed frameworks.
+- Done when: schema, routes, and tests exist.
+- Mapping update triggered: control 18 in `20-target-control-catalog.md`.
+- Tests expected: snapshot and rendering tests.
+
+### Certification-readiness dossier
+
+- Why it matters: external auditors and certification bodies expect a
+  structured dossier.
+- Native vs integration: native.
+- Dependencies: Native reports and dashboards, control catalog, evidence
+  bundle.
+- Evidence produced: readiness dossiers and supporting evidence.
+- Frameworks served: all listed frameworks.
+- Done when: dossier generator, schema, and tests exist.
+- Mapping update triggered: control 18 in `20-target-control-catalog.md`.
+- Tests expected: dossier generation and content tests.
+
+## P2 — Connector Enrichment
+
+### Microsoft connector family
+
+- Why it matters: many enterprise customers operate on M365 and Azure.
+- Native vs integration: connector enrichment, not native control.
+- Dependencies: connector framework and provenance schema.
+- Evidence produced: ingested signals normalized into the unified
+  evidence layer.
+- Frameworks served: LGPD, ANPD, ISO 42001.
+- Done when: connectors with provenance and tests exist and graceful
+  degradation is verified.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion and graceful-degradation tests.
+
+### AWS connector family
+
+- Why it matters: hyperscaler audit and guardrail signals add depth in
+  AWS-resident estates.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework.
+- Evidence produced: ingested signals normalized into the unified
+  evidence layer.
+- Frameworks served: LGPD, ANPD, ISO 42001, NIST AI RMF.
+- Done when: connectors with provenance and tests exist.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion and graceful-degradation tests.
+
+### Google connector family
+
+- Why it matters: Google-resident workloads gain coverage via Vertex,
+  Gemini Enterprise, Cloud Logging, and Model Armor signals.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework.
+- Evidence produced: ingested signals normalized into the unified
+  evidence layer.
+- Frameworks served: LGPD, ANPD, ISO 42001.
+- Done when: connectors with provenance and tests exist.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion and graceful-degradation tests.
+
+### ServiceNow connector
+
+- Why it matters: ServiceNow is a common ITSM and GRC system of record.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework.
+- Evidence produced: tickets, attestations, CMDB records.
+- Frameworks served: ISO 42001, NIST AI RMF.
+- Done when: connector with provenance and tests exists.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion tests.
+
+### GitHub, GitLab, Jira, Slack, Teams connectors
+
+- Why it matters: workflow and collaboration evidence captures real human
+  oversight signals.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework.
+- Evidence produced: workflow and conversation evidence.
+- Frameworks served: cross-framework workflow evidence.
+- Done when: connectors with provenance and tests exist.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion tests.
+
+### OneTrust, IBM, Vanta, Drata optional connectors
+
+- Why it matters: customers that already run these systems can route
+  evidence into GovAI's unified layer.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework.
+- Evidence produced: attestations and assessment artifacts.
+- Frameworks served: ISO 42001, NIST AI RMF.
+- Done when: connectors with provenance and tests exist.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion tests.
+
+### BigID, Securiti, Collibra optional connectors
+
+- Why it matters: external sensitive-data discovery may complement native
+  detectors.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework and sensitive-data normalization.
+- Evidence produced: external classification signals.
+- Frameworks served: LGPD, ANPD, GDPR.
+- Done when: connectors with provenance and tests exist.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion tests.
+
+### Fiddler, Arize, WhyLabs, Arthur optional connectors
+
+- Why it matters: external model-monitoring drift and quality signals
+  enrich AI quality controls.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework.
+- Evidence produced: drift and quality signals.
+- Frameworks served: NIST AI RMF, EU AI Act.
+- Done when: connectors with provenance and tests exist.
+- Mapping update triggered: control 16 and 20 in `20-target-control-catalog.md`.
+- Tests expected: ingestion tests.
+
+### Lakera, Protect AI, Robust Intelligence optional connectors
+
+- Why it matters: AI-security signal ingestion complements GovAI runtime
+  posture.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework.
+- Evidence produced: detection events.
+- Frameworks served: NIST AI RMF, EU AI Act.
+- Done when: connectors with provenance and tests exist.
+- Mapping update triggered: control 16 in `20-target-control-catalog.md`.
+- Tests expected: ingestion tests.
+
+## P3 — Advanced AI Quality and Runtime
+
+### Bias and fairness evaluation
+
+- Why it matters: bias evaluation is expected by NIST AI RMF and the EU
+  AI Act.
+- Native vs integration: native; external enrichment from monitoring
+  vendors.
+- Dependencies: model registry, evaluation framework.
+- Evidence produced: evaluation records and decisions.
+- Frameworks served: NIST AI RMF, EU AI Act.
+- Done when: evaluation schema, records, and tests exist.
+- Mapping update triggered: control 20 in `20-target-control-catalog.md`.
+- Tests expected: evaluation tests.
+
+### Drift and performance monitoring
+
+- Why it matters: drift detection supports periodic re-review of
+  high-risk systems.
+- Native vs integration: native; external enrichment from monitoring
+  vendors.
+- Dependencies: model registry and evaluation framework.
+- Evidence produced: drift records and performance reports.
+- Frameworks served: ISO 42001, NIST AI RMF, EU AI Act.
+- Done when: drift records, schema, and tests exist.
+- Mapping update triggered: control 20 in `20-target-control-catalog.md`.
+- Tests expected: drift detection tests.
+
+### Runtime enforcement gateway
+
+- Why it matters: inline enforcement layers complement the hard-deny
+  floor for tool, prompt, and output policies.
+- Native vs integration: native enforcement, optional connector to
+  gateway products.
+- Dependencies: policy pack engine and capability assertion.
+- Evidence produced: enforcement events.
+- Frameworks served: ISO 42001, NIST AI RMF, EU AI Act.
+- Done when: enforcement engine, schema, and tests exist.
+- Mapping update triggered: control 6 and 19 in `20-target-control-catalog.md`.
+- Tests expected: enforcement tests.
+
+### AI gateway policy enforcement
+
+- Why it matters: where customers already run gateway products,
+  GovAI must integrate their policy signal.
+- Native vs integration: connector enrichment.
+- Dependencies: connector framework and policy engine.
+- Evidence produced: integrated enforcement events.
+- Frameworks served: ISO 42001, NIST AI RMF, EU AI Act.
+- Done when: integration and tests exist.
+- Mapping update triggered: control 16 and 19 in `20-target-control-catalog.md`.
+- Tests expected: integration tests.
+
+### Advanced risk scoring
+
+- Why it matters: expanded risk scoring builds on the P0 risk engine and
+  improves prioritization across customer profiles.
+- Native vs integration: native; optional external scoring.
+- Dependencies: P0 Risk Engine and AI System registry.
+- Evidence produced: advanced risk records and rationales.
+- Frameworks served: ISO 42001, NIST AI RMF, EU AI Act, CNJ 615.
+- Done when: advanced scoring schema and tests exist.
+- Mapping update triggered: control 5 in `20-target-control-catalog.md`.
+- Tests expected: scoring tests.
+
+### Red-team evidence records
+
+- Why it matters: red-team activity should produce defensible, structured
+  evidence linked to models and use cases.
+- Native vs integration: native; external red-team and AI-security
+  signal enrichment.
+- Dependencies: model registry and evaluation framework.
+- Evidence produced: red-team session records, findings, evidence.
+- Frameworks served: NIST AI RMF, EU AI Act.
+- Done when: schema, records, and tests exist.
+- Mapping update triggered: control 20 in `20-target-control-catalog.md`.
+- Tests expected: red-team records tests.
+
+### International expansion overlays
+
+- Why it matters: customers that operate across jurisdictions need GDPR
+  and EU AI Act overlays before further expansion.
+- Native vs integration: native overlays; optional regulatory-intelligence
+  connector enrichment.
+- Dependencies: P0 source registry and control catalog.
+- Evidence produced: overlay records and mapped obligations.
+- Frameworks served: GDPR, EU AI Act, future jurisdictions.
+- Done when: overlay schema, mapping references, and tests exist.
+- Mapping update triggered: control 21 in `20-target-control-catalog.md`.
+- Tests expected: overlay tests.
+
+## Proposed future issues
+
+The following are proposed future implementation issues listed as text
+only. No issues are created in this PR.
+
+- Native AI System Registry.
+- Native Model Registry.
+- Native Agent Registry.
+- Native Use-case Registry.
+- Native Provider Registry.
+- Risk Classification Engine.
+- High-risk workflow.
+- Prohibited-use workflow.
+- CNJ and Sinapses data model.
+- Sensitive-data taxonomy expansion.
+- Segredo de justiça classifier.
+- Attorney-client privilege classifier.
+- DSR workflow.
+- RIPD, DPIA, AIA workflow.
+- Incident and adverse-event workflow.
+- Retention engine.
+- Legal hold engine.
+- Evidence bundle and court export.
+- RFC 3161 integration.
+- ICP-Brasil integration.
+- Reports and dashboards.
+- Certification-readiness dossier.
+- Microsoft connector family.
+- AWS connector family.
+- Google connector family.
+- ServiceNow connector.
+- GitHub, GitLab, Jira, Slack, Teams connectors.
+- OneTrust, IBM, Vanta, Drata optional connectors.
+- BigID, Securiti, Collibra optional connectors.
+- Fiddler, Arize, WhyLabs, Arthur optional connectors.
+- Lakera, Protect AI, Robust Intelligence optional connectors.
+- Bias and fairness evaluation.
+- Drift and performance monitoring.
+- Runtime enforcement gateway.
+- AI gateway policy enforcement.
+- Advanced risk scoring.
+- Red-team evidence records.
+- International expansion overlays.
+
+## Acceptance criteria
+
+- Each item must move the corresponding control in
+  `20-target-control-catalog.md` from `REQUIRED_NATIVE_CAPABILITY` to
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` upon completion and only then to
+  `COVERED` in mapping docs with concrete evidence.
+- Each implementation PR must cite code, schema, routes, audit events,
+  and tests.
+- Each implementation PR must update relevant mapping docs.
+
+## Relationship to issues
+
+Relates to #59.
+
+Relates to #33.
+
+#59 remains open for implementation follow-up.
+
+Umbrella tracker #33 remains active.
