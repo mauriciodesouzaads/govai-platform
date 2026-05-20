@@ -124,3 +124,25 @@ Tracked under #59.
 Relates to #33.
 
 Umbrella tracker #33 remains active.
+
+## PR-C2 target architecture
+
+The PR-C2 docs-only set adds target-architecture and readiness layers on
+top of the BR-core and judiciary mappings, ahead of heavier
+implementation phases:
+
+- `18-competitive-benchmark.md` — market benchmark and GovAI positioning.
+- `19-build-vs-integrate-strategy.md` — native full-core and connector
+  enrichment doctrine.
+- `20-target-control-catalog.md` — target control catalog and capability
+  taxonomy.
+- `21-regulatory-intelligence-operating-model.md` — regulatory source
+  monitoring and update operating model.
+- `22-certification-and-audit-readiness.md` — readiness architecture
+  without certification claims.
+- `23-regulatory-core-roadmap.md` — implementation roadmap before
+  heavier agent, tool, and connector phases.
+- `24-sensitive-data-operating-model.md` — complete native sensitive-data
+  operating model.
+- `25-cnj-sinapses-readiness.md` — CNJ and Sinapses readiness target
+  architecture.
