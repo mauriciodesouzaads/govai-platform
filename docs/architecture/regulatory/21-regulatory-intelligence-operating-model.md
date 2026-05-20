@@ -52,7 +52,7 @@ The regulatory intelligence layer has the following components:
   versions and emits change events when text, status, or applicability
   diverges. Change events are persisted as evidence.
 - Regulatory diff — structured diff records that classify the type of
-  change (clarification, expansion, restriction, recission, deferral,
+  change (clarification, expansion, restriction, rescission, deferral,
   consolidation, or unknown) and link to affected controls.
 - Relevance scoring — engine that weighs change-event impact against the
   customer's profile, active controls, and jurisdiction.
@@ -101,7 +101,7 @@ The regulatory intelligence layer has the following components:
 ## Regulatory diff schema
 
 - Source identifier and version range.
-- Change type: clarification, expansion, restriction, recission,
+- Change type: clarification, expansion, restriction, rescission,
   deferral, consolidation, unknown.
 - Affected controls: list of control identifiers in `20-target-control-catalog.md`.
 - Affected mapping docs: list of paths.
