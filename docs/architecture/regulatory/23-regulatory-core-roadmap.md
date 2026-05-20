@@ -653,12 +653,28 @@ only. No issues are created in this PR.
 
 ## Acceptance criteria
 
-- Each item must move the corresponding control in
-  `20-target-control-catalog.md` from `REQUIRED_NATIVE_CAPABILITY` to
-  `IMPLEMENTED_FOUNDATIONAL_CONTROL` upon completion and only then to
-  `COVERED` in mapping docs with concrete evidence.
+- Each implementation PR must update the corresponding control state
+  according to its capability type:
+  - `REQUIRED_NATIVE_CAPABILITY` and `NATIVE_ENHANCEMENT_REQUIRED` items
+    may move to `IMPLEMENTED_FOUNDATIONAL_CONTROL` only when GovAI ships
+    concrete native implementation evidence.
+  - `CONNECTOR_ENRICHMENT` items remain connector-enrichment capabilities
+    and should move to implemented connector evidence only after
+    connector code, ingestion evidence, tests, and mapping updates exist.
+  - `EXTERNAL_SERVICE_REQUIRED` items remain externally dependent and
+    may move only to readiness or integration-supported evidence, not to
+    native foundational control.
+  - `CUSTOMER_PROCESS_REQUIRED` and `PROFESSIONAL_REVIEW_REQUIRED` items
+    may become supported workflows or evidence packages, but GovAI must
+    not present the external decision, customer process, or professional
+    judgment as a GovAI-controlled implementation.
+  - `SOURCE_VERIFICATION_REQUIRED` items may be reclassified only after
+    primary-source verification.
+- Mapping docs may move to `COVERED` only when concrete code, schema,
+  route, audit event, evidence artifact, and test evidence support the
+  claim.
 - Each implementation PR must cite code, schema, routes, audit events,
-  and tests.
+  and tests where applicable.
 - Each implementation PR must update relevant mapping docs.
 
 ## Relationship to issues
