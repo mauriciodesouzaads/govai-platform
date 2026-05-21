@@ -146,3 +146,19 @@ implementation phases:
   operating model.
 - `25-cnj-sinapses-readiness.md` — CNJ and Sinapses readiness target
   architecture.
+
+## PR-R1 implementation
+
+PR-R1 is the first implementation slice on top of the PR-C2 target
+architecture. It lands the Regulatory Source Registry and the Unified Control
+Catalog as `IMPLEMENTED_FOUNDATIONAL_CONTROL` foundational primitives, with
+migration, validation, service, routes, tenant isolation (RLS), audit events,
+and integration tests. Implementation evidence is recorded in
+`23-regulatory-core-roadmap.md` (P0) and `20-target-control-catalog.md`.
+
+This is a foundational slice, not full regulatory automation. Automated source
+monitoring, the regulatory diff engine, connectors, CNJ/Sinapses readiness,
+and the Sensitive Data OS remain future work; certification and legal
+interpretation remain external. GovAI does not guarantee compliance, does not
+provide legal advice, and does not guarantee judicial validity or evidence
+admissibility.

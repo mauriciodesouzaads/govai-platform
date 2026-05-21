@@ -282,6 +282,23 @@ generated, and the failure mode if monitoring breaks.
 - `23-regulatory-core-roadmap.md` orders the implementation of the
   monitor, diff, review, and reporting pieces.
 
+## PR-R1 implementation status
+
+PR-R1 implements the persistence, validation, tenant-safe access, and audit
+layer that this operating model sits on top of: the Regulatory Source
+Registry and the Unified Control Catalog are now
+`IMPLEMENTED_FOUNDATIONAL_CONTROL` (see
+`23-regulatory-core-roadmap.md` and `20-target-control-catalog.md` for the
+migration, service, route, and test evidence, and the emitted
+`regulatory_source.*` / `regulatory_control.*` audit events).
+
+This is a foundational storage and access slice only. The active parts of
+this operating model remain future work: automated source monitoring, the
+regulatory diff engine, connectors, CNJ/Sinapses readiness, and the
+Sensitive Data OS. Certification and legal interpretation remain external.
+GovAI does not guarantee compliance, does not provide legal advice, and does
+not guarantee judicial validity or evidence admissibility.
+
 ## Relationship to issues
 
 Relates to #59.

@@ -395,6 +395,54 @@ under which the control turns `COVERED`.
 - Turns COVERED when: overlay schema, mapping references, and tests
   exist and are cited.
 
+## PR-R1 implementation evidence (foundational slice)
+
+PR-R1 lands the first concrete repository evidence behind the registry
+control domains above (notably domain 2, AI inventory and registries, and
+domain 17, regulatory source monitoring). It is a PR-R1 foundational
+implementation of the registry and catalog primitives, not full regulatory
+automation, and on its own does not raise any framework requirement to
+`COVERED`.
+
+Capability status:
+
+- Regulatory Source Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL
+- Unified Control Catalog: IMPLEMENTED_FOUNDATIONAL_CONTROL
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0016_regulatory_source_control_catalog.sql`
+- Validation: `apps/api/src/regulatory/validation.ts`
+- Service: `apps/api/src/regulatory/service.ts`
+- Routes: `apps/api/src/routes/regulatory.ts`
+- Server wiring: `apps/api/src/server.ts`
+- Tests: `tests/integration/regulatory-routes.test.ts`,
+  `tests/integration/regulatory-rls.test.ts`,
+  `tests/integration/regulatory-catalog.test.ts`
+
+Audit events emitted:
+
+- `regulatory_source.created`
+- `regulatory_source.updated`
+- `regulatory_source.version_created`
+- `regulatory_source.relationship_created`
+- `regulatory_control.created`
+- `regulatory_control.updated`
+- `regulatory_control.source_link_created`
+- `regulatory_control.framework_mapping_created`
+
+Limitations (remain future work or external):
+
+- Automated source monitoring remains future work.
+- Regulatory diff engine remains future work.
+- Connectors remain future work.
+- CNJ/Sinapses readiness remains future work.
+- Sensitive Data OS remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
 ## Cross-domain decisions
 
 - No domain may treat a `CONNECTOR_ENRICHMENT` capability as a substitute

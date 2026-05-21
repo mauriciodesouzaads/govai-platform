@@ -416,7 +416,7 @@ export async function seedAgentProfile(
 
 export async function inject(
   stack: Stack,
-  method: 'GET' | 'POST' | 'DELETE',
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   url: string,
   apiKey: string | undefined,
   payload?: unknown,

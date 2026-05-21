@@ -21,6 +21,7 @@ import { workroomsRoute } from './routes/workrooms.js';
 import { workroomTranscriptRoute } from './routes/workroom-transcript.js';
 import { workroomRunsRoute } from './routes/workroom-runs.js';
 import { workroomApprovalsRoute } from './routes/workroom-approvals.js';
+import { regulatoryRoute } from './routes/regulatory.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -90,6 +91,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(workroomTranscriptRoute);
   await app.register(workroomRunsRoute);
   await app.register(workroomApprovalsRoute);
+  await app.register(regulatoryRoute);
 
   app.addHook('onClose', async () => {
     if (!overrides.pool) {
