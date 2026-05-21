@@ -114,7 +114,9 @@ under which the control turns `COVERED`.
 - Evidence artifacts: registry records, change events, ownership history.
 - Frameworks: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI Act,
   GDPR.
-- Current state: REQUIRED_NATIVE_CAPABILITY.
+- Current state: the AI System Registry is `IMPLEMENTED_FOUNDATIONAL_CONTROL`
+  (PR-R2; see the PR-R2 implementation evidence below). The model, agent,
+  use-case, and provider registries remain `REQUIRED_NATIVE_CAPABILITY`.
 - Turns COVERED when: schemas, routes, audit events, and tests for each
   registry exist and are cited in framework mappings.
 
@@ -438,6 +440,44 @@ Limitations (remain future work or external):
 - Connectors remain future work.
 - CNJ/Sinapses readiness remains future work.
 - Sensitive Data OS remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+## PR-R2 implementation evidence (foundational slice)
+
+PR-R2 lands the first concrete repository evidence behind domain 2 (AI
+inventory and registries): a tenant-isolated AI System Registry. It is a PR-R2
+foundational implementation of the AI-system inventory primitive, not the full
+registry program, and on its own does not raise any framework requirement to
+`COVERED`.
+
+Capability status:
+
+- AI System Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0017_regulatory_ai_system_registry.sql`
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+- Tests: `tests/integration/regulatory-ai-systems.test.ts`
+
+Audit events emitted:
+
+- `regulatory_ai_system.created`
+- `regulatory_ai_system.updated`
+- `regulatory_ai_system.lifecycle_changed`
+
+Limitations (remain future work or external):
+
+- Model registry remains future work.
+- Agent registry remains future work.
+- Use-case registry remains future work.
+- Provider registry remains future work.
+- Risk-classification engine remains future work.
+- CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.
 - GovAI does not provide legal advice.

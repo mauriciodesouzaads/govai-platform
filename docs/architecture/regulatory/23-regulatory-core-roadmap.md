@@ -122,6 +122,8 @@ implementation timeline.
 - Mapping update triggered: control 2 in `20-target-control-catalog.md`.
 - Tests expected: unit tests for registry records, integration tests for
   lifecycle events.
+- Status: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R2). See the PR-R2 evidence
+  below. Model, agent, use-case, and provider registries remain future work.
 
 ### Model Registry
 
@@ -319,6 +321,46 @@ Limitations (remain future work or external):
 - Connectors remain future work.
 - CNJ/Sinapses readiness remains future work.
 - Sensitive Data OS remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-R2 implementation evidence (foundational slice)
+
+PR-R2 delivers the next P0 foundation after the source registry and control
+catalog: a tenant-isolated AI System Registry. This is a PR-R2 foundational
+implementation slice only — not the full AI inventory program.
+
+Status:
+
+- AI System Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0017_regulatory_ai_system_registry.sql`
+  (`govai.regulatory_ai_systems`; tenant-only, RLS ENABLE + FORCE, optional
+  visibility-checked references to the source registry / control catalog).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+  (`POST/GET/GET:id/PATCH /v1/regulatory/ai-systems`; no delete).
+- Tests: `tests/integration/regulatory-ai-systems.test.ts`.
+
+Audit events emitted:
+
+- `regulatory_ai_system.created`
+- `regulatory_ai_system.updated`
+- `regulatory_ai_system.lifecycle_changed`
+
+Limitations (remain future work or external):
+
+- Model registry remains future work.
+- Agent registry remains future work.
+- Use-case registry remains future work.
+- Provider registry remains future work (an `external_provider_id` column is
+  reserved for forward compatibility only; no provider registry ships here).
+- Risk-classification engine remains future work.
+- CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.
 - GovAI does not provide legal advice.

@@ -162,3 +162,20 @@ and the Sensitive Data OS remain future work; certification and legal
 interpretation remain external. GovAI does not guarantee compliance, does not
 provide legal advice, and does not guarantee judicial validity or evidence
 admissibility.
+
+## PR-R2 implementation
+
+PR-R2 adds the next P0 Native Regulatory Core foundation after the source
+registry and control catalog: a tenant-isolated AI System Registry, landed as
+`IMPLEMENTED_FOUNDATIONAL_CONTROL` with migration, validation, service, routes,
+tenant isolation (RLS), audit events (`regulatory_ai_system.created` /
+`.updated` / `.lifecycle_changed`), and integration tests. Implementation
+evidence is recorded in `23-regulatory-core-roadmap.md` (P0) and
+`20-target-control-catalog.md` (control domain 2).
+
+This is a foundational slice only. The model registry, agent registry,
+use-case registry, provider registry, risk-classification engine, and
+CNJ/Sinapses readiness remain future work; certification and legal
+interpretation remain external. GovAI does not guarantee compliance, does not
+provide legal advice, and does not guarantee judicial validity or evidence
+admissibility.
