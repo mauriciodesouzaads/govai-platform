@@ -316,6 +316,93 @@ export const CreateFrameworkMappingBody = z.object({
 export type CreateFrameworkMappingInput = z.infer<typeof CreateFrameworkMappingBody>;
 
 // ---------------------------------------------------------------------------
+// AI System Registry (PR-R2)
+// ---------------------------------------------------------------------------
+
+export const SystemType = z.enum([
+  'INTERNAL_PRODUCT',
+  'INTERNAL_WORKFLOW',
+  'THIRD_PARTY_PRODUCT',
+  'THIRD_PARTY_API',
+  'AGENTIC_WORKFLOW',
+  'DECISION_SUPPORT',
+  'DOCUMENT_PROCESSING',
+  'MODEL_ENDPOINT',
+  'OTHER',
+]);
+
+export const LifecycleState = z.enum([
+  'PROPOSED',
+  'DESIGN',
+  'EVALUATION',
+  'PILOT',
+  'ACTIVE',
+  'SUSPENDED',
+  'RETIRED',
+]);
+
+export const DeploymentEnvironment = z.enum([
+  'DEVELOPMENT',
+  'STAGING',
+  'PRODUCTION',
+  'CUSTOMER_MANAGED',
+  'THIRD_PARTY_MANAGED',
+  'NOT_DEPLOYED',
+]);
+
+const OwnerField = z.string().min(1).max(200);
+const PurposeText = z.string().max(4000);
+
+export const CreateAiSystemBody = z.object({
+  system_key: KeyField,
+  name: z.string().min(1).max(500),
+  description: LongText.default(''),
+  system_type: SystemType,
+  lifecycle_state: LifecycleState,
+  business_owner: OwnerField.optional(),
+  technical_owner: OwnerField.optional(),
+  legal_owner: OwnerField.optional(),
+  dpo_owner: OwnerField.optional(),
+  intended_purpose: PurposeText.default(''),
+  primary_jurisdiction: z.string().min(1).max(64).default('BR'),
+  deployment_environment: DeploymentEnvironment,
+  external_provider_id: z.string().uuid().optional(),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  review_frequency: ReviewFrequency.default('AD_HOC'),
+  last_reviewed_at: z.string().datetime().optional(),
+  next_review_at: z.string().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateAiSystemInput = z.infer<typeof CreateAiSystemBody>;
+
+// PATCH: every field optional; at least one must be present. system_key and
+// org_id are immutable and intentionally absent.
+export const UpdateAiSystemBody = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    description: LongText.optional(),
+    system_type: SystemType.optional(),
+    lifecycle_state: LifecycleState.optional(),
+    business_owner: OwnerField.nullable().optional(),
+    technical_owner: OwnerField.nullable().optional(),
+    legal_owner: OwnerField.nullable().optional(),
+    dpo_owner: OwnerField.nullable().optional(),
+    intended_purpose: PurposeText.optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    deployment_environment: DeploymentEnvironment.optional(),
+    external_provider_id: z.string().uuid().nullable().optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    review_frequency: ReviewFrequency.optional(),
+    last_reviewed_at: z.string().datetime().nullable().optional(),
+    next_review_at: z.string().datetime().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateAiSystemInput = z.infer<typeof UpdateAiSystemBody>;
+
+// ---------------------------------------------------------------------------
 // List queries (keyset pagination + filters)
 // ---------------------------------------------------------------------------
 
@@ -376,6 +463,20 @@ export const ListLinksQuery = z
 
 export const ListMappingsQuery = z
   .object({ ...Cursor, framework_key: FrameworkKey.optional(), mapping_status: MappingStatus.optional() })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListAiSystemsQuery = z
+  .object({
+    ...Cursor,
+    system_type: SystemType.optional(),
+    lifecycle_state: LifecycleState.optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    deployment_environment: DeploymentEnvironment.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
   .refine(cursorPaired, {
     message: 'before_created_at and before_id must be provided together',
     path: ['before_id'],

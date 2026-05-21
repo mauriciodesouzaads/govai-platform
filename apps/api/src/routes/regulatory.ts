@@ -30,6 +30,10 @@ import {
   listControlSourceLinks,
   createFrameworkMapping,
   listFrameworkMappings,
+  createAiSystem,
+  getVisibleAiSystem,
+  updateAiSystem,
+  listAiSystems,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -38,6 +42,7 @@ import {
   type ControlRow,
   type LinkRow,
   type MappingRow,
+  type AiSystemRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -48,11 +53,14 @@ import {
   UpdateControlBody,
   CreateSourceLinkBody,
   CreateFrameworkMappingBody,
+  CreateAiSystemBody,
+  UpdateAiSystemBody,
   ListSourcesQuery,
   ListControlsQuery,
   ListVersionsQuery,
   ListLinksQuery,
   ListMappingsQuery,
+  ListAiSystemsQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -253,6 +261,36 @@ function serializeMapping(r: MappingRow): Record<string, unknown> {
     metadata: r.metadata,
     created_by_user_id: r.created_by_user_id,
     created_at: r.created_at.toISOString(),
+  };
+}
+
+function serializeAiSystem(r: AiSystemRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    system_key: r.system_key,
+    name: r.name,
+    description: r.description,
+    system_type: r.system_type,
+    lifecycle_state: r.lifecycle_state,
+    business_owner: r.business_owner,
+    technical_owner: r.technical_owner,
+    legal_owner: r.legal_owner,
+    dpo_owner: r.dpo_owner,
+    intended_purpose: r.intended_purpose,
+    primary_jurisdiction: r.primary_jurisdiction,
+    deployment_environment: r.deployment_environment,
+    external_provider_id: r.external_provider_id,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    review_frequency: r.review_frequency,
+    last_reviewed_at: iso(r.last_reviewed_at),
+    next_review_at: iso(r.next_review_at),
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
   };
 }
 
@@ -667,4 +705,101 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       }
     },
   );
+
+  // =========================================================================
+  // AI System Registry (PR-R2)
+  // =========================================================================
+
+  app.get('/v1/regulatory/ai-systems', async (req, reply) => {
+    const parsed = ListAiSystemsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listAiSystems(
+          ctx,
+          {
+            system_type: parsed.data.system_type,
+            lifecycle_state: parsed.data.lifecycle_state,
+            primary_jurisdiction: parsed.data.primary_jurisdiction,
+            deployment_environment: parsed.data.deployment_environment,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { ai_systems: out.value.rows.map(serializeAiSystem), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_ai_systems');
+    }
+  });
+
+  app.post('/v1/regulatory/ai-systems', async (req, reply) => {
+    const parsed = CreateAiSystemBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createAiSystem(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { ai_system: serializeAiSystem(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_ai_system');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/ai-systems/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_ai_system_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleAiSystem(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'ai_system_not_found' };
+      }
+      return { ai_system: serializeAiSystem(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_ai_system');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/ai-systems/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_ai_system_id' };
+    }
+    const parsed = UpdateAiSystemBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateAiSystem(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { ai_system: serializeAiSystem(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_ai_system');
+    }
+  });
 }

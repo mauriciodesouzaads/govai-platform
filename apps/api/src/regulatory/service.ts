@@ -27,6 +27,8 @@ import type {
   UpdateControlInput,
   CreateSourceLinkInput,
   CreateFrameworkMappingInput,
+  CreateAiSystemInput,
+  UpdateAiSystemInput,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -956,6 +958,272 @@ export async function listFrameworkMappings(
   params.push(cursor.limit);
   const res = await ctx.client.query<MappingRow>(
     `SELECT ${MAPPING_COLUMNS} FROM govai.regulatory_control_framework_mappings
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// AI System Registry (PR-R2)
+// ---------------------------------------------------------------------------
+
+export type AiSystemRow = {
+  id: string;
+  org_id: string;
+  system_key: string;
+  name: string;
+  description: string;
+  system_type: string;
+  lifecycle_state: string;
+  business_owner: string | null;
+  technical_owner: string | null;
+  legal_owner: string | null;
+  dpo_owner: string | null;
+  intended_purpose: string;
+  primary_jurisdiction: string;
+  deployment_environment: string;
+  external_provider_id: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  review_frequency: string;
+  last_reviewed_at: Date | null;
+  next_review_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const AI_SYSTEM_COLUMNS = `id, org_id, system_key, name, description, system_type, lifecycle_state,
+  business_owner, technical_owner, legal_owner, dpo_owner, intended_purpose, primary_jurisdiction,
+  deployment_environment, external_provider_id, regulatory_source_id, control_id, review_frequency,
+  last_reviewed_at, next_review_at, metadata, created_by_user_id, updated_by_user_id,
+  created_at, updated_at`;
+
+/**
+ * Validate that an optional parent reference resolves to a row visible to the
+ * caller (own-tenant or system). The DB RLS WITH CHECK is the backstop; this
+ * gives a clean 404 instead of an opaque RLS violation. A hidden cross-tenant
+ * parent is invisible here and so reports as not-found, never as forbidden,
+ * avoiding an existence oracle.
+ */
+async function requireVisibleParents(
+  ctx: Ctx,
+  refs: { regulatory_source_id?: string | null; control_id?: string | null },
+): Promise<void> {
+  if (refs.regulatory_source_id) {
+    const src = await getVisibleSource(ctx, refs.regulatory_source_id);
+    if (!src) throw new RegulatoryError(404, 'regulatory_source_not_found');
+  }
+  if (refs.control_id) {
+    const ctrl = await getVisibleControl(ctx, refs.control_id);
+    if (!ctrl) throw new RegulatoryError(404, 'control_not_found');
+  }
+}
+
+export async function createAiSystem(ctx: Ctx, input: CreateAiSystemInput): Promise<AiSystemRow> {
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<AiSystemRow>(
+      `INSERT INTO govai.regulatory_ai_systems
+         (org_id, system_key, name, description, system_type, lifecycle_state,
+          business_owner, technical_owner, legal_owner, dpo_owner, intended_purpose,
+          primary_jurisdiction, deployment_environment, external_provider_id,
+          regulatory_source_id, control_id, review_frequency, last_reviewed_at, next_review_at,
+          metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+               $14::uuid, $15::uuid, $16::uuid, $17, $18::timestamptz, $19::timestamptz,
+               $20::jsonb, $21::uuid, $21::uuid)
+       RETURNING ${AI_SYSTEM_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.system_key,
+        input.name,
+        input.description,
+        input.system_type,
+        input.lifecycle_state,
+        input.business_owner ?? null,
+        input.technical_owner ?? null,
+        input.legal_owner ?? null,
+        input.dpo_owner ?? null,
+        input.intended_purpose,
+        input.primary_jurisdiction,
+        input.deployment_environment,
+        input.external_provider_id ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        input.review_frequency,
+        input.last_reviewed_at ?? null,
+        input.next_review_at ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'ai_system_key_conflict', { system_key: input.system_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_ai_system.created',
+    subjectType: 'regulatory_ai_system',
+    subjectId: row.id,
+    metadata: {
+      ai_system_id: row.id,
+      system_key: row.system_key,
+      system_type: row.system_type,
+      lifecycle_state: row.lifecycle_state,
+      deployment_environment: row.deployment_environment,
+      primary_jurisdiction: row.primary_jurisdiction,
+      regulatory_source_id: row.regulatory_source_id,
+      control_id: row.control_id,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleAiSystem(ctx: Ctx, id: string): Promise<AiSystemRow | null> {
+  const r = await ctx.client.query<AiSystemRow>(
+    `SELECT ${AI_SYSTEM_COLUMNS} FROM govai.regulatory_ai_systems WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateAiSystem(
+  ctx: Ctx,
+  id: string,
+  input: UpdateAiSystemInput,
+): Promise<AiSystemRow> {
+  // RLS already scopes visibility to the caller's org, so another tenant's row
+  // (or a missing id) reads as null → 404 with no leakage.
+  const existing = await getVisibleAiSystem(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'ai_system_not_found');
+  await requireVisibleParents(ctx, {
+    regulatory_source_id:
+      input.regulatory_source_id !== undefined
+        ? input.regulatory_source_id
+        : existing.regulatory_source_id,
+    control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+  });
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.name !== undefined) col('name', input.name);
+  if (input.description !== undefined) col('description', input.description);
+  if (input.system_type !== undefined) col('system_type', input.system_type);
+  if (input.lifecycle_state !== undefined) col('lifecycle_state', input.lifecycle_state);
+  if (input.business_owner !== undefined) col('business_owner', input.business_owner);
+  if (input.technical_owner !== undefined) col('technical_owner', input.technical_owner);
+  if (input.legal_owner !== undefined) col('legal_owner', input.legal_owner);
+  if (input.dpo_owner !== undefined) col('dpo_owner', input.dpo_owner);
+  if (input.intended_purpose !== undefined) col('intended_purpose', input.intended_purpose);
+  if (input.primary_jurisdiction !== undefined) col('primary_jurisdiction', input.primary_jurisdiction);
+  if (input.deployment_environment !== undefined) col('deployment_environment', input.deployment_environment);
+  if (input.external_provider_id !== undefined) col('external_provider_id', input.external_provider_id, '::uuid');
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.review_frequency !== undefined) col('review_frequency', input.review_frequency);
+  if (input.last_reviewed_at !== undefined) col('last_reviewed_at', input.last_reviewed_at, '::timestamptz');
+  if (input.next_review_at !== undefined) col('next_review_at', input.next_review_at, '::timestamptz');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<AiSystemRow>(
+    `UPDATE govai.regulatory_ai_systems SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${AI_SYSTEM_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'ai_system_not_found');
+
+  const lifecycleChanged =
+    input.lifecycle_state !== undefined && input.lifecycle_state !== existing.lifecycle_state;
+
+  await appendAudit(ctx, {
+    eventType: 'regulatory_ai_system.updated',
+    subjectType: 'regulatory_ai_system',
+    subjectId: row.id,
+    metadata: {
+      ai_system_id: row.id,
+      system_key: row.system_key,
+      changed_fields: Object.keys(input),
+      lifecycle_state: row.lifecycle_state,
+      ...(lifecycleChanged ? { previous_lifecycle_state: existing.lifecycle_state } : {}),
+    },
+  });
+  // A lifecycle transition is governance-significant evidence in its own right;
+  // emit a dedicated event in addition to `updated`. auditAppend chains both
+  // sequentially within this transaction.
+  if (lifecycleChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_ai_system.lifecycle_changed',
+      subjectType: 'regulatory_ai_system',
+      subjectId: row.id,
+      metadata: {
+        ai_system_id: row.id,
+        system_key: row.system_key,
+        previous_lifecycle_state: existing.lifecycle_state,
+        lifecycle_state: row.lifecycle_state,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listAiSystems(
+  ctx: Ctx,
+  filters: {
+    system_type?: string;
+    lifecycle_state?: string;
+    primary_jurisdiction?: string;
+    deployment_environment?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<AiSystemRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined) => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}`);
+  };
+  eq('system_type', filters.system_type);
+  eq('lifecycle_state', filters.lifecycle_state);
+  eq('primary_jurisdiction', filters.primary_jurisdiction);
+  eq('deployment_environment', filters.deployment_environment);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(system_key ILIKE $${i} OR name ILIKE $${i} OR description ILIKE $${i} OR intended_purpose ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<AiSystemRow>(
+    `SELECT ${AI_SYSTEM_COLUMNS} FROM govai.regulatory_ai_systems
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,
