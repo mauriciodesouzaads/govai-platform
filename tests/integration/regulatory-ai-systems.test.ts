@@ -367,4 +367,75 @@ describe('regulatory-ai-systems / optional parent references', () => {
     }
     expect(blocked).toBe(true);
   });
+
+  it('RLS WITH CHECK blocks a direct INSERT referencing another tenant control', async () => {
+    const bControlId = await createTenantControl(orgB);
+    let blocked = false;
+    try {
+      await asOrg(orgA.org_id, (c) =>
+        c.query(
+          `INSERT INTO govai.regulatory_ai_systems
+             (org_id, system_key, name, system_type, lifecycle_state, deployment_environment, control_id)
+           VALUES ($1::uuid, $2, 'x', 'OTHER', 'PROPOSED', 'NOT_DEPLOYED', $3::uuid)`,
+          [orgA.org_id, `AIS-FK-${randomUUID().slice(0, 8)}`, bControlId],
+        ),
+      );
+    } catch {
+      blocked = true;
+    }
+    expect(blocked).toBe(true);
+  });
+
+  it('a direct INSERT referencing own-tenant source and control is allowed', async () => {
+    const ownSourceId = await createTenantSource(orgA);
+    const ownControlId = await createTenantControl(orgA);
+    const inserted = await asOrg(orgA.org_id, async (c) => {
+      const r = await c.query(
+        `INSERT INTO govai.regulatory_ai_systems
+           (org_id, system_key, name, system_type, lifecycle_state, deployment_environment,
+            regulatory_source_id, control_id)
+         VALUES ($1::uuid, $2, 'x', 'OTHER', 'PROPOSED', 'NOT_DEPLOYED', $3::uuid, $4::uuid)
+         RETURNING id`,
+        [orgA.org_id, `AIS-OWN-${randomUUID().slice(0, 8)}`, ownSourceId, ownControlId],
+      );
+      return r.rowCount ?? 0;
+    });
+    expect(inserted).toBe(1);
+  });
+
+  it('RLS WITH CHECK blocks a direct UPDATE setting regulatory_source_id to another tenant source', async () => {
+    const aId = await createAiSystem(orgA);
+    const bSourceId = await createTenantSource(orgB);
+    let blocked = false;
+    try {
+      await asOrg(orgA.org_id, (c) =>
+        c.query(
+          `UPDATE govai.regulatory_ai_systems SET regulatory_source_id = $2::uuid
+            WHERE id = $1::uuid`,
+          [aId, bSourceId],
+        ),
+      );
+    } catch {
+      blocked = true;
+    }
+    expect(blocked).toBe(true);
+  });
+
+  it('RLS WITH CHECK blocks a direct UPDATE setting control_id to another tenant control', async () => {
+    const aId = await createAiSystem(orgA);
+    const bControlId = await createTenantControl(orgB);
+    let blocked = false;
+    try {
+      await asOrg(orgA.org_id, (c) =>
+        c.query(
+          `UPDATE govai.regulatory_ai_systems SET control_id = $2::uuid
+            WHERE id = $1::uuid`,
+          [aId, bControlId],
+        ),
+      );
+    } catch {
+      blocked = true;
+    }
+    expect(blocked).toBe(true);
+  });
 });
