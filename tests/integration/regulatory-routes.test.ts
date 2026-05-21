@@ -142,3 +142,40 @@ describe('regulatory-routes / filters', () => {
     expect(fwIds).toContain(nativeId);
   });
 });
+
+describe('regulatory-routes / date validation', () => {
+  // A YYYY-MM-DD-shaped but impossible/rolled-over date must be rejected at the
+  // validation boundary (400), not pass Zod and 500 on the SQL `date` cast.
+  it('rejects an impossible publication_date on create (400, not 500)', async () => {
+    const org = await seedOrg(stack);
+    const admin = await addApiKey(stack, org.org_id, org.user_id, ['admin']);
+    const r = await inject(stack, 'POST', '/v1/regulatory/sources', admin.api_key, baseSource({ publication_date: '2026-99-99' }));
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('invalid_request');
+  });
+
+  it('rejects a non-canonical rollover date 2026-02-30 on create (400, not 500)', async () => {
+    const org = await seedOrg(stack);
+    const admin = await addApiKey(stack, org.org_id, org.user_id, ['admin']);
+    const r = await inject(stack, 'POST', '/v1/regulatory/sources', admin.api_key, baseSource({ publication_date: '2026-02-30' }));
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('invalid_request');
+  });
+
+  it('rejects an impossible effective_date on update (400, not 500)', async () => {
+    const org = await seedOrg(stack);
+    const admin = await addApiKey(stack, org.org_id, org.user_id, ['admin']);
+    const created = await inject(stack, 'POST', '/v1/regulatory/sources', admin.api_key, baseSource());
+    const id = (bodyOf(created)['source'] as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/sources/${id}`, admin.api_key, { effective_date: '2026-99-99' });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('invalid_request');
+  });
+
+  it('accepts a valid calendar date on create (201)', async () => {
+    const org = await seedOrg(stack);
+    const admin = await addApiKey(stack, org.org_id, org.user_id, ['admin']);
+    const r = await inject(stack, 'POST', '/v1/regulatory/sources', admin.api_key, baseSource({ publication_date: '2026-02-28', effective_date: '2026-03-01' }));
+    expect(r.statusCode).toBe(201);
+  });
+});

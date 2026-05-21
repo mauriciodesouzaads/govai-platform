@@ -19,7 +19,22 @@ const KeyField = z
   .max(100)
   .regex(KEY_RE, 'key must be uppercase alphanumeric with hyphens (e.g. BR-LGPD-13709-2018)');
 
-const DateField = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a YYYY-MM-DD date');
+// YYYY-MM-DD that must also be a real calendar date. The regex pins the shape;
+// the refine rejects impossible months/days (e.g. 2026-99-99) and non-canonical
+// rollovers (e.g. 2026-02-30, which Date would otherwise roll to 2026-03-02)
+// before they reach the SQL `date` cast and turn into a 500. Stays a string so
+// the service/DB API shape is unchanged.
+const DateField = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'must be a YYYY-MM-DD date')
+  .refine((s) => {
+    const parts = s.split('-');
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    const d = Number(parts[2]);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }, 'must be a valid calendar date (YYYY-MM-DD)');
 const HttpUrl = z
   .string()
   .url()

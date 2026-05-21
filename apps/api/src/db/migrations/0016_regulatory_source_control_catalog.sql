@@ -341,9 +341,20 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
+  -- Row must carry the caller's org_id, AND the referenced parent source must be
+  -- visible to the caller (own-tenant or system). FK checks bypass RLS, so this
+  -- EXISTS is what stops a tenant from attaching a version to another tenant's
+  -- hidden source (which would weaken isolation and act as an existence oracle).
   CREATE POLICY regulatory_source_versions_insert_app ON govai.regulatory_source_versions
     FOR INSERT TO govai_app
-    WITH CHECK (org_id::text = current_setting('app.org_id', true));
+    WITH CHECK (
+      org_id::text = current_setting('app.org_id', true)
+      AND EXISTS (
+        SELECT 1 FROM govai.regulatory_sources s
+        WHERE s.id = source_id
+          AND (s.org_id IS NULL OR s.org_id::text = current_setting('app.org_id', true))
+      )
+    );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -360,9 +371,23 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
+  -- Both endpoints must reference sources visible to the caller (own-tenant or
+  -- system); neither may point at another tenant's hidden source.
   CREATE POLICY regulatory_source_relationships_insert_app ON govai.regulatory_source_relationships
     FOR INSERT TO govai_app
-    WITH CHECK (org_id::text = current_setting('app.org_id', true));
+    WITH CHECK (
+      org_id::text = current_setting('app.org_id', true)
+      AND EXISTS (
+        SELECT 1 FROM govai.regulatory_sources s
+        WHERE s.id = from_source_id
+          AND (s.org_id IS NULL OR s.org_id::text = current_setting('app.org_id', true))
+      )
+      AND EXISTS (
+        SELECT 1 FROM govai.regulatory_sources s
+        WHERE s.id = to_source_id
+          AND (s.org_id IS NULL OR s.org_id::text = current_setting('app.org_id', true))
+      )
+    );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -405,9 +430,24 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
+  -- Both the control and the source referenced must be visible to the caller
+  -- (own-tenant or system); a link may never reference another tenant's hidden
+  -- control or source.
   CREATE POLICY regulatory_control_source_links_insert_app ON govai.regulatory_control_source_links
     FOR INSERT TO govai_app
-    WITH CHECK (org_id::text = current_setting('app.org_id', true));
+    WITH CHECK (
+      org_id::text = current_setting('app.org_id', true)
+      AND EXISTS (
+        SELECT 1 FROM govai.regulatory_controls c
+        WHERE c.id = control_id
+          AND (c.org_id IS NULL OR c.org_id::text = current_setting('app.org_id', true))
+      )
+      AND EXISTS (
+        SELECT 1 FROM govai.regulatory_sources s
+        WHERE s.id = source_id
+          AND (s.org_id IS NULL OR s.org_id::text = current_setting('app.org_id', true))
+      )
+    );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -424,9 +464,27 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
+  -- The control referenced must be visible to the caller (own-tenant or system).
+  -- source_id is optional; when present it must likewise reference a visible
+  -- source. Neither may reference another tenant's hidden row.
   CREATE POLICY regulatory_control_framework_mappings_insert_app ON govai.regulatory_control_framework_mappings
     FOR INSERT TO govai_app
-    WITH CHECK (org_id::text = current_setting('app.org_id', true));
+    WITH CHECK (
+      org_id::text = current_setting('app.org_id', true)
+      AND EXISTS (
+        SELECT 1 FROM govai.regulatory_controls c
+        WHERE c.id = control_id
+          AND (c.org_id IS NULL OR c.org_id::text = current_setting('app.org_id', true))
+      )
+      AND (
+        source_id IS NULL
+        OR EXISTS (
+          SELECT 1 FROM govai.regulatory_sources s
+          WHERE s.id = source_id
+            AND (s.org_id IS NULL OR s.org_id::text = current_setting('app.org_id', true))
+        )
+      )
+    );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN

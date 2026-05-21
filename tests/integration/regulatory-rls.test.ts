@@ -92,6 +92,26 @@ function bodyOf(r: { body: unknown }): Record<string, unknown> {
   return r.body as Record<string, unknown>;
 }
 
+async function createTenantSource(org: AdminOrg): Promise<string> {
+  const r = await inject(stack, 'POST', '/v1/regulatory/sources', org.api_key, baseSource());
+  return (bodyOf(r)['source'] as Record<string, unknown>)['id'] as string;
+}
+
+async function createTenantControl(org: AdminOrg): Promise<string> {
+  const r = await inject(stack, 'POST', '/v1/regulatory/controls', org.api_key, baseControl());
+  return (bodyOf(r)['control'] as Record<string, unknown>)['id'] as string;
+}
+
+/** Run a direct INSERT as govai_app for `orgId`; resolve blocked=true if RLS rejects it. */
+async function insertBlocked(orgId: string, sql: string, params: unknown[]): Promise<boolean> {
+  try {
+    await asOrg(orgId, (c) => c.query(sql, params));
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 describe('regulatory-rls / system vs tenant scope', () => {
   it('a tenant can read a system source by id and in the list', async () => {
     const org = await adminOrg();
@@ -245,5 +265,137 @@ describe('regulatory-rls / cross-tenant isolation', () => {
       return r.rowCount;
     });
     expect(visibleToB).toBe(0);
+  });
+});
+
+// FK checks bypass RLS, so child INSERT policies must independently verify the
+// referenced parent is visible (own-tenant or system). These tests drive the
+// DB layer directly (as govai_app), bypassing the service layer, to prove the
+// WITH CHECK policies — not just service-layer guards — block cross-tenant
+// parent references and the resulting existence oracle.
+describe('regulatory-rls / child parent-ownership (RLS WITH CHECK)', () => {
+  it('a tenant cannot create a source version referencing another tenant\'s source', async () => {
+    const orgA = await adminOrg();
+    const orgB = await adminOrg();
+    const aSourceId = await createTenantSource(orgA);
+    const blocked = await insertBlocked(
+      orgB.org_id,
+      `INSERT INTO govai.regulatory_source_versions (org_id, source_id, version_number, verification_status)
+       VALUES ($1::uuid, $2::uuid, 1, 'CONFIRMED_PRIMARY_SOURCE')`,
+      [orgB.org_id, aSourceId],
+    );
+    expect(blocked).toBe(true);
+  });
+
+  it('a tenant cannot create a source relationship to or from another tenant\'s source', async () => {
+    const orgA = await adminOrg();
+    const orgB = await adminOrg();
+    const aSourceId = await createTenantSource(orgA);
+    const bSourceId = await createTenantSource(orgB);
+
+    const blockedTo = await insertBlocked(
+      orgB.org_id,
+      `INSERT INTO govai.regulatory_source_relationships (org_id, from_source_id, to_source_id, relationship_type)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'RELATED')`,
+      [orgB.org_id, bSourceId, aSourceId],
+    );
+    expect(blockedTo).toBe(true);
+
+    const blockedFrom = await insertBlocked(
+      orgB.org_id,
+      `INSERT INTO govai.regulatory_source_relationships (org_id, from_source_id, to_source_id, relationship_type)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'RELATED')`,
+      [orgB.org_id, aSourceId, bSourceId],
+    );
+    expect(blockedFrom).toBe(true);
+  });
+
+  it('a tenant cannot create a control-source link referencing another tenant\'s control or source', async () => {
+    const orgA = await adminOrg();
+    const orgB = await adminOrg();
+    const aControlId = await createTenantControl(orgA);
+    const aSourceId = await createTenantSource(orgA);
+    const bControlId = await createTenantControl(orgB);
+    const bSourceId = await createTenantSource(orgB);
+
+    const blockedControl = await insertBlocked(
+      orgB.org_id,
+      `INSERT INTO govai.regulatory_control_source_links (org_id, control_id, source_id, link_type)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'LEGAL_DRIVER')`,
+      [orgB.org_id, aControlId, bSourceId],
+    );
+    expect(blockedControl).toBe(true);
+
+    const blockedSource = await insertBlocked(
+      orgB.org_id,
+      `INSERT INTO govai.regulatory_control_source_links (org_id, control_id, source_id, link_type)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'LEGAL_DRIVER')`,
+      [orgB.org_id, bControlId, aSourceId],
+    );
+    expect(blockedSource).toBe(true);
+  });
+
+  it('a tenant cannot create a framework mapping referencing another tenant\'s control or source', async () => {
+    const orgA = await adminOrg();
+    const orgB = await adminOrg();
+    const aControlId = await createTenantControl(orgA);
+    const aSourceId = await createTenantSource(orgA);
+    const bControlId = await createTenantControl(orgB);
+
+    const blockedControl = await insertBlocked(
+      orgB.org_id,
+      `INSERT INTO govai.regulatory_control_framework_mappings (org_id, control_id, framework_key, mapping_status)
+       VALUES ($1::uuid, $2::uuid, 'LGPD', 'PARTIAL')`,
+      [orgB.org_id, aControlId],
+    );
+    expect(blockedControl).toBe(true);
+
+    const blockedSource = await insertBlocked(
+      orgB.org_id,
+      `INSERT INTO govai.regulatory_control_framework_mappings (org_id, control_id, framework_key, mapping_status, source_id)
+       VALUES ($1::uuid, $2::uuid, 'LGPD', 'PARTIAL', $3::uuid)`,
+      [orgB.org_id, bControlId, aSourceId],
+    );
+    expect(blockedSource).toBe(true);
+  });
+
+  it('a tenant may reference a visible system source and its own rows (happy paths preserved)', async () => {
+    const orgB = await adminOrg();
+    const systemSourceId = await seedSystemSource();
+    const bControlId = await createTenantControl(orgB);
+    const bSourceId = await createTenantSource(orgB);
+
+    // Own control linked to a visible system source → allowed.
+    const linkSystem = await asOrg(orgB.org_id, async (c) => {
+      const r = await c.query(
+        `INSERT INTO govai.regulatory_control_source_links (org_id, control_id, source_id, link_type)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'LEGAL_DRIVER') RETURNING id`,
+        [orgB.org_id, bControlId, systemSourceId],
+      );
+      return r.rowCount;
+    });
+    expect(linkSystem).toBe(1);
+
+    // Own control linked to own source → allowed.
+    const linkOwn = await asOrg(orgB.org_id, async (c) => {
+      const r = await c.query(
+        `INSERT INTO govai.regulatory_control_source_links (org_id, control_id, source_id, link_type)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'FRAMEWORK_DRIVER') RETURNING id`,
+        [orgB.org_id, bControlId, bSourceId],
+      );
+      return r.rowCount;
+    });
+    expect(linkOwn).toBe(1);
+
+    // Own version on own source → allowed.
+    const ver = await asOrg(orgB.org_id, async (c) => {
+      const r = await c.query(
+        `INSERT INTO govai.regulatory_source_versions (org_id, source_id, version_number, verification_status)
+         VALUES ($1::uuid, $2::uuid, 1, 'CONFIRMED_PRIMARY_SOURCE') RETURNING id`,
+        [orgB.org_id, bSourceId],
+      );
+      return r.rowCount;
+    });
+    expect(ver).toBe(1);
   });
 });
