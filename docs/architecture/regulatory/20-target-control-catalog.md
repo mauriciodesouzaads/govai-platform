@@ -114,9 +114,10 @@ under which the control turns `COVERED`.
 - Evidence artifacts: registry records, change events, ownership history.
 - Frameworks: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI Act,
   GDPR.
-- Current state: the AI System Registry is `IMPLEMENTED_FOUNDATIONAL_CONTROL`
-  (PR-R2; see the PR-R2 implementation evidence below). The model, agent,
-  use-case, and provider registries remain `REQUIRED_NATIVE_CAPABILITY`.
+- Current state: the AI System Registry (PR-R2) and the Provider Registry
+  (PR-R3) are `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the PR-R2 and PR-R3
+  implementation evidence below). The model, agent, and use-case registries
+  remain `REQUIRED_NATIVE_CAPABILITY`.
 - Turns COVERED when: schemas, routes, audit events, and tests for each
   registry exist and are cited in framework mappings.
 
@@ -476,6 +477,48 @@ Limitations (remain future work or external):
 - Agent registry remains future work.
 - Use-case registry remains future work.
 - Provider registry remains future work.
+- Risk-classification engine remains future work.
+- CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+## PR-R3 implementation evidence (foundational slice)
+
+PR-R3 adds the second concrete repository evidence behind domain 2 (AI
+inventory and registries) and supports domain 15 (vendor and provider
+responsibility): a tenant-isolated Provider Registry. It is a PR-R3
+foundational implementation of the provider inventory/posture primitive, not
+the full provider-governance program, and on its own does not raise any
+framework requirement to `COVERED`.
+
+Capability status:
+
+- Provider Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0018_regulatory_provider_registry.sql`
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+- Tests: `tests/integration/regulatory-providers.test.ts`
+
+Audit events emitted:
+
+- `regulatory_provider.created`
+- `regulatory_provider.updated`
+- `regulatory_provider.status_changed`
+- `regulatory_provider.review_status_changed`
+
+Limitations (remain future work or external):
+
+- Posture/inventory only — no credential vault, and no API keys, client
+  secrets, OAuth tokens, certificates, or passwords are stored.
+- No live provider integration or connector.
+- Model registry remains future work.
+- Agent registry remains future work.
+- Use-case registry remains future work.
 - Risk-classification engine remains future work.
 - CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
