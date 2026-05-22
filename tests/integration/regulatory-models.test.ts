@@ -574,4 +574,66 @@ describe('regulatory-models / RLS (direct DB)', () => {
     // Try to point this link's model_version_id at v2 (belongs to m2, not m1) via direct UPDATE.
     expect(await insertBlocked(orgA.org_id, 'UPDATE govai.regulatory_ai_system_model_links SET model_version_id = $2::uuid WHERE id = $1::uuid', [id, v2])).toBe(true);
   });
+
+  // Helper: create a fresh own-tenant link for orgA and return its id.
+  async function ownLinkA(): Promise<string> {
+    const mId = await mkModel(orgA, provA);
+    const vId = await mkVersion(orgA, mId);
+    const link = await mkLink(orgA, {
+      ai_system_id: aiSysA,
+      model_id: mId,
+      model_version_id: vId,
+      usage_role: 'EVALUATION_MODEL',
+      deployment_environment: 'PRODUCTION',
+    });
+    return (link.body['ai_system_model_link'] as Record<string, unknown>)['id'] as string;
+  }
+
+  it('tenant A cannot UPDATE an own link to reference tenant B AI system', async () => {
+    const id = await ownLinkA();
+    expect(
+      await insertBlocked(
+        orgA.org_id,
+        'UPDATE govai.regulatory_ai_system_model_links SET ai_system_id = $2::uuid WHERE id = $1::uuid',
+        [id, aiSysB],
+      ),
+    ).toBe(true);
+  });
+
+  it('tenant A cannot UPDATE an own link to reference tenant B model', async () => {
+    const id = await ownLinkA();
+    expect(
+      await insertBlocked(
+        orgA.org_id,
+        'UPDATE govai.regulatory_ai_system_model_links SET model_id = $2::uuid WHERE id = $1::uuid',
+        [id, modelB],
+      ),
+    ).toBe(true);
+  });
+
+  it('tenant A cannot UPDATE an own link to reference tenant B model version', async () => {
+    const id = await ownLinkA();
+    expect(
+      await insertBlocked(
+        orgA.org_id,
+        'UPDATE govai.regulatory_ai_system_model_links SET model_version_id = $2::uuid WHERE id = $1::uuid',
+        [id, versionB],
+      ),
+    ).toBe(true);
+  });
+
+  it('tenant A can UPDATE allowed mutable fields on an own link (no over-blocking)', async () => {
+    const id = await ownLinkA();
+    const affected = await asOrg(orgA.org_id, async (c) => {
+      const r = await c.query(
+        `UPDATE govai.regulatory_ai_system_model_links
+            SET link_status = 'ACTIVE', rationale = 'reviewed and approved',
+                effective_to = '2026-12-31T00:00:00.000Z'::timestamptz
+          WHERE id = $1::uuid`,
+        [id],
+      );
+      return r.rowCount ?? 0;
+    });
+    expect(affected).toBe(1);
+  });
 });
