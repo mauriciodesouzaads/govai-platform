@@ -159,6 +159,12 @@ implementation timeline.
 - Mapping update triggered: control 2 and 3 in `20-target-control-catalog.md`.
 - Tests expected: unit tests for agent records, integration tests for
   capability binding changes.
+- Status: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R5) for agent identity,
+  version/config provenance, lifecycle/status and approval/retirement evidence,
+  capability bindings, and hard-deny-floor expectation tracking as registry
+  evidence. See the PR-R5 evidence below. The `hard_deny_floor_expected` field
+  is a declared governance expectation only; runtime hard-deny enforcement,
+  live tool invocation, and gateway-level denial remain future work.
 
 ### Use-case Registry
 
@@ -460,6 +466,62 @@ Limitations (remain future work or external):
 - Risk-classification engine remains future work.
 - No model runtime enforcement.
 - No live provider integration or connector.
+- CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-R5 implementation evidence (foundational slice)
+
+PR-R5 delivers the Agent Registry, the next P0 foundation after the source
+registry, control catalog, AI system registry, provider registry, and model
+registry. It is a production-focused PR-R5 foundational slice — agent identity,
+agent version/config provenance, and agent capability bindings — not the full
+AI inventory program.
+
+Status:
+
+- Agent Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL for agent identity,
+  version/config provenance, lifecycle/status evidence, capability bindings,
+  hard-deny-floor expectation tracking as registry evidence, and optional
+  linkage to AI systems, models, model versions, and providers.
+
+Agent capability bindings record declared governance expectations, including
+whether the hard-deny floor is expected to apply, but PR-R5 does not implement
+runtime enforcement, live tool invocation blocking, or gateway-level denial
+behavior.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0020_regulatory_agent_registry.sql`
+  (`govai.regulatory_agents`, `govai.regulatory_agent_versions`,
+  `govai.regulatory_agent_capability_bindings`; tenant-only, RLS ENABLE + FORCE,
+  DB-enforced parent visibility, version-requires-model CHECK, and
+  version-belongs-to-model / agent-version-belongs-to-agent guards).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+  (agent, agent-version, and agent-capability-binding endpoints; no delete).
+- Tests: `tests/integration/regulatory-agents.test.ts`.
+
+Audit events emitted:
+
+- `regulatory_agent.created` / `.updated` / `.status_changed`
+- `regulatory_agent_version.created` / `.updated` / `.status_changed` /
+  `.approved` / `.retired`
+- `regulatory_agent_capability_binding.created` / `.updated` /
+  `.status_changed` / `.risk_posture_changed`
+
+Limitations (remain future work or external):
+
+- Registry evidence / provenance only — no prompts, tool-manifest bodies,
+  model artifacts, training data, credentials, API keys, secrets, tokens, or
+  certificates are stored.
+- `hard_deny_floor_expected` is a declared governance expectation only; runtime
+  hard-deny enforcement, live tool invocation, and gateway-level denial remain
+  future work.
+- Use-case registry remains future work.
+- Risk-classification engine remains future work.
 - CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.

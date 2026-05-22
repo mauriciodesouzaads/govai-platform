@@ -50,6 +50,18 @@ import {
   getVisibleAiSystemModelLink,
   updateAiSystemModelLink,
   listAiSystemModelLinks,
+  createAgent,
+  getVisibleAgent,
+  updateAgent,
+  listAgents,
+  createAgentVersion,
+  getVisibleAgentVersion,
+  updateAgentVersion,
+  listAgentVersions,
+  createAgentCapabilityBinding,
+  getVisibleAgentCapabilityBinding,
+  updateAgentCapabilityBinding,
+  listAgentCapabilityBindings,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -63,6 +75,9 @@ import {
   type ModelRow,
   type ModelVersionRow,
   type AiSystemModelLinkRow,
+  type AgentRow,
+  type AgentVersionRow,
+  type AgentCapabilityBindingRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -83,6 +98,12 @@ import {
   UpdateModelVersionBody,
   CreateAiSystemModelLinkBody,
   UpdateAiSystemModelLinkBody,
+  CreateAgentBody,
+  UpdateAgentBody,
+  CreateAgentVersionBody,
+  UpdateAgentVersionBody,
+  CreateAgentCapabilityBindingBody,
+  UpdateAgentCapabilityBindingBody,
   ListSourcesQuery,
   ListControlsQuery,
   ListVersionsQuery,
@@ -93,6 +114,9 @@ import {
   ListModelsQuery,
   ListModelVersionsQuery,
   ListAiSystemModelLinksQuery,
+  ListAgentsQuery,
+  ListAgentVersionsQuery,
+  ListAgentCapabilityBindingsQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -434,6 +458,100 @@ function serializeAiSystemModelLink(r: AiSystemModelLinkRow): Record<string, unk
     effective_from: iso(r.effective_from),
     effective_to: iso(r.effective_to),
     rationale: r.rationale,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeAgent(r: AgentRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    agent_key: r.agent_key,
+    name: r.name,
+    description: r.description,
+    agent_type: r.agent_type,
+    agent_status: r.agent_status,
+    autonomy_level: r.autonomy_level,
+    execution_boundary: r.execution_boundary,
+    human_oversight_mode: r.human_oversight_mode,
+    provider_id: r.provider_id,
+    primary_ai_system_id: r.primary_ai_system_id,
+    primary_model_id: r.primary_model_id,
+    primary_model_version_id: r.primary_model_version_id,
+    primary_jurisdiction: r.primary_jurisdiction,
+    business_owner: r.business_owner,
+    technical_owner: r.technical_owner,
+    legal_owner: r.legal_owner,
+    dpo_owner: r.dpo_owner,
+    intended_purpose: r.intended_purpose,
+    prohibited_uses: r.prohibited_uses,
+    capability_summary: r.capability_summary,
+    tool_access_summary: r.tool_access_summary,
+    data_access_summary: r.data_access_summary,
+    human_oversight_summary: r.human_oversight_summary,
+    last_reviewed_at: iso(r.last_reviewed_at),
+    next_review_at: iso(r.next_review_at),
+    review_frequency: r.review_frequency,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeAgentVersion(r: AgentVersionRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    agent_id: r.agent_id,
+    version_key: r.version_key,
+    version_label: r.version_label,
+    version_status: r.version_status,
+    configuration_hash: r.configuration_hash,
+    prompt_policy_hash: r.prompt_policy_hash,
+    tool_manifest_hash: r.tool_manifest_hash,
+    sandbox_policy_hash: r.sandbox_policy_hash,
+    capability_manifest_hash: r.capability_manifest_hash,
+    evaluation_score_summary: r.evaluation_score_summary,
+    release_notes: r.release_notes,
+    approval_reference: r.approval_reference,
+    approved_at: iso(r.approved_at),
+    approved_by_user_id: r.approved_by_user_id,
+    retired_at: iso(r.retired_at),
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeAgentCapabilityBinding(r: AgentCapabilityBindingRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    agent_id: r.agent_id,
+    agent_version_id: r.agent_version_id,
+    capability_key: r.capability_key,
+    capability_name: r.capability_name,
+    capability_category: r.capability_category,
+    capability_status: r.capability_status,
+    risk_posture: r.risk_posture,
+    hard_deny_floor_expected: r.hard_deny_floor_expected,
+    approval_required: r.approval_required,
+    evidence_required: r.evidence_required,
+    scope_summary: r.scope_summary,
+    restriction_summary: r.restriction_summary,
+    rationale: r.rationale,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
     metadata: r.metadata,
     created_by_user_id: r.created_by_user_id,
     updated_by_user_id: r.updated_by_user_id,
@@ -1343,6 +1461,309 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       return { ai_system_model_link: serializeAiSystemModelLink(out.value) };
     } catch (err) {
       return onError(req, reply, err, 'update_ai_system_model_link');
+    }
+  });
+
+  // =========================================================================
+  // Agent Registry (PR-R5)
+  // =========================================================================
+
+  app.get('/v1/regulatory/agents', async (req, reply) => {
+    const parsed = ListAgentsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listAgents(
+          ctx,
+          {
+            agent_type: parsed.data.agent_type,
+            agent_status: parsed.data.agent_status,
+            autonomy_level: parsed.data.autonomy_level,
+            execution_boundary: parsed.data.execution_boundary,
+            provider_id: parsed.data.provider_id,
+            primary_ai_system_id: parsed.data.primary_ai_system_id,
+            primary_model_id: parsed.data.primary_model_id,
+            primary_jurisdiction: parsed.data.primary_jurisdiction,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { agents: out.value.rows.map(serializeAgent), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_agents');
+    }
+  });
+
+  app.post('/v1/regulatory/agents', async (req, reply) => {
+    const parsed = CreateAgentBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createAgent(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { agent: serializeAgent(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_agent');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/agents/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_agent_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleAgent(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'agent_not_found' };
+      }
+      return { agent: serializeAgent(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_agent');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/agents/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_agent_id' };
+    }
+    const parsed = UpdateAgentBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateAgent(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { agent: serializeAgent(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_agent');
+    }
+  });
+
+  // --- Agent versions ------------------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/agents/:id/versions', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_agent_id' };
+    }
+    const parsed = CreateAgentVersionBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createAgentVersion(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { agent_version: serializeAgentVersion(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_agent_version');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/agents/:id/versions', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_agent_id' };
+    }
+    const parsed = ListAgentVersionsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listAgentVersions(
+          ctx,
+          req.params.id,
+          { version_status: parsed.data.version_status, q: parsed.data.q },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { agent_versions: out.value.rows.map(serializeAgentVersion), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_agent_versions');
+    }
+  });
+
+  app.get<{ Params: { versionId: string } }>('/v1/regulatory/agent-versions/:versionId', async (req, reply) => {
+    if (!validId(req.params.versionId)) {
+      reply.code(400);
+      return { error: 'invalid_agent_version_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleAgentVersion(ctx, req.params.versionId));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'agent_version_not_found' };
+      }
+      return { agent_version: serializeAgentVersion(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_agent_version');
+    }
+  });
+
+  app.patch<{ Params: { versionId: string } }>('/v1/regulatory/agent-versions/:versionId', async (req, reply) => {
+    if (!validId(req.params.versionId)) {
+      reply.code(400);
+      return { error: 'invalid_agent_version_id' };
+    }
+    const parsed = UpdateAgentVersionBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateAgentVersion(ctx, req.params.versionId, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { agent_version: serializeAgentVersion(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_agent_version');
+    }
+  });
+
+  // --- Agent capability bindings -------------------------------------------
+
+  app.get('/v1/regulatory/agent-capability-bindings', async (req, reply) => {
+    const parsed = ListAgentCapabilityBindingsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listAgentCapabilityBindings(
+          ctx,
+          {
+            agent_id: parsed.data.agent_id,
+            agent_version_id: parsed.data.agent_version_id,
+            capability_category: parsed.data.capability_category,
+            capability_status: parsed.data.capability_status,
+            risk_posture: parsed.data.risk_posture,
+            hard_deny_floor_expected: parsed.data.hard_deny_floor_expected,
+            approval_required: parsed.data.approval_required,
+            evidence_required: parsed.data.evidence_required,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        agent_capability_bindings: out.value.rows.map(serializeAgentCapabilityBinding),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_agent_capability_bindings');
+    }
+  });
+
+  app.post('/v1/regulatory/agent-capability-bindings', async (req, reply) => {
+    const parsed = CreateAgentCapabilityBindingBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createAgentCapabilityBinding(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { agent_capability_binding: serializeAgentCapabilityBinding(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_agent_capability_binding');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/agent-capability-bindings/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_agent_capability_binding_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleAgentCapabilityBinding(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'agent_capability_binding_not_found' };
+      }
+      return { agent_capability_binding: serializeAgentCapabilityBinding(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_agent_capability_binding');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/agent-capability-bindings/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_agent_capability_binding_id' };
+    }
+    const parsed = UpdateAgentCapabilityBindingBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateAgentCapabilityBinding(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { agent_capability_binding: serializeAgentCapabilityBinding(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_agent_capability_binding');
     }
   });
 }

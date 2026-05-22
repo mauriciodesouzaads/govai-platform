@@ -724,6 +724,262 @@ export const UpdateAiSystemModelLinkBody = z
 export type UpdateAiSystemModelLinkInput = z.infer<typeof UpdateAiSystemModelLinkBody>;
 
 // ---------------------------------------------------------------------------
+// Agent Registry (PR-R5)
+// ---------------------------------------------------------------------------
+
+export const AgentType = z.enum([
+  'LLM_AGENT',
+  'WORKFLOW_AGENT',
+  'TOOL_USING_AGENT',
+  'RETRIEVAL_AGENT',
+  'ORCHESTRATOR_AGENT',
+  'MONITORING_AGENT',
+  'EVALUATION_AGENT',
+  'HUMAN_ASSISTED_AGENT',
+  'OTHER',
+]);
+
+export const AgentStatus = z.enum([
+  'PROPOSED',
+  'UNDER_EVALUATION',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'ACTIVE',
+  'SUSPENDED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const AutonomyLevel = z.enum([
+  'HUMAN_ASSISTED',
+  'HUMAN_APPROVAL_REQUIRED',
+  'SUPERVISED_AUTONOMOUS',
+  'AUTONOMOUS_WITH_GUARDRAILS',
+  'AUDIT_ONLY',
+]);
+
+export const ExecutionBoundary = z.enum([
+  'GOVAI_WORKROOM',
+  'PROVIDER_NATIVE',
+  'CUSTOMER_ENVIRONMENT',
+  'THIRD_PARTY_RUNTIME',
+  'SANDBOXED_TOOL_RUNTIME',
+  'NOT_DEPLOYED',
+  'OTHER',
+]);
+
+export const HumanOversightMode = z.enum([
+  'HUMAN_IN_LOOP',
+  'HUMAN_ON_LOOP',
+  'HUMAN_REVIEW_REQUIRED',
+  'ESCALATION_ONLY',
+  'NOT_APPLICABLE',
+]);
+
+export const AgentVersionStatus = z.enum([
+  'DRAFT',
+  'UNDER_EVALUATION',
+  'APPROVED',
+  'ACTIVE',
+  'DEPRECATED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const CapabilityCategory = z.enum([
+  'READ_ONLY',
+  'WRITE_ACTION',
+  'EXTERNAL_SIDE_EFFECT',
+  'DATA_ACCESS',
+  'FILESYSTEM',
+  'NETWORK',
+  'CODE_EXECUTION',
+  'BROWSER',
+  'COMMUNICATION',
+  'ADMINISTRATIVE',
+  'EVALUATION',
+  'MONITORING',
+  'OTHER',
+]);
+
+export const CapabilityStatus = z.enum([
+  'PROPOSED',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'SUSPENDED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const RiskPosture = z.enum(['LOW', 'MODERATE', 'HIGH', 'PROHIBITED', 'UNKNOWN']);
+
+// Query-string boolean: accepts only the literal "true"/"false" tokens.
+const QueryBool = z.enum(['true', 'false']).transform((v) => v === 'true');
+
+export const CreateAgentBody = z
+  .object({
+    agent_key: KeyField,
+    name: z.string().min(1).max(500),
+    description: LongText.default(''),
+    agent_type: AgentType,
+    agent_status: AgentStatus,
+    autonomy_level: AutonomyLevel,
+    execution_boundary: ExecutionBoundary,
+    human_oversight_mode: HumanOversightMode,
+    provider_id: z.string().uuid().optional(),
+    primary_ai_system_id: z.string().uuid().optional(),
+    primary_model_id: z.string().uuid().optional(),
+    primary_model_version_id: z.string().uuid().optional(),
+    primary_jurisdiction: z.string().min(1).max(64).default('BR'),
+    business_owner: OwnerField.optional(),
+    technical_owner: OwnerField.optional(),
+    legal_owner: OwnerField.optional(),
+    dpo_owner: OwnerField.optional(),
+    intended_purpose: SummaryText.default(''),
+    prohibited_uses: SummaryText.default(''),
+    capability_summary: SummaryText.default(''),
+    tool_access_summary: SummaryText.default(''),
+    data_access_summary: SummaryText.default(''),
+    human_oversight_summary: SummaryText.default(''),
+    last_reviewed_at: z.string().datetime().optional(),
+    next_review_at: z.string().datetime().optional(),
+    review_frequency: ReviewFrequency.default('AD_HOC'),
+    regulatory_source_id: z.string().uuid().optional(),
+    control_id: z.string().uuid().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  // A primary model version is meaningless without its model.
+  .refine((d) => !(d.primary_model_version_id !== undefined && d.primary_model_id === undefined), {
+    message: 'primary_model_version_id requires primary_model_id',
+    path: ['primary_model_id'],
+  });
+export type CreateAgentInput = z.infer<typeof CreateAgentBody>;
+
+// PATCH: every field optional; ≥1 required. agent_key and org_id are immutable.
+// The version-requires-model rule depends on the merged (existing + patch) state
+// and is enforced in the service layer and by the DB CHECK; here we only catch
+// the in-body contradiction of setting a version while clearing the model.
+export const UpdateAgentBody = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    description: LongText.optional(),
+    agent_type: AgentType.optional(),
+    agent_status: AgentStatus.optional(),
+    autonomy_level: AutonomyLevel.optional(),
+    execution_boundary: ExecutionBoundary.optional(),
+    human_oversight_mode: HumanOversightMode.optional(),
+    provider_id: z.string().uuid().nullable().optional(),
+    primary_ai_system_id: z.string().uuid().nullable().optional(),
+    primary_model_id: z.string().uuid().nullable().optional(),
+    primary_model_version_id: z.string().uuid().nullable().optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    business_owner: OwnerField.nullable().optional(),
+    technical_owner: OwnerField.nullable().optional(),
+    legal_owner: OwnerField.nullable().optional(),
+    dpo_owner: OwnerField.nullable().optional(),
+    intended_purpose: SummaryText.optional(),
+    prohibited_uses: SummaryText.optional(),
+    capability_summary: SummaryText.optional(),
+    tool_access_summary: SummaryText.optional(),
+    data_access_summary: SummaryText.optional(),
+    human_oversight_summary: SummaryText.optional(),
+    last_reviewed_at: z.string().datetime().nullable().optional(),
+    next_review_at: z.string().datetime().nullable().optional(),
+    review_frequency: ReviewFrequency.optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' })
+  // Setting a version while explicitly clearing the model in the same patch.
+  .refine((d) => !(typeof d.primary_model_version_id === 'string' && d.primary_model_id === null), {
+    message: 'primary_model_version_id requires primary_model_id',
+    path: ['primary_model_id'],
+  });
+export type UpdateAgentInput = z.infer<typeof UpdateAgentBody>;
+
+export const CreateAgentVersionBody = z.object({
+  version_key: KeyField,
+  version_label: z.string().min(1).max(200),
+  version_status: AgentVersionStatus,
+  configuration_hash: HashField.optional(),
+  prompt_policy_hash: HashField.optional(),
+  tool_manifest_hash: HashField.optional(),
+  sandbox_policy_hash: HashField.optional(),
+  capability_manifest_hash: HashField.optional(),
+  evaluation_score_summary: SummaryText.default(''),
+  release_notes: SummaryText.default(''),
+  approval_reference: z.string().min(1).max(500).optional(),
+  approved_at: z.string().datetime().optional(),
+  approved_by_user_id: z.string().uuid().optional(),
+  retired_at: z.string().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateAgentVersionInput = z.infer<typeof CreateAgentVersionBody>;
+
+export const UpdateAgentVersionBody = z
+  .object({
+    version_label: z.string().min(1).max(200).optional(),
+    version_status: AgentVersionStatus.optional(),
+    configuration_hash: HashField.nullable().optional(),
+    prompt_policy_hash: HashField.nullable().optional(),
+    tool_manifest_hash: HashField.nullable().optional(),
+    sandbox_policy_hash: HashField.nullable().optional(),
+    capability_manifest_hash: HashField.nullable().optional(),
+    evaluation_score_summary: SummaryText.optional(),
+    release_notes: SummaryText.optional(),
+    approval_reference: z.string().min(1).max(500).nullable().optional(),
+    approved_at: z.string().datetime().nullable().optional(),
+    approved_by_user_id: z.string().uuid().nullable().optional(),
+    retired_at: z.string().datetime().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateAgentVersionInput = z.infer<typeof UpdateAgentVersionBody>;
+
+export const CreateAgentCapabilityBindingBody = z.object({
+  agent_id: z.string().uuid(),
+  agent_version_id: z.string().uuid().optional(),
+  capability_key: KeyField,
+  capability_name: z.string().min(1).max(500),
+  capability_category: CapabilityCategory,
+  capability_status: CapabilityStatus,
+  risk_posture: RiskPosture,
+  hard_deny_floor_expected: z.boolean().default(true),
+  approval_required: z.boolean().default(false),
+  evidence_required: z.boolean().default(true),
+  scope_summary: SummaryText.default(''),
+  restriction_summary: SummaryText.default(''),
+  rationale: SummaryText.default(''),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateAgentCapabilityBindingInput = z.infer<typeof CreateAgentCapabilityBindingBody>;
+
+// PATCH: the binding identity (agent_id, agent_version_id, capability_key) is
+// immutable; only posture/evidence/description fields move.
+export const UpdateAgentCapabilityBindingBody = z
+  .object({
+    capability_name: z.string().min(1).max(500).optional(),
+    capability_category: CapabilityCategory.optional(),
+    capability_status: CapabilityStatus.optional(),
+    risk_posture: RiskPosture.optional(),
+    hard_deny_floor_expected: z.boolean().optional(),
+    approval_required: z.boolean().optional(),
+    evidence_required: z.boolean().optional(),
+    scope_summary: SummaryText.optional(),
+    restriction_summary: SummaryText.optional(),
+    rationale: SummaryText.optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateAgentCapabilityBindingInput = z.infer<typeof UpdateAgentCapabilityBindingBody>;
+
+// ---------------------------------------------------------------------------
 // List queries (keyset pagination + filters)
 // ---------------------------------------------------------------------------
 
@@ -855,6 +1111,53 @@ export const ListAiSystemModelLinksQuery = z
     link_status: ModelLinkStatus.optional(),
     usage_role: ModelUsageRole.optional(),
     deployment_environment: DeploymentEnvironment.optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListAgentsQuery = z
+  .object({
+    ...Cursor,
+    agent_type: AgentType.optional(),
+    agent_status: AgentStatus.optional(),
+    autonomy_level: AutonomyLevel.optional(),
+    execution_boundary: ExecutionBoundary.optional(),
+    provider_id: z.string().uuid().optional(),
+    primary_ai_system_id: z.string().uuid().optional(),
+    primary_model_id: z.string().uuid().optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListAgentVersionsQuery = z
+  .object({
+    ...Cursor,
+    version_status: AgentVersionStatus.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListAgentCapabilityBindingsQuery = z
+  .object({
+    ...Cursor,
+    agent_id: z.string().uuid().optional(),
+    agent_version_id: z.string().uuid().optional(),
+    capability_category: CapabilityCategory.optional(),
+    capability_status: CapabilityStatus.optional(),
+    risk_posture: RiskPosture.optional(),
+    hard_deny_floor_expected: QueryBool.optional(),
+    approval_required: QueryBool.optional(),
+    evidence_required: QueryBool.optional(),
+    q: z.string().min(1).max(200).optional(),
   })
   .refine(cursorPaired, {
     message: 'before_created_at and before_id must be provided together',
