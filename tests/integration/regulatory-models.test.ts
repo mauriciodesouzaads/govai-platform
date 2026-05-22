@@ -177,8 +177,7 @@ afterAll(async () => {
 });
 
 const MODEL_COLS = '(org_id, model_key, name, model_type, model_status, provider_id, primary_ai_system_id, regulatory_source_id, control_id)';
-const insModel = (n: number) =>
-  `INSERT INTO govai.regulatory_models ${MODEL_COLS}
+const insModel = `INSERT INTO govai.regulatory_models ${MODEL_COLS}
    VALUES ($1::uuid, $2, 'x', 'OTHER', 'PROPOSED', $3::uuid, $4::uuid, NULL, NULL)`;
 
 describe('regulatory-models / auth + rbac', () => {
@@ -493,20 +492,20 @@ describe('regulatory-models / RLS (direct DB)', () => {
   });
 
   it('tenant A cannot insert a model with org_id of tenant B', async () => {
-    expect(await insertBlocked(orgA.org_id, insModel(1), [orgB.org_id, `MDL-${randomUUID().slice(0, 8)}`, provA, null])).toBe(true);
+    expect(await insertBlocked(orgA.org_id, insModel, [orgB.org_id, `MDL-${randomUUID().slice(0, 8)}`, provA, null])).toBe(true);
   });
 
   it('tenant A cannot insert a model referencing tenant B provider', async () => {
-    expect(await insertBlocked(orgA.org_id, insModel(1), [orgA.org_id, `MDL-${randomUUID().slice(0, 8)}`, provB, null])).toBe(true);
+    expect(await insertBlocked(orgA.org_id, insModel, [orgA.org_id, `MDL-${randomUUID().slice(0, 8)}`, provB, null])).toBe(true);
   });
 
   it('tenant A cannot insert a model referencing tenant B AI system', async () => {
-    expect(await insertBlocked(orgA.org_id, insModel(1), [orgA.org_id, `MDL-${randomUUID().slice(0, 8)}`, provA, aiSysB])).toBe(true);
+    expect(await insertBlocked(orgA.org_id, insModel, [orgA.org_id, `MDL-${randomUUID().slice(0, 8)}`, provA, aiSysB])).toBe(true);
   });
 
   it('tenant A can insert a model referencing own provider and own AI system', async () => {
     const inserted = await asOrg(orgA.org_id, async (c) => {
-      const r = await c.query(`${insModel(1)} RETURNING id`, [orgA.org_id, `MDL-${randomUUID().slice(0, 8)}`, provA, aiSysA]);
+      const r = await c.query(`${insModel} RETURNING id`, [orgA.org_id, `MDL-${randomUUID().slice(0, 8)}`, provA, aiSysA]);
       return r.rowCount ?? 0;
     });
     expect(inserted).toBe(1);
