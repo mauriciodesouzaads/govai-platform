@@ -34,7 +34,7 @@ let orgPage: AdminOrg;
 let orgFilter: AdminOrg;
 
 // Shared parent records.
-let aiSysA: string, provA: string, modelA: string, modelVerA: string, agentA: string, agentVerA: string, useCaseA: string;
+let aiSysA: string, provA: string, modelA: string, modelVerA: string, agentA: string, agentVerA: string;
 let aiSysB: string, provB: string, modelB: string, modelVerB: string, agentB: string, agentVerB: string, useCaseB: string;
 
 function bodyOf(r: { body: unknown }): Record<string, unknown> {
@@ -226,7 +226,6 @@ beforeAll(async () => {
   modelVerA = await mkModelVersion(orgA, modelA);
   agentA = await mkAgent(orgA);
   agentVerA = await mkAgentVersion(orgA, agentA);
-  useCaseA = await mkUseCase(orgA);
 
   aiSysB = await mkAiSystem(orgB);
   provB = await mkProvider(orgB);
