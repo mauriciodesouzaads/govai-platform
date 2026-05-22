@@ -114,10 +114,11 @@ under which the control turns `COVERED`.
 - Evidence artifacts: registry records, change events, ownership history.
 - Frameworks: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI Act,
   GDPR.
-- Current state: the AI System Registry (PR-R2) and the Provider Registry
-  (PR-R3) are `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the PR-R2 and PR-R3
-  implementation evidence below). The model, agent, and use-case registries
-  remain `REQUIRED_NATIVE_CAPABILITY`.
+- Current state: the AI System Registry (PR-R2), the Provider Registry
+  (PR-R3), and the Model Registry (PR-R4) are
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the PR-R2, PR-R3, and PR-R4
+  implementation evidence below). The agent and use-case registries remain
+  `REQUIRED_NATIVE_CAPABILITY`, so this domain is not `COVERED`.
 - Turns COVERED when: schemas, routes, audit events, and tests for each
   registry exist and are cited in framework mappings.
 
@@ -133,7 +134,11 @@ under which the control turns `COVERED`.
 - Evidence artifacts: lifecycle events, approval evidence, retirement
   records.
 - Frameworks: ISO 42001, NIST AI RMF, EU AI Act, CNJ 615.
-- Current state: REQUIRED_NATIVE_CAPABILITY.
+- Current state: the model side is `IMPLEMENTED_FOUNDATIONAL_CONTROL` for
+  model identity, version provenance, lifecycle/status transitions, and
+  approval/retirement evidence (PR-R4; see the PR-R4 implementation evidence
+  below). The agent side remains `REQUIRED_NATIVE_CAPABILITY`, so this domain
+  is not `COVERED`.
 - Turns COVERED when: lifecycle event types, schema fields, and tests
   exist and are cited in framework mappings.
 
@@ -520,6 +525,53 @@ Limitations (remain future work or external):
 - Agent registry remains future work.
 - Use-case registry remains future work.
 - Risk-classification engine remains future work.
+- CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+## PR-R4 implementation evidence (foundational slice)
+
+PR-R4 adds the next concrete repository evidence behind domain 2 (AI inventory
+and registries) and the model side of domain 3 (model and agent lifecycle): a
+production-focused Model Registry. It is a PR-R4 foundational implementation of
+the model identity, version-provenance, and AI-system/model-version binding
+primitives — not the full AI inventory program — and on its own does not raise
+any framework requirement, nor domain 2 or domain 3, to `COVERED`.
+
+Capability status:
+
+- Model Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL for model identity, version
+  provenance, lifecycle/status evidence, provider linkage, and
+  AI-system/model-version binding.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0019_regulatory_model_registry.sql`
+  (`govai.regulatory_models`, `govai.regulatory_model_versions`,
+  `govai.regulatory_ai_system_model_links`; tenant-only, RLS ENABLE + FORCE,
+  DB-enforced parent visibility and version-belongs-to-model guards).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+- Tests: `tests/integration/regulatory-models.test.ts`
+
+Audit events emitted:
+
+- `regulatory_model.created` / `.updated` / `.status_changed`
+- `regulatory_model_version.created` / `.updated` / `.status_changed` /
+  `.approved` / `.retired`
+- `regulatory_ai_system_model_link.created` / `.updated` / `.status_changed`
+
+Limitations (remain future work or external):
+
+- Provenance/metadata only — no model artifact bytes, training data, evaluation
+  datasets, credentials, API keys, secrets, tokens, or certificates are stored.
+- Agent registry remains future work.
+- Use-case registry remains future work.
+- Risk-classification engine remains future work.
+- No model runtime enforcement.
+- No live provider integration or connector.
 - CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.

@@ -38,6 +38,18 @@ import {
   getVisibleProvider,
   updateProvider,
   listProviders,
+  createModel,
+  getVisibleModel,
+  updateModel,
+  listModels,
+  createModelVersion,
+  getVisibleModelVersion,
+  updateModelVersion,
+  listModelVersions,
+  createAiSystemModelLink,
+  getVisibleAiSystemModelLink,
+  updateAiSystemModelLink,
+  listAiSystemModelLinks,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -48,6 +60,9 @@ import {
   type MappingRow,
   type AiSystemRow,
   type ProviderRow,
+  type ModelRow,
+  type ModelVersionRow,
+  type AiSystemModelLinkRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -62,6 +77,12 @@ import {
   UpdateAiSystemBody,
   CreateProviderBody,
   UpdateProviderBody,
+  CreateModelBody,
+  UpdateModelBody,
+  CreateModelVersionBody,
+  UpdateModelVersionBody,
+  CreateAiSystemModelLinkBody,
+  UpdateAiSystemModelLinkBody,
   ListSourcesQuery,
   ListControlsQuery,
   ListVersionsQuery,
@@ -69,6 +90,9 @@ import {
   ListMappingsQuery,
   ListAiSystemsQuery,
   ListProvidersQuery,
+  ListModelsQuery,
+  ListModelVersionsQuery,
+  ListAiSystemModelLinksQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -327,6 +351,89 @@ function serializeProvider(r: ProviderRow): Record<string, unknown> {
     review_frequency: r.review_frequency,
     regulatory_source_id: r.regulatory_source_id,
     control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeModel(r: ModelRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    model_key: r.model_key,
+    name: r.name,
+    description: r.description,
+    model_type: r.model_type,
+    model_status: r.model_status,
+    provider_id: r.provider_id,
+    primary_ai_system_id: r.primary_ai_system_id,
+    primary_jurisdiction: r.primary_jurisdiction,
+    business_owner: r.business_owner,
+    technical_owner: r.technical_owner,
+    legal_owner: r.legal_owner,
+    dpo_owner: r.dpo_owner,
+    intended_use: r.intended_use,
+    prohibited_uses: r.prohibited_uses,
+    training_data_summary: r.training_data_summary,
+    evaluation_summary: r.evaluation_summary,
+    human_oversight_summary: r.human_oversight_summary,
+    last_reviewed_at: iso(r.last_reviewed_at),
+    next_review_at: iso(r.next_review_at),
+    review_frequency: r.review_frequency,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeModelVersion(r: ModelVersionRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    model_id: r.model_id,
+    version_key: r.version_key,
+    version_label: r.version_label,
+    version_status: r.version_status,
+    provider_model_name: r.provider_model_name,
+    provider_model_version: r.provider_model_version,
+    artifact_uri: r.artifact_uri,
+    artifact_hash: r.artifact_hash,
+    training_data_hash: r.training_data_hash,
+    evaluation_dataset_hash: r.evaluation_dataset_hash,
+    evaluation_score_summary: r.evaluation_score_summary,
+    release_notes: r.release_notes,
+    approval_reference: r.approval_reference,
+    approved_at: iso(r.approved_at),
+    approved_by_user_id: r.approved_by_user_id,
+    retired_at: iso(r.retired_at),
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeAiSystemModelLink(r: AiSystemModelLinkRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    ai_system_id: r.ai_system_id,
+    model_id: r.model_id,
+    model_version_id: r.model_version_id,
+    link_status: r.link_status,
+    usage_role: r.usage_role,
+    deployment_environment: r.deployment_environment,
+    effective_from: iso(r.effective_from),
+    effective_to: iso(r.effective_to),
+    rationale: r.rationale,
     metadata: r.metadata,
     created_by_user_id: r.created_by_user_id,
     updated_by_user_id: r.updated_by_user_id,
@@ -941,6 +1048,301 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       return { provider: serializeProvider(out.value) };
     } catch (err) {
       return onError(req, reply, err, 'update_provider');
+    }
+  });
+
+  // =========================================================================
+  // Model Registry (PR-R4)
+  // =========================================================================
+
+  app.get('/v1/regulatory/models', async (req, reply) => {
+    const parsed = ListModelsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listModels(
+          ctx,
+          {
+            model_type: parsed.data.model_type,
+            model_status: parsed.data.model_status,
+            provider_id: parsed.data.provider_id,
+            primary_ai_system_id: parsed.data.primary_ai_system_id,
+            primary_jurisdiction: parsed.data.primary_jurisdiction,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { models: out.value.rows.map(serializeModel), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_models');
+    }
+  });
+
+  app.post('/v1/regulatory/models', async (req, reply) => {
+    const parsed = CreateModelBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createModel(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { model: serializeModel(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_model');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/models/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_model_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleModel(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'model_not_found' };
+      }
+      return { model: serializeModel(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_model');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/models/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_model_id' };
+    }
+    const parsed = UpdateModelBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateModel(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { model: serializeModel(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_model');
+    }
+  });
+
+  // --- Model versions ------------------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/models/:id/versions', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_model_id' };
+    }
+    const parsed = CreateModelVersionBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createModelVersion(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { model_version: serializeModelVersion(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_model_version');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/models/:id/versions', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_model_id' };
+    }
+    const parsed = ListModelVersionsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listModelVersions(
+          ctx,
+          req.params.id,
+          { version_status: parsed.data.version_status, q: parsed.data.q },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { model_versions: out.value.rows.map(serializeModelVersion), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_model_versions');
+    }
+  });
+
+  app.get<{ Params: { versionId: string } }>('/v1/regulatory/model-versions/:versionId', async (req, reply) => {
+    if (!validId(req.params.versionId)) {
+      reply.code(400);
+      return { error: 'invalid_model_version_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleModelVersion(ctx, req.params.versionId));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'model_version_not_found' };
+      }
+      return { model_version: serializeModelVersion(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_model_version');
+    }
+  });
+
+  app.patch<{ Params: { versionId: string } }>('/v1/regulatory/model-versions/:versionId', async (req, reply) => {
+    if (!validId(req.params.versionId)) {
+      reply.code(400);
+      return { error: 'invalid_model_version_id' };
+    }
+    const parsed = UpdateModelVersionBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateModelVersion(ctx, req.params.versionId, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { model_version: serializeModelVersion(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_model_version');
+    }
+  });
+
+  // --- AI system ↔ model version links -------------------------------------
+
+  app.get('/v1/regulatory/ai-system-model-links', async (req, reply) => {
+    const parsed = ListAiSystemModelLinksQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listAiSystemModelLinks(
+          ctx,
+          {
+            ai_system_id: parsed.data.ai_system_id,
+            model_id: parsed.data.model_id,
+            model_version_id: parsed.data.model_version_id,
+            link_status: parsed.data.link_status,
+            usage_role: parsed.data.usage_role,
+            deployment_environment: parsed.data.deployment_environment,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        ai_system_model_links: out.value.rows.map(serializeAiSystemModelLink),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_ai_system_model_links');
+    }
+  });
+
+  app.post('/v1/regulatory/ai-system-model-links', async (req, reply) => {
+    const parsed = CreateAiSystemModelLinkBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createAiSystemModelLink(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { ai_system_model_link: serializeAiSystemModelLink(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_ai_system_model_link');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/ai-system-model-links/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_ai_system_model_link_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleAiSystemModelLink(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'ai_system_model_link_not_found' };
+      }
+      return { ai_system_model_link: serializeAiSystemModelLink(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_ai_system_model_link');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/ai-system-model-links/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_ai_system_model_link_id' };
+    }
+    const parsed = UpdateAiSystemModelLinkBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateAiSystemModelLink(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { ai_system_model_link: serializeAiSystemModelLink(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_ai_system_model_link');
     }
   });
 }
