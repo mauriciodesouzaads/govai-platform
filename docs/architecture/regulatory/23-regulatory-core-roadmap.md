@@ -140,6 +140,11 @@ implementation timeline.
 - Mapping update triggered: control 3 in `20-target-control-catalog.md`.
 - Tests expected: unit tests for model records, integration tests for
   approvals.
+- Status: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R4) for model identity,
+  version provenance, lifecycle/status transitions, approval/retirement
+  evidence, provider linkage, and AI-system/model-version binding. See the
+  PR-R4 evidence below. Model runtime enforcement and live ModelOps/provider
+  integration remain future work.
 
 ### Agent Registry
 
@@ -407,6 +412,54 @@ Limitations (remain future work or external):
 - Agent registry remains future work.
 - Use-case registry remains future work.
 - Risk-classification engine remains future work.
+- CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-R4 implementation evidence (foundational slice)
+
+PR-R4 delivers the Model Registry, the next P0 foundation after the source
+registry, control catalog, AI system registry, and provider registry (the
+Model Registry depends on both the AI System Registry and the Provider
+Registry, both now in place). It is a production-focused PR-R4 foundational
+slice — model identity, version provenance, and AI-system/model-version
+bindings — not the full AI inventory program.
+
+Status:
+
+- Model Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL for model identity, version
+  provenance, lifecycle/status evidence, provider linkage, and
+  AI-system/model-version binding.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0019_regulatory_model_registry.sql`
+  (`govai.regulatory_models`, `govai.regulatory_model_versions`,
+  `govai.regulatory_ai_system_model_links`; tenant-only, RLS ENABLE + FORCE,
+  DB-enforced parent visibility + version-belongs-to-model guards).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+  (model, model-version, and ai-system-model-link endpoints; no delete).
+- Tests: `tests/integration/regulatory-models.test.ts`.
+
+Audit events emitted:
+
+- `regulatory_model.created` / `.updated` / `.status_changed`
+- `regulatory_model_version.created` / `.updated` / `.status_changed` /
+  `.approved` / `.retired`
+- `regulatory_ai_system_model_link.created` / `.updated` / `.status_changed`
+
+Limitations (remain future work or external):
+
+- Provenance/metadata only — no model artifact bytes, training data, evaluation
+  datasets, credentials, API keys, secrets, tokens, or certificates are stored.
+- Agent registry remains future work.
+- Use-case registry remains future work.
+- Risk-classification engine remains future work.
+- No model runtime enforcement.
+- No live provider integration or connector.
 - CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.

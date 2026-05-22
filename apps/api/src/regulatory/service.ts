@@ -31,6 +31,12 @@ import type {
   UpdateAiSystemInput,
   CreateProviderInput,
   UpdateProviderInput,
+  CreateModelInput,
+  UpdateModelInput,
+  CreateModelVersionInput,
+  UpdateModelVersionInput,
+  CreateAiSystemModelLinkInput,
+  UpdateAiSystemModelLinkInput,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -1516,6 +1522,744 @@ export async function listProviders(
   params.push(cursor.limit);
   const res = await ctx.client.query<ProviderRow>(
     `SELECT ${PROVIDER_COLUMNS} FROM govai.regulatory_providers
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// Model Registry (PR-R4)
+// ---------------------------------------------------------------------------
+
+export type ModelRow = {
+  id: string;
+  org_id: string;
+  model_key: string;
+  name: string;
+  description: string;
+  model_type: string;
+  model_status: string;
+  provider_id: string;
+  primary_ai_system_id: string | null;
+  primary_jurisdiction: string;
+  business_owner: string | null;
+  technical_owner: string | null;
+  legal_owner: string | null;
+  dpo_owner: string | null;
+  intended_use: string;
+  prohibited_uses: string;
+  training_data_summary: string;
+  evaluation_summary: string;
+  human_oversight_summary: string;
+  last_reviewed_at: Date | null;
+  next_review_at: Date | null;
+  review_frequency: string;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const MODEL_COLUMNS = `id, org_id, model_key, name, description, model_type, model_status, provider_id,
+  primary_ai_system_id, primary_jurisdiction, business_owner, technical_owner, legal_owner, dpo_owner,
+  intended_use, prohibited_uses, training_data_summary, evaluation_summary, human_oversight_summary,
+  last_reviewed_at, next_review_at, review_frequency, regulatory_source_id, control_id, metadata,
+  created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type ModelVersionRow = {
+  id: string;
+  org_id: string;
+  model_id: string;
+  version_key: string;
+  version_label: string;
+  version_status: string;
+  provider_model_name: string | null;
+  provider_model_version: string | null;
+  artifact_uri: string | null;
+  artifact_hash: string | null;
+  training_data_hash: string | null;
+  evaluation_dataset_hash: string | null;
+  evaluation_score_summary: string;
+  release_notes: string;
+  approval_reference: string | null;
+  approved_at: Date | null;
+  approved_by_user_id: string | null;
+  retired_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const MODEL_VERSION_COLUMNS = `id, org_id, model_id, version_key, version_label, version_status,
+  provider_model_name, provider_model_version, artifact_uri, artifact_hash, training_data_hash,
+  evaluation_dataset_hash, evaluation_score_summary, release_notes, approval_reference, approved_at,
+  approved_by_user_id, retired_at, metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type AiSystemModelLinkRow = {
+  id: string;
+  org_id: string;
+  ai_system_id: string;
+  model_id: string;
+  model_version_id: string;
+  link_status: string;
+  usage_role: string;
+  deployment_environment: string;
+  effective_from: Date | null;
+  effective_to: Date | null;
+  rationale: string;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const LINK_MODEL_COLUMNS = `id, org_id, ai_system_id, model_id, model_version_id, link_status, usage_role,
+  deployment_environment, effective_from, effective_to, rationale, metadata, created_by_user_id,
+  updated_by_user_id, created_at, updated_at`;
+
+const VERSION_APPROVAL_STATES = new Set(['APPROVED', 'ACTIVE']);
+
+// Models reference an own-tenant provider (required) and optionally an own-tenant
+// AI system, plus optionally own/system source/control. Service-level checks give
+// clean 404s; the DB RLS WITH CHECK is the backstop.
+async function requireModelParents(
+  ctx: Ctx,
+  refs: {
+    provider_id?: string | null;
+    primary_ai_system_id?: string | null;
+    regulatory_source_id?: string | null;
+    control_id?: string | null;
+  },
+): Promise<void> {
+  if (refs.provider_id) {
+    const p = await getVisibleProvider(ctx, refs.provider_id);
+    if (!p) throw new RegulatoryError(404, 'provider_not_found');
+  }
+  if (refs.primary_ai_system_id) {
+    const a = await getVisibleAiSystem(ctx, refs.primary_ai_system_id);
+    if (!a) throw new RegulatoryError(404, 'ai_system_not_found');
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: refs.regulatory_source_id ?? null,
+    control_id: refs.control_id ?? null,
+  });
+}
+
+export async function createModel(ctx: Ctx, input: CreateModelInput): Promise<ModelRow> {
+  await requireModelParents(ctx, {
+    provider_id: input.provider_id,
+    primary_ai_system_id: input.primary_ai_system_id ?? null,
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<ModelRow>(
+      `INSERT INTO govai.regulatory_models
+         (org_id, model_key, name, description, model_type, model_status, provider_id,
+          primary_ai_system_id, primary_jurisdiction, business_owner, technical_owner, legal_owner,
+          dpo_owner, intended_use, prohibited_uses, training_data_summary, evaluation_summary,
+          human_oversight_summary, last_reviewed_at, next_review_at, review_frequency,
+          regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::uuid, $8::uuid, $9, $10, $11, $12, $13, $14, $15, $16,
+               $17, $18, $19::timestamptz, $20::timestamptz, $21, $22::uuid, $23::uuid, $24::jsonb,
+               $25::uuid, $25::uuid)
+       RETURNING ${MODEL_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.model_key,
+        input.name,
+        input.description,
+        input.model_type,
+        input.model_status,
+        input.provider_id,
+        input.primary_ai_system_id ?? null,
+        input.primary_jurisdiction,
+        input.business_owner ?? null,
+        input.technical_owner ?? null,
+        input.legal_owner ?? null,
+        input.dpo_owner ?? null,
+        input.intended_use,
+        input.prohibited_uses,
+        input.training_data_summary,
+        input.evaluation_summary,
+        input.human_oversight_summary,
+        input.last_reviewed_at ?? null,
+        input.next_review_at ?? null,
+        input.review_frequency,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'model_key_conflict', { model_key: input.model_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_model.created',
+    subjectType: 'regulatory_model',
+    subjectId: row.id,
+    metadata: {
+      model_id: row.id,
+      model_key: row.model_key,
+      model_type: row.model_type,
+      model_status: row.model_status,
+      provider_id: row.provider_id,
+      primary_ai_system_id: row.primary_ai_system_id,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleModel(ctx: Ctx, id: string): Promise<ModelRow | null> {
+  const r = await ctx.client.query<ModelRow>(
+    `SELECT ${MODEL_COLUMNS} FROM govai.regulatory_models WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateModel(ctx: Ctx, id: string, input: UpdateModelInput): Promise<ModelRow> {
+  const existing = await getVisibleModel(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'model_not_found');
+  await requireModelParents(ctx, {
+    provider_id: input.provider_id !== undefined ? input.provider_id : existing.provider_id,
+    primary_ai_system_id:
+      input.primary_ai_system_id !== undefined ? input.primary_ai_system_id : existing.primary_ai_system_id,
+    regulatory_source_id:
+      input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+    control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+  });
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.name !== undefined) col('name', input.name);
+  if (input.description !== undefined) col('description', input.description);
+  if (input.model_type !== undefined) col('model_type', input.model_type);
+  if (input.model_status !== undefined) col('model_status', input.model_status);
+  if (input.provider_id !== undefined) col('provider_id', input.provider_id, '::uuid');
+  if (input.primary_ai_system_id !== undefined) col('primary_ai_system_id', input.primary_ai_system_id, '::uuid');
+  if (input.primary_jurisdiction !== undefined) col('primary_jurisdiction', input.primary_jurisdiction);
+  if (input.business_owner !== undefined) col('business_owner', input.business_owner);
+  if (input.technical_owner !== undefined) col('technical_owner', input.technical_owner);
+  if (input.legal_owner !== undefined) col('legal_owner', input.legal_owner);
+  if (input.dpo_owner !== undefined) col('dpo_owner', input.dpo_owner);
+  if (input.intended_use !== undefined) col('intended_use', input.intended_use);
+  if (input.prohibited_uses !== undefined) col('prohibited_uses', input.prohibited_uses);
+  if (input.training_data_summary !== undefined) col('training_data_summary', input.training_data_summary);
+  if (input.evaluation_summary !== undefined) col('evaluation_summary', input.evaluation_summary);
+  if (input.human_oversight_summary !== undefined) col('human_oversight_summary', input.human_oversight_summary);
+  if (input.last_reviewed_at !== undefined) col('last_reviewed_at', input.last_reviewed_at, '::timestamptz');
+  if (input.next_review_at !== undefined) col('next_review_at', input.next_review_at, '::timestamptz');
+  if (input.review_frequency !== undefined) col('review_frequency', input.review_frequency);
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<ModelRow>(
+    `UPDATE govai.regulatory_models SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${MODEL_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'model_not_found');
+
+  const statusChanged = input.model_status !== undefined && input.model_status !== existing.model_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_model.updated',
+    subjectType: 'regulatory_model',
+    subjectId: row.id,
+    metadata: {
+      model_id: row.id,
+      model_key: row.model_key,
+      changed_fields: Object.keys(input),
+      model_status: row.model_status,
+      ...(statusChanged ? { previous_model_status: existing.model_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_model.status_changed',
+      subjectType: 'regulatory_model',
+      subjectId: row.id,
+      metadata: {
+        model_id: row.id,
+        model_key: row.model_key,
+        previous_model_status: existing.model_status,
+        model_status: row.model_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listModels(
+  ctx: Ctx,
+  filters: {
+    model_type?: string;
+    model_status?: string;
+    provider_id?: string;
+    primary_ai_system_id?: string;
+    primary_jurisdiction?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<ModelRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('model_type', filters.model_type);
+  eq('model_status', filters.model_status);
+  eq('provider_id', filters.provider_id, '::uuid');
+  eq('primary_ai_system_id', filters.primary_ai_system_id, '::uuid');
+  eq('primary_jurisdiction', filters.primary_jurisdiction);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(`(model_key ILIKE $${i} OR name ILIKE $${i} OR description ILIKE $${i} OR intended_use ILIKE $${i})`);
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ModelRow>(
+    `SELECT ${MODEL_COLUMNS} FROM govai.regulatory_models
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// --- Model versions --------------------------------------------------------
+
+async function requireOwnedModel(ctx: Ctx, id: string): Promise<ModelRow> {
+  const m = await getVisibleModel(ctx, id);
+  if (!m) throw new RegulatoryError(404, 'model_not_found');
+  return m;
+}
+
+export async function createModelVersion(
+  ctx: Ctx,
+  modelId: string,
+  input: CreateModelVersionInput,
+): Promise<ModelVersionRow> {
+  await requireOwnedModel(ctx, modelId);
+  let res;
+  try {
+    res = await ctx.client.query<ModelVersionRow>(
+      `INSERT INTO govai.regulatory_model_versions
+         (org_id, model_id, version_key, version_label, version_status, provider_model_name,
+          provider_model_version, artifact_uri, artifact_hash, training_data_hash,
+          evaluation_dataset_hash, evaluation_score_summary, release_notes, approval_reference,
+          approved_at, approved_by_user_id, retired_at, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+               $15::timestamptz, $16::uuid, $17::timestamptz, $18::jsonb, $19::uuid, $19::uuid)
+       RETURNING ${MODEL_VERSION_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        modelId,
+        input.version_key,
+        input.version_label,
+        input.version_status,
+        input.provider_model_name ?? null,
+        input.provider_model_version ?? null,
+        input.artifact_uri ?? null,
+        input.artifact_hash ?? null,
+        input.training_data_hash ?? null,
+        input.evaluation_dataset_hash ?? null,
+        input.evaluation_score_summary,
+        input.release_notes,
+        input.approval_reference ?? null,
+        input.approved_at ?? null,
+        input.approved_by_user_id ?? null,
+        input.retired_at ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'model_version_key_conflict', { version_key: input.version_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_model_version.created',
+    subjectType: 'regulatory_model_version',
+    subjectId: row.id,
+    metadata: {
+      model_id: modelId,
+      version_id: row.id,
+      version_key: row.version_key,
+      version_status: row.version_status,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleModelVersion(ctx: Ctx, id: string): Promise<ModelVersionRow | null> {
+  const r = await ctx.client.query<ModelVersionRow>(
+    `SELECT ${MODEL_VERSION_COLUMNS} FROM govai.regulatory_model_versions WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateModelVersion(
+  ctx: Ctx,
+  id: string,
+  input: UpdateModelVersionInput,
+): Promise<ModelVersionRow> {
+  const existing = await getVisibleModelVersion(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'model_version_not_found');
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.version_label !== undefined) col('version_label', input.version_label);
+  if (input.version_status !== undefined) col('version_status', input.version_status);
+  if (input.provider_model_name !== undefined) col('provider_model_name', input.provider_model_name);
+  if (input.provider_model_version !== undefined) col('provider_model_version', input.provider_model_version);
+  if (input.artifact_uri !== undefined) col('artifact_uri', input.artifact_uri);
+  if (input.artifact_hash !== undefined) col('artifact_hash', input.artifact_hash);
+  if (input.training_data_hash !== undefined) col('training_data_hash', input.training_data_hash);
+  if (input.evaluation_dataset_hash !== undefined) col('evaluation_dataset_hash', input.evaluation_dataset_hash);
+  if (input.evaluation_score_summary !== undefined) col('evaluation_score_summary', input.evaluation_score_summary);
+  if (input.release_notes !== undefined) col('release_notes', input.release_notes);
+  if (input.approval_reference !== undefined) col('approval_reference', input.approval_reference);
+  if (input.approved_at !== undefined) col('approved_at', input.approved_at, '::timestamptz');
+  if (input.approved_by_user_id !== undefined) col('approved_by_user_id', input.approved_by_user_id, '::uuid');
+  if (input.retired_at !== undefined) col('retired_at', input.retired_at, '::timestamptz');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<ModelVersionRow>(
+    `UPDATE govai.regulatory_model_versions SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${MODEL_VERSION_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'model_version_not_found');
+
+  const statusChanged = input.version_status !== undefined && input.version_status !== existing.version_status;
+  const approvedTransition = statusChanged && VERSION_APPROVAL_STATES.has(row.version_status);
+  const retiredTransition =
+    (statusChanged && row.version_status === 'RETIRED') ||
+    (input.retired_at !== undefined && input.retired_at !== null && existing.retired_at === null);
+
+  await appendAudit(ctx, {
+    eventType: 'regulatory_model_version.updated',
+    subjectType: 'regulatory_model_version',
+    subjectId: row.id,
+    metadata: {
+      model_id: row.model_id,
+      version_id: row.id,
+      version_key: row.version_key,
+      changed_fields: Object.keys(input),
+      version_status: row.version_status,
+      ...(statusChanged ? { previous_version_status: existing.version_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_model_version.status_changed',
+      subjectType: 'regulatory_model_version',
+      subjectId: row.id,
+      metadata: {
+        model_id: row.model_id,
+        version_id: row.id,
+        previous_version_status: existing.version_status,
+        version_status: row.version_status,
+      },
+    });
+  }
+  if (approvedTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_model_version.approved',
+      subjectType: 'regulatory_model_version',
+      subjectId: row.id,
+      metadata: {
+        model_id: row.model_id,
+        version_id: row.id,
+        version_status: row.version_status,
+        approved_at: row.approved_at ? row.approved_at.toISOString() : null,
+        approved_by_user_id: row.approved_by_user_id,
+        approval_reference: row.approval_reference,
+      },
+    });
+  }
+  if (retiredTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_model_version.retired',
+      subjectType: 'regulatory_model_version',
+      subjectId: row.id,
+      metadata: {
+        model_id: row.model_id,
+        version_id: row.id,
+        version_status: row.version_status,
+        retired_at: row.retired_at ? row.retired_at.toISOString() : null,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listModelVersions(
+  ctx: Ctx,
+  modelId: string,
+  filters: { version_status?: string; q?: string },
+  cursor: Cursor,
+): Promise<ListResult<ModelVersionRow>> {
+  // The model must be visible to the caller (own tenant).
+  await requireOwnedModel(ctx, modelId);
+  const where: string[] = ['model_id = $1::uuid'];
+  const params: unknown[] = [modelId];
+  if (filters.version_status !== undefined) {
+    params.push(filters.version_status);
+    where.push(`version_status = $${params.length}`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(version_key ILIKE $${i} OR version_label ILIKE $${i} OR provider_model_name ILIKE $${i}
+        OR provider_model_version ILIKE $${i} OR release_notes ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ModelVersionRow>(
+    `SELECT ${MODEL_VERSION_COLUMNS} FROM govai.regulatory_model_versions
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// --- AI system ↔ model version links ---------------------------------------
+
+export async function createAiSystemModelLink(
+  ctx: Ctx,
+  input: CreateAiSystemModelLinkInput,
+): Promise<AiSystemModelLinkRow> {
+  // Clean 404/400s; DB RLS WITH CHECK is the backstop.
+  const ai = await getVisibleAiSystem(ctx, input.ai_system_id);
+  if (!ai) throw new RegulatoryError(404, 'ai_system_not_found');
+  const model = await getVisibleModel(ctx, input.model_id);
+  if (!model) throw new RegulatoryError(404, 'model_not_found');
+  const version = await getVisibleModelVersion(ctx, input.model_version_id);
+  if (!version) throw new RegulatoryError(404, 'model_version_not_found');
+  if (version.model_id !== input.model_id) {
+    throw new RegulatoryError(400, 'model_version_model_mismatch', {
+      model_id: input.model_id,
+      model_version_id: input.model_version_id,
+    });
+  }
+  let res;
+  try {
+    res = await ctx.client.query<AiSystemModelLinkRow>(
+      `INSERT INTO govai.regulatory_ai_system_model_links
+         (org_id, ai_system_id, model_id, model_version_id, link_status, usage_role,
+          deployment_environment, effective_from, effective_to, rationale, metadata,
+          created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8::timestamptz, $9::timestamptz,
+               $10, $11::jsonb, $12::uuid, $12::uuid)
+       RETURNING ${LINK_MODEL_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.ai_system_id,
+        input.model_id,
+        input.model_version_id,
+        input.link_status,
+        input.usage_role,
+        input.deployment_environment,
+        input.effective_from ?? null,
+        input.effective_to ?? null,
+        input.rationale,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'ai_system_model_link_conflict', {
+        usage_role: input.usage_role,
+        deployment_environment: input.deployment_environment,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_ai_system_model_link.created',
+    subjectType: 'regulatory_ai_system_model_link',
+    subjectId: row.id,
+    metadata: {
+      link_id: row.id,
+      ai_system_id: row.ai_system_id,
+      model_id: row.model_id,
+      model_version_id: row.model_version_id,
+      usage_role: row.usage_role,
+      deployment_environment: row.deployment_environment,
+      link_status: row.link_status,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleAiSystemModelLink(
+  ctx: Ctx,
+  id: string,
+): Promise<AiSystemModelLinkRow | null> {
+  const r = await ctx.client.query<AiSystemModelLinkRow>(
+    `SELECT ${LINK_MODEL_COLUMNS} FROM govai.regulatory_ai_system_model_links WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateAiSystemModelLink(
+  ctx: Ctx,
+  id: string,
+  input: UpdateAiSystemModelLinkInput,
+): Promise<AiSystemModelLinkRow> {
+  const existing = await getVisibleAiSystemModelLink(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'ai_system_model_link_not_found');
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.link_status !== undefined) col('link_status', input.link_status);
+  if (input.effective_from !== undefined) col('effective_from', input.effective_from, '::timestamptz');
+  if (input.effective_to !== undefined) col('effective_to', input.effective_to, '::timestamptz');
+  if (input.rationale !== undefined) col('rationale', input.rationale);
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<AiSystemModelLinkRow>(
+    `UPDATE govai.regulatory_ai_system_model_links SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${LINK_MODEL_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'ai_system_model_link_not_found');
+
+  const statusChanged = input.link_status !== undefined && input.link_status !== existing.link_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_ai_system_model_link.updated',
+    subjectType: 'regulatory_ai_system_model_link',
+    subjectId: row.id,
+    metadata: {
+      link_id: row.id,
+      ai_system_id: row.ai_system_id,
+      model_id: row.model_id,
+      model_version_id: row.model_version_id,
+      usage_role: row.usage_role,
+      deployment_environment: row.deployment_environment,
+      changed_fields: Object.keys(input),
+      link_status: row.link_status,
+      ...(statusChanged ? { previous_link_status: existing.link_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_ai_system_model_link.status_changed',
+      subjectType: 'regulatory_ai_system_model_link',
+      subjectId: row.id,
+      metadata: {
+        link_id: row.id,
+        ai_system_id: row.ai_system_id,
+        model_id: row.model_id,
+        model_version_id: row.model_version_id,
+        usage_role: row.usage_role,
+        deployment_environment: row.deployment_environment,
+        previous_link_status: existing.link_status,
+        link_status: row.link_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listAiSystemModelLinks(
+  ctx: Ctx,
+  filters: {
+    ai_system_id?: string;
+    model_id?: string;
+    model_version_id?: string;
+    link_status?: string;
+    usage_role?: string;
+    deployment_environment?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<AiSystemModelLinkRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('ai_system_id', filters.ai_system_id, '::uuid');
+  eq('model_id', filters.model_id, '::uuid');
+  eq('model_version_id', filters.model_version_id, '::uuid');
+  eq('link_status', filters.link_status);
+  eq('usage_role', filters.usage_role);
+  eq('deployment_environment', filters.deployment_environment);
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<AiSystemModelLinkRow>(
+    `SELECT ${LINK_MODEL_COLUMNS} FROM govai.regulatory_ai_system_model_links
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,

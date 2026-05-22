@@ -199,3 +199,30 @@ integration, and CNJ/Sinapses readiness remain future work; certification and
 legal interpretation remain external. GovAI does not guarantee compliance, does
 not provide legal advice, and does not guarantee judicial validity or evidence
 admissibility.
+
+## PR-R4 implementation
+
+PR-R4 adds the next P0 Native Regulatory Core foundation after the source
+registry, control catalog, AI system registry, and provider registry: a
+production-focused Model Registry. It lands three tables —
+`govai.regulatory_models`, `govai.regulatory_model_versions`, and
+`govai.regulatory_ai_system_model_links` — as `IMPLEMENTED_FOUNDATIONAL_CONTROL`
+for model identity, version provenance, lifecycle/status evidence, provider
+linkage, and AI-system/model-version binding, with migration, validation,
+service, routes, tenant isolation (RLS with DB-enforced parent visibility and a
+version-belongs-to-model guard), audit events (`regulatory_model.*`,
+`regulatory_model_version.*` including `.approved` / `.retired`, and
+`regulatory_ai_system_model_link.*`), and integration tests including direct DB
+RLS coverage. Implementation evidence is recorded in
+`23-regulatory-core-roadmap.md` (P0) and `20-target-control-catalog.md`
+(control domains 2 and 3).
+
+This is a foundational, production-focused slice within its declared scope. It
+stores provenance/metadata only — no model artifact bytes, training data,
+evaluation datasets, or credentials. The agent registry and use-case registry
+(so control domain 2 is **not** complete and not `COVERED`), the
+risk-classification engine, model runtime enforcement, live provider/ModelOps
+integration, connectors, and CNJ/Sinapses readiness remain future work;
+certification and legal interpretation remain external. GovAI does not guarantee
+compliance, does not provide legal advice, and does not guarantee judicial
+validity or evidence admissibility.

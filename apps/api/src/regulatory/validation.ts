@@ -544,6 +544,186 @@ export const UpdateProviderBody = z
 export type UpdateProviderInput = z.infer<typeof UpdateProviderBody>;
 
 // ---------------------------------------------------------------------------
+// Model Registry (PR-R4)
+// ---------------------------------------------------------------------------
+
+export const ModelType = z.enum([
+  'FOUNDATION_MODEL',
+  'FINE_TUNED_MODEL',
+  'EMBEDDING_MODEL',
+  'CLASSIFIER',
+  'RERANKER',
+  'RULE_BASED_MODEL',
+  'ENSEMBLE',
+  'THIRD_PARTY_MODEL',
+  'OTHER',
+]);
+
+export const ModelStatus = z.enum([
+  'PROPOSED',
+  'UNDER_EVALUATION',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'ACTIVE',
+  'SUSPENDED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const ModelVersionStatus = z.enum([
+  'DRAFT',
+  'UNDER_EVALUATION',
+  'APPROVED',
+  'ACTIVE',
+  'DEPRECATED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const ModelLinkStatus = z.enum(['PROPOSED', 'ACTIVE', 'SUSPENDED', 'RETIRED']);
+
+export const ModelUsageRole = z.enum([
+  'PRIMARY_MODEL',
+  'FALLBACK_MODEL',
+  'EMBEDDING_MODEL',
+  'RERANKING_MODEL',
+  'CLASSIFICATION_MODEL',
+  'SAFETY_MODEL',
+  'EVALUATION_MODEL',
+  'OTHER',
+]);
+
+// Artifact/data URIs are provenance metadata only (may be s3://, gs://, hf://,
+// internal registry URIs, …), so this is a bounded string rather than an http URL.
+const ProvenanceUri = z.string().min(1).max(2048);
+const SummaryText = z.string().max(8000);
+
+export const CreateModelBody = z.object({
+  model_key: KeyField,
+  name: z.string().min(1).max(500),
+  description: LongText.default(''),
+  model_type: ModelType,
+  model_status: ModelStatus,
+  provider_id: z.string().uuid(),
+  primary_ai_system_id: z.string().uuid().optional(),
+  primary_jurisdiction: z.string().min(1).max(64).default('BR'),
+  business_owner: OwnerField.optional(),
+  technical_owner: OwnerField.optional(),
+  legal_owner: OwnerField.optional(),
+  dpo_owner: OwnerField.optional(),
+  intended_use: SummaryText.default(''),
+  prohibited_uses: SummaryText.default(''),
+  training_data_summary: SummaryText.default(''),
+  evaluation_summary: SummaryText.default(''),
+  human_oversight_summary: SummaryText.default(''),
+  last_reviewed_at: z.string().datetime().optional(),
+  next_review_at: z.string().datetime().optional(),
+  review_frequency: ReviewFrequency.default('AD_HOC'),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateModelInput = z.infer<typeof CreateModelBody>;
+
+// PATCH: every field optional; ≥1 required. model_key and org_id are immutable.
+export const UpdateModelBody = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    description: LongText.optional(),
+    model_type: ModelType.optional(),
+    model_status: ModelStatus.optional(),
+    provider_id: z.string().uuid().optional(),
+    primary_ai_system_id: z.string().uuid().nullable().optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    business_owner: OwnerField.nullable().optional(),
+    technical_owner: OwnerField.nullable().optional(),
+    legal_owner: OwnerField.nullable().optional(),
+    dpo_owner: OwnerField.nullable().optional(),
+    intended_use: SummaryText.optional(),
+    prohibited_uses: SummaryText.optional(),
+    training_data_summary: SummaryText.optional(),
+    evaluation_summary: SummaryText.optional(),
+    human_oversight_summary: SummaryText.optional(),
+    last_reviewed_at: z.string().datetime().nullable().optional(),
+    next_review_at: z.string().datetime().nullable().optional(),
+    review_frequency: ReviewFrequency.optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateModelInput = z.infer<typeof UpdateModelBody>;
+
+export const CreateModelVersionBody = z.object({
+  version_key: KeyField,
+  version_label: z.string().min(1).max(200),
+  version_status: ModelVersionStatus,
+  provider_model_name: z.string().min(1).max(300).optional(),
+  provider_model_version: z.string().min(1).max(200).optional(),
+  artifact_uri: ProvenanceUri.optional(),
+  artifact_hash: HashField.optional(),
+  training_data_hash: HashField.optional(),
+  evaluation_dataset_hash: HashField.optional(),
+  evaluation_score_summary: SummaryText.default(''),
+  release_notes: SummaryText.default(''),
+  approval_reference: z.string().min(1).max(500).optional(),
+  approved_at: z.string().datetime().optional(),
+  approved_by_user_id: z.string().uuid().optional(),
+  retired_at: z.string().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateModelVersionInput = z.infer<typeof CreateModelVersionBody>;
+
+// PATCH: version_key, model_id, and org_id are immutable.
+export const UpdateModelVersionBody = z
+  .object({
+    version_label: z.string().min(1).max(200).optional(),
+    version_status: ModelVersionStatus.optional(),
+    provider_model_name: z.string().min(1).max(300).nullable().optional(),
+    provider_model_version: z.string().min(1).max(200).nullable().optional(),
+    artifact_uri: ProvenanceUri.nullable().optional(),
+    artifact_hash: HashField.nullable().optional(),
+    training_data_hash: HashField.nullable().optional(),
+    evaluation_dataset_hash: HashField.nullable().optional(),
+    evaluation_score_summary: SummaryText.optional(),
+    release_notes: SummaryText.optional(),
+    approval_reference: z.string().min(1).max(500).nullable().optional(),
+    approved_at: z.string().datetime().nullable().optional(),
+    approved_by_user_id: z.string().uuid().nullable().optional(),
+    retired_at: z.string().datetime().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateModelVersionInput = z.infer<typeof UpdateModelVersionBody>;
+
+export const CreateAiSystemModelLinkBody = z.object({
+  ai_system_id: z.string().uuid(),
+  model_id: z.string().uuid(),
+  model_version_id: z.string().uuid(),
+  link_status: ModelLinkStatus,
+  usage_role: ModelUsageRole,
+  deployment_environment: DeploymentEnvironment,
+  effective_from: z.string().datetime().optional(),
+  effective_to: z.string().datetime().optional(),
+  rationale: SummaryText.default(''),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateAiSystemModelLinkInput = z.infer<typeof CreateAiSystemModelLinkBody>;
+
+// PATCH: the binding identity (ai_system_id, model_id, model_version_id,
+// usage_role, deployment_environment) is immutable; only posture/timing fields move.
+export const UpdateAiSystemModelLinkBody = z
+  .object({
+    link_status: ModelLinkStatus.optional(),
+    effective_from: z.string().datetime().nullable().optional(),
+    effective_to: z.string().datetime().nullable().optional(),
+    rationale: SummaryText.optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateAiSystemModelLinkInput = z.infer<typeof UpdateAiSystemModelLinkBody>;
+
+// ---------------------------------------------------------------------------
 // List queries (keyset pagination + filters)
 // ---------------------------------------------------------------------------
 
@@ -634,6 +814,47 @@ export const ListProvidersQuery = z
     security_review_status: SecurityReviewStatus.optional(),
     dpa_status: DpaStatus.optional(),
     q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListModelsQuery = z
+  .object({
+    ...Cursor,
+    model_type: ModelType.optional(),
+    model_status: ModelStatus.optional(),
+    provider_id: z.string().uuid().optional(),
+    primary_ai_system_id: z.string().uuid().optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListModelVersionsQuery = z
+  .object({
+    ...Cursor,
+    version_status: ModelVersionStatus.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListAiSystemModelLinksQuery = z
+  .object({
+    ...Cursor,
+    ai_system_id: z.string().uuid().optional(),
+    model_id: z.string().uuid().optional(),
+    model_version_id: z.string().uuid().optional(),
+    link_status: ModelLinkStatus.optional(),
+    usage_role: ModelUsageRole.optional(),
+    deployment_environment: DeploymentEnvironment.optional(),
   })
   .refine(cursorPaired, {
     message: 'before_created_at and before_id must be provided together',
