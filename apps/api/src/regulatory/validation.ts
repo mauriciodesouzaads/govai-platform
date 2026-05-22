@@ -980,6 +980,275 @@ export const UpdateAgentCapabilityBindingBody = z
 export type UpdateAgentCapabilityBindingInput = z.infer<typeof UpdateAgentCapabilityBindingBody>;
 
 // ---------------------------------------------------------------------------
+// Use-case Registry (PR-R6)
+// ---------------------------------------------------------------------------
+
+export const UseCaseStatus = z.enum([
+  'PROPOSED',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'ACTIVE',
+  'SUSPENDED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const UseCaseCategory = z.enum([
+  'INTERNAL_PRODUCTIVITY',
+  'CUSTOMER_SUPPORT',
+  'LEGAL_SUPPORT',
+  'JUDICIAL_SUPPORT',
+  'COMPLIANCE_MONITORING',
+  'SECURITY_MONITORING',
+  'HR_EMPLOYMENT',
+  'FINANCIAL_SERVICES',
+  'HEALTHCARE_SUPPORT',
+  'PUBLIC_SECTOR_SERVICE',
+  'RESEARCH_AND_ANALYTICS',
+  'SOFTWARE_ENGINEERING',
+  'DOCUMENT_PROCESSING',
+  'DECISION_SUPPORT',
+  'OTHER',
+]);
+
+export const BusinessCriticality = z.enum(['LOW', 'MEDIUM', 'HIGH', 'MISSION_CRITICAL']);
+
+export const DeploymentScope = z.enum([
+  'INTERNAL_ONLY',
+  'CUSTOMER_FACING',
+  'PUBLIC_FACING',
+  'JUDICIARY_INTERNAL',
+  'REGULATED_WORKFLOW',
+  'THIRD_PARTY_MANAGED',
+  'NOT_DEPLOYED',
+  'OTHER',
+]);
+
+export const UseCaseReviewFrequency = z.enum([
+  'DAILY',
+  'WEEKLY',
+  'MONTHLY',
+  'QUARTERLY',
+  'SEMIANNUAL',
+  'ANNUAL',
+  'AD_HOC',
+  'EMERGENCY',
+]);
+
+export const UseCaseLinkStatus = z.enum(['PROPOSED', 'ACTIVE', 'SUSPENDED', 'RETIRED', 'REJECTED']);
+
+export const UseCaseUsageRole = z.enum([
+  'PRIMARY_SYSTEM',
+  'SUPPORTING_SYSTEM',
+  'PRIMARY_MODEL',
+  'FALLBACK_MODEL',
+  'PRIMARY_AGENT',
+  'SUPPORTING_AGENT',
+  'EMBEDDING',
+  'RERANKING',
+  'CLASSIFICATION',
+  'SAFETY',
+  'EVALUATION',
+  'MONITORING',
+  'OTHER',
+]);
+
+export const UseCaseLinkDeploymentEnvironment = z.enum([
+  'DEVELOPMENT',
+  'STAGING',
+  'PRODUCTION',
+  'CUSTOMER_MANAGED',
+  'THIRD_PARTY_MANAGED',
+  'NOT_DEPLOYED',
+  'OTHER',
+]);
+
+export const UseCaseReviewType = z.enum([
+  'INITIAL_REVIEW',
+  'PERIODIC_REVIEW',
+  'MATERIAL_CHANGE_REVIEW',
+  'INCIDENT_TRIGGERED_REVIEW',
+  'EMERGENCY_REVIEW',
+  'RETIREMENT_REVIEW',
+  'OTHER',
+]);
+
+export const UseCaseReviewStatus = z.enum(['DRAFT', 'IN_REVIEW', 'COMPLETED', 'SUPERSEDED', 'CANCELLED']);
+
+export const UseCaseReviewOutcome = z.enum([
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'CHANGES_REQUIRED',
+  'SUSPENDED',
+  'RETIRED',
+  'NO_DECISION',
+  'REJECTED',
+]);
+
+const EvidenceRef = z.string().min(1).max(2048);
+
+export const CreateUseCaseBody = z.object({
+  use_case_key: KeyField,
+  name: z.string().min(1).max(500),
+  description: LongText.default(''),
+  use_case_status: UseCaseStatus,
+  use_case_category: UseCaseCategory,
+  business_criticality: BusinessCriticality,
+  deployment_scope: DeploymentScope,
+  primary_jurisdiction: z.string().min(1).max(64).default('BR'),
+  business_owner: OwnerField.optional(),
+  technical_owner: OwnerField.optional(),
+  legal_owner: OwnerField.optional(),
+  dpo_owner: OwnerField.optional(),
+  accountable_executive: OwnerField.optional(),
+  intended_purpose: SummaryText.default(''),
+  expected_benefits: SummaryText.default(''),
+  prohibited_uses: SummaryText.default(''),
+  restricted_uses: SummaryText.default(''),
+  target_users: SummaryText.default(''),
+  affected_subjects: SummaryText.default(''),
+  data_categories_summary: SummaryText.default(''),
+  sensitive_data_summary: SummaryText.default(''),
+  legal_basis_summary: SummaryText.default(''),
+  regulatory_basis_summary: SummaryText.default(''),
+  human_oversight_summary: SummaryText.default(''),
+  review_frequency: UseCaseReviewFrequency.default('AD_HOC'),
+  last_reviewed_at: z.string().datetime().optional(),
+  next_review_at: z.string().datetime().optional(),
+  primary_ai_system_id: z.string().uuid().optional(),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateUseCaseInput = z.infer<typeof CreateUseCaseBody>;
+
+// PATCH: every field optional; ≥1 required. use_case_key and org_id are immutable.
+export const UpdateUseCaseBody = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    description: LongText.optional(),
+    use_case_status: UseCaseStatus.optional(),
+    use_case_category: UseCaseCategory.optional(),
+    business_criticality: BusinessCriticality.optional(),
+    deployment_scope: DeploymentScope.optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    business_owner: OwnerField.nullable().optional(),
+    technical_owner: OwnerField.nullable().optional(),
+    legal_owner: OwnerField.nullable().optional(),
+    dpo_owner: OwnerField.nullable().optional(),
+    accountable_executive: OwnerField.nullable().optional(),
+    intended_purpose: SummaryText.optional(),
+    expected_benefits: SummaryText.optional(),
+    prohibited_uses: SummaryText.optional(),
+    restricted_uses: SummaryText.optional(),
+    target_users: SummaryText.optional(),
+    affected_subjects: SummaryText.optional(),
+    data_categories_summary: SummaryText.optional(),
+    sensitive_data_summary: SummaryText.optional(),
+    legal_basis_summary: SummaryText.optional(),
+    regulatory_basis_summary: SummaryText.optional(),
+    human_oversight_summary: SummaryText.optional(),
+    review_frequency: UseCaseReviewFrequency.optional(),
+    last_reviewed_at: z.string().datetime().nullable().optional(),
+    next_review_at: z.string().datetime().nullable().optional(),
+    primary_ai_system_id: z.string().uuid().nullable().optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateUseCaseInput = z.infer<typeof UpdateUseCaseBody>;
+
+export const CreateUseCaseAssetLinkBody = z
+  .object({
+    use_case_id: z.string().uuid(),
+    ai_system_id: z.string().uuid(),
+    model_id: z.string().uuid().optional(),
+    model_version_id: z.string().uuid().optional(),
+    agent_id: z.string().uuid().optional(),
+    agent_version_id: z.string().uuid().optional(),
+    link_status: UseCaseLinkStatus,
+    usage_role: UseCaseUsageRole,
+    deployment_environment: UseCaseLinkDeploymentEnvironment,
+    effective_from: z.string().datetime().optional(),
+    effective_to: z.string().datetime().optional(),
+    rationale: SummaryText.default(''),
+    evidence_reference: EvidenceRef.optional(),
+    regulatory_source_id: z.string().uuid().optional(),
+    control_id: z.string().uuid().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => !(d.model_version_id !== undefined && d.model_id === undefined), {
+    message: 'model_version_id requires model_id',
+    path: ['model_id'],
+  })
+  .refine((d) => !(d.agent_version_id !== undefined && d.agent_id === undefined), {
+    message: 'agent_version_id requires agent_id',
+    path: ['agent_id'],
+  });
+export type CreateUseCaseAssetLinkInput = z.infer<typeof CreateUseCaseAssetLinkBody>;
+
+// PATCH: the binding identity (use_case_id, ai_system_id, model_id,
+// model_version_id, agent_id, agent_version_id, usage_role,
+// deployment_environment) is immutable; only posture/timing/evidence fields move.
+export const UpdateUseCaseAssetLinkBody = z
+  .object({
+    link_status: UseCaseLinkStatus.optional(),
+    effective_from: z.string().datetime().nullable().optional(),
+    effective_to: z.string().datetime().nullable().optional(),
+    rationale: SummaryText.optional(),
+    evidence_reference: EvidenceRef.nullable().optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateUseCaseAssetLinkInput = z.infer<typeof UpdateUseCaseAssetLinkBody>;
+
+export const CreateUseCaseReviewBody = z.object({
+  review_key: KeyField,
+  review_type: UseCaseReviewType,
+  review_status: UseCaseReviewStatus,
+  review_outcome: UseCaseReviewOutcome,
+  reviewer_user_id: z.string().uuid().optional(),
+  reviewer_name: OwnerField.optional(),
+  reviewed_at: z.string().datetime().optional(),
+  next_review_at: z.string().datetime().optional(),
+  findings_summary: SummaryText.default(''),
+  decision_summary: SummaryText.default(''),
+  conditions_summary: SummaryText.default(''),
+  evidence_reference: EvidenceRef.optional(),
+  evidence_hash: HashField.optional(),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateUseCaseReviewInput = z.infer<typeof CreateUseCaseReviewBody>;
+
+// PATCH: review_key, use_case_id, and org_id are immutable.
+export const UpdateUseCaseReviewBody = z
+  .object({
+    review_type: UseCaseReviewType.optional(),
+    review_status: UseCaseReviewStatus.optional(),
+    review_outcome: UseCaseReviewOutcome.optional(),
+    reviewer_user_id: z.string().uuid().nullable().optional(),
+    reviewer_name: OwnerField.nullable().optional(),
+    reviewed_at: z.string().datetime().nullable().optional(),
+    next_review_at: z.string().datetime().nullable().optional(),
+    findings_summary: SummaryText.optional(),
+    decision_summary: SummaryText.optional(),
+    conditions_summary: SummaryText.optional(),
+    evidence_reference: EvidenceRef.nullable().optional(),
+    evidence_hash: HashField.nullable().optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateUseCaseReviewInput = z.infer<typeof UpdateUseCaseReviewBody>;
+
+// ---------------------------------------------------------------------------
 // List queries (keyset pagination + filters)
 // ---------------------------------------------------------------------------
 
@@ -1157,6 +1426,57 @@ export const ListAgentCapabilityBindingsQuery = z
     hard_deny_floor_expected: QueryBool.optional(),
     approval_required: QueryBool.optional(),
     evidence_required: QueryBool.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListUseCasesQuery = z
+  .object({
+    ...Cursor,
+    use_case_status: UseCaseStatus.optional(),
+    use_case_category: UseCaseCategory.optional(),
+    business_criticality: BusinessCriticality.optional(),
+    deployment_scope: DeploymentScope.optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    primary_ai_system_id: z.string().uuid().optional(),
+    next_review_before: z.string().datetime().optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListUseCaseAssetLinksQuery = z
+  .object({
+    ...Cursor,
+    use_case_id: z.string().uuid().optional(),
+    ai_system_id: z.string().uuid().optional(),
+    model_id: z.string().uuid().optional(),
+    model_version_id: z.string().uuid().optional(),
+    agent_id: z.string().uuid().optional(),
+    agent_version_id: z.string().uuid().optional(),
+    link_status: UseCaseLinkStatus.optional(),
+    usage_role: UseCaseUsageRole.optional(),
+    deployment_environment: UseCaseLinkDeploymentEnvironment.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListUseCaseReviewsQuery = z
+  .object({
+    ...Cursor,
+    review_type: UseCaseReviewType.optional(),
+    review_status: UseCaseReviewStatus.optional(),
+    review_outcome: UseCaseReviewOutcome.optional(),
+    reviewed_before: z.string().datetime().optional(),
+    next_review_before: z.string().datetime().optional(),
     q: z.string().min(1).max(200).optional(),
   })
   .refine(cursorPaired, {

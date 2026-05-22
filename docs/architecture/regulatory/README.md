@@ -257,3 +257,37 @@ runtime agent enforcement, live tool invocation, connectors, and CNJ/Sinapses
 readiness remain future work; certification and legal interpretation remain
 external. GovAI does not guarantee compliance, does not provide legal advice,
 and does not guarantee judicial validity or evidence admissibility.
+
+## PR-R6 implementation
+
+PR-R6 adds the final P0 Native Regulatory Core registry category after the
+source registry, control catalog, AI system registry, provider registry, model
+registry, and agent registry: a production-focused Use-case Registry. It lands
+three tables — `govai.regulatory_use_cases`,
+`govai.regulatory_use_case_asset_links`, and
+`govai.regulatory_use_case_reviews` — as `IMPLEMENTED_FOUNDATIONAL_CONTROL` for
+use-case identity, intended purpose, prohibited/restricted-use boundaries,
+ownership/accountability, jurisdiction and regulatory/legal-basis evidence,
+AI-system plus optional model/model-version/agent/agent-version linkage,
+lifecycle/status evidence, and periodic-review evidence, with migration,
+validation, service, routes, tenant isolation (RLS with DB-enforced parent
+visibility, version-requires-parent CHECKs, table-qualified
+version-belongs-to-parent guards, and partial unique indexes for nullable
+version columns), audit events (`regulatory_use_case.*`,
+`regulatory_use_case_asset_link.*`, and `regulatory_use_case_review.*`), and
+integration tests including direct DB RLS coverage. Implementation evidence is
+recorded in `23-regulatory-core-roadmap.md` (P0) and
+`20-target-control-catalog.md` (control domains 2 and 4).
+
+Use-case records and reviews capture governance evidence about intended purpose,
+ownership, jurisdiction, regulatory/legal-basis summaries, and review cadence,
+but PR-R6 does not implement risk classification, high-risk approval workflow,
+prohibited-use hard-deny workflow, legal advice, or runtime enforcement. All
+five domain-2 registry categories now have foundational implementations, but
+control domain 2 remains **not** `COVERED` (COVERED requires per-requirement
+framework-mapping citations), and domains 4, 5, and 6 are **not** `COVERED`. The
+risk-classification engine, high-risk and prohibited-use workflows, review
+workflow engine, legal-basis automation, runtime enforcement, connectors, and
+CNJ/Sinapses readiness remain future work; certification and legal interpretation
+remain external. GovAI does not guarantee compliance, does not provide legal
+advice, and does not guarantee judicial validity or evidence admissibility.

@@ -179,6 +179,14 @@ implementation timeline.
 - Mapping update triggered: control 4 in `20-target-control-catalog.md`.
 - Tests expected: unit and integration tests for use-case lifecycle and
   review.
+- Status: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R6) for use-case identity,
+  intended purpose, ownership/accountability, jurisdiction/regulatory-basis
+  evidence, AI-system/asset linkage, lifecycle/status evidence, and
+  periodic-review evidence. See the PR-R6 evidence below. The Risk Engine
+  dependency is intentionally not pulled in: PR-R6 records review evidence, not
+  a risk engine or review workflow engine, and risk classification, high-risk
+  approval workflow, prohibited-use enforcement, and runtime enforcement remain
+  future work.
 
 ### Provider Registry
 
@@ -522,6 +530,61 @@ Limitations (remain future work or external):
   future work.
 - Use-case registry remains future work.
 - Risk-classification engine remains future work.
+- CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-R6 implementation evidence (foundational slice)
+
+PR-R6 delivers the Use-case Registry, the final registry category of the P0
+Native Regulatory Core foundations (after the source registry, control catalog,
+AI system registry, provider registry, model registry, and agent registry). It
+is a production-focused PR-R6 foundational slice — use-case identity and
+governance evidence, use-case ↔ asset links, and periodic review evidence — not
+a risk engine or workflow engine.
+
+Status:
+
+- Use-case Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL for use-case identity,
+  intended purpose, ownership/accountability, jurisdiction/regulatory-basis
+  evidence, AI-system/asset linkage, lifecycle/status evidence, and
+  periodic-review evidence.
+
+Use-case records and reviews capture governance evidence about intended purpose,
+ownership, jurisdiction, regulatory/legal-basis summaries, and review cadence,
+but PR-R6 does not implement risk classification, high-risk approval workflow,
+prohibited-use hard-deny workflow, legal advice, or runtime enforcement.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0021_regulatory_use_case_registry.sql`
+  (`govai.regulatory_use_cases`, `govai.regulatory_use_case_asset_links`,
+  `govai.regulatory_use_case_reviews`; tenant-only, RLS ENABLE + FORCE,
+  DB-enforced parent visibility, version-requires-parent CHECKs, table-qualified
+  version-belongs-to-parent guards, partial unique indexes for nullable versions).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+  (use-case, asset-link, and review endpoints; no delete).
+- Tests: `tests/integration/regulatory-use-cases.test.ts`.
+
+Audit events emitted:
+
+- `regulatory_use_case.created` / `.updated` / `.status_changed` / `.review_due_changed`
+- `regulatory_use_case_asset_link.created` / `.updated` / `.status_changed` / `.retired`
+- `regulatory_use_case_review.created` / `.updated` / `.status_changed` /
+  `.completed` / `.outcome_changed`
+
+Limitations (remain future work or external):
+
+- Governance evidence only — no prompts, credentials, legal opinions, medical
+  records, or raw sensitive data are stored.
+- Risk-classification engine remains future work.
+- High-risk approval and prohibited-use hard-deny workflows remain future work.
+- Review evidence only — no workflow engine, no legal sign-off workflow, no
+  legal-basis automation.
+- Runtime enforcement remains future work.
 - CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.

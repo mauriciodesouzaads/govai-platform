@@ -115,10 +115,13 @@ under which the control turns `COVERED`.
 - Frameworks: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI Act,
   GDPR.
 - Current state: the AI System Registry (PR-R2), the Provider Registry
-  (PR-R3), the Model Registry (PR-R4), and the Agent Registry (PR-R5) are
-  `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the PR-R2, PR-R3, PR-R4, and PR-R5
-  implementation evidence below). The use-case registry remains
-  `REQUIRED_NATIVE_CAPABILITY`, so this domain is not `COVERED`.
+  (PR-R3), the Model Registry (PR-R4), the Agent Registry (PR-R5), and the
+  Use-case Registry (PR-R6) are all `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the
+  PR-R2 through PR-R6 implementation evidence below). All five registry
+  categories now have foundational schema, routes, audit events, and tests.
+  This domain is still **not** `COVERED`: COVERED additionally requires these
+  registries to be cited in the per-requirement framework mappings (the BR-core,
+  judiciary/sector, and international mapping PRs), which remains future work.
 - Turns COVERED when: schemas, routes, audit events, and tests for each
   registry exist and are cited in framework mappings.
 
@@ -152,7 +155,14 @@ under which the control turns `COVERED`.
 - Connector enrichment: GRC and AI-governance platforms.
 - Evidence artifacts: use-case records, periodic-review events.
 - Frameworks: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI Act.
-- Current state: REQUIRED_NATIVE_CAPABILITY.
+- Current state: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R6) for use-case
+  identity, intended purpose, ownership/accountability, jurisdiction/regulatory-
+  basis evidence, AI-system/asset linkage, lifecycle/status evidence, and
+  periodic-review evidence (see the PR-R6 implementation evidence below). This
+  domain is **not** `COVERED`: PR-R6 records review *evidence*, not a review
+  *workflow engine*, and risk classification, high-risk approval workflow,
+  prohibited-use enforcement, legal-basis automation, and runtime enforcement
+  remain future work.
 - Turns COVERED when: schema and review workflow exist with tests and
   citation in mappings.
 
@@ -630,6 +640,66 @@ Limitations (remain future work or external):
 - Use-case registry remains future work.
 - Risk-classification engine remains future work.
 - CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+## PR-R6 implementation evidence (foundational slice)
+
+PR-R6 adds the final registry category behind domain 2 (AI inventory and
+registries) and the foundational layer of domain 4 (use-case governance): a
+production-focused Use-case Registry. It is a PR-R6 foundational implementation
+of the use-case identity, asset-linkage, and periodic-review-evidence
+primitives — not a risk engine, high-risk workflow, or review workflow engine —
+and on its own does not raise any framework requirement, nor domain 2, 4, 5, or
+6, to `COVERED`.
+
+Capability status:
+
+- Use-case Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL for use-case identity,
+  intended purpose, prohibited/restricted-use boundaries, ownership and
+  accountability, jurisdiction and regulatory/legal-basis evidence, AI-system
+  and optional model/model-version/agent/agent-version linkage, lifecycle/status
+  evidence, and periodic-review evidence.
+
+Use-case records and reviews capture governance evidence about intended purpose,
+ownership, jurisdiction, regulatory/legal-basis summaries, and review cadence,
+but PR-R6 does not implement risk classification, high-risk approval workflow,
+prohibited-use hard-deny workflow, legal advice, or runtime enforcement.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0021_regulatory_use_case_registry.sql`
+  (`govai.regulatory_use_cases`, `govai.regulatory_use_case_asset_links`,
+  `govai.regulatory_use_case_reviews`; tenant-only, RLS ENABLE + FORCE,
+  DB-enforced parent visibility, version-requires-parent CHECKs, table-qualified
+  version-belongs-to-parent guards, and partial unique indexes for nullable
+  version columns).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+- Tests: `tests/integration/regulatory-use-cases.test.ts`
+
+Audit events emitted:
+
+- `regulatory_use_case.created` / `.updated` / `.status_changed` /
+  `.review_due_changed`
+- `regulatory_use_case_asset_link.created` / `.updated` / `.status_changed` /
+  `.retired`
+- `regulatory_use_case_review.created` / `.updated` / `.status_changed` /
+  `.completed` / `.outcome_changed`
+
+Limitations (remain future work or external):
+
+- Governance evidence only — no prompts, credentials, secrets, legal opinions,
+  medical records, financial-advice outputs, or raw sensitive data are stored.
+- Risk-classification engine remains future work (domain 5 not `COVERED`).
+- High-risk approval and prohibited-use hard-deny workflows remain future work
+  (domain 6 not `COVERED`).
+- Review evidence only — no review/approval workflow engine, no legal sign-off
+  workflow, no legal-basis automation.
+- Runtime enforcement remains future work.
+- Connectors, UI, dashboards, reports, and CNJ/Sinapses readiness remain future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.
 - GovAI does not provide legal advice.

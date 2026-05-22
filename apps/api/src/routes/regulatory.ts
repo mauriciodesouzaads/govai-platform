@@ -62,6 +62,18 @@ import {
   getVisibleAgentCapabilityBinding,
   updateAgentCapabilityBinding,
   listAgentCapabilityBindings,
+  createUseCase,
+  getVisibleUseCase,
+  updateUseCase,
+  listUseCases,
+  createUseCaseAssetLink,
+  getVisibleUseCaseAssetLink,
+  updateUseCaseAssetLink,
+  listUseCaseAssetLinks,
+  createUseCaseReview,
+  getVisibleUseCaseReview,
+  updateUseCaseReview,
+  listUseCaseReviews,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -78,6 +90,9 @@ import {
   type AgentRow,
   type AgentVersionRow,
   type AgentCapabilityBindingRow,
+  type UseCaseRow,
+  type UseCaseAssetLinkRow,
+  type UseCaseReviewRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -104,6 +119,12 @@ import {
   UpdateAgentVersionBody,
   CreateAgentCapabilityBindingBody,
   UpdateAgentCapabilityBindingBody,
+  CreateUseCaseBody,
+  UpdateUseCaseBody,
+  CreateUseCaseAssetLinkBody,
+  UpdateUseCaseAssetLinkBody,
+  CreateUseCaseReviewBody,
+  UpdateUseCaseReviewBody,
   ListSourcesQuery,
   ListControlsQuery,
   ListVersionsQuery,
@@ -117,6 +138,9 @@ import {
   ListAgentsQuery,
   ListAgentVersionsQuery,
   ListAgentCapabilityBindingsQuery,
+  ListUseCasesQuery,
+  ListUseCaseAssetLinksQuery,
+  ListUseCaseReviewsQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -550,6 +574,103 @@ function serializeAgentCapabilityBinding(r: AgentCapabilityBindingRow): Record<s
     scope_summary: r.scope_summary,
     restriction_summary: r.restriction_summary,
     rationale: r.rationale,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeUseCase(r: UseCaseRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    use_case_key: r.use_case_key,
+    name: r.name,
+    description: r.description,
+    use_case_status: r.use_case_status,
+    use_case_category: r.use_case_category,
+    business_criticality: r.business_criticality,
+    deployment_scope: r.deployment_scope,
+    primary_jurisdiction: r.primary_jurisdiction,
+    business_owner: r.business_owner,
+    technical_owner: r.technical_owner,
+    legal_owner: r.legal_owner,
+    dpo_owner: r.dpo_owner,
+    accountable_executive: r.accountable_executive,
+    intended_purpose: r.intended_purpose,
+    expected_benefits: r.expected_benefits,
+    prohibited_uses: r.prohibited_uses,
+    restricted_uses: r.restricted_uses,
+    target_users: r.target_users,
+    affected_subjects: r.affected_subjects,
+    data_categories_summary: r.data_categories_summary,
+    sensitive_data_summary: r.sensitive_data_summary,
+    legal_basis_summary: r.legal_basis_summary,
+    regulatory_basis_summary: r.regulatory_basis_summary,
+    human_oversight_summary: r.human_oversight_summary,
+    review_frequency: r.review_frequency,
+    last_reviewed_at: iso(r.last_reviewed_at),
+    next_review_at: iso(r.next_review_at),
+    primary_ai_system_id: r.primary_ai_system_id,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeUseCaseAssetLink(r: UseCaseAssetLinkRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    use_case_id: r.use_case_id,
+    ai_system_id: r.ai_system_id,
+    model_id: r.model_id,
+    model_version_id: r.model_version_id,
+    agent_id: r.agent_id,
+    agent_version_id: r.agent_version_id,
+    link_status: r.link_status,
+    usage_role: r.usage_role,
+    deployment_environment: r.deployment_environment,
+    effective_from: iso(r.effective_from),
+    effective_to: iso(r.effective_to),
+    rationale: r.rationale,
+    evidence_reference: r.evidence_reference,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeUseCaseReview(r: UseCaseReviewRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    use_case_id: r.use_case_id,
+    review_key: r.review_key,
+    review_type: r.review_type,
+    review_status: r.review_status,
+    review_outcome: r.review_outcome,
+    reviewer_user_id: r.reviewer_user_id,
+    reviewer_name: r.reviewer_name,
+    reviewed_at: iso(r.reviewed_at),
+    next_review_at: iso(r.next_review_at),
+    findings_summary: r.findings_summary,
+    decision_summary: r.decision_summary,
+    conditions_summary: r.conditions_summary,
+    evidence_reference: r.evidence_reference,
+    evidence_hash: r.evidence_hash,
     regulatory_source_id: r.regulatory_source_id,
     control_id: r.control_id,
     metadata: r.metadata,
@@ -1764,6 +1885,314 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       return { agent_capability_binding: serializeAgentCapabilityBinding(out.value) };
     } catch (err) {
       return onError(req, reply, err, 'update_agent_capability_binding');
+    }
+  });
+
+  // =========================================================================
+  // Use-case Registry (PR-R6)
+  // =========================================================================
+
+  app.get('/v1/regulatory/use-cases', async (req, reply) => {
+    const parsed = ListUseCasesQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listUseCases(
+          ctx,
+          {
+            use_case_status: parsed.data.use_case_status,
+            use_case_category: parsed.data.use_case_category,
+            business_criticality: parsed.data.business_criticality,
+            deployment_scope: parsed.data.deployment_scope,
+            primary_jurisdiction: parsed.data.primary_jurisdiction,
+            primary_ai_system_id: parsed.data.primary_ai_system_id,
+            next_review_before: parsed.data.next_review_before,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { use_cases: out.value.rows.map(serializeUseCase), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_use_cases');
+    }
+  });
+
+  app.post('/v1/regulatory/use-cases', async (req, reply) => {
+    const parsed = CreateUseCaseBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createUseCase(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { use_case: serializeUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_use_case');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/use-cases/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleUseCase(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'use_case_not_found' };
+      }
+      return { use_case: serializeUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_use_case');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/use-cases/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_id' };
+    }
+    const parsed = UpdateUseCaseBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateUseCase(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { use_case: serializeUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_use_case');
+    }
+  });
+
+  // --- Use-case asset links ------------------------------------------------
+
+  app.get('/v1/regulatory/use-case-asset-links', async (req, reply) => {
+    const parsed = ListUseCaseAssetLinksQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listUseCaseAssetLinks(
+          ctx,
+          {
+            use_case_id: parsed.data.use_case_id,
+            ai_system_id: parsed.data.ai_system_id,
+            model_id: parsed.data.model_id,
+            model_version_id: parsed.data.model_version_id,
+            agent_id: parsed.data.agent_id,
+            agent_version_id: parsed.data.agent_version_id,
+            link_status: parsed.data.link_status,
+            usage_role: parsed.data.usage_role,
+            deployment_environment: parsed.data.deployment_environment,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        use_case_asset_links: out.value.rows.map(serializeUseCaseAssetLink),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_use_case_asset_links');
+    }
+  });
+
+  app.post('/v1/regulatory/use-case-asset-links', async (req, reply) => {
+    const parsed = CreateUseCaseAssetLinkBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createUseCaseAssetLink(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { use_case_asset_link: serializeUseCaseAssetLink(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_use_case_asset_link');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/use-case-asset-links/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_asset_link_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleUseCaseAssetLink(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'use_case_asset_link_not_found' };
+      }
+      return { use_case_asset_link: serializeUseCaseAssetLink(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_use_case_asset_link');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/use-case-asset-links/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_asset_link_id' };
+    }
+    const parsed = UpdateUseCaseAssetLinkBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateUseCaseAssetLink(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { use_case_asset_link: serializeUseCaseAssetLink(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_use_case_asset_link');
+    }
+  });
+
+  // --- Use-case reviews ----------------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/use-cases/:id/reviews', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_id' };
+    }
+    const parsed = CreateUseCaseReviewBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createUseCaseReview(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { use_case_review: serializeUseCaseReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_use_case_review');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/use-cases/:id/reviews', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_id' };
+    }
+    const parsed = ListUseCaseReviewsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listUseCaseReviews(
+          ctx,
+          req.params.id,
+          {
+            review_type: parsed.data.review_type,
+            review_status: parsed.data.review_status,
+            review_outcome: parsed.data.review_outcome,
+            reviewed_before: parsed.data.reviewed_before,
+            next_review_before: parsed.data.next_review_before,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { use_case_reviews: out.value.rows.map(serializeUseCaseReview), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_use_case_reviews');
+    }
+  });
+
+  app.get<{ Params: { reviewId: string } }>('/v1/regulatory/use-case-reviews/:reviewId', async (req, reply) => {
+    if (!validId(req.params.reviewId)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_review_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleUseCaseReview(ctx, req.params.reviewId));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'use_case_review_not_found' };
+      }
+      return { use_case_review: serializeUseCaseReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_use_case_review');
+    }
+  });
+
+  app.patch<{ Params: { reviewId: string } }>('/v1/regulatory/use-case-reviews/:reviewId', async (req, reply) => {
+    if (!validId(req.params.reviewId)) {
+      reply.code(400);
+      return { error: 'invalid_use_case_review_id' };
+    }
+    const parsed = UpdateUseCaseReviewBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateUseCaseReview(ctx, req.params.reviewId, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { use_case_review: serializeUseCaseReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_use_case_review');
     }
   });
 }
