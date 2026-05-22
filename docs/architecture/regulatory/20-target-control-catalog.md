@@ -115,9 +115,9 @@ under which the control turns `COVERED`.
 - Frameworks: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI Act,
   GDPR.
 - Current state: the AI System Registry (PR-R2), the Provider Registry
-  (PR-R3), and the Model Registry (PR-R4) are
-  `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the PR-R2, PR-R3, and PR-R4
-  implementation evidence below). The agent and use-case registries remain
+  (PR-R3), the Model Registry (PR-R4), and the Agent Registry (PR-R5) are
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the PR-R2, PR-R3, PR-R4, and PR-R5
+  implementation evidence below). The use-case registry remains
   `REQUIRED_NATIVE_CAPABILITY`, so this domain is not `COVERED`.
 - Turns COVERED when: schemas, routes, audit events, and tests for each
   registry exist and are cited in framework mappings.
@@ -134,11 +134,12 @@ under which the control turns `COVERED`.
 - Evidence artifacts: lifecycle events, approval evidence, retirement
   records.
 - Frameworks: ISO 42001, NIST AI RMF, EU AI Act, CNJ 615.
-- Current state: the model side is `IMPLEMENTED_FOUNDATIONAL_CONTROL` for
-  model identity, version provenance, lifecycle/status transitions, and
-  approval/retirement evidence (PR-R4; see the PR-R4 implementation evidence
-  below). The agent side remains `REQUIRED_NATIVE_CAPABILITY`, so this domain
-  is not `COVERED`.
+- Current state: both the model side (PR-R4) and the agent side (PR-R5) are
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` for identity, version/config provenance,
+  lifecycle/status transitions, and approval/retirement evidence (see the PR-R4
+  and PR-R5 implementation evidence below). This is registry evidence only:
+  runtime lifecycle enforcement is not implemented, so this domain is not
+  `COVERED`.
 - Turns COVERED when: lifecycle event types, schema fields, and tests
   exist and are cited in framework mappings.
 
@@ -572,6 +573,62 @@ Limitations (remain future work or external):
 - Risk-classification engine remains future work.
 - No model runtime enforcement.
 - No live provider integration or connector.
+- CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+## PR-R5 implementation evidence (foundational slice)
+
+PR-R5 adds the next concrete repository evidence behind domain 2 (AI inventory
+and registries) and the agent side of domain 3 (model and agent lifecycle): a
+production-focused Agent Registry. It is a PR-R5 foundational implementation of
+the agent identity, version/config-provenance, and capability-binding
+primitives — not the full AI inventory program — and on its own does not raise
+any framework requirement, nor domain 2 or domain 3, to `COVERED`.
+
+Capability status:
+
+- Agent Registry: IMPLEMENTED_FOUNDATIONAL_CONTROL for agent identity,
+  version/config provenance, lifecycle/status evidence, capability bindings,
+  hard-deny-floor expectation tracking as registry evidence, and optional
+  linkage to AI systems, models, model versions, and providers.
+
+Agent capability bindings record declared governance expectations, including
+whether the hard-deny floor is expected to apply, but PR-R5 does not implement
+runtime enforcement, live tool invocation blocking, or gateway-level denial
+behavior.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0020_regulatory_agent_registry.sql`
+  (`govai.regulatory_agents`, `govai.regulatory_agent_versions`,
+  `govai.regulatory_agent_capability_bindings`; tenant-only, RLS ENABLE + FORCE,
+  DB-enforced parent visibility, version-requires-model CHECK, and
+  version-belongs-to-model / agent-version-belongs-to-agent guards).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`, `apps/api/src/routes/regulatory.ts`
+- Tests: `tests/integration/regulatory-agents.test.ts`
+
+Audit events emitted:
+
+- `regulatory_agent.created` / `.updated` / `.status_changed`
+- `regulatory_agent_version.created` / `.updated` / `.status_changed` /
+  `.approved` / `.retired`
+- `regulatory_agent_capability_binding.created` / `.updated` /
+  `.status_changed` / `.risk_posture_changed`
+
+Limitations (remain future work or external):
+
+- Registry evidence / provenance only — no prompts, tool-manifest bodies,
+  model artifacts, training data, credentials, API keys, secrets, tokens, or
+  certificates are stored.
+- `hard_deny_floor_expected` is a declared governance expectation only; it does
+  not enforce runtime hard-deny behavior. Runtime agent enforcement, live tool
+  invocation, and gateway-level denial remain future work.
+- Use-case registry remains future work.
+- Risk-classification engine remains future work.
 - CNJ/Sinapses readiness remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.

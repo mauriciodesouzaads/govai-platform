@@ -37,6 +37,12 @@ import type {
   UpdateModelVersionInput,
   CreateAiSystemModelLinkInput,
   UpdateAiSystemModelLinkInput,
+  CreateAgentInput,
+  UpdateAgentInput,
+  CreateAgentVersionInput,
+  UpdateAgentVersionInput,
+  CreateAgentCapabilityBindingInput,
+  UpdateAgentCapabilityBindingInput,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -2260,6 +2266,875 @@ export async function listAiSystemModelLinks(
   params.push(cursor.limit);
   const res = await ctx.client.query<AiSystemModelLinkRow>(
     `SELECT ${LINK_MODEL_COLUMNS} FROM govai.regulatory_ai_system_model_links
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// Agent Registry (PR-R5)
+// ---------------------------------------------------------------------------
+
+export type AgentRow = {
+  id: string;
+  org_id: string;
+  agent_key: string;
+  name: string;
+  description: string;
+  agent_type: string;
+  agent_status: string;
+  autonomy_level: string;
+  execution_boundary: string;
+  human_oversight_mode: string;
+  provider_id: string | null;
+  primary_ai_system_id: string | null;
+  primary_model_id: string | null;
+  primary_model_version_id: string | null;
+  primary_jurisdiction: string;
+  business_owner: string | null;
+  technical_owner: string | null;
+  legal_owner: string | null;
+  dpo_owner: string | null;
+  intended_purpose: string;
+  prohibited_uses: string;
+  capability_summary: string;
+  tool_access_summary: string;
+  data_access_summary: string;
+  human_oversight_summary: string;
+  last_reviewed_at: Date | null;
+  next_review_at: Date | null;
+  review_frequency: string;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const AGENT_COLUMNS = `id, org_id, agent_key, name, description, agent_type, agent_status, autonomy_level,
+  execution_boundary, human_oversight_mode, provider_id, primary_ai_system_id, primary_model_id,
+  primary_model_version_id, primary_jurisdiction, business_owner, technical_owner, legal_owner, dpo_owner,
+  intended_purpose, prohibited_uses, capability_summary, tool_access_summary, data_access_summary,
+  human_oversight_summary, last_reviewed_at, next_review_at, review_frequency, regulatory_source_id,
+  control_id, metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type AgentVersionRow = {
+  id: string;
+  org_id: string;
+  agent_id: string;
+  version_key: string;
+  version_label: string;
+  version_status: string;
+  configuration_hash: string | null;
+  prompt_policy_hash: string | null;
+  tool_manifest_hash: string | null;
+  sandbox_policy_hash: string | null;
+  capability_manifest_hash: string | null;
+  evaluation_score_summary: string;
+  release_notes: string;
+  approval_reference: string | null;
+  approved_at: Date | null;
+  approved_by_user_id: string | null;
+  retired_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const AGENT_VERSION_COLUMNS = `id, org_id, agent_id, version_key, version_label, version_status,
+  configuration_hash, prompt_policy_hash, tool_manifest_hash, sandbox_policy_hash, capability_manifest_hash,
+  evaluation_score_summary, release_notes, approval_reference, approved_at, approved_by_user_id, retired_at,
+  metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type AgentCapabilityBindingRow = {
+  id: string;
+  org_id: string;
+  agent_id: string;
+  agent_version_id: string | null;
+  capability_key: string;
+  capability_name: string;
+  capability_category: string;
+  capability_status: string;
+  risk_posture: string;
+  hard_deny_floor_expected: boolean;
+  approval_required: boolean;
+  evidence_required: boolean;
+  scope_summary: string;
+  restriction_summary: string;
+  rationale: string;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const AGENT_BINDING_COLUMNS = `id, org_id, agent_id, agent_version_id, capability_key, capability_name,
+  capability_category, capability_status, risk_posture, hard_deny_floor_expected, approval_required,
+  evidence_required, scope_summary, restriction_summary, rationale, regulatory_source_id, control_id,
+  metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+// Agents reference optional own-tenant provider / AI system / model, and an
+// optional model version that must (a) exist and (b) belong to the model. A
+// version without a model is rejected up front (the DB CHECK is the backstop).
+// Service-level checks give clean 404/400s; the DB RLS WITH CHECK is the backstop.
+async function requireAgentParents(
+  ctx: Ctx,
+  refs: {
+    provider_id?: string | null;
+    primary_ai_system_id?: string | null;
+    primary_model_id?: string | null;
+    primary_model_version_id?: string | null;
+    regulatory_source_id?: string | null;
+    control_id?: string | null;
+  },
+): Promise<void> {
+  if (refs.primary_model_version_id && !refs.primary_model_id) {
+    throw new RegulatoryError(400, 'model_version_requires_model');
+  }
+  if (refs.provider_id) {
+    if (!(await getVisibleProvider(ctx, refs.provider_id))) throw new RegulatoryError(404, 'provider_not_found');
+  }
+  if (refs.primary_ai_system_id) {
+    if (!(await getVisibleAiSystem(ctx, refs.primary_ai_system_id)))
+      throw new RegulatoryError(404, 'ai_system_not_found');
+  }
+  if (refs.primary_model_id) {
+    if (!(await getVisibleModel(ctx, refs.primary_model_id))) throw new RegulatoryError(404, 'model_not_found');
+  }
+  if (refs.primary_model_version_id) {
+    const v = await getVisibleModelVersion(ctx, refs.primary_model_version_id);
+    if (!v) throw new RegulatoryError(404, 'model_version_not_found');
+    if (v.model_id !== refs.primary_model_id) {
+      throw new RegulatoryError(400, 'model_version_model_mismatch', {
+        primary_model_id: refs.primary_model_id,
+        primary_model_version_id: refs.primary_model_version_id,
+      });
+    }
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: refs.regulatory_source_id ?? null,
+    control_id: refs.control_id ?? null,
+  });
+}
+
+export async function createAgent(ctx: Ctx, input: CreateAgentInput): Promise<AgentRow> {
+  await requireAgentParents(ctx, {
+    provider_id: input.provider_id ?? null,
+    primary_ai_system_id: input.primary_ai_system_id ?? null,
+    primary_model_id: input.primary_model_id ?? null,
+    primary_model_version_id: input.primary_model_version_id ?? null,
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<AgentRow>(
+      `INSERT INTO govai.regulatory_agents
+         (org_id, agent_key, name, description, agent_type, agent_status, autonomy_level,
+          execution_boundary, human_oversight_mode, provider_id, primary_ai_system_id, primary_model_id,
+          primary_model_version_id, primary_jurisdiction, business_owner, technical_owner, legal_owner,
+          dpo_owner, intended_purpose, prohibited_uses, capability_summary, tool_access_summary,
+          data_access_summary, human_oversight_summary, last_reviewed_at, next_review_at, review_frequency,
+          regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11::uuid, $12::uuid, $13::uuid, $14,
+               $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25::timestamptz, $26::timestamptz, $27,
+               $28::uuid, $29::uuid, $30::jsonb, $31::uuid, $31::uuid)
+       RETURNING ${AGENT_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.agent_key,
+        input.name,
+        input.description,
+        input.agent_type,
+        input.agent_status,
+        input.autonomy_level,
+        input.execution_boundary,
+        input.human_oversight_mode,
+        input.provider_id ?? null,
+        input.primary_ai_system_id ?? null,
+        input.primary_model_id ?? null,
+        input.primary_model_version_id ?? null,
+        input.primary_jurisdiction,
+        input.business_owner ?? null,
+        input.technical_owner ?? null,
+        input.legal_owner ?? null,
+        input.dpo_owner ?? null,
+        input.intended_purpose,
+        input.prohibited_uses,
+        input.capability_summary,
+        input.tool_access_summary,
+        input.data_access_summary,
+        input.human_oversight_summary,
+        input.last_reviewed_at ?? null,
+        input.next_review_at ?? null,
+        input.review_frequency,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'agent_key_conflict', { agent_key: input.agent_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_agent.created',
+    subjectType: 'regulatory_agent',
+    subjectId: row.id,
+    metadata: {
+      agent_id: row.id,
+      agent_key: row.agent_key,
+      agent_type: row.agent_type,
+      agent_status: row.agent_status,
+      autonomy_level: row.autonomy_level,
+      execution_boundary: row.execution_boundary,
+      provider_id: row.provider_id,
+      primary_ai_system_id: row.primary_ai_system_id,
+      primary_model_id: row.primary_model_id,
+      primary_model_version_id: row.primary_model_version_id,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleAgent(ctx: Ctx, id: string): Promise<AgentRow | null> {
+  const r = await ctx.client.query<AgentRow>(
+    `SELECT ${AGENT_COLUMNS} FROM govai.regulatory_agents WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateAgent(ctx: Ctx, id: string, input: UpdateAgentInput): Promise<AgentRow> {
+  const existing = await getVisibleAgent(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'agent_not_found');
+  // Validate the merged (existing + patch) parent references, including the
+  // version-requires-model and version-belongs-to-model rules.
+  await requireAgentParents(ctx, {
+    provider_id: input.provider_id !== undefined ? input.provider_id : existing.provider_id,
+    primary_ai_system_id:
+      input.primary_ai_system_id !== undefined ? input.primary_ai_system_id : existing.primary_ai_system_id,
+    primary_model_id: input.primary_model_id !== undefined ? input.primary_model_id : existing.primary_model_id,
+    primary_model_version_id:
+      input.primary_model_version_id !== undefined
+        ? input.primary_model_version_id
+        : existing.primary_model_version_id,
+    regulatory_source_id:
+      input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+    control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+  });
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.name !== undefined) col('name', input.name);
+  if (input.description !== undefined) col('description', input.description);
+  if (input.agent_type !== undefined) col('agent_type', input.agent_type);
+  if (input.agent_status !== undefined) col('agent_status', input.agent_status);
+  if (input.autonomy_level !== undefined) col('autonomy_level', input.autonomy_level);
+  if (input.execution_boundary !== undefined) col('execution_boundary', input.execution_boundary);
+  if (input.human_oversight_mode !== undefined) col('human_oversight_mode', input.human_oversight_mode);
+  if (input.provider_id !== undefined) col('provider_id', input.provider_id, '::uuid');
+  if (input.primary_ai_system_id !== undefined) col('primary_ai_system_id', input.primary_ai_system_id, '::uuid');
+  if (input.primary_model_id !== undefined) col('primary_model_id', input.primary_model_id, '::uuid');
+  if (input.primary_model_version_id !== undefined)
+    col('primary_model_version_id', input.primary_model_version_id, '::uuid');
+  if (input.primary_jurisdiction !== undefined) col('primary_jurisdiction', input.primary_jurisdiction);
+  if (input.business_owner !== undefined) col('business_owner', input.business_owner);
+  if (input.technical_owner !== undefined) col('technical_owner', input.technical_owner);
+  if (input.legal_owner !== undefined) col('legal_owner', input.legal_owner);
+  if (input.dpo_owner !== undefined) col('dpo_owner', input.dpo_owner);
+  if (input.intended_purpose !== undefined) col('intended_purpose', input.intended_purpose);
+  if (input.prohibited_uses !== undefined) col('prohibited_uses', input.prohibited_uses);
+  if (input.capability_summary !== undefined) col('capability_summary', input.capability_summary);
+  if (input.tool_access_summary !== undefined) col('tool_access_summary', input.tool_access_summary);
+  if (input.data_access_summary !== undefined) col('data_access_summary', input.data_access_summary);
+  if (input.human_oversight_summary !== undefined) col('human_oversight_summary', input.human_oversight_summary);
+  if (input.last_reviewed_at !== undefined) col('last_reviewed_at', input.last_reviewed_at, '::timestamptz');
+  if (input.next_review_at !== undefined) col('next_review_at', input.next_review_at, '::timestamptz');
+  if (input.review_frequency !== undefined) col('review_frequency', input.review_frequency);
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<AgentRow>(
+    `UPDATE govai.regulatory_agents SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${AGENT_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'agent_not_found');
+
+  const statusChanged = input.agent_status !== undefined && input.agent_status !== existing.agent_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_agent.updated',
+    subjectType: 'regulatory_agent',
+    subjectId: row.id,
+    metadata: {
+      agent_id: row.id,
+      agent_key: row.agent_key,
+      changed_fields: Object.keys(input),
+      agent_status: row.agent_status,
+      ...(statusChanged ? { previous_agent_status: existing.agent_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_agent.status_changed',
+      subjectType: 'regulatory_agent',
+      subjectId: row.id,
+      metadata: {
+        agent_id: row.id,
+        agent_key: row.agent_key,
+        previous_agent_status: existing.agent_status,
+        agent_status: row.agent_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listAgents(
+  ctx: Ctx,
+  filters: {
+    agent_type?: string;
+    agent_status?: string;
+    autonomy_level?: string;
+    execution_boundary?: string;
+    provider_id?: string;
+    primary_ai_system_id?: string;
+    primary_model_id?: string;
+    primary_jurisdiction?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<AgentRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('agent_type', filters.agent_type);
+  eq('agent_status', filters.agent_status);
+  eq('autonomy_level', filters.autonomy_level);
+  eq('execution_boundary', filters.execution_boundary);
+  eq('provider_id', filters.provider_id, '::uuid');
+  eq('primary_ai_system_id', filters.primary_ai_system_id, '::uuid');
+  eq('primary_model_id', filters.primary_model_id, '::uuid');
+  eq('primary_jurisdiction', filters.primary_jurisdiction);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(agent_key ILIKE $${i} OR name ILIKE $${i} OR description ILIKE $${i}
+        OR intended_purpose ILIKE $${i} OR capability_summary ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<AgentRow>(
+    `SELECT ${AGENT_COLUMNS} FROM govai.regulatory_agents
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// --- Agent versions --------------------------------------------------------
+
+async function requireOwnedAgent(ctx: Ctx, id: string): Promise<AgentRow> {
+  const a = await getVisibleAgent(ctx, id);
+  if (!a) throw new RegulatoryError(404, 'agent_not_found');
+  return a;
+}
+
+export async function createAgentVersion(
+  ctx: Ctx,
+  agentId: string,
+  input: CreateAgentVersionInput,
+): Promise<AgentVersionRow> {
+  await requireOwnedAgent(ctx, agentId);
+  let res;
+  try {
+    res = await ctx.client.query<AgentVersionRow>(
+      `INSERT INTO govai.regulatory_agent_versions
+         (org_id, agent_id, version_key, version_label, version_status, configuration_hash,
+          prompt_policy_hash, tool_manifest_hash, sandbox_policy_hash, capability_manifest_hash,
+          evaluation_score_summary, release_notes, approval_reference, approved_at, approved_by_user_id,
+          retired_at, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+               $14::timestamptz, $15::uuid, $16::timestamptz, $17::jsonb, $18::uuid, $18::uuid)
+       RETURNING ${AGENT_VERSION_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        agentId,
+        input.version_key,
+        input.version_label,
+        input.version_status,
+        input.configuration_hash ?? null,
+        input.prompt_policy_hash ?? null,
+        input.tool_manifest_hash ?? null,
+        input.sandbox_policy_hash ?? null,
+        input.capability_manifest_hash ?? null,
+        input.evaluation_score_summary,
+        input.release_notes,
+        input.approval_reference ?? null,
+        input.approved_at ?? null,
+        input.approved_by_user_id ?? null,
+        input.retired_at ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'agent_version_key_conflict', { version_key: input.version_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_agent_version.created',
+    subjectType: 'regulatory_agent_version',
+    subjectId: row.id,
+    metadata: {
+      agent_id: agentId,
+      version_id: row.id,
+      version_key: row.version_key,
+      version_status: row.version_status,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleAgentVersion(ctx: Ctx, id: string): Promise<AgentVersionRow | null> {
+  const r = await ctx.client.query<AgentVersionRow>(
+    `SELECT ${AGENT_VERSION_COLUMNS} FROM govai.regulatory_agent_versions WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateAgentVersion(
+  ctx: Ctx,
+  id: string,
+  input: UpdateAgentVersionInput,
+): Promise<AgentVersionRow> {
+  const existing = await getVisibleAgentVersion(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'agent_version_not_found');
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.version_label !== undefined) col('version_label', input.version_label);
+  if (input.version_status !== undefined) col('version_status', input.version_status);
+  if (input.configuration_hash !== undefined) col('configuration_hash', input.configuration_hash);
+  if (input.prompt_policy_hash !== undefined) col('prompt_policy_hash', input.prompt_policy_hash);
+  if (input.tool_manifest_hash !== undefined) col('tool_manifest_hash', input.tool_manifest_hash);
+  if (input.sandbox_policy_hash !== undefined) col('sandbox_policy_hash', input.sandbox_policy_hash);
+  if (input.capability_manifest_hash !== undefined)
+    col('capability_manifest_hash', input.capability_manifest_hash);
+  if (input.evaluation_score_summary !== undefined)
+    col('evaluation_score_summary', input.evaluation_score_summary);
+  if (input.release_notes !== undefined) col('release_notes', input.release_notes);
+  if (input.approval_reference !== undefined) col('approval_reference', input.approval_reference);
+  if (input.approved_at !== undefined) col('approved_at', input.approved_at, '::timestamptz');
+  if (input.approved_by_user_id !== undefined) col('approved_by_user_id', input.approved_by_user_id, '::uuid');
+  if (input.retired_at !== undefined) col('retired_at', input.retired_at, '::timestamptz');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<AgentVersionRow>(
+    `UPDATE govai.regulatory_agent_versions SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${AGENT_VERSION_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'agent_version_not_found');
+
+  const statusChanged = input.version_status !== undefined && input.version_status !== existing.version_status;
+  const approvedTransition = statusChanged && VERSION_APPROVAL_STATES.has(row.version_status);
+  const retiredTransition =
+    (statusChanged && row.version_status === 'RETIRED') ||
+    (input.retired_at !== undefined && input.retired_at !== null && existing.retired_at === null);
+
+  await appendAudit(ctx, {
+    eventType: 'regulatory_agent_version.updated',
+    subjectType: 'regulatory_agent_version',
+    subjectId: row.id,
+    metadata: {
+      agent_id: row.agent_id,
+      version_id: row.id,
+      version_key: row.version_key,
+      changed_fields: Object.keys(input),
+      version_status: row.version_status,
+      ...(statusChanged ? { previous_version_status: existing.version_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_agent_version.status_changed',
+      subjectType: 'regulatory_agent_version',
+      subjectId: row.id,
+      metadata: {
+        agent_id: row.agent_id,
+        version_id: row.id,
+        previous_version_status: existing.version_status,
+        version_status: row.version_status,
+      },
+    });
+  }
+  if (approvedTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_agent_version.approved',
+      subjectType: 'regulatory_agent_version',
+      subjectId: row.id,
+      metadata: {
+        agent_id: row.agent_id,
+        version_id: row.id,
+        version_status: row.version_status,
+        approved_at: row.approved_at ? row.approved_at.toISOString() : null,
+        approved_by_user_id: row.approved_by_user_id,
+        approval_reference: row.approval_reference,
+      },
+    });
+  }
+  if (retiredTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_agent_version.retired',
+      subjectType: 'regulatory_agent_version',
+      subjectId: row.id,
+      metadata: {
+        agent_id: row.agent_id,
+        version_id: row.id,
+        version_status: row.version_status,
+        retired_at: row.retired_at ? row.retired_at.toISOString() : null,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listAgentVersions(
+  ctx: Ctx,
+  agentId: string,
+  filters: { version_status?: string; q?: string },
+  cursor: Cursor,
+): Promise<ListResult<AgentVersionRow>> {
+  await requireOwnedAgent(ctx, agentId);
+  const where: string[] = ['agent_id = $1::uuid'];
+  const params: unknown[] = [agentId];
+  if (filters.version_status !== undefined) {
+    params.push(filters.version_status);
+    where.push(`version_status = $${params.length}`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(version_key ILIKE $${i} OR version_label ILIKE $${i} OR release_notes ILIKE $${i}
+        OR evaluation_score_summary ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<AgentVersionRow>(
+    `SELECT ${AGENT_VERSION_COLUMNS} FROM govai.regulatory_agent_versions
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// --- Agent capability bindings ---------------------------------------------
+
+export async function createAgentCapabilityBinding(
+  ctx: Ctx,
+  input: CreateAgentCapabilityBindingInput,
+): Promise<AgentCapabilityBindingRow> {
+  const agent = await getVisibleAgent(ctx, input.agent_id);
+  if (!agent) throw new RegulatoryError(404, 'agent_not_found');
+  if (input.agent_version_id) {
+    const version = await getVisibleAgentVersion(ctx, input.agent_version_id);
+    if (!version) throw new RegulatoryError(404, 'agent_version_not_found');
+    if (version.agent_id !== input.agent_id) {
+      throw new RegulatoryError(400, 'agent_version_agent_mismatch', {
+        agent_id: input.agent_id,
+        agent_version_id: input.agent_version_id,
+      });
+    }
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<AgentCapabilityBindingRow>(
+      `INSERT INTO govai.regulatory_agent_capability_bindings
+         (org_id, agent_id, agent_version_id, capability_key, capability_name, capability_category,
+          capability_status, risk_posture, hard_deny_floor_expected, approval_required, evidence_required,
+          scope_summary, restriction_summary, rationale, regulatory_source_id, control_id, metadata,
+          created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+               $15::uuid, $16::uuid, $17::jsonb, $18::uuid, $18::uuid)
+       RETURNING ${AGENT_BINDING_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.agent_id,
+        input.agent_version_id ?? null,
+        input.capability_key,
+        input.capability_name,
+        input.capability_category,
+        input.capability_status,
+        input.risk_posture,
+        input.hard_deny_floor_expected,
+        input.approval_required,
+        input.evidence_required,
+        input.scope_summary,
+        input.restriction_summary,
+        input.rationale,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'agent_capability_binding_conflict', {
+        capability_key: input.capability_key,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_agent_capability_binding.created',
+    subjectType: 'regulatory_agent_capability_binding',
+    subjectId: row.id,
+    metadata: {
+      binding_id: row.id,
+      agent_id: row.agent_id,
+      agent_version_id: row.agent_version_id,
+      capability_key: row.capability_key,
+      capability_category: row.capability_category,
+      capability_status: row.capability_status,
+      risk_posture: row.risk_posture,
+      hard_deny_floor_expected: row.hard_deny_floor_expected,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleAgentCapabilityBinding(
+  ctx: Ctx,
+  id: string,
+): Promise<AgentCapabilityBindingRow | null> {
+  const r = await ctx.client.query<AgentCapabilityBindingRow>(
+    `SELECT ${AGENT_BINDING_COLUMNS} FROM govai.regulatory_agent_capability_bindings WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateAgentCapabilityBinding(
+  ctx: Ctx,
+  id: string,
+  input: UpdateAgentCapabilityBindingInput,
+): Promise<AgentCapabilityBindingRow> {
+  const existing = await getVisibleAgentCapabilityBinding(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'agent_capability_binding_not_found');
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.capability_name !== undefined) col('capability_name', input.capability_name);
+  if (input.capability_category !== undefined) col('capability_category', input.capability_category);
+  if (input.capability_status !== undefined) col('capability_status', input.capability_status);
+  if (input.risk_posture !== undefined) col('risk_posture', input.risk_posture);
+  if (input.hard_deny_floor_expected !== undefined)
+    col('hard_deny_floor_expected', input.hard_deny_floor_expected);
+  if (input.approval_required !== undefined) col('approval_required', input.approval_required);
+  if (input.evidence_required !== undefined) col('evidence_required', input.evidence_required);
+  if (input.scope_summary !== undefined) col('scope_summary', input.scope_summary);
+  if (input.restriction_summary !== undefined) col('restriction_summary', input.restriction_summary);
+  if (input.rationale !== undefined) col('rationale', input.rationale);
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<AgentCapabilityBindingRow>(
+    `UPDATE govai.regulatory_agent_capability_bindings SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${AGENT_BINDING_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'agent_capability_binding_not_found');
+
+  const statusChanged =
+    input.capability_status !== undefined && input.capability_status !== existing.capability_status;
+  const riskChanged = input.risk_posture !== undefined && input.risk_posture !== existing.risk_posture;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_agent_capability_binding.updated',
+    subjectType: 'regulatory_agent_capability_binding',
+    subjectId: row.id,
+    metadata: {
+      binding_id: row.id,
+      agent_id: row.agent_id,
+      agent_version_id: row.agent_version_id,
+      capability_key: row.capability_key,
+      capability_category: row.capability_category,
+      changed_fields: Object.keys(input),
+      capability_status: row.capability_status,
+      risk_posture: row.risk_posture,
+      hard_deny_floor_expected: row.hard_deny_floor_expected,
+      ...(statusChanged ? { previous_capability_status: existing.capability_status } : {}),
+      ...(riskChanged ? { previous_risk_posture: existing.risk_posture } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_agent_capability_binding.status_changed',
+      subjectType: 'regulatory_agent_capability_binding',
+      subjectId: row.id,
+      metadata: {
+        binding_id: row.id,
+        agent_id: row.agent_id,
+        agent_version_id: row.agent_version_id,
+        capability_key: row.capability_key,
+        capability_category: row.capability_category,
+        risk_posture: row.risk_posture,
+        hard_deny_floor_expected: row.hard_deny_floor_expected,
+        previous_capability_status: existing.capability_status,
+        capability_status: row.capability_status,
+      },
+    });
+  }
+  if (riskChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_agent_capability_binding.risk_posture_changed',
+      subjectType: 'regulatory_agent_capability_binding',
+      subjectId: row.id,
+      metadata: {
+        binding_id: row.id,
+        agent_id: row.agent_id,
+        agent_version_id: row.agent_version_id,
+        capability_key: row.capability_key,
+        capability_category: row.capability_category,
+        capability_status: row.capability_status,
+        hard_deny_floor_expected: row.hard_deny_floor_expected,
+        previous_risk_posture: existing.risk_posture,
+        risk_posture: row.risk_posture,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listAgentCapabilityBindings(
+  ctx: Ctx,
+  filters: {
+    agent_id?: string;
+    agent_version_id?: string;
+    capability_category?: string;
+    capability_status?: string;
+    risk_posture?: string;
+    hard_deny_floor_expected?: boolean;
+    approval_required?: boolean;
+    evidence_required?: boolean;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<AgentCapabilityBindingRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  const eqBool = (column: string, val: boolean | undefined) => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}`);
+  };
+  eq('agent_id', filters.agent_id, '::uuid');
+  eq('agent_version_id', filters.agent_version_id, '::uuid');
+  eq('capability_category', filters.capability_category);
+  eq('capability_status', filters.capability_status);
+  eq('risk_posture', filters.risk_posture);
+  eqBool('hard_deny_floor_expected', filters.hard_deny_floor_expected);
+  eqBool('approval_required', filters.approval_required);
+  eqBool('evidence_required', filters.evidence_required);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(capability_key ILIKE $${i} OR capability_name ILIKE $${i} OR scope_summary ILIKE $${i}
+        OR restriction_summary ILIKE $${i} OR rationale ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<AgentCapabilityBindingRow>(
+    `SELECT ${AGENT_BINDING_COLUMNS} FROM govai.regulatory_agent_capability_bindings
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,

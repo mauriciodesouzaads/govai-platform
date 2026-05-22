@@ -226,3 +226,34 @@ integration, connectors, and CNJ/Sinapses readiness remain future work;
 certification and legal interpretation remain external. GovAI does not guarantee
 compliance, does not provide legal advice, and does not guarantee judicial
 validity or evidence admissibility.
+
+## PR-R5 implementation
+
+PR-R5 adds the next P0 Native Regulatory Core foundation after the source
+registry, control catalog, AI system registry, provider registry, and model
+registry: a production-focused Agent Registry. It lands three tables —
+`govai.regulatory_agents`, `govai.regulatory_agent_versions`, and
+`govai.regulatory_agent_capability_bindings` — as
+`IMPLEMENTED_FOUNDATIONAL_CONTROL` for agent identity, version/config
+provenance, lifecycle/status and approval/retirement evidence, capability
+bindings, and hard-deny-floor expectation tracking as registry evidence, with
+optional linkage to AI systems, models, model versions, and providers, plus
+migration, validation, service, routes, tenant isolation (RLS with DB-enforced
+parent visibility, a version-requires-model CHECK, and version-belongs-to-model
+/ agent-version-belongs-to-agent guards), audit events (`regulatory_agent.*`,
+`regulatory_agent_version.*` including `.approved` / `.retired`, and
+`regulatory_agent_capability_binding.*` including `.risk_posture_changed`), and
+integration tests including direct DB RLS coverage. Implementation evidence is
+recorded in `23-regulatory-core-roadmap.md` (P0) and
+`20-target-control-catalog.md` (control domains 2 and 3).
+
+Agent capability bindings record declared governance expectations, including
+whether the hard-deny floor is expected to apply, but PR-R5 does not implement
+runtime enforcement, live tool invocation blocking, or gateway-level denial
+behavior. This is a foundational registry-evidence slice only — it stores no
+prompts, tool-manifest bodies, or credentials. The use-case registry (so
+control domain 2 remains **not** `COVERED`), the risk-classification engine,
+runtime agent enforcement, live tool invocation, connectors, and CNJ/Sinapses
+readiness remain future work; certification and legal interpretation remain
+external. GovAI does not guarantee compliance, does not provide legal advice,
+and does not guarantee judicial validity or evidence admissibility.
