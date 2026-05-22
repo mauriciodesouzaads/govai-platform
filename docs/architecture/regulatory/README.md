@@ -179,3 +179,23 @@ CNJ/Sinapses readiness remain future work; certification and legal
 interpretation remain external. GovAI does not guarantee compliance, does not
 provide legal advice, and does not guarantee judicial validity or evidence
 admissibility.
+
+## PR-R3 implementation
+
+PR-R3 adds the next P0 Native Regulatory Core foundation after the source
+registry, control catalog, and AI system registry: a tenant-isolated Provider
+Registry, landed as `IMPLEMENTED_FOUNDATIONAL_CONTROL` with migration,
+validation, service, routes, tenant isolation (RLS), audit events
+(`regulatory_provider.created` / `.updated` / `.status_changed` /
+`.review_status_changed`), and integration tests. Implementation evidence is
+recorded in `23-regulatory-core-roadmap.md` (P0) and
+`20-target-control-catalog.md` (control domains 2 and 15).
+
+This is a foundational provider inventory/posture slice only. It stores no
+credentials (no API keys, client secrets, OAuth tokens, certificates, or
+passwords) and no credential vault. The model registry, agent registry,
+use-case registry, risk-classification engine, connectors, live provider
+integration, and CNJ/Sinapses readiness remain future work; certification and
+legal interpretation remain external. GovAI does not guarantee compliance, does
+not provide legal advice, and does not guarantee judicial validity or evidence
+admissibility.

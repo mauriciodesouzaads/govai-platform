@@ -34,6 +34,10 @@ import {
   getVisibleAiSystem,
   updateAiSystem,
   listAiSystems,
+  createProvider,
+  getVisibleProvider,
+  updateProvider,
+  listProviders,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -43,6 +47,7 @@ import {
   type LinkRow,
   type MappingRow,
   type AiSystemRow,
+  type ProviderRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -55,12 +60,15 @@ import {
   CreateFrameworkMappingBody,
   CreateAiSystemBody,
   UpdateAiSystemBody,
+  CreateProviderBody,
+  UpdateProviderBody,
   ListSourcesQuery,
   ListControlsQuery,
   ListVersionsQuery,
   ListLinksQuery,
   ListMappingsQuery,
   ListAiSystemsQuery,
+  ListProvidersQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -286,6 +294,39 @@ function serializeAiSystem(r: AiSystemRow): Record<string, unknown> {
     review_frequency: r.review_frequency,
     last_reviewed_at: iso(r.last_reviewed_at),
     next_review_at: iso(r.next_review_at),
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeProvider(r: ProviderRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    provider_key: r.provider_key,
+    name: r.name,
+    description: r.description,
+    provider_type: r.provider_type,
+    provider_status: r.provider_status,
+    deployment_model: r.deployment_model,
+    data_processing_role: r.data_processing_role,
+    primary_jurisdiction: r.primary_jurisdiction,
+    headquarters_country: r.headquarters_country,
+    website_url: r.website_url,
+    contact_name: r.contact_name,
+    contact_email: r.contact_email,
+    dpa_status: r.dpa_status,
+    security_review_status: r.security_review_status,
+    subprocessors_review_status: r.subprocessors_review_status,
+    ai_terms_review_status: r.ai_terms_review_status,
+    last_reviewed_at: iso(r.last_reviewed_at),
+    next_review_at: iso(r.next_review_at),
+    review_frequency: r.review_frequency,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
     metadata: r.metadata,
     created_by_user_id: r.created_by_user_id,
     updated_by_user_id: r.updated_by_user_id,
@@ -800,6 +841,106 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       return { ai_system: serializeAiSystem(out.value) };
     } catch (err) {
       return onError(req, reply, err, 'update_ai_system');
+    }
+  });
+
+  // =========================================================================
+  // Provider Registry (PR-R3)
+  // =========================================================================
+
+  app.get('/v1/regulatory/providers', async (req, reply) => {
+    const parsed = ListProvidersQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listProviders(
+          ctx,
+          {
+            provider_type: parsed.data.provider_type,
+            provider_status: parsed.data.provider_status,
+            deployment_model: parsed.data.deployment_model,
+            data_processing_role: parsed.data.data_processing_role,
+            primary_jurisdiction: parsed.data.primary_jurisdiction,
+            security_review_status: parsed.data.security_review_status,
+            dpa_status: parsed.data.dpa_status,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { providers: out.value.rows.map(serializeProvider), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_providers');
+    }
+  });
+
+  app.post('/v1/regulatory/providers', async (req, reply) => {
+    const parsed = CreateProviderBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createProvider(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { provider: serializeProvider(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_provider');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/providers/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_provider_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleProvider(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'provider_not_found' };
+      }
+      return { provider: serializeProvider(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_provider');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/providers/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_provider_id' };
+    }
+    const parsed = UpdateProviderBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateProvider(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { provider: serializeProvider(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_provider');
     }
   });
 }

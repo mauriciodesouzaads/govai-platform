@@ -29,6 +29,8 @@ import type {
   CreateFrameworkMappingInput,
   CreateAiSystemInput,
   UpdateAiSystemInput,
+  CreateProviderInput,
+  UpdateProviderInput,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -1224,6 +1226,296 @@ export async function listAiSystems(
   params.push(cursor.limit);
   const res = await ctx.client.query<AiSystemRow>(
     `SELECT ${AI_SYSTEM_COLUMNS} FROM govai.regulatory_ai_systems
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// Provider Registry (PR-R3)
+// ---------------------------------------------------------------------------
+
+export type ProviderRow = {
+  id: string;
+  org_id: string;
+  provider_key: string;
+  name: string;
+  description: string;
+  provider_type: string;
+  provider_status: string;
+  deployment_model: string;
+  data_processing_role: string;
+  primary_jurisdiction: string;
+  headquarters_country: string | null;
+  website_url: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  dpa_status: string;
+  security_review_status: string;
+  subprocessors_review_status: string;
+  ai_terms_review_status: string;
+  last_reviewed_at: Date | null;
+  next_review_at: Date | null;
+  review_frequency: string;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const PROVIDER_COLUMNS = `id, org_id, provider_key, name, description, provider_type, provider_status,
+  deployment_model, data_processing_role, primary_jurisdiction, headquarters_country, website_url,
+  contact_name, contact_email, dpa_status, security_review_status, subprocessors_review_status,
+  ai_terms_review_status, last_reviewed_at, next_review_at, review_frequency, regulatory_source_id,
+  control_id, metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+// The review-status fields whose changes trigger a review_status_changed event.
+const PROVIDER_REVIEW_FIELDS = [
+  'dpa_status',
+  'security_review_status',
+  'subprocessors_review_status',
+  'ai_terms_review_status',
+] as const;
+
+export async function createProvider(ctx: Ctx, input: CreateProviderInput): Promise<ProviderRow> {
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<ProviderRow>(
+      `INSERT INTO govai.regulatory_providers
+         (org_id, provider_key, name, description, provider_type, provider_status, deployment_model,
+          data_processing_role, primary_jurisdiction, headquarters_country, website_url, contact_name,
+          contact_email, dpa_status, security_review_status, subprocessors_review_status,
+          ai_terms_review_status, last_reviewed_at, next_review_at, review_frequency,
+          regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+               $18::timestamptz, $19::timestamptz, $20, $21::uuid, $22::uuid, $23::jsonb, $24::uuid, $24::uuid)
+       RETURNING ${PROVIDER_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.provider_key,
+        input.name,
+        input.description,
+        input.provider_type,
+        input.provider_status,
+        input.deployment_model,
+        input.data_processing_role,
+        input.primary_jurisdiction,
+        input.headquarters_country ?? null,
+        input.website_url ?? null,
+        input.contact_name ?? null,
+        input.contact_email ?? null,
+        input.dpa_status,
+        input.security_review_status,
+        input.subprocessors_review_status,
+        input.ai_terms_review_status,
+        input.last_reviewed_at ?? null,
+        input.next_review_at ?? null,
+        input.review_frequency,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'provider_key_conflict', { provider_key: input.provider_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_provider.created',
+    subjectType: 'regulatory_provider',
+    subjectId: row.id,
+    metadata: {
+      provider_id: row.id,
+      provider_key: row.provider_key,
+      provider_type: row.provider_type,
+      provider_status: row.provider_status,
+      data_processing_role: row.data_processing_role,
+      primary_jurisdiction: row.primary_jurisdiction,
+      regulatory_source_id: row.regulatory_source_id,
+      control_id: row.control_id,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleProvider(ctx: Ctx, id: string): Promise<ProviderRow | null> {
+  const r = await ctx.client.query<ProviderRow>(
+    `SELECT ${PROVIDER_COLUMNS} FROM govai.regulatory_providers WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateProvider(
+  ctx: Ctx,
+  id: string,
+  input: UpdateProviderInput,
+): Promise<ProviderRow> {
+  // RLS already scopes visibility to the caller's org, so another tenant's row
+  // (or a missing id) reads as null → 404 with no leakage.
+  const existing = await getVisibleProvider(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'provider_not_found');
+  await requireVisibleParents(ctx, {
+    regulatory_source_id:
+      input.regulatory_source_id !== undefined
+        ? input.regulatory_source_id
+        : existing.regulatory_source_id,
+    control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+  });
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.name !== undefined) col('name', input.name);
+  if (input.description !== undefined) col('description', input.description);
+  if (input.provider_type !== undefined) col('provider_type', input.provider_type);
+  if (input.provider_status !== undefined) col('provider_status', input.provider_status);
+  if (input.deployment_model !== undefined) col('deployment_model', input.deployment_model);
+  if (input.data_processing_role !== undefined) col('data_processing_role', input.data_processing_role);
+  if (input.primary_jurisdiction !== undefined) col('primary_jurisdiction', input.primary_jurisdiction);
+  if (input.headquarters_country !== undefined) col('headquarters_country', input.headquarters_country);
+  if (input.website_url !== undefined) col('website_url', input.website_url);
+  if (input.contact_name !== undefined) col('contact_name', input.contact_name);
+  if (input.contact_email !== undefined) col('contact_email', input.contact_email);
+  if (input.dpa_status !== undefined) col('dpa_status', input.dpa_status);
+  if (input.security_review_status !== undefined) col('security_review_status', input.security_review_status);
+  if (input.subprocessors_review_status !== undefined)
+    col('subprocessors_review_status', input.subprocessors_review_status);
+  if (input.ai_terms_review_status !== undefined) col('ai_terms_review_status', input.ai_terms_review_status);
+  if (input.last_reviewed_at !== undefined) col('last_reviewed_at', input.last_reviewed_at, '::timestamptz');
+  if (input.next_review_at !== undefined) col('next_review_at', input.next_review_at, '::timestamptz');
+  if (input.review_frequency !== undefined) col('review_frequency', input.review_frequency);
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<ProviderRow>(
+    `UPDATE govai.regulatory_providers SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${PROVIDER_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'provider_not_found');
+
+  const statusChanged =
+    input.provider_status !== undefined && input.provider_status !== existing.provider_status;
+  // Collect each review-status field that actually changed value.
+  const reviewChanges: Record<string, { from: string; to: string }> = {};
+  for (const field of PROVIDER_REVIEW_FIELDS) {
+    const next = (input as Record<string, unknown>)[field];
+    if (next !== undefined && next !== existing[field]) {
+      reviewChanges[field] = { from: existing[field], to: next as string };
+    }
+  }
+  const reviewChanged = Object.keys(reviewChanges).length > 0;
+
+  await appendAudit(ctx, {
+    eventType: 'regulatory_provider.updated',
+    subjectType: 'regulatory_provider',
+    subjectId: row.id,
+    metadata: {
+      provider_id: row.id,
+      provider_key: row.provider_key,
+      changed_fields: Object.keys(input),
+      provider_status: row.provider_status,
+      ...(statusChanged ? { previous_provider_status: existing.provider_status } : {}),
+      ...(reviewChanged ? { review_status_changes: reviewChanges } : {}),
+    },
+  });
+  // A provider_status transition is governance-significant evidence; emit a
+  // dedicated event in addition to `updated`. auditAppend chains sequentially.
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_provider.status_changed',
+      subjectType: 'regulatory_provider',
+      subjectId: row.id,
+      metadata: {
+        provider_id: row.id,
+        provider_key: row.provider_key,
+        previous_provider_status: existing.provider_status,
+        provider_status: row.provider_status,
+      },
+    });
+  }
+  // Any review-posture transition is likewise tracked as its own evidence event.
+  if (reviewChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_provider.review_status_changed',
+      subjectType: 'regulatory_provider',
+      subjectId: row.id,
+      metadata: {
+        provider_id: row.id,
+        provider_key: row.provider_key,
+        review_status_changes: reviewChanges,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listProviders(
+  ctx: Ctx,
+  filters: {
+    provider_type?: string;
+    provider_status?: string;
+    deployment_model?: string;
+    data_processing_role?: string;
+    primary_jurisdiction?: string;
+    security_review_status?: string;
+    dpa_status?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<ProviderRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined) => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}`);
+  };
+  eq('provider_type', filters.provider_type);
+  eq('provider_status', filters.provider_status);
+  eq('deployment_model', filters.deployment_model);
+  eq('data_processing_role', filters.data_processing_role);
+  eq('primary_jurisdiction', filters.primary_jurisdiction);
+  eq('security_review_status', filters.security_review_status);
+  eq('dpa_status', filters.dpa_status);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(provider_key ILIKE $${i} OR name ILIKE $${i} OR description ILIKE $${i} OR contact_email ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ProviderRow>(
+    `SELECT ${PROVIDER_COLUMNS} FROM govai.regulatory_providers
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,

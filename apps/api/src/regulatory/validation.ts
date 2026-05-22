@@ -403,6 +403,147 @@ export const UpdateAiSystemBody = z
 export type UpdateAiSystemInput = z.infer<typeof UpdateAiSystemBody>;
 
 // ---------------------------------------------------------------------------
+// Provider Registry (PR-R3)
+// ---------------------------------------------------------------------------
+
+export const ProviderType = z.enum([
+  'MODEL_PROVIDER',
+  'CLOUD_PROVIDER',
+  'AI_PLATFORM',
+  'VECTOR_DATABASE',
+  'DATA_PROCESSOR',
+  'EVALUATION_TOOL',
+  'MONITORING_TOOL',
+  'SECURITY_TOOL',
+  'WORKFLOW_TOOL',
+  'OTHER',
+]);
+
+export const ProviderStatus = z.enum([
+  'PROPOSED',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'SUSPENDED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const DeploymentModel = z.enum([
+  'SAAS',
+  'API',
+  'CLOUD_MARKETPLACE',
+  'CUSTOMER_CLOUD',
+  'ON_PREMISE',
+  'HYBRID',
+  'OTHER',
+]);
+
+export const DataProcessingRole = z.enum([
+  'CONTROLLER',
+  'PROCESSOR',
+  'SUBPROCESSOR',
+  'JOINT_CONTROLLER',
+  'NOT_APPLICABLE',
+  'TO_BE_DETERMINED',
+]);
+
+export const DpaStatus = z.enum([
+  'NOT_STARTED',
+  'REQUESTED',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'REJECTED',
+  'NOT_APPLICABLE',
+]);
+
+export const SecurityReviewStatus = z.enum([
+  'NOT_STARTED',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'REJECTED',
+  'EXPIRED',
+]);
+
+export const SubprocessorsReviewStatus = z.enum([
+  'NOT_STARTED',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'REJECTED',
+  'NOT_APPLICABLE',
+]);
+
+export const AiTermsReviewStatus = z.enum([
+  'NOT_STARTED',
+  'UNDER_REVIEW',
+  'APPROVED',
+  'APPROVED_WITH_CONDITIONS',
+  'REJECTED',
+  'NOT_APPLICABLE',
+]);
+
+const EmailField = z.string().email().max(320);
+const CountryField = z.string().min(1).max(120);
+
+export const CreateProviderBody = z.object({
+  provider_key: KeyField,
+  name: z.string().min(1).max(500),
+  description: LongText.default(''),
+  provider_type: ProviderType,
+  provider_status: ProviderStatus,
+  deployment_model: DeploymentModel,
+  data_processing_role: DataProcessingRole,
+  primary_jurisdiction: z.string().min(1).max(64).default('BR'),
+  headquarters_country: CountryField.optional(),
+  website_url: HttpUrl.optional(),
+  contact_name: OwnerField.optional(),
+  contact_email: EmailField.optional(),
+  dpa_status: DpaStatus,
+  security_review_status: SecurityReviewStatus,
+  subprocessors_review_status: SubprocessorsReviewStatus,
+  ai_terms_review_status: AiTermsReviewStatus,
+  last_reviewed_at: z.string().datetime().optional(),
+  next_review_at: z.string().datetime().optional(),
+  review_frequency: ReviewFrequency.default('AD_HOC'),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateProviderInput = z.infer<typeof CreateProviderBody>;
+
+// PATCH: every field optional; at least one must be present. provider_key and
+// org_id are immutable and intentionally absent.
+export const UpdateProviderBody = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    description: LongText.optional(),
+    provider_type: ProviderType.optional(),
+    provider_status: ProviderStatus.optional(),
+    deployment_model: DeploymentModel.optional(),
+    data_processing_role: DataProcessingRole.optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    headquarters_country: CountryField.nullable().optional(),
+    website_url: HttpUrl.nullable().optional(),
+    contact_name: OwnerField.nullable().optional(),
+    contact_email: EmailField.nullable().optional(),
+    dpa_status: DpaStatus.optional(),
+    security_review_status: SecurityReviewStatus.optional(),
+    subprocessors_review_status: SubprocessorsReviewStatus.optional(),
+    ai_terms_review_status: AiTermsReviewStatus.optional(),
+    last_reviewed_at: z.string().datetime().nullable().optional(),
+    next_review_at: z.string().datetime().nullable().optional(),
+    review_frequency: ReviewFrequency.optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateProviderInput = z.infer<typeof UpdateProviderBody>;
+
+// ---------------------------------------------------------------------------
 // List queries (keyset pagination + filters)
 // ---------------------------------------------------------------------------
 
@@ -475,6 +616,23 @@ export const ListAiSystemsQuery = z
     lifecycle_state: LifecycleState.optional(),
     primary_jurisdiction: z.string().min(1).max(64).optional(),
     deployment_environment: DeploymentEnvironment.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListProvidersQuery = z
+  .object({
+    ...Cursor,
+    provider_type: ProviderType.optional(),
+    provider_status: ProviderStatus.optional(),
+    deployment_model: DeploymentModel.optional(),
+    data_processing_role: DataProcessingRole.optional(),
+    primary_jurisdiction: z.string().min(1).max(64).optional(),
+    security_review_status: SecurityReviewStatus.optional(),
+    dpa_status: DpaStatus.optional(),
     q: z.string().min(1).max(200).optional(),
   })
   .refine(cursorPaired, {
