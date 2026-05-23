@@ -860,7 +860,12 @@ describe('regulatory-risk / pagination + filters', () => {
   });
 
   it('factor filters by category/severity/triggered work; trigger filters by status/type/action/due_before work', async () => {
-    const cls = await mkClassification(orgFilter, { factor_inputs: HIGH_INPUTS });
+    const methodFi = await mkMethod(orgFilter);
+    const aiFi = await mkAiSystem(orgFilter);
+    const ucFi = await mkUseCase(orgFilter);
+    const cls = await mkClassification(orgFilter, {
+      factor_inputs: HIGH_INPUTS, risk_method_id: methodFi, use_case_id: ucFi, ai_system_id: aiFi,
+    });
     const triggered = await inject(stack, 'GET', `/v1/regulatory/risk-classification-factors?classification_id=${cls.id}&triggered=true&factor_severity=HIGH&limit=200`, orgFilter.api_key);
     const rows = bodyOf(triggered)['risk_classification_factors'] as Array<Record<string, unknown>>;
     expect(rows.length).toBeGreaterThan(0);
