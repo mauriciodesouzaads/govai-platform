@@ -5687,16 +5687,22 @@ export async function createHighRiskReview(
     });
   }
   if (input.workroom_id) {
+    // Scope by org_id explicitly so a foreign-tenant workroom id surfaces as a
+    // clean 404 RegulatoryError, instead of falling through to the RLS
+    // WITH CHECK on INSERT and producing a generic DB 500. RLS remains the
+    // defense-in-depth backstop.
     const wr = await ctx.client.query<{ id: string }>(
-      `SELECT id FROM govai.workrooms WHERE id = $1::uuid`,
-      [input.workroom_id],
+      `SELECT id FROM govai.workrooms WHERE id = $1::uuid AND org_id = $2::uuid`,
+      [input.workroom_id, ctx.actor.orgId],
     );
     if (wr.rowCount === 0) throw new RegulatoryError(404, 'workroom_not_found');
   }
   if (input.workroom_approval_request_id) {
+    // Same defensive tenant scoping for the approval-request lookup.
     const ar = await ctx.client.query<{ id: string; workroom_id: string }>(
-      `SELECT id, workroom_id FROM govai.workroom_approval_requests WHERE id = $1::uuid`,
-      [input.workroom_approval_request_id],
+      `SELECT id, workroom_id FROM govai.workroom_approval_requests
+        WHERE id = $1::uuid AND org_id = $2::uuid`,
+      [input.workroom_approval_request_id, ctx.actor.orgId],
     );
     if (ar.rowCount === 0) throw new RegulatoryError(404, 'workroom_approval_request_not_found');
     if (input.workroom_id && ar.rows[0]!.workroom_id !== input.workroom_id) {
@@ -6197,9 +6203,14 @@ async function requireAssignmentParticipantValid(
   review: HighRiskReviewRow,
   participantId: string,
 ): Promise<void> {
+  // Scope by org_id explicitly so a foreign-tenant participant id surfaces as a
+  // clean 404 RegulatoryError, instead of falling through to the RLS WITH CHECK
+  // on INSERT and producing a generic DB 500. RLS remains the defense-in-depth
+  // backstop.
   const r = await ctx.client.query<{ id: string; workroom_id: string }>(
-    `SELECT id, workroom_id FROM govai.workroom_participants WHERE id = $1::uuid`,
-    [participantId],
+    `SELECT id, workroom_id FROM govai.workroom_participants
+      WHERE id = $1::uuid AND org_id = $2::uuid`,
+    [participantId, ctx.actor.orgId],
   );
   if (r.rowCount === 0) throw new RegulatoryError(404, 'workroom_participant_not_found');
   if (review.workroom_id && r.rows[0]!.workroom_id !== review.workroom_id) {
@@ -6425,9 +6436,11 @@ export async function createHighRiskReviewDecision(
     });
   }
   if (input.decided_by_participant_id) {
+    // Same defensive tenant scoping for the decision participant lookup.
     const p = await ctx.client.query<{ id: string; workroom_id: string }>(
-      `SELECT id, workroom_id FROM govai.workroom_participants WHERE id = $1::uuid`,
-      [input.decided_by_participant_id],
+      `SELECT id, workroom_id FROM govai.workroom_participants
+        WHERE id = $1::uuid AND org_id = $2::uuid`,
+      [input.decided_by_participant_id, ctx.actor.orgId],
     );
     if (p.rowCount === 0) throw new RegulatoryError(404, 'workroom_participant_not_found');
     if (review.workroom_id && p.rows[0]!.workroom_id !== review.workroom_id) {

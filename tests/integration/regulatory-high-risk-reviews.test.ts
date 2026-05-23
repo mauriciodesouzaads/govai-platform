@@ -1127,3 +1127,209 @@ describe('regulatory-high-risk-reviews / PR-R7 non-regression', () => {
     expect(afterCount).toBe(beforeCount);
   });
 });
+
+// ===========================================================================
+// Service-layer tenant pre-checks (Codex P1 #1 + #2 + GPT helper finding)
+//
+// Service-layer lookups for workroom_id, workroom_approval_request_id, and
+// workroom_participants (both the assignment-create and decision-create paths)
+// must be scoped by org_id so cross-tenant ids surface as deterministic
+// 404/400 RegulatoryError responses rather than falling through to RLS
+// WITH CHECK on INSERT and producing a generic DB 500. RLS remains the
+// defense-in-depth backstop and is exercised by the direct-DB RLS suite above.
+// ===========================================================================
+
+describe('regulatory-high-risk-reviews / tenant pre-checks', () => {
+  // Build a workroom + a passthrough_run approval request + an additional
+  // human-reviewer participant in a given tenant. All via existing public
+  // routes — no direct DB INSERT into audit_events / workroom_approval_requests
+  // is needed. Returns the ids used downstream by the pre-check tests.
+  async function seedWorkroomBundle(
+    org: AdminOrg,
+  ): Promise<{ workroomId: string; participantId: string; approvalRequestId: string }> {
+    // Creating a workroom registers the caller as the human_owner participant
+    // automatically, which is what the approval-request route requires.
+    const wr = await inject(stack, 'POST', '/v1/workrooms', org.api_key, {
+      workspace_id: randomUUID(),
+      name: `wr-${randomUUID().slice(0, 6)}`,
+      governance_mode: 'governance_active',
+    });
+    expect(wr.statusCode).toBe(201);
+    const workroomId = ((bodyOf(wr)['workroom']) as Record<string, unknown>)['id'] as string;
+
+    // Add a second human-reviewer participant — used as the assignee/decider in
+    // the participant pre-check tests below.
+    const part = await inject(stack, 'POST', `/v1/workrooms/${workroomId}/participants`, org.api_key, {
+      kind: 'human',
+      role: 'human_reviewer',
+      user_id: randomUUID(),
+    });
+    expect(part.statusCode).toBe(201);
+    const participantId = ((bodyOf(part)['participant']) as Record<string, unknown>)['id'] as string;
+
+    // Raise an approval request via the public route. The caller (workroom
+    // owner) is an active participant by construction.
+    const ar = await inject(stack, 'POST', `/v1/workrooms/${workroomId}/approvals`, org.api_key, {
+      subject_kind: 'passthrough_run',
+      intended_run: {
+        capability: 'anthropic.passthrough.messages',
+        model: 'claude-3-5-sonnet',
+        input: 'pr-r8 pre-check test fixture',
+      },
+    });
+    expect(ar.statusCode).toBe(201);
+    const approvalRequestId = ((bodyOf(ar)['approval_request']) as Record<string, unknown>)['id'] as string;
+
+    return { workroomId, participantId, approvalRequestId };
+  }
+
+  it('create review with foreign-tenant workroom_id returns 404 workroom_not_found, not 500', async () => {
+    const bundleB = await seedWorkroomBundle(orgB);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const r = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_id: bundleB.workroomId,
+    });
+    expect(r.statusCode).toBe(404);
+    expect(bodyOf(r)['error']).toBe('workroom_not_found');
+  });
+
+  it('create review with foreign-tenant workroom_approval_request_id returns 404 workroom_approval_request_not_found, not 500', async () => {
+    const bundleB = await seedWorkroomBundle(orgB);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const r = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_approval_request_id: bundleB.approvalRequestId,
+    });
+    expect(r.statusCode).toBe(404);
+    expect(bodyOf(r)['error']).toBe('workroom_approval_request_not_found');
+  });
+
+  it('create review with own-tenant approval request but mismatched own workroom_id returns 400 workroom_approval_request_workroom_mismatch', async () => {
+    const bundleA1 = await seedWorkroomBundle(orgA);
+    const bundleA2 = await seedWorkroomBundle(orgA);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const r = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_id: bundleA1.workroomId,
+      workroom_approval_request_id: bundleA2.approvalRequestId,
+    });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('workroom_approval_request_workroom_mismatch');
+  });
+
+  it('create review with own-tenant workroom + own-tenant matching approval request succeeds (200/201, not 500)', async () => {
+    const bundle = await seedWorkroomBundle(orgA);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const r = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_id: bundle.workroomId,
+      workroom_approval_request_id: bundle.approvalRequestId,
+    });
+    expect(r.statusCode).toBe(201);
+    const rev = (bodyOf(r)['high_risk_review']) as Record<string, unknown>;
+    expect(rev['workroom_id']).toBe(bundle.workroomId);
+    expect(rev['workroom_approval_request_id']).toBe(bundle.approvalRequestId);
+  });
+
+  it('create assignment with foreign-tenant assignee_participant_id returns 404 workroom_participant_not_found, not 500', async () => {
+    const bundleB = await seedWorkroomBundle(orgB);
+    const out = await mkReview(orgA);
+    const r = await inject(stack, 'POST', `/v1/regulatory/high-risk-reviews/${out.id}/assignments`, orgA.api_key, {
+      assignee_participant_id: bundleB.participantId,
+      reviewer_role: 'LEGAL',
+    });
+    expect(r.statusCode).toBe(404);
+    expect(bodyOf(r)['error']).toBe('workroom_participant_not_found');
+  });
+
+  it('create assignment with own-tenant participant outside review-bound workroom returns 400 workroom_participant_workroom_mismatch', async () => {
+    // Bind the review to workroom A1, then assign a participant from workroom A2 — same tenant, different workroom.
+    const bundleA1 = await seedWorkroomBundle(orgA);
+    const bundleA2 = await seedWorkroomBundle(orgA);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const reviewResp = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_id: bundleA1.workroomId,
+    });
+    expect(reviewResp.statusCode).toBe(201);
+    const reviewId = ((bodyOf(reviewResp)['high_risk_review']) as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'POST', `/v1/regulatory/high-risk-reviews/${reviewId}/assignments`, orgA.api_key, {
+      assignee_participant_id: bundleA2.participantId,
+      reviewer_role: 'LEGAL',
+    });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('workroom_participant_workroom_mismatch');
+  });
+
+  it('create assignment with own-tenant participant inside review-bound workroom succeeds (201)', async () => {
+    const bundle = await seedWorkroomBundle(orgA);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const reviewResp = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_id: bundle.workroomId,
+    });
+    expect(reviewResp.statusCode).toBe(201);
+    const reviewId = ((bodyOf(reviewResp)['high_risk_review']) as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'POST', `/v1/regulatory/high-risk-reviews/${reviewId}/assignments`, orgA.api_key, {
+      assignee_participant_id: bundle.participantId,
+      reviewer_role: 'LEGAL',
+    });
+    expect(r.statusCode).toBe(201);
+  });
+
+  it('create decision with foreign-tenant decided_by_participant_id returns 404 workroom_participant_not_found, not 500', async () => {
+    const bundleB = await seedWorkroomBundle(orgB);
+    const out = await mkReview(orgA);
+    await submitReview(orgA, out.id);
+    const r = await inject(stack, 'POST', `/v1/regulatory/high-risk-reviews/${out.id}/decisions`, approverApiKey, {
+      decision: 'APPROVE',
+      reviewer_role: 'COMPLIANCE',
+      decided_by_participant_id: bundleB.participantId,
+    });
+    expect(r.statusCode).toBe(404);
+    expect(bodyOf(r)['error']).toBe('workroom_participant_not_found');
+  });
+
+  it('create decision with own-tenant participant outside review-bound workroom returns 400 workroom_participant_workroom_mismatch', async () => {
+    const bundleA1 = await seedWorkroomBundle(orgA);
+    const bundleA2 = await seedWorkroomBundle(orgA);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const reviewResp = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_id: bundleA1.workroomId,
+    });
+    expect(reviewResp.statusCode).toBe(201);
+    const reviewId = ((bodyOf(reviewResp)['high_risk_review']) as Record<string, unknown>)['id'] as string;
+    await submitReview(orgA, reviewId);
+    const r = await inject(stack, 'POST', `/v1/regulatory/high-risk-reviews/${reviewId}/decisions`, approverApiKey, {
+      decision: 'APPROVE',
+      reviewer_role: 'COMPLIANCE',
+      decided_by_participant_id: bundleA2.participantId,
+    });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('workroom_participant_workroom_mismatch');
+  });
+
+  it('create decision with own-tenant participant inside review-bound workroom succeeds (201)', async () => {
+    const bundle = await seedWorkroomBundle(orgA);
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, HIGH_INPUTS);
+    const reviewResp = await inject(stack, 'POST', '/v1/regulatory/high-risk-reviews', orgA.api_key, {
+      ...baseReview({ risk_classification_id: cls }),
+      workroom_id: bundle.workroomId,
+    });
+    expect(reviewResp.statusCode).toBe(201);
+    const reviewId = ((bodyOf(reviewResp)['high_risk_review']) as Record<string, unknown>)['id'] as string;
+    await submitReview(orgA, reviewId);
+    // The approverApiKey identity is a non-requester admin on orgA — SoD passes.
+    // The bundle's workroom_id matches the review's workroom_id, so the participant lookup passes too.
+    const r = await inject(stack, 'POST', `/v1/regulatory/high-risk-reviews/${reviewId}/decisions`, approverApiKey, {
+      decision: 'APPROVE',
+      reviewer_role: 'COMPLIANCE',
+      decided_by_participant_id: bundle.participantId,
+    });
+    expect(r.statusCode).toBe(201);
+    const rev = (bodyOf(r)['high_risk_review']) as Record<string, unknown>;
+    expect(rev['review_status']).toBe('APPROVED');
+  });
+});
