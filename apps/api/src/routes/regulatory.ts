@@ -74,6 +74,21 @@ import {
   getVisibleUseCaseReview,
   updateUseCaseReview,
   listUseCaseReviews,
+  createRiskMethod,
+  getVisibleRiskMethod,
+  updateRiskMethod,
+  listRiskMethods,
+  evaluateRiskClassification,
+  createRiskClassification,
+  getVisibleRiskClassification,
+  updateRiskClassification,
+  listRiskClassifications,
+  getVisibleRiskClassificationFactor,
+  listRiskClassificationFactors,
+  createReclassificationTrigger,
+  getVisibleReclassificationTrigger,
+  updateReclassificationTrigger,
+  listReclassificationTriggers,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -93,6 +108,10 @@ import {
   type UseCaseRow,
   type UseCaseAssetLinkRow,
   type UseCaseReviewRow,
+  type RiskMethodRow,
+  type RiskClassificationRow,
+  type RiskClassificationFactorRow,
+  type ReclassificationTriggerRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -141,6 +160,17 @@ import {
   ListUseCasesQuery,
   ListUseCaseAssetLinksQuery,
   ListUseCaseReviewsQuery,
+  CreateRiskMethodBody,
+  UpdateRiskMethodBody,
+  ListRiskMethodsQuery,
+  EvaluateRiskClassificationBody,
+  CreateRiskClassificationBody,
+  UpdateRiskClassificationBody,
+  ListRiskClassificationsQuery,
+  ListRiskClassificationFactorsQuery,
+  CreateReclassificationTriggerBody,
+  UpdateReclassificationTriggerBody,
+  ListReclassificationTriggersQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -671,6 +701,124 @@ function serializeUseCaseReview(r: UseCaseReviewRow): Record<string, unknown> {
     conditions_summary: r.conditions_summary,
     evidence_reference: r.evidence_reference,
     evidence_hash: r.evidence_hash,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeRiskMethod(r: RiskMethodRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    method_key: r.method_key,
+    method_version: r.method_version,
+    name: r.name,
+    method_status: r.method_status,
+    framework_profile: r.framework_profile,
+    methodology_summary: r.methodology_summary,
+    scoring_summary: r.scoring_summary,
+    high_risk_criteria_summary: r.high_risk_criteria_summary,
+    prohibited_criteria_summary: r.prohibited_criteria_summary,
+    mitigation_policy_summary: r.mitigation_policy_summary,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeRiskClassification(r: RiskClassificationRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    classification_key: r.classification_key,
+    classification_status: r.classification_status,
+    risk_method_id: r.risk_method_id,
+    use_case_id: r.use_case_id,
+    ai_system_id: r.ai_system_id,
+    use_case_asset_link_id: r.use_case_asset_link_id,
+    model_id: r.model_id,
+    model_version_id: r.model_version_id,
+    agent_id: r.agent_id,
+    agent_version_id: r.agent_version_id,
+    classification_basis: r.classification_basis,
+    decision_scope: r.decision_scope,
+    inherent_risk_tier: r.inherent_risk_tier,
+    residual_risk_tier: r.residual_risk_tier,
+    risk_score: r.risk_score,
+    residual_risk_score: r.residual_risk_score,
+    mitigation_strength: r.mitigation_strength,
+    requires_high_risk_review: r.requires_high_risk_review,
+    requires_prohibited_use_review: r.requires_prohibited_use_review,
+    insufficient_information: r.insufficient_information,
+    rationale_summary: r.rationale_summary,
+    factor_summary: r.factor_summary,
+    evidence_summary: r.evidence_summary,
+    mitigation_summary: r.mitigation_summary,
+    residual_risk_summary: r.residual_risk_summary,
+    recommended_controls_summary: r.recommended_controls_summary,
+    review_notes: r.review_notes,
+    effective_from: iso(r.effective_from),
+    effective_to: iso(r.effective_to),
+    supersedes_classification_id: r.supersedes_classification_id,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeRiskClassificationFactor(r: RiskClassificationFactorRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    classification_id: r.classification_id,
+    factor_key: r.factor_key,
+    factor_category: r.factor_category,
+    factor_severity: r.factor_severity,
+    factor_value: r.factor_value,
+    triggered: r.triggered,
+    score_contribution: r.score_contribution,
+    rationale: r.rationale,
+    evidence_reference: r.evidence_reference,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeReclassificationTrigger(r: ReclassificationTriggerRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    trigger_key: r.trigger_key,
+    trigger_status: r.trigger_status,
+    trigger_type: r.trigger_type,
+    recommended_action: r.recommended_action,
+    classification_id: r.classification_id,
+    use_case_id: r.use_case_id,
+    ai_system_id: r.ai_system_id,
+    prior_risk_tier: r.prior_risk_tier,
+    trigger_reason: r.trigger_reason,
+    evidence_reference: r.evidence_reference,
+    detected_at: iso(r.detected_at),
+    due_at: iso(r.due_at),
+    resolved_at: iso(r.resolved_at),
     regulatory_source_id: r.regulatory_source_id,
     control_id: r.control_id,
     metadata: r.metadata,
@@ -2193,6 +2341,426 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       return { use_case_review: serializeUseCaseReview(out.value) };
     } catch (err) {
       return onError(req, reply, err, 'update_use_case_review');
+    }
+  });
+
+  // --- Risk methods (PR-R7) -----------------------------------------------
+
+  app.post('/v1/regulatory/risk-methods', async (req, reply) => {
+    const parsed = CreateRiskMethodBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createRiskMethod(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { risk_method: serializeRiskMethod(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_risk_method');
+    }
+  });
+
+  app.get('/v1/regulatory/risk-methods', async (req, reply) => {
+    const parsed = ListRiskMethodsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listRiskMethods(
+          ctx,
+          {
+            method_status: parsed.data.method_status,
+            framework_profile: parsed.data.framework_profile,
+            method_key: parsed.data.method_key,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { risk_methods: out.value.rows.map(serializeRiskMethod), next_cursor: out.value.nextCursor };
+    } catch (err) {
+      return onError(req, reply, err, 'list_risk_methods');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/risk-methods/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_risk_method_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleRiskMethod(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'risk_method_not_found' };
+      }
+      return { risk_method: serializeRiskMethod(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_risk_method');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/risk-methods/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_risk_method_id' };
+    }
+    const parsed = UpdateRiskMethodBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateRiskMethod(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { risk_method: serializeRiskMethod(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_risk_method');
+    }
+  });
+
+  // --- Risk classifications -----------------------------------------------
+
+  // Stateless preview endpoint: runs the deterministic engine and returns the
+  // proposed classification without persisting or emitting audit events.
+  app.post('/v1/regulatory/risk-classifications/evaluate', async (req, reply) => {
+    const parsed = EvaluateRiskClassificationBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => evaluateRiskClassification(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { risk_classification_preview: out.value };
+    } catch (err) {
+      return onError(req, reply, err, 'evaluate_risk_classification');
+    }
+  });
+
+  app.post('/v1/regulatory/risk-classifications', async (req, reply) => {
+    const parsed = CreateRiskClassificationBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createRiskClassification(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return {
+        risk_classification: serializeRiskClassification(out.value.classification),
+        risk_classification_factors: out.value.factors.map(serializeRiskClassificationFactor),
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'create_risk_classification');
+    }
+  });
+
+  app.get('/v1/regulatory/risk-classifications', async (req, reply) => {
+    const parsed = ListRiskClassificationsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listRiskClassifications(
+          ctx,
+          {
+            classification_status: parsed.data.classification_status,
+            risk_method_id: parsed.data.risk_method_id,
+            use_case_id: parsed.data.use_case_id,
+            ai_system_id: parsed.data.ai_system_id,
+            use_case_asset_link_id: parsed.data.use_case_asset_link_id,
+            model_id: parsed.data.model_id,
+            model_version_id: parsed.data.model_version_id,
+            agent_id: parsed.data.agent_id,
+            agent_version_id: parsed.data.agent_version_id,
+            inherent_risk_tier: parsed.data.inherent_risk_tier,
+            residual_risk_tier: parsed.data.residual_risk_tier,
+            requires_high_risk_review: parsed.data.requires_high_risk_review,
+            requires_prohibited_use_review: parsed.data.requires_prohibited_use_review,
+            classification_basis: parsed.data.classification_basis,
+            decision_scope: parsed.data.decision_scope,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        risk_classifications: out.value.rows.map(serializeRiskClassification),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_risk_classifications');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/risk-classifications/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_risk_classification_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleRiskClassification(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'risk_classification_not_found' };
+      }
+      return { risk_classification: serializeRiskClassification(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_risk_classification');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/risk-classifications/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_risk_classification_id' };
+    }
+    const parsed = UpdateRiskClassificationBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => updateRiskClassification(ctx, req.params.id, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { risk_classification: serializeRiskClassification(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_risk_classification');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/risk-classifications/:id/factors', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_risk_classification_id' };
+    }
+    const parsed = ListRiskClassificationFactorsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listRiskClassificationFactors(
+          ctx,
+          {
+            classification_id: req.params.id,
+            factor_category: parsed.data.factor_category,
+            factor_severity: parsed.data.factor_severity,
+            triggered: parsed.data.triggered,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        risk_classification_factors: out.value.rows.map(serializeRiskClassificationFactor),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_risk_classification_factors_for_classification');
+    }
+  });
+
+  app.get('/v1/regulatory/risk-classification-factors', async (req, reply) => {
+    const parsed = ListRiskClassificationFactorsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listRiskClassificationFactors(
+          ctx,
+          {
+            classification_id: parsed.data.classification_id,
+            factor_category: parsed.data.factor_category,
+            factor_severity: parsed.data.factor_severity,
+            triggered: parsed.data.triggered,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        risk_classification_factors: out.value.rows.map(serializeRiskClassificationFactor),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_risk_classification_factors');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/risk-classification-factors/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_risk_classification_factor_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleRiskClassificationFactor(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'risk_classification_factor_not_found' };
+      }
+      return { risk_classification_factor: serializeRiskClassificationFactor(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_risk_classification_factor');
+    }
+  });
+
+  // --- Reclassification triggers ------------------------------------------
+
+  app.post('/v1/regulatory/reclassification-triggers', async (req, reply) => {
+    const parsed = CreateReclassificationTriggerBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createReclassificationTrigger(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { reclassification_trigger: serializeReclassificationTrigger(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_reclassification_trigger');
+    }
+  });
+
+  app.get('/v1/regulatory/reclassification-triggers', async (req, reply) => {
+    const parsed = ListReclassificationTriggersQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listReclassificationTriggers(
+          ctx,
+          {
+            classification_id: parsed.data.classification_id,
+            use_case_id: parsed.data.use_case_id,
+            ai_system_id: parsed.data.ai_system_id,
+            trigger_status: parsed.data.trigger_status,
+            trigger_type: parsed.data.trigger_type,
+            recommended_action: parsed.data.recommended_action,
+            due_before: parsed.data.due_before,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        reclassification_triggers: out.value.rows.map(serializeReclassificationTrigger),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_reclassification_triggers');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/reclassification-triggers/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_reclassification_trigger_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleReclassificationTrigger(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'reclassification_trigger_not_found' };
+      }
+      return { reclassification_trigger: serializeReclassificationTrigger(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_reclassification_trigger');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/reclassification-triggers/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_reclassification_trigger_id' };
+    }
+    const parsed = UpdateReclassificationTriggerBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateReclassificationTrigger(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { reclassification_trigger: serializeReclassificationTrigger(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_reclassification_trigger');
     }
   });
 }

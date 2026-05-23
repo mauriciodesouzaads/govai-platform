@@ -176,7 +176,24 @@ under which the control turns `COVERED`.
 - Evidence artifacts: classification records, rationales, re-classification
   events.
 - Frameworks: LGPD, ANPD, CNJ 615, ISO 42001, NIST AI RMF, EU AI Act.
-- Current state: REQUIRED_NATIVE_CAPABILITY.
+- Current state: deterministic technical risk classification engine
+  (methodology records, classification records, per-factor evidence rows,
+  reclassification triggers, audit events) is `IMPLEMENTED_FOUNDATIONAL_CONTROL`
+  (PR-R7); see the PR-R7 evidence in `23-regulatory-core-roadmap.md` and the
+  PR-R7 implementation section in `README.md`. Domain 5 is **not** `COVERED`
+  (COVERED still requires per-requirement framework-mapping citations). In
+  PR-R7 the residual risk tier and score always mirror the inherent risk tier
+  and score (DB-enforced); mitigation_strength is recorded as an evidence-only
+  factor and does not downgrade tier or score, because no methodology PR has
+  yet defined and tested bounded downgrade rules. The review flags
+  `requires_high_risk_review` and `requires_prohibited_use_review` are
+  evidence flags that record that review attention is required — they do not
+  create review workflows, assign reviewers, block execution, or enforce
+  runtime decisions; a future PR is required before any approval workflow,
+  hard-deny, or runtime enforcement may rely on them. Mitigation-weighted
+  scoring/downgrading, high-risk approval workflow, prohibited-use hard-deny
+  workflow, runtime enforcement, and external scoring-tool connectors remain
+  future work.
 - Turns COVERED when: classification engine, schema, audit events, and
   tests exist and are cited in mappings.
 

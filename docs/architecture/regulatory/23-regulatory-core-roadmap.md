@@ -218,6 +218,19 @@ implementation timeline.
 - Mapping update triggered: control 5 in `20-target-control-catalog.md`.
 - Tests expected: rule and scoring tests, integration tests for
   re-classification triggers.
+- Status: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R7) for the deterministic
+  technical classifier, factor-evidence rows, and reclassification-trigger
+  evidence; see the PR-R7 evidence below. In PR-R7 the residual risk tier and
+  score always mirror the inherent risk tier and score (DB-enforced);
+  mitigation_strength is recorded as an evidence-only factor and does not
+  downgrade tier or score, because no methodology PR has yet defined and tested
+  bounded downgrade rules. The review flags `requires_high_risk_review` and
+  `requires_prohibited_use_review` are evidence flags that record that review
+  attention is required — they do not create review workflows, assign reviewers,
+  block execution, or enforce runtime decisions; a future PR is required before
+  any approval workflow, hard-deny, or runtime enforcement may rely on them.
+  High-risk and prohibited-use workflows, runtime enforcement, mitigation-
+  weighted downgrading, legal advice, and connectors remain future work.
 
 ### High-risk workflow
 
@@ -586,6 +599,82 @@ Limitations (remain future work or external):
   legal-basis automation.
 - Runtime enforcement remains future work.
 - CNJ/Sinapses readiness remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-R7 implementation evidence (foundational slice)
+
+PR-R7 delivers the deterministic technical Risk Classification Engine, the next
+P0 Native Regulatory Core foundation after the source registry, control catalog,
+AI-system registry, provider registry, model registry, agent registry, and
+use-case registry. It is a production-focused PR-R7 foundational slice — risk
+methodology evidence, deterministic per-subject classification, per-factor
+evidence rows, and reclassification-trigger evidence — not a high-risk approval
+workflow, prohibited-use hard-deny workflow, runtime enforcement engine, or
+mitigation-weighted scoring engine.
+
+Status:
+
+- Risk Classification Engine: IMPLEMENTED_FOUNDATIONAL_CONTROL for risk
+  methodology evidence, deterministic per-subject classification (tier + score +
+  per-factor evidence rows), and reclassification-trigger evidence.
+
+In PR-R7 the residual risk tier and score always mirror the inherent risk tier
+and score (DB-enforced); mitigation_strength is recorded as an evidence-only
+factor and does not downgrade tier or score, because no methodology PR has yet
+defined and tested bounded downgrade rules. The review flags
+`requires_high_risk_review` and `requires_prohibited_use_review` are evidence
+flags that record that review attention is required — they do not create review
+workflows, assign reviewers, block execution, or enforce runtime decisions; a
+future PR is required before any approval workflow, hard-deny, or runtime
+enforcement may rely on them.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0022_regulatory_risk_classification_engine.sql`
+  (`govai.regulatory_risk_methods`, `govai.regulatory_risk_classifications`,
+  `govai.regulatory_risk_classification_factors`,
+  `govai.regulatory_reclassification_triggers`; tenant-only; RLS ENABLE + FORCE;
+  DB-enforced parent visibility, asset-link consistency,
+  version-belongs-to-parent guards, table-qualified outer references;
+  DB-enforced residual-equals-inherent, residual-score-equals-risk-score,
+  PROHIBITED-implies-both-flags, HIGH-or-PROHIBITED-implies-high-review, and
+  version-requires-parent CHECK invariants; factors table grants SELECT + INSERT
+  only).
+- Engine, validation, service, routes: `apps/api/src/regulatory/service.ts`
+  (`classifyRisk`), `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/routes/regulatory.ts` (risk-method, risk-classification,
+  classification-factor read endpoints, evaluate-only preview endpoint, and
+  reclassification-trigger endpoints; no delete).
+- Tests: `tests/integration/regulatory-risk-classifications.test.ts`.
+
+Audit events emitted:
+
+- `regulatory_risk_method.created` / `.updated` / `.status_changed`
+- `regulatory_risk_classification.created` / `.updated` / `.status_changed` /
+  `.risk_tier_assigned` / `.superseded`
+- `regulatory_risk_classification_factor.created` (factor rows are append-only;
+  no `.updated` audit)
+- `regulatory_reclassification_trigger.created` / `.updated` / `.status_changed` /
+  `.resolved`
+
+Limitations (remain future work or external):
+
+- Governance evidence only — no prompts, credentials, legal opinions, medical
+  records, raw sensitive data, or financial advice outputs are stored.
+- Residual risk mirrors inherent risk and mitigation does not downgrade score
+  or tier in PR-R7 — a future methodology PR is required to define and test any
+  bounded downgrade rules.
+- Review flags are evidence only — no approval workflow, no reviewer
+  assignment, no execution blocking, no runtime enforcement.
+- High-risk approval workflow and prohibited-use hard-deny workflow remain
+  future work.
+- Runtime enforcement, live tool invocation, and gateway-level denial remain
+  future work.
+- Sensitive-data operating model, connectors, and CNJ/Sinapses readiness
+  remain future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.
 - GovAI does not provide legal advice.
