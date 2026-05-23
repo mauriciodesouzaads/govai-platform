@@ -1249,6 +1249,309 @@ export const UpdateUseCaseReviewBody = z
 export type UpdateUseCaseReviewInput = z.infer<typeof UpdateUseCaseReviewBody>;
 
 // ---------------------------------------------------------------------------
+// Risk Classification Engine (PR-R7)
+// ---------------------------------------------------------------------------
+
+export const RiskMethodStatus = z.enum(['DRAFT', 'ACTIVE', 'SUPERSEDED', 'RETIRED']);
+
+export const FrameworkProfile = z.enum([
+  'GOVAI_BASELINE',
+  'BR_AI_GOVERNANCE',
+  'CNJ_615_READINESS',
+  'LGPD_ANPD',
+  'ISO_42001',
+  'NIST_AI_RMF',
+  'EU_AI_ACT_REFERENCE',
+  'CUSTOM',
+]);
+
+export const ClassificationStatus = z.enum([
+  'DRAFT',
+  'ACTIVE',
+  'SUPERSEDED',
+  'RETIRED',
+  'REJECTED',
+]);
+
+export const ClassificationBasis = z.enum([
+  'RULE_EVALUATION',
+  'MANUAL_ATTESTATION',
+  'MATERIAL_CHANGE_REVIEW',
+  'PERIODIC_REVIEW',
+  'IMPORTED_EVIDENCE',
+]);
+
+export const ClassificationDecisionScope = z.enum([
+  'INTERNAL_ASSISTANCE',
+  'DECISION_SUPPORT',
+  'AUTOMATED_DECISION',
+  'EXTERNAL_EFFECT',
+  'PUBLIC_SECTOR_DECISION',
+  'JUDICIAL_SUPPORT',
+  'OTHER',
+]);
+
+export const RiskTier = z.enum(['MINIMAL', 'LOW', 'MODERATE', 'HIGH', 'PROHIBITED', 'UNKNOWN']);
+
+export const MitigationStrength = z.enum(['NONE', 'PARTIAL', 'STRONG', 'UNKNOWN']);
+
+export const FactorCategory = z.enum([
+  'DATA_SENSITIVITY',
+  'SUBJECT_RIGHTS',
+  'AUTOMATION',
+  'DECISION_SCOPE',
+  'SECTOR_CONTEXT',
+  'JURISDICTION_CONTEXT',
+  'JUDICIARY_CONTEXT',
+  'MODEL_RISK',
+  'AGENT_AUTONOMY',
+  'PROVIDER_POSTURE',
+  'SECURITY',
+  'HUMAN_OVERSIGHT',
+  'MITIGATION',
+  'INSUFFICIENT_INFORMATION',
+  'PROHIBITED_SIGNAL',
+  'OTHER',
+]);
+
+export const FactorSeverity = z.enum(['MINIMAL', 'LOW', 'MODERATE', 'HIGH', 'PROHIBITED', 'UNKNOWN']);
+
+export const ReclassificationTriggerStatus = z.enum([
+  'OPEN',
+  'ACKNOWLEDGED',
+  'RESOLVED',
+  'SUPERSEDED',
+  'CANCELLED',
+]);
+
+export const ReclassificationTriggerType = z.enum([
+  'MATERIAL_CHANGE',
+  'PERIODIC_REVIEW_DUE',
+  'MODEL_VERSION_CHANGE',
+  'AGENT_VERSION_CHANGE',
+  'DATA_SCOPE_CHANGE',
+  'INCIDENT_SIGNAL',
+  'REGULATORY_SOURCE_CHANGE',
+  'MANUAL_REVIEW',
+  'OTHER',
+]);
+
+export const ReclassificationRecommendedAction = z.enum([
+  'RECLASSIFY',
+  'REVIEW_REQUIRED',
+  'NO_ACTION',
+  'RETIRE',
+  'SUSPEND',
+  'OTHER',
+]);
+
+// Engine input enums (used inside FactorInputs).
+export const AutomatedDecisioning = z.enum([
+  'NONE',
+  'DECISION_SUPPORT',
+  'AUTOMATED_INTERNAL',
+  'AUTOMATED_EXTERNAL_EFFECT',
+]);
+
+export const FactorAgentAutonomy = z.enum([
+  'NONE',
+  'HUMAN_ASSISTED',
+  'HUMAN_APPROVAL_REQUIRED',
+  'SUPERVISED_AUTONOMOUS',
+  'AUTONOMOUS_WITH_GUARDRAILS',
+]);
+
+// Bounded factor input object: only known boolean/enum signals are accepted.
+// The exact shape mirrors the engine rules in service.ts.
+export const FactorInputs = z
+  .object({
+    insufficient_information: z.boolean().optional(),
+    prohibited_use_signal: z.boolean().optional(),
+    social_scoring_signal: z.boolean().optional(),
+    biometric_emotion_recognition_signal: z.boolean().optional(),
+    rights_affecting_automated_decision: z.boolean().optional(),
+    personal_data: z.boolean().optional(),
+    sensitive_data: z.boolean().optional(),
+    children_or_adolescents_data: z.boolean().optional(),
+    judicial_secret_data: z.boolean().optional(),
+    attorney_client_privileged_data: z.boolean().optional(),
+    biometric_data: z.boolean().optional(),
+    health_data: z.boolean().optional(),
+    employment_or_credit_access: z.boolean().optional(),
+    public_sector_context: z.boolean().optional(),
+    customer_facing_or_public_facing: z.boolean().optional(),
+    third_party_runtime: z.boolean().optional(),
+    limited_human_oversight: z.boolean().optional(),
+    agent_external_side_effects: z.boolean().optional(),
+    automated_decisioning: AutomatedDecisioning.optional(),
+    agent_autonomy_level: FactorAgentAutonomy.optional(),
+    mitigation_strength: MitigationStrength.optional(),
+  })
+  .strict();
+export type FactorInputsValue = z.infer<typeof FactorInputs>;
+
+export const CreateRiskMethodBody = z.object({
+  method_key: KeyField,
+  method_version: z.string().min(1).max(120),
+  name: z.string().min(1).max(500),
+  method_status: RiskMethodStatus,
+  framework_profile: FrameworkProfile,
+  methodology_summary: SummaryText.default(''),
+  scoring_summary: SummaryText.default(''),
+  high_risk_criteria_summary: SummaryText.default(''),
+  prohibited_criteria_summary: SummaryText.default(''),
+  mitigation_policy_summary: SummaryText.default(''),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateRiskMethodInput = z.infer<typeof CreateRiskMethodBody>;
+
+// PATCH: method_key, method_version, org_id are immutable.
+export const UpdateRiskMethodBody = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    method_status: RiskMethodStatus.optional(),
+    framework_profile: FrameworkProfile.optional(),
+    methodology_summary: SummaryText.optional(),
+    scoring_summary: SummaryText.optional(),
+    high_risk_criteria_summary: SummaryText.optional(),
+    prohibited_criteria_summary: SummaryText.optional(),
+    mitigation_policy_summary: SummaryText.optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateRiskMethodInput = z.infer<typeof UpdateRiskMethodBody>;
+
+// Shared shape for evaluate + create. Does NOT accept client-supplied tier or
+// score — those are always computed by the deterministic engine.
+const RiskClassificationSubjectShape = {
+  risk_method_id: z.string().uuid(),
+  use_case_id: z.string().uuid(),
+  ai_system_id: z.string().uuid(),
+  use_case_asset_link_id: z.string().uuid().optional(),
+  model_id: z.string().uuid().optional(),
+  model_version_id: z.string().uuid().optional(),
+  agent_id: z.string().uuid().optional(),
+  agent_version_id: z.string().uuid().optional(),
+  classification_basis: ClassificationBasis,
+  decision_scope: ClassificationDecisionScope,
+  factor_inputs: FactorInputs,
+} as const;
+
+const RiskClassificationSummaryShape = {
+  rationale_summary: SummaryText.default(''),
+  factor_summary: SummaryText.default(''),
+  evidence_summary: SummaryText.default(''),
+  mitigation_summary: SummaryText.default(''),
+  residual_risk_summary: SummaryText.default(''),
+  recommended_controls_summary: SummaryText.default(''),
+  review_notes: SummaryText.default(''),
+} as const;
+
+export const EvaluateRiskClassificationBody = z
+  .object({
+    ...RiskClassificationSubjectShape,
+  })
+  .refine((d) => !(d.model_version_id !== undefined && d.model_id === undefined), {
+    message: 'model_version_id requires model_id',
+    path: ['model_id'],
+  })
+  .refine((d) => !(d.agent_version_id !== undefined && d.agent_id === undefined), {
+    message: 'agent_version_id requires agent_id',
+    path: ['agent_id'],
+  });
+export type EvaluateRiskClassificationInput = z.infer<typeof EvaluateRiskClassificationBody>;
+
+export const CreateRiskClassificationBody = z
+  .object({
+    classification_key: KeyField,
+    classification_status: ClassificationStatus.default('DRAFT'),
+    ...RiskClassificationSubjectShape,
+    ...RiskClassificationSummaryShape,
+    effective_from: z.string().datetime().optional(),
+    effective_to: z.string().datetime().optional(),
+    supersedes_classification_id: z.string().uuid().optional(),
+    regulatory_source_id: z.string().uuid().optional(),
+    control_id: z.string().uuid().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => !(d.model_version_id !== undefined && d.model_id === undefined), {
+    message: 'model_version_id requires model_id',
+    path: ['model_id'],
+  })
+  .refine((d) => !(d.agent_version_id !== undefined && d.agent_id === undefined), {
+    message: 'agent_version_id requires agent_id',
+    path: ['agent_id'],
+  });
+export type CreateRiskClassificationInput = z.infer<typeof CreateRiskClassificationBody>;
+
+// PATCH: identity (classification_key, subject references, risk_method_id) and
+// computed tiers/scores are all immutable. Only status, timing, summaries, and
+// metadata move. Mitigation/residual summaries are evidence text only.
+export const UpdateRiskClassificationBody = z
+  .object({
+    classification_status: ClassificationStatus.optional(),
+    effective_from: z.string().datetime().nullable().optional(),
+    effective_to: z.string().datetime().nullable().optional(),
+    rationale_summary: SummaryText.optional(),
+    factor_summary: SummaryText.optional(),
+    evidence_summary: SummaryText.optional(),
+    mitigation_summary: SummaryText.optional(),
+    residual_risk_summary: SummaryText.optional(),
+    recommended_controls_summary: SummaryText.optional(),
+    review_notes: SummaryText.optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateRiskClassificationInput = z.infer<typeof UpdateRiskClassificationBody>;
+
+export const CreateReclassificationTriggerBody = z.object({
+  trigger_key: KeyField,
+  trigger_status: ReclassificationTriggerStatus.default('OPEN'),
+  trigger_type: ReclassificationTriggerType,
+  recommended_action: ReclassificationRecommendedAction,
+  classification_id: z.string().uuid().optional(),
+  use_case_id: z.string().uuid(),
+  ai_system_id: z.string().uuid(),
+  prior_risk_tier: RiskTier.optional(),
+  trigger_reason: SummaryText.default(''),
+  evidence_reference: z.string().min(1).max(2048).optional(),
+  detected_at: z.string().datetime().optional(),
+  due_at: z.string().datetime().optional(),
+  resolved_at: z.string().datetime().optional(),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateReclassificationTriggerInput = z.infer<typeof CreateReclassificationTriggerBody>;
+
+// PATCH: trigger_key + identity references (classification/use_case/ai_system)
+// are immutable. Mutable: status, recommended_action, type, reason, timing,
+// prior_risk_tier evidence, source/control, metadata.
+export const UpdateReclassificationTriggerBody = z
+  .object({
+    trigger_status: ReclassificationTriggerStatus.optional(),
+    trigger_type: ReclassificationTriggerType.optional(),
+    recommended_action: ReclassificationRecommendedAction.optional(),
+    prior_risk_tier: RiskTier.nullable().optional(),
+    trigger_reason: SummaryText.optional(),
+    evidence_reference: z.string().min(1).max(2048).nullable().optional(),
+    detected_at: z.string().datetime().nullable().optional(),
+    due_at: z.string().datetime().nullable().optional(),
+    resolved_at: z.string().datetime().nullable().optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateReclassificationTriggerInput = z.infer<typeof UpdateReclassificationTriggerBody>;
+
+// ---------------------------------------------------------------------------
 // List queries (keyset pagination + filters)
 // ---------------------------------------------------------------------------
 
@@ -1477,6 +1780,75 @@ export const ListUseCaseReviewsQuery = z
     review_outcome: UseCaseReviewOutcome.optional(),
     reviewed_before: z.string().datetime().optional(),
     next_review_before: z.string().datetime().optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListRiskMethodsQuery = z
+  .object({
+    ...Cursor,
+    method_status: RiskMethodStatus.optional(),
+    framework_profile: FrameworkProfile.optional(),
+    method_key: KeyField.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListRiskClassificationsQuery = z
+  .object({
+    ...Cursor,
+    classification_status: ClassificationStatus.optional(),
+    risk_method_id: z.string().uuid().optional(),
+    use_case_id: z.string().uuid().optional(),
+    ai_system_id: z.string().uuid().optional(),
+    use_case_asset_link_id: z.string().uuid().optional(),
+    model_id: z.string().uuid().optional(),
+    model_version_id: z.string().uuid().optional(),
+    agent_id: z.string().uuid().optional(),
+    agent_version_id: z.string().uuid().optional(),
+    inherent_risk_tier: RiskTier.optional(),
+    residual_risk_tier: RiskTier.optional(),
+    requires_high_risk_review: QueryBool.optional(),
+    requires_prohibited_use_review: QueryBool.optional(),
+    classification_basis: ClassificationBasis.optional(),
+    decision_scope: ClassificationDecisionScope.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListRiskClassificationFactorsQuery = z
+  .object({
+    ...Cursor,
+    classification_id: z.string().uuid().optional(),
+    factor_category: FactorCategory.optional(),
+    factor_severity: FactorSeverity.optional(),
+    triggered: QueryBool.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListReclassificationTriggersQuery = z
+  .object({
+    ...Cursor,
+    classification_id: z.string().uuid().optional(),
+    use_case_id: z.string().uuid().optional(),
+    ai_system_id: z.string().uuid().optional(),
+    trigger_status: ReclassificationTriggerStatus.optional(),
+    trigger_type: ReclassificationTriggerType.optional(),
+    recommended_action: ReclassificationRecommendedAction.optional(),
+    due_before: z.string().datetime().optional(),
     q: z.string().min(1).max(200).optional(),
   })
   .refine(cursorPaired, {

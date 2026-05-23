@@ -49,6 +49,14 @@ import type {
   UpdateUseCaseAssetLinkInput,
   CreateUseCaseReviewInput,
   UpdateUseCaseReviewInput,
+  CreateRiskMethodInput,
+  UpdateRiskMethodInput,
+  EvaluateRiskClassificationInput,
+  CreateRiskClassificationInput,
+  UpdateRiskClassificationInput,
+  CreateReclassificationTriggerInput,
+  UpdateReclassificationTriggerInput,
+  FactorInputsValue,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -4028,6 +4036,1393 @@ export async function listUseCaseReviews(
   params.push(cursor.limit);
   const res = await ctx.client.query<UseCaseReviewRow>(
     `SELECT ${USE_CASE_REVIEW_COLUMNS} FROM govai.regulatory_use_case_reviews
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// Risk Classification Engine (PR-R7)
+// ---------------------------------------------------------------------------
+
+// Deterministic technical risk classifier. Pure function: same inputs always
+// produce the same factor list, tier, and score. Mitigation posture is recorded
+// as an evidence-only factor and does NOT downgrade tier or score in PR-R7.
+// Review flags (requires_high_risk_review / requires_prohibited_use_review) are
+// evidence flags only — PR-R7 does NOT create review workflows, assign
+// reviewers, block execution, or enforce runtime decisions.
+
+const RISK_TIER_ORDER = ['MINIMAL', 'LOW', 'MODERATE', 'HIGH', 'PROHIBITED'] as const;
+const RISK_TIER_SCORE: Record<string, number> = {
+  MINIMAL: 5,
+  LOW: 20,
+  MODERATE: 50,
+  HIGH: 80,
+  PROHIBITED: 100,
+  UNKNOWN: 0,
+};
+const EXTERNAL_DECISION_SCOPES = new Set([
+  'EXTERNAL_EFFECT',
+  'AUTOMATED_DECISION',
+  'PUBLIC_SECTOR_DECISION',
+  'JUDICIAL_SUPPORT',
+]);
+const PUBLIC_JUDICIAL_DECISION_SCOPES = new Set(['PUBLIC_SECTOR_DECISION', 'JUDICIAL_SUPPORT']);
+const AUTONOMOUS_AGENT_LEVELS = new Set(['AUTONOMOUS_WITH_GUARDRAILS', 'SUPERVISED_AUTONOMOUS']);
+
+export type RiskEngineFactor = {
+  factor_key: string;
+  factor_category: string;
+  factor_severity: string;
+  factor_value: string;
+  triggered: boolean;
+  score_contribution: number;
+  rationale: string;
+};
+
+export type RiskEngineResult = {
+  inherent_risk_tier: string;
+  residual_risk_tier: string;
+  risk_score: number;
+  residual_risk_score: number;
+  mitigation_strength: string;
+  requires_high_risk_review: boolean;
+  requires_prohibited_use_review: boolean;
+  insufficient_information: boolean;
+  factors: RiskEngineFactor[];
+  factor_summary: string;
+};
+
+export function classifyRisk(input: FactorInputsValue, decisionScope: string): RiskEngineResult {
+  const factors: RiskEngineFactor[] = [];
+  const mitigation = input.mitigation_strength ?? 'UNKNOWN';
+  const automatedDec = input.automated_decisioning ?? 'NONE';
+  const agentAutonomy = input.agent_autonomy_level ?? 'NONE';
+
+  // 1. Insufficient information short-circuits to UNKNOWN.
+  if (input.insufficient_information === true) {
+    factors.push({
+      factor_key: 'insufficient_information',
+      factor_category: 'INSUFFICIENT_INFORMATION',
+      factor_severity: 'UNKNOWN',
+      factor_value: 'true',
+      triggered: true,
+      score_contribution: 0,
+      rationale: 'insufficient information provided to classify',
+    });
+    return {
+      inherent_risk_tier: 'UNKNOWN',
+      residual_risk_tier: 'UNKNOWN',
+      risk_score: 0,
+      residual_risk_score: 0,
+      mitigation_strength: mitigation,
+      requires_high_risk_review: false,
+      requires_prohibited_use_review: false,
+      insufficient_information: true,
+      factors,
+      factor_summary: 'UNKNOWN: insufficient information',
+    };
+  }
+
+  // 2. Prohibited signals short-circuit to PROHIBITED.
+  const prohibitedSignals: Array<readonly [string, boolean | undefined, string]> = [
+    ['prohibited_use_signal', input.prohibited_use_signal, 'declared prohibited use'],
+    ['social_scoring_signal', input.social_scoring_signal, 'social scoring signal'],
+    [
+      'biometric_emotion_recognition_signal',
+      input.biometric_emotion_recognition_signal,
+      'biometric emotion recognition signal',
+    ],
+  ];
+  let prohibited = false;
+  for (const [key, val, rationale] of prohibitedSignals) {
+    if (val === true) {
+      prohibited = true;
+      factors.push({
+        factor_key: key,
+        factor_category: 'PROHIBITED_SIGNAL',
+        factor_severity: 'PROHIBITED',
+        factor_value: 'true',
+        triggered: true,
+        score_contribution: 100,
+        rationale,
+      });
+    }
+  }
+  if (prohibited) {
+    if (mitigation !== 'UNKNOWN') {
+      factors.push({
+        factor_key: 'mitigation_strength',
+        factor_category: 'MITIGATION',
+        factor_severity: 'UNKNOWN',
+        factor_value: mitigation,
+        triggered: false,
+        score_contribution: 0,
+        rationale: 'mitigation posture recorded as evidence (PR-R7 does not downgrade)',
+      });
+    }
+    return {
+      inherent_risk_tier: 'PROHIBITED',
+      residual_risk_tier: 'PROHIBITED',
+      risk_score: 100,
+      residual_risk_score: 100,
+      mitigation_strength: mitigation,
+      requires_high_risk_review: true,
+      requires_prohibited_use_review: true,
+      insufficient_information: false,
+      factors,
+      factor_summary: 'PROHIBITED: prohibited signal triggered',
+    };
+  }
+
+  // 3. HIGH-trigger rules.
+  type RuleSpec = readonly [string, boolean, string, string];
+  const highRules: RuleSpec[] = [
+    [
+      'rights_affecting_automated_decision',
+      input.rights_affecting_automated_decision === true,
+      'SUBJECT_RIGHTS',
+      'rights-affecting automated decision',
+    ],
+    [
+      'sensitive_data_with_automation',
+      input.sensitive_data === true && automatedDec !== 'NONE',
+      'DATA_SENSITIVITY',
+      'sensitive data combined with automated decisioning',
+    ],
+    [
+      'children_or_adolescents_data',
+      input.children_or_adolescents_data === true,
+      'DATA_SENSITIVITY',
+      'data on children or adolescents',
+    ],
+    [
+      'judicial_secret_data',
+      input.judicial_secret_data === true,
+      'JUDICIARY_CONTEXT',
+      'judicial secret data',
+    ],
+    [
+      'attorney_client_privileged_data',
+      input.attorney_client_privileged_data === true,
+      'JUDICIARY_CONTEXT',
+      'attorney-client privileged data',
+    ],
+    ['biometric_data', input.biometric_data === true, 'DATA_SENSITIVITY', 'biometric data'],
+    [
+      'health_data_external_scope',
+      input.health_data === true && EXTERNAL_DECISION_SCOPES.has(decisionScope),
+      'DATA_SENSITIVITY',
+      'health data with external/decisioning scope',
+    ],
+    [
+      'employment_or_credit_access_with_automation',
+      input.employment_or_credit_access === true && automatedDec !== 'NONE',
+      'SUBJECT_RIGHTS',
+      'employment or credit access with automated decisioning',
+    ],
+    [
+      'public_sector_judicial_context',
+      input.public_sector_context === true && PUBLIC_JUDICIAL_DECISION_SCOPES.has(decisionScope),
+      'SECTOR_CONTEXT',
+      'public-sector context with public-sector or judicial-support decision scope',
+    ],
+    [
+      'agent_external_side_effects_autonomous',
+      input.agent_external_side_effects === true && AUTONOMOUS_AGENT_LEVELS.has(agentAutonomy),
+      'AGENT_AUTONOMY',
+      'agent external side effects under (supervised) autonomous operation',
+    ],
+  ];
+
+  const moderateRules: RuleSpec[] = [
+    ['personal_data', input.personal_data === true, 'DATA_SENSITIVITY', 'personal data processing'],
+    [
+      'customer_or_public_facing',
+      input.customer_facing_or_public_facing === true,
+      'DECISION_SCOPE',
+      'customer-facing or public-facing deployment',
+    ],
+    [
+      'third_party_runtime',
+      input.third_party_runtime === true,
+      'PROVIDER_POSTURE',
+      'third-party runtime',
+    ],
+    [
+      'limited_human_oversight',
+      input.limited_human_oversight === true,
+      'HUMAN_OVERSIGHT',
+      'limited human oversight',
+    ],
+  ];
+
+  for (const [key, triggered, category, rationale] of highRules) {
+    factors.push({
+      factor_key: key,
+      factor_category: category,
+      factor_severity: triggered ? 'HIGH' : 'MINIMAL',
+      factor_value: String(Boolean(triggered)),
+      triggered,
+      score_contribution: triggered ? 80 : 0,
+      rationale,
+    });
+  }
+  for (const [key, triggered, category, rationale] of moderateRules) {
+    factors.push({
+      factor_key: key,
+      factor_category: category,
+      factor_severity: triggered ? 'MODERATE' : 'MINIMAL',
+      factor_value: String(Boolean(triggered)),
+      triggered,
+      score_contribution: triggered ? 50 : 0,
+      rationale,
+    });
+  }
+
+  // Mitigation posture is evidence only — PR-R7 does NOT downgrade tier/score.
+  if (mitigation !== 'UNKNOWN') {
+    factors.push({
+      factor_key: 'mitigation_strength',
+      factor_category: 'MITIGATION',
+      factor_severity: 'UNKNOWN',
+      factor_value: mitigation,
+      triggered: false,
+      score_contribution: 0,
+      rationale: 'mitigation posture recorded as evidence (PR-R7 does not downgrade)',
+    });
+  }
+
+  // Aggregate: tier = max severity among triggered non-mitigation factors.
+  const triggeredSeverities = factors
+    .filter(
+      (f) =>
+        f.triggered &&
+        f.factor_category !== 'MITIGATION' &&
+        f.factor_category !== 'INSUFFICIENT_INFORMATION',
+    )
+    .map((f) => f.factor_severity);
+
+  let bestIdx = -1;
+  for (const sev of triggeredSeverities) {
+    const i = RISK_TIER_ORDER.indexOf(sev as (typeof RISK_TIER_ORDER)[number]);
+    if (i > bestIdx) bestIdx = i;
+  }
+  const tier = bestIdx === -1 ? 'MINIMAL' : RISK_TIER_ORDER[bestIdx]!;
+  const score = RISK_TIER_SCORE[tier]!;
+
+  return {
+    inherent_risk_tier: tier,
+    residual_risk_tier: tier,
+    risk_score: score,
+    residual_risk_score: score,
+    mitigation_strength: mitigation,
+    requires_high_risk_review: tier === 'HIGH' || tier === 'PROHIBITED',
+    requires_prohibited_use_review: tier === 'PROHIBITED',
+    insufficient_information: false,
+    factors,
+    factor_summary: `${tier}: ${triggeredSeverities.length} triggered factor(s)`,
+  };
+}
+
+// ---- Row types -----------------------------------------------------------
+
+export type RiskMethodRow = {
+  id: string;
+  org_id: string;
+  method_key: string;
+  method_version: string;
+  name: string;
+  method_status: string;
+  framework_profile: string;
+  methodology_summary: string;
+  scoring_summary: string;
+  high_risk_criteria_summary: string;
+  prohibited_criteria_summary: string;
+  mitigation_policy_summary: string;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const RISK_METHOD_COLUMNS = `id, org_id, method_key, method_version, name, method_status, framework_profile,
+  methodology_summary, scoring_summary, high_risk_criteria_summary, prohibited_criteria_summary,
+  mitigation_policy_summary, regulatory_source_id, control_id, metadata, created_by_user_id,
+  updated_by_user_id, created_at, updated_at`;
+
+export type RiskClassificationRow = {
+  id: string;
+  org_id: string;
+  classification_key: string;
+  classification_status: string;
+  risk_method_id: string;
+  use_case_id: string;
+  ai_system_id: string;
+  use_case_asset_link_id: string | null;
+  model_id: string | null;
+  model_version_id: string | null;
+  agent_id: string | null;
+  agent_version_id: string | null;
+  classification_basis: string;
+  decision_scope: string;
+  inherent_risk_tier: string;
+  residual_risk_tier: string;
+  risk_score: number;
+  residual_risk_score: number;
+  mitigation_strength: string;
+  requires_high_risk_review: boolean;
+  requires_prohibited_use_review: boolean;
+  insufficient_information: boolean;
+  rationale_summary: string;
+  factor_summary: string;
+  evidence_summary: string;
+  mitigation_summary: string;
+  residual_risk_summary: string;
+  recommended_controls_summary: string;
+  review_notes: string;
+  effective_from: Date | null;
+  effective_to: Date | null;
+  supersedes_classification_id: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const RISK_CLASSIFICATION_COLUMNS = `id, org_id, classification_key, classification_status, risk_method_id,
+  use_case_id, ai_system_id, use_case_asset_link_id, model_id, model_version_id, agent_id, agent_version_id,
+  classification_basis, decision_scope, inherent_risk_tier, residual_risk_tier, risk_score,
+  residual_risk_score, mitigation_strength, requires_high_risk_review, requires_prohibited_use_review,
+  insufficient_information, rationale_summary, factor_summary, evidence_summary, mitigation_summary,
+  residual_risk_summary, recommended_controls_summary, review_notes, effective_from, effective_to,
+  supersedes_classification_id, regulatory_source_id, control_id, metadata, created_by_user_id,
+  updated_by_user_id, created_at, updated_at`;
+
+export type RiskClassificationFactorRow = {
+  id: string;
+  org_id: string;
+  classification_id: string;
+  factor_key: string;
+  factor_category: string;
+  factor_severity: string;
+  factor_value: string;
+  triggered: boolean;
+  score_contribution: number;
+  rationale: string;
+  evidence_reference: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const RISK_FACTOR_COLUMNS = `id, org_id, classification_id, factor_key, factor_category, factor_severity,
+  factor_value, triggered, score_contribution, rationale, evidence_reference, regulatory_source_id,
+  control_id, metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type ReclassificationTriggerRow = {
+  id: string;
+  org_id: string;
+  trigger_key: string;
+  trigger_status: string;
+  trigger_type: string;
+  recommended_action: string;
+  classification_id: string | null;
+  use_case_id: string;
+  ai_system_id: string;
+  prior_risk_tier: string | null;
+  trigger_reason: string;
+  evidence_reference: string | null;
+  detected_at: Date | null;
+  due_at: Date | null;
+  resolved_at: Date | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const RECLASSIFICATION_TRIGGER_COLUMNS = `id, org_id, trigger_key, trigger_status, trigger_type,
+  recommended_action, classification_id, use_case_id, ai_system_id, prior_risk_tier, trigger_reason,
+  evidence_reference, detected_at, due_at, resolved_at, regulatory_source_id, control_id, metadata,
+  created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+// ---- Risk methods --------------------------------------------------------
+
+export async function createRiskMethod(
+  ctx: Ctx,
+  input: CreateRiskMethodInput,
+): Promise<RiskMethodRow> {
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<RiskMethodRow>(
+      `INSERT INTO govai.regulatory_risk_methods
+         (org_id, method_key, method_version, name, method_status, framework_profile,
+          methodology_summary, scoring_summary, high_risk_criteria_summary, prohibited_criteria_summary,
+          mitigation_policy_summary, regulatory_source_id, control_id, metadata, created_by_user_id,
+          updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::uuid, $13::uuid, $14::jsonb,
+               $15::uuid, $15::uuid)
+       RETURNING ${RISK_METHOD_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.method_key,
+        input.method_version,
+        input.name,
+        input.method_status,
+        input.framework_profile,
+        input.methodology_summary,
+        input.scoring_summary,
+        input.high_risk_criteria_summary,
+        input.prohibited_criteria_summary,
+        input.mitigation_policy_summary,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'risk_method_key_conflict', {
+        method_key: input.method_key,
+        method_version: input.method_version,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_risk_method.created',
+    subjectType: 'regulatory_risk_method',
+    subjectId: row.id,
+    metadata: {
+      risk_method_id: row.id,
+      method_key: row.method_key,
+      method_version: row.method_version,
+      method_status: row.method_status,
+      framework_profile: row.framework_profile,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleRiskMethod(ctx: Ctx, id: string): Promise<RiskMethodRow | null> {
+  const r = await ctx.client.query<RiskMethodRow>(
+    `SELECT ${RISK_METHOD_COLUMNS} FROM govai.regulatory_risk_methods WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateRiskMethod(
+  ctx: Ctx,
+  id: string,
+  input: UpdateRiskMethodInput,
+): Promise<RiskMethodRow> {
+  const existing = await getVisibleRiskMethod(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'risk_method_not_found');
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.name !== undefined) col('name', input.name);
+  if (input.method_status !== undefined) col('method_status', input.method_status);
+  if (input.framework_profile !== undefined) col('framework_profile', input.framework_profile);
+  if (input.methodology_summary !== undefined) col('methodology_summary', input.methodology_summary);
+  if (input.scoring_summary !== undefined) col('scoring_summary', input.scoring_summary);
+  if (input.high_risk_criteria_summary !== undefined)
+    col('high_risk_criteria_summary', input.high_risk_criteria_summary);
+  if (input.prohibited_criteria_summary !== undefined)
+    col('prohibited_criteria_summary', input.prohibited_criteria_summary);
+  if (input.mitigation_policy_summary !== undefined)
+    col('mitigation_policy_summary', input.mitigation_policy_summary);
+  if (input.regulatory_source_id !== undefined)
+    col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<RiskMethodRow>(
+    `UPDATE govai.regulatory_risk_methods SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${RISK_METHOD_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'risk_method_not_found');
+
+  const statusChanged = input.method_status !== undefined && input.method_status !== existing.method_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_risk_method.updated',
+    subjectType: 'regulatory_risk_method',
+    subjectId: row.id,
+    metadata: {
+      risk_method_id: row.id,
+      method_key: row.method_key,
+      method_version: row.method_version,
+      changed_fields: Object.keys(input),
+      method_status: row.method_status,
+      ...(statusChanged ? { previous_method_status: existing.method_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_risk_method.status_changed',
+      subjectType: 'regulatory_risk_method',
+      subjectId: row.id,
+      metadata: {
+        risk_method_id: row.id,
+        method_key: row.method_key,
+        method_version: row.method_version,
+        previous_method_status: existing.method_status,
+        method_status: row.method_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listRiskMethods(
+  ctx: Ctx,
+  filters: {
+    method_status?: string;
+    framework_profile?: string;
+    method_key?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<RiskMethodRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined) => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}`);
+  };
+  eq('method_status', filters.method_status);
+  eq('framework_profile', filters.framework_profile);
+  eq('method_key', filters.method_key);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(method_key ILIKE $${i} OR name ILIKE $${i} OR methodology_summary ILIKE $${i}
+        OR scoring_summary ILIKE $${i} OR high_risk_criteria_summary ILIKE $${i}
+        OR prohibited_criteria_summary ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<RiskMethodRow>(
+    `SELECT ${RISK_METHOD_COLUMNS} FROM govai.regulatory_risk_methods
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- Risk classifications ------------------------------------------------
+
+// Validate every parent reference for a classification: cross-tenant 404,
+// version-without-parent 400, version-belongs-to-parent 400, asset-link
+// consistency 400. Service-level checks give clean errors; the DB RLS WITH
+// CHECK is the backstop.
+async function requireClassificationParents(
+  ctx: Ctx,
+  refs: {
+    risk_method_id: string;
+    use_case_id: string;
+    ai_system_id: string;
+    use_case_asset_link_id?: string | null;
+    model_id?: string | null;
+    model_version_id?: string | null;
+    agent_id?: string | null;
+    agent_version_id?: string | null;
+    supersedes_classification_id?: string | null;
+    regulatory_source_id?: string | null;
+    control_id?: string | null;
+  },
+): Promise<void> {
+  if (refs.model_version_id && !refs.model_id)
+    throw new RegulatoryError(400, 'model_version_requires_model');
+  if (refs.agent_version_id && !refs.agent_id)
+    throw new RegulatoryError(400, 'agent_version_requires_agent');
+  if (!(await getVisibleRiskMethod(ctx, refs.risk_method_id)))
+    throw new RegulatoryError(404, 'risk_method_not_found');
+  if (!(await getVisibleUseCase(ctx, refs.use_case_id)))
+    throw new RegulatoryError(404, 'use_case_not_found');
+  if (!(await getVisibleAiSystem(ctx, refs.ai_system_id)))
+    throw new RegulatoryError(404, 'ai_system_not_found');
+  if (refs.use_case_asset_link_id) {
+    const al = await getVisibleUseCaseAssetLink(ctx, refs.use_case_asset_link_id);
+    if (!al) throw new RegulatoryError(404, 'use_case_asset_link_not_found');
+    if (al.use_case_id !== refs.use_case_id || al.ai_system_id !== refs.ai_system_id) {
+      throw new RegulatoryError(400, 'use_case_asset_link_subject_mismatch', {
+        use_case_id: refs.use_case_id,
+        ai_system_id: refs.ai_system_id,
+        use_case_asset_link_id: refs.use_case_asset_link_id,
+      });
+    }
+  }
+  if (refs.model_id) {
+    if (!(await getVisibleModel(ctx, refs.model_id)))
+      throw new RegulatoryError(404, 'model_not_found');
+  }
+  if (refs.model_version_id) {
+    const v = await getVisibleModelVersion(ctx, refs.model_version_id);
+    if (!v) throw new RegulatoryError(404, 'model_version_not_found');
+    if (v.model_id !== refs.model_id) {
+      throw new RegulatoryError(400, 'model_version_model_mismatch', {
+        model_id: refs.model_id,
+        model_version_id: refs.model_version_id,
+      });
+    }
+  }
+  if (refs.agent_id) {
+    if (!(await getVisibleAgent(ctx, refs.agent_id)))
+      throw new RegulatoryError(404, 'agent_not_found');
+  }
+  if (refs.agent_version_id) {
+    const v = await getVisibleAgentVersion(ctx, refs.agent_version_id);
+    if (!v) throw new RegulatoryError(404, 'agent_version_not_found');
+    if (v.agent_id !== refs.agent_id) {
+      throw new RegulatoryError(400, 'agent_version_agent_mismatch', {
+        agent_id: refs.agent_id,
+        agent_version_id: refs.agent_version_id,
+      });
+    }
+  }
+  if (refs.supersedes_classification_id) {
+    if (!(await getVisibleRiskClassification(ctx, refs.supersedes_classification_id))) {
+      throw new RegulatoryError(404, 'supersedes_classification_not_found');
+    }
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: refs.regulatory_source_id ?? null,
+    control_id: refs.control_id ?? null,
+  });
+}
+
+export async function evaluateRiskClassification(
+  _ctx: Ctx,
+  input: EvaluateRiskClassificationInput,
+): Promise<RiskEngineResult> {
+  // Preview only: deterministic engine, no DB writes, no audit, no parent lookup.
+  // The route may still reject invalid request shape via zod before reaching here.
+  return classifyRisk(input.factor_inputs, input.decision_scope);
+}
+
+export async function createRiskClassification(
+  ctx: Ctx,
+  input: CreateRiskClassificationInput,
+): Promise<{ classification: RiskClassificationRow; factors: RiskClassificationFactorRow[] }> {
+  await requireClassificationParents(ctx, {
+    risk_method_id: input.risk_method_id,
+    use_case_id: input.use_case_id,
+    ai_system_id: input.ai_system_id,
+    use_case_asset_link_id: input.use_case_asset_link_id ?? null,
+    model_id: input.model_id ?? null,
+    model_version_id: input.model_version_id ?? null,
+    agent_id: input.agent_id ?? null,
+    agent_version_id: input.agent_version_id ?? null,
+    supersedes_classification_id: input.supersedes_classification_id ?? null,
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  const result = classifyRisk(input.factor_inputs, input.decision_scope);
+
+  let classificationRes;
+  try {
+    classificationRes = await ctx.client.query<RiskClassificationRow>(
+      `INSERT INTO govai.regulatory_risk_classifications
+         (org_id, classification_key, classification_status, risk_method_id, use_case_id, ai_system_id,
+          use_case_asset_link_id, model_id, model_version_id, agent_id, agent_version_id,
+          classification_basis, decision_scope, inherent_risk_tier, residual_risk_tier, risk_score,
+          residual_risk_score, mitigation_strength, requires_high_risk_review, requires_prohibited_use_review,
+          insufficient_information, rationale_summary, factor_summary, evidence_summary, mitigation_summary,
+          residual_risk_summary, recommended_controls_summary, review_notes, effective_from, effective_to,
+          supersedes_classification_id, regulatory_source_id, control_id, metadata, created_by_user_id,
+          updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8::uuid, $9::uuid, $10::uuid,
+               $11::uuid, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
+               $28, $29::timestamptz, $30::timestamptz, $31::uuid, $32::uuid, $33::uuid, $34::jsonb,
+               $35::uuid, $35::uuid)
+       RETURNING ${RISK_CLASSIFICATION_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.classification_key,
+        input.classification_status,
+        input.risk_method_id,
+        input.use_case_id,
+        input.ai_system_id,
+        input.use_case_asset_link_id ?? null,
+        input.model_id ?? null,
+        input.model_version_id ?? null,
+        input.agent_id ?? null,
+        input.agent_version_id ?? null,
+        input.classification_basis,
+        input.decision_scope,
+        result.inherent_risk_tier,
+        result.residual_risk_tier,
+        result.risk_score,
+        result.residual_risk_score,
+        result.mitigation_strength,
+        result.requires_high_risk_review,
+        result.requires_prohibited_use_review,
+        result.insufficient_information,
+        input.rationale_summary,
+        // Use engine-produced factor_summary if user did not supply one.
+        input.factor_summary && input.factor_summary.length > 0 ? input.factor_summary : result.factor_summary,
+        input.evidence_summary,
+        input.mitigation_summary,
+        input.residual_risk_summary,
+        input.recommended_controls_summary,
+        input.review_notes,
+        input.effective_from ?? null,
+        input.effective_to ?? null,
+        input.supersedes_classification_id ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'risk_classification_key_conflict', {
+        classification_key: input.classification_key,
+      });
+    }
+    throw err;
+  }
+  const classification = classificationRes.rows[0]!;
+
+  // Fetch the risk method for audit metadata (method_key/method_version).
+  const method = await getVisibleRiskMethod(ctx, input.risk_method_id);
+
+  // Persist factor rows.
+  const factorRows: RiskClassificationFactorRow[] = [];
+  for (const f of result.factors) {
+    const fr = await ctx.client.query<RiskClassificationFactorRow>(
+      `INSERT INTO govai.regulatory_risk_classification_factors
+         (org_id, classification_id, factor_key, factor_category, factor_severity, factor_value,
+          triggered, score_contribution, rationale, evidence_reference, regulatory_source_id, control_id,
+          metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, NULL, '{}'::jsonb, $10::uuid, $10::uuid)
+       RETURNING ${RISK_FACTOR_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        classification.id,
+        f.factor_key,
+        f.factor_category,
+        f.factor_severity,
+        f.factor_value,
+        f.triggered,
+        f.score_contribution,
+        f.rationale,
+        ctx.actor.userId,
+      ],
+    );
+    factorRows.push(fr.rows[0]!);
+  }
+
+  // Audit: created + risk_tier_assigned + per-factor created + (optional) superseded.
+  const auditCore = classificationAuditMeta(classification, method, result);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_risk_classification.created',
+    subjectType: 'regulatory_risk_classification',
+    subjectId: classification.id,
+    metadata: auditCore,
+  });
+  await appendAudit(ctx, {
+    eventType: 'regulatory_risk_classification.risk_tier_assigned',
+    subjectType: 'regulatory_risk_classification',
+    subjectId: classification.id,
+    metadata: auditCore,
+  });
+  for (const f of factorRows) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_risk_classification_factor.created',
+      subjectType: 'regulatory_risk_classification_factor',
+      subjectId: f.id,
+      metadata: {
+        factor_id: f.id,
+        classification_id: classification.id,
+        factor_key: f.factor_key,
+        factor_category: f.factor_category,
+        factor_severity: f.factor_severity,
+        triggered: f.triggered,
+        score_contribution: f.score_contribution,
+      },
+    });
+  }
+  if (classification.supersedes_classification_id) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_risk_classification.superseded',
+      subjectType: 'regulatory_risk_classification',
+      subjectId: classification.id,
+      metadata: {
+        classification_id: classification.id,
+        supersedes_classification_id: classification.supersedes_classification_id,
+      },
+    });
+  }
+  return { classification, factors: factorRows };
+}
+
+function classificationAuditMeta(
+  row: RiskClassificationRow,
+  method: RiskMethodRow | null,
+  result: RiskEngineResult,
+): Record<string, unknown> {
+  const triggeredFactorKeys = result.factors.filter((f) => f.triggered).map((f) => f.factor_key);
+  return {
+    classification_id: row.id,
+    classification_key: row.classification_key,
+    classification_status: row.classification_status,
+    risk_method_id: row.risk_method_id,
+    method_key: method?.method_key ?? null,
+    method_version: method?.method_version ?? null,
+    use_case_id: row.use_case_id,
+    ai_system_id: row.ai_system_id,
+    use_case_asset_link_id: row.use_case_asset_link_id,
+    model_id: row.model_id,
+    model_version_id: row.model_version_id,
+    agent_id: row.agent_id,
+    agent_version_id: row.agent_version_id,
+    classification_basis: row.classification_basis,
+    decision_scope: row.decision_scope,
+    inherent_risk_tier: row.inherent_risk_tier,
+    residual_risk_tier: row.residual_risk_tier,
+    risk_score: row.risk_score,
+    residual_risk_score: row.residual_risk_score,
+    mitigation_strength: row.mitigation_strength,
+    requires_high_risk_review: row.requires_high_risk_review,
+    requires_prohibited_use_review: row.requires_prohibited_use_review,
+    insufficient_information: row.insufficient_information,
+    factor_count: result.factors.length,
+    triggered_factor_keys: triggeredFactorKeys,
+  };
+}
+
+export async function getVisibleRiskClassification(
+  ctx: Ctx,
+  id: string,
+): Promise<RiskClassificationRow | null> {
+  const r = await ctx.client.query<RiskClassificationRow>(
+    `SELECT ${RISK_CLASSIFICATION_COLUMNS} FROM govai.regulatory_risk_classifications WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateRiskClassification(
+  ctx: Ctx,
+  id: string,
+  input: UpdateRiskClassificationInput,
+): Promise<RiskClassificationRow> {
+  const existing = await getVisibleRiskClassification(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'risk_classification_not_found');
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.classification_status !== undefined) col('classification_status', input.classification_status);
+  if (input.effective_from !== undefined) col('effective_from', input.effective_from, '::timestamptz');
+  if (input.effective_to !== undefined) col('effective_to', input.effective_to, '::timestamptz');
+  if (input.rationale_summary !== undefined) col('rationale_summary', input.rationale_summary);
+  if (input.factor_summary !== undefined) col('factor_summary', input.factor_summary);
+  if (input.evidence_summary !== undefined) col('evidence_summary', input.evidence_summary);
+  if (input.mitigation_summary !== undefined) col('mitigation_summary', input.mitigation_summary);
+  if (input.residual_risk_summary !== undefined) col('residual_risk_summary', input.residual_risk_summary);
+  if (input.recommended_controls_summary !== undefined)
+    col('recommended_controls_summary', input.recommended_controls_summary);
+  if (input.review_notes !== undefined) col('review_notes', input.review_notes);
+  if (input.regulatory_source_id !== undefined)
+    col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<RiskClassificationRow>(
+    `UPDATE govai.regulatory_risk_classifications SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${RISK_CLASSIFICATION_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'risk_classification_not_found');
+
+  const statusChanged =
+    input.classification_status !== undefined && input.classification_status !== existing.classification_status;
+  const supersededTransition = statusChanged && row.classification_status === 'SUPERSEDED';
+  await appendAudit(ctx, {
+    eventType: 'regulatory_risk_classification.updated',
+    subjectType: 'regulatory_risk_classification',
+    subjectId: row.id,
+    metadata: {
+      classification_id: row.id,
+      classification_key: row.classification_key,
+      changed_fields: Object.keys(input),
+      classification_status: row.classification_status,
+      inherent_risk_tier: row.inherent_risk_tier,
+      residual_risk_tier: row.residual_risk_tier,
+      ...(statusChanged ? { previous_classification_status: existing.classification_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_risk_classification.status_changed',
+      subjectType: 'regulatory_risk_classification',
+      subjectId: row.id,
+      metadata: {
+        classification_id: row.id,
+        classification_key: row.classification_key,
+        previous_classification_status: existing.classification_status,
+        classification_status: row.classification_status,
+      },
+    });
+  }
+  if (supersededTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_risk_classification.superseded',
+      subjectType: 'regulatory_risk_classification',
+      subjectId: row.id,
+      metadata: {
+        classification_id: row.id,
+        classification_key: row.classification_key,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listRiskClassifications(
+  ctx: Ctx,
+  filters: {
+    classification_status?: string;
+    risk_method_id?: string;
+    use_case_id?: string;
+    ai_system_id?: string;
+    use_case_asset_link_id?: string;
+    model_id?: string;
+    model_version_id?: string;
+    agent_id?: string;
+    agent_version_id?: string;
+    inherent_risk_tier?: string;
+    residual_risk_tier?: string;
+    requires_high_risk_review?: boolean;
+    requires_prohibited_use_review?: boolean;
+    classification_basis?: string;
+    decision_scope?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<RiskClassificationRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  const eqBool = (column: string, val: boolean | undefined) => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}`);
+  };
+  eq('classification_status', filters.classification_status);
+  eq('risk_method_id', filters.risk_method_id, '::uuid');
+  eq('use_case_id', filters.use_case_id, '::uuid');
+  eq('ai_system_id', filters.ai_system_id, '::uuid');
+  eq('use_case_asset_link_id', filters.use_case_asset_link_id, '::uuid');
+  eq('model_id', filters.model_id, '::uuid');
+  eq('model_version_id', filters.model_version_id, '::uuid');
+  eq('agent_id', filters.agent_id, '::uuid');
+  eq('agent_version_id', filters.agent_version_id, '::uuid');
+  eq('inherent_risk_tier', filters.inherent_risk_tier);
+  eq('residual_risk_tier', filters.residual_risk_tier);
+  eqBool('requires_high_risk_review', filters.requires_high_risk_review);
+  eqBool('requires_prohibited_use_review', filters.requires_prohibited_use_review);
+  eq('classification_basis', filters.classification_basis);
+  eq('decision_scope', filters.decision_scope);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(classification_key ILIKE $${i} OR rationale_summary ILIKE $${i} OR factor_summary ILIKE $${i}
+        OR evidence_summary ILIKE $${i} OR mitigation_summary ILIKE $${i}
+        OR recommended_controls_summary ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<RiskClassificationRow>(
+    `SELECT ${RISK_CLASSIFICATION_COLUMNS} FROM govai.regulatory_risk_classifications
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- Risk classification factors (read-only) -----------------------------
+
+export async function getVisibleRiskClassificationFactor(
+  ctx: Ctx,
+  id: string,
+): Promise<RiskClassificationFactorRow | null> {
+  const r = await ctx.client.query<RiskClassificationFactorRow>(
+    `SELECT ${RISK_FACTOR_COLUMNS} FROM govai.regulatory_risk_classification_factors WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function listRiskClassificationFactors(
+  ctx: Ctx,
+  filters: {
+    classification_id?: string;
+    factor_category?: string;
+    factor_severity?: string;
+    triggered?: boolean;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<RiskClassificationFactorRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('classification_id', filters.classification_id, '::uuid');
+  eq('factor_category', filters.factor_category);
+  eq('factor_severity', filters.factor_severity);
+  if (filters.triggered !== undefined) {
+    params.push(filters.triggered);
+    where.push(`triggered = $${params.length}`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(factor_key ILIKE $${i} OR factor_value ILIKE $${i} OR rationale ILIKE $${i}
+        OR evidence_reference ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<RiskClassificationFactorRow>(
+    `SELECT ${RISK_FACTOR_COLUMNS} FROM govai.regulatory_risk_classification_factors
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- Reclassification triggers -------------------------------------------
+
+async function requireTriggerParents(
+  ctx: Ctx,
+  refs: {
+    classification_id?: string | null;
+    use_case_id: string;
+    ai_system_id: string;
+    regulatory_source_id?: string | null;
+    control_id?: string | null;
+  },
+): Promise<void> {
+  if (!(await getVisibleUseCase(ctx, refs.use_case_id)))
+    throw new RegulatoryError(404, 'use_case_not_found');
+  if (!(await getVisibleAiSystem(ctx, refs.ai_system_id)))
+    throw new RegulatoryError(404, 'ai_system_not_found');
+  if (refs.classification_id) {
+    const c = await getVisibleRiskClassification(ctx, refs.classification_id);
+    if (!c) throw new RegulatoryError(404, 'risk_classification_not_found');
+    if (c.use_case_id !== refs.use_case_id || c.ai_system_id !== refs.ai_system_id) {
+      throw new RegulatoryError(400, 'classification_subject_mismatch', {
+        classification_id: refs.classification_id,
+        use_case_id: refs.use_case_id,
+        ai_system_id: refs.ai_system_id,
+      });
+    }
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: refs.regulatory_source_id ?? null,
+    control_id: refs.control_id ?? null,
+  });
+}
+
+export async function createReclassificationTrigger(
+  ctx: Ctx,
+  input: CreateReclassificationTriggerInput,
+): Promise<ReclassificationTriggerRow> {
+  await requireTriggerParents(ctx, {
+    classification_id: input.classification_id ?? null,
+    use_case_id: input.use_case_id,
+    ai_system_id: input.ai_system_id,
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<ReclassificationTriggerRow>(
+      `INSERT INTO govai.regulatory_reclassification_triggers
+         (org_id, trigger_key, trigger_status, trigger_type, recommended_action, classification_id,
+          use_case_id, ai_system_id, prior_risk_tier, trigger_reason, evidence_reference, detected_at,
+          due_at, resolved_at, regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6::uuid, $7::uuid, $8::uuid, $9, $10, $11,
+               $12::timestamptz, $13::timestamptz, $14::timestamptz, $15::uuid, $16::uuid, $17::jsonb,
+               $18::uuid, $18::uuid)
+       RETURNING ${RECLASSIFICATION_TRIGGER_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.trigger_key,
+        input.trigger_status,
+        input.trigger_type,
+        input.recommended_action,
+        input.classification_id ?? null,
+        input.use_case_id,
+        input.ai_system_id,
+        input.prior_risk_tier ?? null,
+        input.trigger_reason,
+        input.evidence_reference ?? null,
+        input.detected_at ?? null,
+        input.due_at ?? null,
+        input.resolved_at ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'reclassification_trigger_key_conflict', {
+        trigger_key: input.trigger_key,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_reclassification_trigger.created',
+    subjectType: 'regulatory_reclassification_trigger',
+    subjectId: row.id,
+    metadata: triggerAuditMeta(row),
+  });
+  return row;
+}
+
+function triggerAuditMeta(row: ReclassificationTriggerRow): Record<string, unknown> {
+  return {
+    trigger_id: row.id,
+    trigger_key: row.trigger_key,
+    trigger_type: row.trigger_type,
+    trigger_status: row.trigger_status,
+    recommended_action: row.recommended_action,
+    classification_id: row.classification_id,
+    use_case_id: row.use_case_id,
+    ai_system_id: row.ai_system_id,
+    prior_risk_tier: row.prior_risk_tier,
+  };
+}
+
+export async function getVisibleReclassificationTrigger(
+  ctx: Ctx,
+  id: string,
+): Promise<ReclassificationTriggerRow | null> {
+  const r = await ctx.client.query<ReclassificationTriggerRow>(
+    `SELECT ${RECLASSIFICATION_TRIGGER_COLUMNS} FROM govai.regulatory_reclassification_triggers WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateReclassificationTrigger(
+  ctx: Ctx,
+  id: string,
+  input: UpdateReclassificationTriggerInput,
+): Promise<ReclassificationTriggerRow> {
+  const existing = await getVisibleReclassificationTrigger(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'reclassification_trigger_not_found');
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.trigger_status !== undefined) col('trigger_status', input.trigger_status);
+  if (input.trigger_type !== undefined) col('trigger_type', input.trigger_type);
+  if (input.recommended_action !== undefined) col('recommended_action', input.recommended_action);
+  if (input.prior_risk_tier !== undefined) col('prior_risk_tier', input.prior_risk_tier);
+  if (input.trigger_reason !== undefined) col('trigger_reason', input.trigger_reason);
+  if (input.evidence_reference !== undefined) col('evidence_reference', input.evidence_reference);
+  if (input.detected_at !== undefined) col('detected_at', input.detected_at, '::timestamptz');
+  if (input.due_at !== undefined) col('due_at', input.due_at, '::timestamptz');
+  if (input.resolved_at !== undefined) col('resolved_at', input.resolved_at, '::timestamptz');
+  if (input.regulatory_source_id !== undefined)
+    col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<ReclassificationTriggerRow>(
+    `UPDATE govai.regulatory_reclassification_triggers SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${RECLASSIFICATION_TRIGGER_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'reclassification_trigger_not_found');
+
+  const statusChanged = input.trigger_status !== undefined && input.trigger_status !== existing.trigger_status;
+  const resolvedTransition =
+    (statusChanged && row.trigger_status === 'RESOLVED') ||
+    (input.resolved_at !== undefined && input.resolved_at !== null && existing.resolved_at === null);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_reclassification_trigger.updated',
+    subjectType: 'regulatory_reclassification_trigger',
+    subjectId: row.id,
+    metadata: {
+      ...triggerAuditMeta(row),
+      changed_fields: Object.keys(input),
+      ...(statusChanged ? { previous_trigger_status: existing.trigger_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_reclassification_trigger.status_changed',
+      subjectType: 'regulatory_reclassification_trigger',
+      subjectId: row.id,
+      metadata: { ...triggerAuditMeta(row), previous_trigger_status: existing.trigger_status },
+    });
+  }
+  if (resolvedTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_reclassification_trigger.resolved',
+      subjectType: 'regulatory_reclassification_trigger',
+      subjectId: row.id,
+      metadata: {
+        ...triggerAuditMeta(row),
+        resolved_at: row.resolved_at ? row.resolved_at.toISOString() : null,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listReclassificationTriggers(
+  ctx: Ctx,
+  filters: {
+    classification_id?: string;
+    use_case_id?: string;
+    ai_system_id?: string;
+    trigger_status?: string;
+    trigger_type?: string;
+    recommended_action?: string;
+    due_before?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<ReclassificationTriggerRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('classification_id', filters.classification_id, '::uuid');
+  eq('use_case_id', filters.use_case_id, '::uuid');
+  eq('ai_system_id', filters.ai_system_id, '::uuid');
+  eq('trigger_status', filters.trigger_status);
+  eq('trigger_type', filters.trigger_type);
+  eq('recommended_action', filters.recommended_action);
+  if (filters.due_before !== undefined) {
+    params.push(filters.due_before);
+    where.push(`due_at IS NOT NULL AND due_at <= $${params.length}::timestamptz`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(`(trigger_key ILIKE $${i} OR trigger_reason ILIKE $${i} OR evidence_reference ILIKE $${i})`);
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ReclassificationTriggerRow>(
+    `SELECT ${RECLASSIFICATION_TRIGGER_COLUMNS} FROM govai.regulatory_reclassification_triggers
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,

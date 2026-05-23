@@ -291,3 +291,52 @@ workflow engine, legal-basis automation, runtime enforcement, connectors, and
 CNJ/Sinapses readiness remain future work; certification and legal interpretation
 remain external. GovAI does not guarantee compliance, does not provide legal
 advice, and does not guarantee judicial validity or evidence admissibility.
+
+## PR-R7 implementation
+
+PR-R7 adds the next P0 Native Regulatory Core foundation after the source
+registry, control catalog, AI-system registry, provider registry, model
+registry, agent registry, and use-case registry: a production-focused
+deterministic technical Risk Classification Engine. It lands four tables —
+`govai.regulatory_risk_methods`, `govai.regulatory_risk_classifications`,
+`govai.regulatory_risk_classification_factors`, and
+`govai.regulatory_reclassification_triggers` — as
+`IMPLEMENTED_FOUNDATIONAL_CONTROL` for risk-methodology evidence, deterministic
+per-subject risk classification (tier + score + per-factor evidence rows),
+reclassification-trigger evidence, plus optional linkage to use-case asset
+links, models, model versions, agents, agent versions, regulatory sources, and
+controls, with migration, validation, service, routes, tenant isolation (RLS
+with DB-enforced parent visibility, asset-link consistency guards,
+version-belongs-to-parent guards, table-qualified outer references, and
+DB-enforced residual-equals-inherent / review-flag-implication / version-requires-parent
+CHECK invariants), audit events (`regulatory_risk_method.*`,
+`regulatory_risk_classification.*` including `.risk_tier_assigned` and
+`.superseded`, `regulatory_risk_classification_factor.created`, and
+`regulatory_reclassification_trigger.*` including `.status_changed` and
+`.resolved`), and integration tests including direct DB RLS and CHECK coverage.
+Implementation evidence is recorded in `23-regulatory-core-roadmap.md` (P0) and
+`20-target-control-catalog.md` (control domain 5).
+
+The risk-classification engine is a deterministic technical classifier producing
+governance evidence — it does not implement a high-risk approval workflow, a
+prohibited-use hard-deny workflow, runtime enforcement, gateway-level blocking,
+DSR/RIPD/DPIA/AIA workflows, incident response, retention or legal hold,
+evidence-bundle export, CNJ/Sinapses submission, credential vaulting, or legal,
+medical, or financial advice; control domains 5 and 6 are **not** `COVERED`
+(domain 5 has its first foundational primitive but COVERED requires
+per-requirement framework-mapping citations, and domain 6 has no implementation
+in PR-R7), and domain 4 also remains **not** `COVERED`. In PR-R7 the residual
+risk tier and score always mirror the inherent risk tier and score
+(DB-enforced); mitigation_strength is recorded as an evidence-only factor and
+does not downgrade tier or score, because no methodology PR has yet defined and
+tested bounded downgrade rules. The review flags
+`requires_high_risk_review` and `requires_prohibited_use_review` are evidence
+flags that record that review attention is required — they do not create review
+workflows, assign reviewers, block execution, or enforce runtime decisions; a
+future PR is required before any approval workflow, hard-deny, or runtime
+enforcement may rely on them. Connectors, live provider/runtime enforcement,
+the high-risk and prohibited-use workflows, review workflow engine, sensitive
+data operating model, and CNJ/Sinapses readiness remain future work;
+certification and legal interpretation remain external. GovAI does not
+guarantee compliance, does not provide legal advice, and does not guarantee
+judicial validity or evidence admissibility.
