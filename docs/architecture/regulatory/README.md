@@ -340,3 +340,70 @@ data operating model, and CNJ/Sinapses readiness remain future work;
 certification and legal interpretation remain external. GovAI does not
 guarantee compliance, does not provide legal advice, and does not guarantee
 judicial validity or evidence admissibility.
+
+## PR-R8 implementation
+
+PR-R8 adds the next P0 Native Regulatory Core foundation after the source
+registry, control catalog, AI-system registry, provider registry, model
+registry, agent registry, use-case registry, and Risk Classification Engine: a
+production-focused high-risk governance review workflow. It lands four
+tenant-only tables — `govai.regulatory_high_risk_reviews`,
+`govai.regulatory_high_risk_review_evidence`,
+`govai.regulatory_high_risk_review_assignments`, and
+`govai.regulatory_high_risk_review_decisions` — as
+`IMPLEMENTED_FOUNDATIONAL_CONTROL` for high-risk review cases, evidence
+records, reviewer assignments, append-only decisions, deterministic lifecycle
+transitions (OPEN → IN_REVIEW / CHANGES_REQUESTED → APPROVED / REJECTED /
+CANCELLED, with SUPERSEDED supported), separation-of-duties enforced in both
+service and DB trigger (the requester cannot decide their own review), terminal-
+state backstops blocking further evidence / assignment / decision mutation,
+migration, validation, service, routes, tenant isolation (RLS with DB-enforced
+parent visibility, table-qualified asset/version/workroom/approval-request and
+classification-snapshot guards, partial unique indexes — one non-terminal
+review per classification, one active assignment per review+role+assignee, and
+one final APPROVE/REJECT decision per review), audit events
+(`regulatory_high_risk_review.created/submitted/updated/status_changed/cancelled/
+approved/rejected/changes_requested`, `regulatory_high_risk_review_evidence.created/
+updated/status_changed`, `regulatory_high_risk_review_assignment.created/updated/
+status_changed`, `regulatory_high_risk_review_decision.created`), DDL semantic
+comments binding APPROVED/APPROVE to governance evidence only, and integration
+tests including direct DB RLS, SoD-trigger, append-only, terminal-state, and
+DDL-comment coverage. Implementation evidence is recorded in
+`23-regulatory-core-roadmap.md` (P0) and `20-target-control-catalog.md`
+(control domain 6, high-risk workflow portion only).
+
+PR-R8 implements high-risk review case, evidence, assignment, decision, SoD,
+audit, and tenant-isolation primitives; it does not implement prohibited-use
+workflow, hard-deny enforcement, runtime blocking, legal advice, compliance
+certification, or CNJ/Sinapses submission.
+
+APPROVED in PR-R8 means the high-risk governance review case has an approval
+decision recorded as governance evidence only. It does not mean legal
+approval; it does not mean compliance certification; it does not mean safety
+certification; and it does not authorize runtime execution.
+
+High-risk review approval is governance evidence only; it does not mutate the
+underlying risk classification, authorize runtime execution, or make the AI
+system legally compliant.
+
+A high-risk review can only be opened from a PR-R7 risk classification whose
+`residual_risk_tier = inherent_risk_tier = HIGH` and
+`requires_high_risk_review = true` and `requires_prohibited_use_review = false`
+(both the service and the DB RLS WITH CHECK enforce this). Attempts to open a
+review from a `PROHIBITED` classification or from a classification with
+`requires_prohibited_use_review = true` are rejected with the deterministic
+error code `prohibited_classification_requires_future_workflow`; attempts to
+open a review from LOW/MODERATE/MINIMAL/UNKNOWN classifications are rejected
+with `classification_not_high_risk`. The prohibited-use registry and hard-deny
+workflow remain future work and are out of scope for PR-R8. Control domain 6
+remains **not** `COVERED` — PR-R8 ships the high-risk workflow portion of
+domain 6 as `IMPLEMENTED_FOUNDATIONAL_CONTROL`, while the prohibited-use
+registry and hard-deny workflow remain `REQUIRED_NATIVE_CAPABILITY` / future
+work, and `COVERED` still requires per-requirement framework-mapping
+citations. Domain 5 remains the PR-R7 `IMPLEMENTED_FOUNDATIONAL_CONTROL`
+(not `COVERED`). Runtime enforcement, gateway blocking, live tool invocation,
+prohibited-use workflow, mitigation-weighted downgrading, sensitive-data
+operating model, connectors, and CNJ/Sinapses submission remain future work;
+certification and legal interpretation remain external. GovAI does not
+guarantee compliance, does not provide legal advice, and does not guarantee
+judicial validity or evidence admissibility.

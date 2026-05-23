@@ -245,6 +245,19 @@ implementation timeline.
 - Mapping update triggered: control 6 in `20-target-control-catalog.md`.
 - Tests expected: workflow tests for approval, SoD, expiry, and one-time
   consumption.
+- Status: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R8) for high-risk review
+  cases, evidence records, reviewer assignments, append-only decisions,
+  deterministic lifecycle transitions, separation-of-duties (service + DB
+  trigger), terminal-state backstops, and tenant RLS; see the PR-R8 evidence
+  below. APPROVED in PR-R8 means the high-risk governance review case has an
+  approval decision recorded as governance evidence only; it does not mean
+  legal approval; it does not mean compliance certification; it does not mean
+  safety certification; and it does not authorize runtime execution.
+  High-risk review approval does not mutate the underlying risk
+  classification, does not authorize runtime execution, does not bypass
+  hard-deny controls, and does not make the AI system legally compliant. Prohibited-use workflow, hard-deny enforcement, runtime
+  blocking, ITSM connector enrichment, expiry-based one-time-consumption
+  binding, and CNJ/Sinapses submission remain future work.
 
 ### Prohibited-use workflow
 
@@ -675,6 +688,102 @@ Limitations (remain future work or external):
   future work.
 - Sensitive-data operating model, connectors, and CNJ/Sinapses readiness
   remain future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-R8 implementation evidence (foundational slice)
+
+PR-R8 delivers the High-risk Review Workflow, the next P0 foundation after the
+Risk Classification Engine. It is a production-focused foundational slice —
+high-risk review case records, evidence records, reviewer assignment records,
+append-only decisions, deterministic lifecycle transitions, separation-of-duties
+backstops, terminal-state backstops, audit events, tenant RLS, and semantic
+DDL comments — not a prohibited-use hard-deny workflow, not runtime
+enforcement, not a connector, and not a legal-advice engine.
+
+Status:
+
+- High-risk Review Workflow: IMPLEMENTED_FOUNDATIONAL_CONTROL for high-risk
+  review cases, evidence records, reviewer assignments, append-only
+  decisions, deterministic lifecycle transitions (OPEN → IN_REVIEW /
+  CHANGES_REQUESTED → APPROVED / REJECTED / CANCELLED / SUPERSEDED), service
+  + DB-trigger separation-of-duties, terminal-state backstops, and tenant
+  RLS.
+
+PR-R8 implements high-risk review case, evidence, assignment, decision, SoD,
+audit, and tenant-isolation primitives; it does not implement prohibited-use
+workflow, hard-deny enforcement, runtime blocking, legal advice, compliance
+certification, or CNJ/Sinapses submission.
+
+APPROVED in PR-R8 means the high-risk governance review case has an approval
+decision recorded as governance evidence only. It does not mean legal
+approval; it does not mean compliance certification; it does not mean safety
+certification; and it does not authorize runtime execution.
+
+High-risk review approval is governance evidence only; it does not mutate the
+underlying risk classification, does not authorize runtime execution, and
+does not make the AI system legally compliant.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0023_regulatory_high_risk_review_workflow.sql`
+  (`govai.regulatory_high_risk_reviews`,
+  `govai.regulatory_high_risk_review_evidence`,
+  `govai.regulatory_high_risk_review_assignments`,
+  `govai.regulatory_high_risk_review_decisions`; tenant-only; RLS ENABLE +
+  FORCE; DB-enforced parent visibility and table-qualified guards on the
+  risk-classification snapshot (`residual_risk_tier = inherent_risk_tier =
+  HIGH`, `requires_high_risk_review = true`,
+  `requires_prohibited_use_review = false`, and copied
+  risk_method_id/use_case_id/ai_system_id/asset/model/version/agent/version
+  fields matching the classification); partial unique indexes for "one
+  non-terminal review per classification", "one active assignment per
+  review+role+assignee", and "one final APPROVE/REJECT decision per review";
+  guarded-update triggers on reviews / evidence / assignments freezing
+  identity and risk snapshot; append-only trigger on decisions; SoD trigger
+  blocking decisions whose decider equals the review requester; terminal-
+  state trigger blocking evidence/assignment/decision inserts after
+  APPROVED / REJECTED / CANCELLED / SUPERSEDED; semantic DDL comments
+  binding APPROVED/APPROVE to governance evidence only on the reviews and
+  decisions tables and on their `review_status` and `decision` columns).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`,
+  `apps/api/src/routes/regulatory.ts` (high-risk review CRUD-without-delete
+  + submit/cancel + evidence + assignments + append-only decisions, with
+  service-level SoD and terminal-state checks; risk snapshot is copied from
+  the PR-R7 classification by the service and never accepted from the
+  client; client-supplied tier/score/snapshot fields are stripped).
+- Tests: `tests/integration/regulatory-high-risk-reviews.test.ts`.
+
+Audit events emitted:
+
+- `regulatory_high_risk_review.created` / `.submitted` / `.updated` /
+  `.status_changed` / `.cancelled` / `.approved` / `.rejected` /
+  `.changes_requested`
+- `regulatory_high_risk_review_evidence.created` / `.updated` /
+  `.status_changed`
+- `regulatory_high_risk_review_assignment.created` / `.updated` /
+  `.status_changed`
+- `regulatory_high_risk_review_decision.created` (decisions are append-only)
+
+Limitations (remain future work or external):
+
+- Governance evidence only — no prompts, credentials, legal opinions,
+  medical records, raw sensitive data samples, or financial advice outputs
+  are stored.
+- Domain 6 is **not** `COVERED`: PR-R8 ships the high-risk workflow portion
+  as `IMPLEMENTED_FOUNDATIONAL_CONTROL`; the prohibited-use registry and
+  hard-deny workflow remain `REQUIRED_NATIVE_CAPABILITY` / future work, and
+  `COVERED` requires per-requirement framework-mapping citations.
+- Prohibited-use workflow and prohibited-use registry remain future work.
+- Hard-deny enforcement, runtime enforcement, gateway-level blocking, and
+  live tool invocation remain future work.
+- ITSM connector enrichment, expiry-based one-time-consumption binding to a
+  runtime invocation, and mitigation-weighted downgrading remain future
+  work.
+- CNJ/Sinapses submission model remains future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.
 - GovAI does not provide legal advice.

@@ -57,6 +57,15 @@ import type {
   CreateReclassificationTriggerInput,
   UpdateReclassificationTriggerInput,
   FactorInputsValue,
+  CreateHighRiskReviewInput,
+  UpdateHighRiskReviewInput,
+  CancelHighRiskReviewInput,
+  SubmitHighRiskReviewInput,
+  CreateHighRiskReviewEvidenceInput,
+  UpdateHighRiskReviewEvidenceInput,
+  CreateHighRiskReviewAssignmentInput,
+  UpdateHighRiskReviewAssignmentInput,
+  CreateHighRiskReviewDecisionInput,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -5469,6 +5478,1103 @@ export async function listReclassificationTriggers(
   params.push(cursor.limit);
   const res = await ctx.client.query<ReclassificationTriggerRow>(
     `SELECT ${RECLASSIFICATION_TRIGGER_COLUMNS} FROM govai.regulatory_reclassification_triggers
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// High-risk Review Workflow (PR-R8)
+// ---------------------------------------------------------------------------
+//
+// Production-focused governance review workflow built on top of the
+// deterministic Risk Classification Engine (PR-R7). Only HIGH classifications
+// can become review cases; PROHIBITED classifications are rejected because the
+// prohibited-use hard-deny workflow is future work. APPROVED on a review case
+// is GOVERNANCE EVIDENCE ONLY: it does not mean legal approval, does not mean
+// compliance certification, does not mean safety certification, and does not
+// authorize runtime execution. PR-R8 does NOT mutate the underlying risk
+// classification tier/score, does NOT create Workroom run approvals, does NOT
+// implement runtime enforcement, does NOT implement hard-deny, and does NOT
+// provide legal advice.
+
+const TERMINAL_REVIEW_STATUSES = new Set(['APPROVED', 'REJECTED', 'CANCELLED', 'SUPERSEDED']);
+
+export type HighRiskReviewRow = {
+  id: string;
+  org_id: string;
+  review_key: string;
+  review_status: string;
+  risk_classification_id: string;
+  risk_method_id: string;
+  use_case_id: string;
+  ai_system_id: string;
+  use_case_asset_link_id: string | null;
+  model_id: string | null;
+  model_version_id: string | null;
+  agent_id: string | null;
+  agent_version_id: string | null;
+  inherent_risk_tier: string;
+  residual_risk_tier: string;
+  risk_score: number;
+  residual_risk_score: number;
+  requires_high_risk_review: boolean;
+  requires_prohibited_use_review: boolean;
+  review_basis: string;
+  required_approver_count: number;
+  requester_user_id: string | null;
+  requested_by_participant_id: string | null;
+  workroom_id: string | null;
+  workroom_approval_request_id: string | null;
+  rationale_summary: string;
+  evidence_summary: string;
+  reviewer_guidance: string;
+  decision_summary: string;
+  cancellation_reason: string | null;
+  supersedes_review_id: string | null;
+  superseded_by_review_id: string | null;
+  due_at: Date | null;
+  submitted_at: Date | null;
+  decided_at: Date | null;
+  cancelled_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const HIGH_RISK_REVIEW_COLUMNS = `id, org_id, review_key, review_status, risk_classification_id,
+  risk_method_id, use_case_id, ai_system_id, use_case_asset_link_id, model_id, model_version_id,
+  agent_id, agent_version_id, inherent_risk_tier, residual_risk_tier, risk_score, residual_risk_score,
+  requires_high_risk_review, requires_prohibited_use_review, review_basis, required_approver_count,
+  requester_user_id, requested_by_participant_id, workroom_id, workroom_approval_request_id,
+  rationale_summary, evidence_summary, reviewer_guidance, decision_summary, cancellation_reason,
+  supersedes_review_id, superseded_by_review_id, due_at, submitted_at, decided_at, cancelled_at,
+  metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type HighRiskReviewEvidenceRow = {
+  id: string;
+  org_id: string;
+  high_risk_review_id: string;
+  evidence_key: string;
+  evidence_type: string;
+  evidence_status: string;
+  title: string;
+  summary: string;
+  evidence_reference: string | null;
+  source_uri: string | null;
+  source_hash: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const HIGH_RISK_REVIEW_EVIDENCE_COLUMNS = `id, org_id, high_risk_review_id, evidence_key, evidence_type,
+  evidence_status, title, summary, evidence_reference, source_uri, source_hash, regulatory_source_id,
+  control_id, metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type HighRiskReviewAssignmentRow = {
+  id: string;
+  org_id: string;
+  high_risk_review_id: string;
+  assignee_user_id: string | null;
+  assignee_participant_id: string | null;
+  reviewer_role: string;
+  assignment_status: string;
+  assigned_by_user_id: string | null;
+  assigned_at: Date;
+  acknowledged_at: Date | null;
+  completed_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const HIGH_RISK_REVIEW_ASSIGNMENT_COLUMNS = `id, org_id, high_risk_review_id, assignee_user_id,
+  assignee_participant_id, reviewer_role, assignment_status, assigned_by_user_id, assigned_at,
+  acknowledged_at, completed_at, metadata, created_at, updated_at`;
+
+export type HighRiskReviewDecisionRow = {
+  id: string;
+  org_id: string;
+  high_risk_review_id: string;
+  decision: string;
+  decision_rationale: string;
+  decided_by_user_id: string | null;
+  decided_by_participant_id: string | null;
+  reviewer_role: string;
+  evidence_snapshot_summary: string;
+  conditions_summary: string;
+  expiry_at: Date | null;
+  decision_audit_event_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+};
+
+const HIGH_RISK_REVIEW_DECISION_COLUMNS = `id, org_id, high_risk_review_id, decision, decision_rationale,
+  decided_by_user_id, decided_by_participant_id, reviewer_role, evidence_snapshot_summary,
+  conditions_summary, expiry_at, decision_audit_event_id, metadata, created_at`;
+
+// ---- helpers -------------------------------------------------------------
+
+function highRiskReviewAuditMeta(row: HighRiskReviewRow): Record<string, unknown> {
+  return {
+    high_risk_review_id: row.id,
+    review_key: row.review_key,
+    review_status: row.review_status,
+    review_basis: row.review_basis,
+    risk_classification_id: row.risk_classification_id,
+    risk_method_id: row.risk_method_id,
+    use_case_id: row.use_case_id,
+    ai_system_id: row.ai_system_id,
+    use_case_asset_link_id: row.use_case_asset_link_id,
+    model_id: row.model_id,
+    model_version_id: row.model_version_id,
+    agent_id: row.agent_id,
+    agent_version_id: row.agent_version_id,
+    workroom_id: row.workroom_id,
+    workroom_approval_request_id: row.workroom_approval_request_id,
+    inherent_risk_tier: row.inherent_risk_tier,
+    residual_risk_tier: row.residual_risk_tier,
+    risk_score: row.risk_score,
+    residual_risk_score: row.residual_risk_score,
+    required_approver_count: row.required_approver_count,
+    requester_user_id: row.requester_user_id,
+    requested_by_participant_id: row.requested_by_participant_id,
+  };
+}
+
+// ---- create / read / patch / lifecycle -----------------------------------
+
+export async function createHighRiskReview(
+  ctx: Ctx,
+  input: CreateHighRiskReviewInput,
+): Promise<HighRiskReviewRow> {
+  const classification = await getVisibleRiskClassification(ctx, input.risk_classification_id);
+  if (!classification) {
+    throw new RegulatoryError(404, 'risk_classification_not_found');
+  }
+  // PR-R7 governance gate: PROHIBITED is future workflow; LOW/MODERATE/MINIMAL/
+  // UNKNOWN are not eligible for high-risk review.
+  if (
+    classification.residual_risk_tier === 'PROHIBITED' ||
+    classification.requires_prohibited_use_review === true
+  ) {
+    throw new RegulatoryError(400, 'prohibited_classification_requires_future_workflow', {
+      risk_classification_id: classification.id,
+      residual_risk_tier: classification.residual_risk_tier,
+      requires_prohibited_use_review: classification.requires_prohibited_use_review,
+    });
+  }
+  if (
+    classification.residual_risk_tier !== 'HIGH' ||
+    classification.inherent_risk_tier !== 'HIGH' ||
+    classification.requires_high_risk_review !== true
+  ) {
+    throw new RegulatoryError(400, 'classification_not_high_risk', {
+      risk_classification_id: classification.id,
+      residual_risk_tier: classification.residual_risk_tier,
+      inherent_risk_tier: classification.inherent_risk_tier,
+      requires_high_risk_review: classification.requires_high_risk_review,
+    });
+  }
+  if (input.workroom_id) {
+    const wr = await ctx.client.query<{ id: string }>(
+      `SELECT id FROM govai.workrooms WHERE id = $1::uuid`,
+      [input.workroom_id],
+    );
+    if (wr.rowCount === 0) throw new RegulatoryError(404, 'workroom_not_found');
+  }
+  if (input.workroom_approval_request_id) {
+    const ar = await ctx.client.query<{ id: string; workroom_id: string }>(
+      `SELECT id, workroom_id FROM govai.workroom_approval_requests WHERE id = $1::uuid`,
+      [input.workroom_approval_request_id],
+    );
+    if (ar.rowCount === 0) throw new RegulatoryError(404, 'workroom_approval_request_not_found');
+    if (input.workroom_id && ar.rows[0]!.workroom_id !== input.workroom_id) {
+      throw new RegulatoryError(400, 'workroom_approval_request_workroom_mismatch', {
+        workroom_id: input.workroom_id,
+        workroom_approval_request_id: input.workroom_approval_request_id,
+      });
+    }
+  }
+
+  let res;
+  try {
+    res = await ctx.client.query<HighRiskReviewRow>(
+      `INSERT INTO govai.regulatory_high_risk_reviews
+         (org_id, review_key, review_status, risk_classification_id, risk_method_id,
+          use_case_id, ai_system_id, use_case_asset_link_id, model_id, model_version_id,
+          agent_id, agent_version_id, inherent_risk_tier, residual_risk_tier, risk_score,
+          residual_risk_score, requires_high_risk_review, requires_prohibited_use_review,
+          review_basis, required_approver_count, requester_user_id, requested_by_participant_id,
+          workroom_id, workroom_approval_request_id, rationale_summary, evidence_summary,
+          reviewer_guidance, decision_summary, due_at, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, 'OPEN', $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8::uuid,
+               $9::uuid, $10::uuid, $11::uuid, $12, $13, $14, $15, $16, $17, $18, $19,
+               $20::uuid, $21::uuid, $22::uuid, $23::uuid, $24, $25, $26, '', $27::timestamptz,
+               $28::jsonb, $29::uuid, $29::uuid)
+       RETURNING ${HIGH_RISK_REVIEW_COLUMNS}`,
+      [
+        ctx.actor.orgId,                              // $1
+        input.review_key,                             // $2
+        classification.id,                            // $3  risk_classification_id
+        classification.risk_method_id,                // $4
+        classification.use_case_id,                   // $5
+        classification.ai_system_id,                  // $6
+        classification.use_case_asset_link_id,        // $7
+        classification.model_id,                      // $8
+        classification.model_version_id,              // $9
+        classification.agent_id,                      // $10
+        classification.agent_version_id,              // $11
+        classification.inherent_risk_tier,            // $12
+        classification.residual_risk_tier,            // $13
+        classification.risk_score,                    // $14
+        classification.residual_risk_score,           // $15
+        classification.requires_high_risk_review,     // $16
+        classification.requires_prohibited_use_review,// $17
+        input.review_basis,                           // $18
+        input.required_approver_count ?? 1,           // $19
+        ctx.actor.userId,                             // $20  requester_user_id
+        input.requested_by_participant_id ?? null,    // $21
+        input.workroom_id ?? null,                    // $22
+        input.workroom_approval_request_id ?? null,   // $23
+        input.rationale_summary,                      // $24
+        input.evidence_summary,                       // $25
+        input.reviewer_guidance,                      // $26
+        input.due_at ?? null,                         // $27
+        JSON.stringify(input.metadata ?? {}),         // $28
+        ctx.actor.userId,                             // $29  created_by / updated_by
+      ],
+    );
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === UNIQUE_VIOLATION) {
+      const msg = (err as { constraint?: string }).constraint ?? '';
+      if (msg.includes('one_active_per_classification')) {
+        throw new RegulatoryError(409, 'high_risk_review_active_for_classification', {
+          risk_classification_id: classification.id,
+        });
+      }
+      throw new RegulatoryError(409, 'high_risk_review_key_conflict', {
+        review_key: input.review_key,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review.created',
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: row.id,
+    metadata: highRiskReviewAuditMeta(row),
+  });
+  return row;
+}
+
+export async function getVisibleHighRiskReview(
+  ctx: Ctx,
+  id: string,
+): Promise<HighRiskReviewRow | null> {
+  const r = await ctx.client.query<HighRiskReviewRow>(
+    `SELECT ${HIGH_RISK_REVIEW_COLUMNS} FROM govai.regulatory_high_risk_reviews WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateHighRiskReview(
+  ctx: Ctx,
+  id: string,
+  input: UpdateHighRiskReviewInput,
+): Promise<HighRiskReviewRow> {
+  const existing = await getVisibleHighRiskReview(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  if (TERMINAL_REVIEW_STATUSES.has(existing.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: existing.review_status,
+    });
+  }
+  if (input.superseded_by_review_id !== undefined && input.superseded_by_review_id !== null) {
+    const next = await getVisibleHighRiskReview(ctx, input.superseded_by_review_id);
+    if (!next) throw new RegulatoryError(404, 'superseded_by_review_not_found');
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.rationale_summary !== undefined) col('rationale_summary', input.rationale_summary);
+  if (input.evidence_summary !== undefined) col('evidence_summary', input.evidence_summary);
+  if (input.reviewer_guidance !== undefined) col('reviewer_guidance', input.reviewer_guidance);
+  if (input.decision_summary !== undefined) col('decision_summary', input.decision_summary);
+  if (input.due_at !== undefined) col('due_at', input.due_at, '::timestamptz');
+  if (input.superseded_by_review_id !== undefined)
+    col('superseded_by_review_id', input.superseded_by_review_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<HighRiskReviewRow>(
+    `UPDATE govai.regulatory_high_risk_reviews SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${HIGH_RISK_REVIEW_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review.updated',
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: row.id,
+    metadata: { ...highRiskReviewAuditMeta(row), changed_fields: Object.keys(input) },
+  });
+  return row;
+}
+
+export async function submitHighRiskReview(
+  ctx: Ctx,
+  id: string,
+  _input: SubmitHighRiskReviewInput,
+): Promise<HighRiskReviewRow> {
+  const existing = await getVisibleHighRiskReview(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  if (TERMINAL_REVIEW_STATUSES.has(existing.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: existing.review_status,
+    });
+  }
+  if (existing.review_status !== 'OPEN' && existing.review_status !== 'CHANGES_REQUESTED') {
+    throw new RegulatoryError(409, 'high_risk_review_not_submittable', {
+      review_status: existing.review_status,
+    });
+  }
+  const submittedSet = existing.submitted_at === null ? ', submitted_at = now()' : '';
+  const res = await ctx.client.query<HighRiskReviewRow>(
+    `UPDATE govai.regulatory_high_risk_reviews
+       SET review_status = 'IN_REVIEW',
+           updated_by_user_id = $2::uuid,
+           updated_at = now()${submittedSet}
+     WHERE id = $1::uuid AND org_id = $3::uuid
+     RETURNING ${HIGH_RISK_REVIEW_COLUMNS}`,
+    [id, ctx.actor.userId, ctx.actor.orgId],
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  const baseMeta = highRiskReviewAuditMeta(row);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review.submitted',
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_review_status: existing.review_status },
+  });
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review.status_changed',
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_review_status: existing.review_status },
+  });
+  return row;
+}
+
+export async function cancelHighRiskReview(
+  ctx: Ctx,
+  id: string,
+  input: CancelHighRiskReviewInput,
+): Promise<HighRiskReviewRow> {
+  const existing = await getVisibleHighRiskReview(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  if (TERMINAL_REVIEW_STATUSES.has(existing.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: existing.review_status,
+    });
+  }
+  const res = await ctx.client.query<HighRiskReviewRow>(
+    `UPDATE govai.regulatory_high_risk_reviews
+       SET review_status = 'CANCELLED',
+           cancellation_reason = $2,
+           cancelled_at = now(),
+           metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+           updated_by_user_id = $4::uuid,
+           updated_at = now()
+     WHERE id = $1::uuid AND org_id = $5::uuid
+     RETURNING ${HIGH_RISK_REVIEW_COLUMNS}`,
+    [id, input.cancellation_reason, JSON.stringify(input.metadata ?? {}), ctx.actor.userId, ctx.actor.orgId],
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  const baseMeta = highRiskReviewAuditMeta(row);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review.cancelled',
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_review_status: existing.review_status, cancellation_reason: input.cancellation_reason },
+  });
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review.status_changed',
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_review_status: existing.review_status },
+  });
+  return row;
+}
+
+export async function listHighRiskReviews(
+  ctx: Ctx,
+  filters: {
+    review_status?: string;
+    risk_classification_id?: string;
+    risk_method_id?: string;
+    use_case_id?: string;
+    ai_system_id?: string;
+    workroom_id?: string;
+    review_basis?: string;
+    due_before?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<HighRiskReviewRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('review_status', filters.review_status);
+  eq('risk_classification_id', filters.risk_classification_id, '::uuid');
+  eq('risk_method_id', filters.risk_method_id, '::uuid');
+  eq('use_case_id', filters.use_case_id, '::uuid');
+  eq('ai_system_id', filters.ai_system_id, '::uuid');
+  eq('workroom_id', filters.workroom_id, '::uuid');
+  eq('review_basis', filters.review_basis);
+  if (filters.due_before !== undefined) {
+    params.push(filters.due_before);
+    where.push(`due_at IS NOT NULL AND due_at <= $${params.length}::timestamptz`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(review_key ILIKE $${i} OR rationale_summary ILIKE $${i} OR evidence_summary ILIKE $${i}
+        OR reviewer_guidance ILIKE $${i} OR decision_summary ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<HighRiskReviewRow>(
+    `SELECT ${HIGH_RISK_REVIEW_COLUMNS} FROM govai.regulatory_high_risk_reviews
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- evidence ------------------------------------------------------------
+
+export async function createHighRiskReviewEvidence(
+  ctx: Ctx,
+  reviewId: string,
+  input: CreateHighRiskReviewEvidenceInput,
+): Promise<HighRiskReviewEvidenceRow> {
+  const review = await getVisibleHighRiskReview(ctx, reviewId);
+  if (!review) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  if (TERMINAL_REVIEW_STATUSES.has(review.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: review.review_status,
+    });
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<HighRiskReviewEvidenceRow>(
+      `INSERT INTO govai.regulatory_high_risk_review_evidence
+         (org_id, high_risk_review_id, evidence_key, evidence_type, evidence_status, title,
+          summary, evidence_reference, source_uri, source_hash, regulatory_source_id, control_id,
+          metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12::uuid,
+               $13::jsonb, $14::uuid, $14::uuid)
+       RETURNING ${HIGH_RISK_REVIEW_EVIDENCE_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        reviewId,
+        input.evidence_key,
+        input.evidence_type,
+        input.evidence_status,
+        input.title,
+        input.summary,
+        input.evidence_reference ?? null,
+        input.source_uri ?? null,
+        input.source_hash ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'high_risk_review_evidence_key_conflict', {
+        evidence_key: input.evidence_key,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review_evidence.created',
+    subjectType: 'regulatory_high_risk_review_evidence',
+    subjectId: row.id,
+    metadata: {
+      evidence_id: row.id,
+      evidence_key: row.evidence_key,
+      evidence_type: row.evidence_type,
+      evidence_status: row.evidence_status,
+      high_risk_review_id: row.high_risk_review_id,
+      review_key: review.review_key,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleHighRiskReviewEvidence(
+  ctx: Ctx,
+  id: string,
+): Promise<HighRiskReviewEvidenceRow | null> {
+  const r = await ctx.client.query<HighRiskReviewEvidenceRow>(
+    `SELECT ${HIGH_RISK_REVIEW_EVIDENCE_COLUMNS} FROM govai.regulatory_high_risk_review_evidence WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateHighRiskReviewEvidence(
+  ctx: Ctx,
+  id: string,
+  input: UpdateHighRiskReviewEvidenceInput,
+): Promise<HighRiskReviewEvidenceRow> {
+  const existing = await getVisibleHighRiskReviewEvidence(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'high_risk_review_evidence_not_found');
+  const review = await getVisibleHighRiskReview(ctx, existing.high_risk_review_id);
+  if (review && TERMINAL_REVIEW_STATUSES.has(review.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: review.review_status,
+    });
+  }
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.evidence_status !== undefined) col('evidence_status', input.evidence_status);
+  if (input.title !== undefined) col('title', input.title);
+  if (input.summary !== undefined) col('summary', input.summary);
+  if (input.evidence_reference !== undefined) col('evidence_reference', input.evidence_reference);
+  if (input.source_uri !== undefined) col('source_uri', input.source_uri);
+  if (input.source_hash !== undefined) col('source_hash', input.source_hash);
+  if (input.regulatory_source_id !== undefined)
+    col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<HighRiskReviewEvidenceRow>(
+    `UPDATE govai.regulatory_high_risk_review_evidence SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${HIGH_RISK_REVIEW_EVIDENCE_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'high_risk_review_evidence_not_found');
+  const statusChanged =
+    input.evidence_status !== undefined && input.evidence_status !== existing.evidence_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review_evidence.updated',
+    subjectType: 'regulatory_high_risk_review_evidence',
+    subjectId: row.id,
+    metadata: {
+      evidence_id: row.id,
+      evidence_key: row.evidence_key,
+      high_risk_review_id: row.high_risk_review_id,
+      changed_fields: Object.keys(input),
+      evidence_status: row.evidence_status,
+      ...(statusChanged ? { previous_evidence_status: existing.evidence_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_high_risk_review_evidence.status_changed',
+      subjectType: 'regulatory_high_risk_review_evidence',
+      subjectId: row.id,
+      metadata: {
+        evidence_id: row.id,
+        evidence_key: row.evidence_key,
+        high_risk_review_id: row.high_risk_review_id,
+        previous_evidence_status: existing.evidence_status,
+        evidence_status: row.evidence_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listHighRiskReviewEvidence(
+  ctx: Ctx,
+  filters: {
+    high_risk_review_id?: string;
+    evidence_type?: string;
+    evidence_status?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<HighRiskReviewEvidenceRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('high_risk_review_id', filters.high_risk_review_id, '::uuid');
+  eq('evidence_type', filters.evidence_type);
+  eq('evidence_status', filters.evidence_status);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(evidence_key ILIKE $${i} OR title ILIKE $${i} OR summary ILIKE $${i}
+        OR evidence_reference ILIKE $${i} OR source_uri ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<HighRiskReviewEvidenceRow>(
+    `SELECT ${HIGH_RISK_REVIEW_EVIDENCE_COLUMNS} FROM govai.regulatory_high_risk_review_evidence
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- assignments ---------------------------------------------------------
+
+async function requireAssignmentParticipantValid(
+  ctx: Ctx,
+  review: HighRiskReviewRow,
+  participantId: string,
+): Promise<void> {
+  const r = await ctx.client.query<{ id: string; workroom_id: string }>(
+    `SELECT id, workroom_id FROM govai.workroom_participants WHERE id = $1::uuid`,
+    [participantId],
+  );
+  if (r.rowCount === 0) throw new RegulatoryError(404, 'workroom_participant_not_found');
+  if (review.workroom_id && r.rows[0]!.workroom_id !== review.workroom_id) {
+    throw new RegulatoryError(400, 'workroom_participant_workroom_mismatch', {
+      workroom_id: review.workroom_id,
+      participant_id: participantId,
+    });
+  }
+}
+
+export async function createHighRiskReviewAssignment(
+  ctx: Ctx,
+  reviewId: string,
+  input: CreateHighRiskReviewAssignmentInput,
+): Promise<HighRiskReviewAssignmentRow> {
+  const review = await getVisibleHighRiskReview(ctx, reviewId);
+  if (!review) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  if (TERMINAL_REVIEW_STATUSES.has(review.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: review.review_status,
+    });
+  }
+  if (input.assignee_participant_id) {
+    await requireAssignmentParticipantValid(ctx, review, input.assignee_participant_id);
+  }
+  let res;
+  try {
+    res = await ctx.client.query<HighRiskReviewAssignmentRow>(
+      `INSERT INTO govai.regulatory_high_risk_review_assignments
+         (org_id, high_risk_review_id, assignee_user_id, assignee_participant_id, reviewer_role,
+          assignment_status, assigned_by_user_id, metadata)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::uuid, $8::jsonb)
+       RETURNING ${HIGH_RISK_REVIEW_ASSIGNMENT_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        reviewId,
+        input.assignee_user_id ?? null,
+        input.assignee_participant_id ?? null,
+        input.reviewer_role,
+        input.assignment_status,
+        ctx.actor.userId,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'high_risk_review_assignment_active_duplicate', {
+        high_risk_review_id: reviewId,
+        reviewer_role: input.reviewer_role,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review_assignment.created',
+    subjectType: 'regulatory_high_risk_review_assignment',
+    subjectId: row.id,
+    metadata: {
+      assignment_id: row.id,
+      high_risk_review_id: row.high_risk_review_id,
+      review_key: review.review_key,
+      reviewer_role: row.reviewer_role,
+      assignment_status: row.assignment_status,
+      assignee_user_id: row.assignee_user_id,
+      assignee_participant_id: row.assignee_participant_id,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleHighRiskReviewAssignment(
+  ctx: Ctx,
+  id: string,
+): Promise<HighRiskReviewAssignmentRow | null> {
+  const r = await ctx.client.query<HighRiskReviewAssignmentRow>(
+    `SELECT ${HIGH_RISK_REVIEW_ASSIGNMENT_COLUMNS} FROM govai.regulatory_high_risk_review_assignments WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateHighRiskReviewAssignment(
+  ctx: Ctx,
+  id: string,
+  input: UpdateHighRiskReviewAssignmentInput,
+): Promise<HighRiskReviewAssignmentRow> {
+  const existing = await getVisibleHighRiskReviewAssignment(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'high_risk_review_assignment_not_found');
+  const review = await getVisibleHighRiskReview(ctx, existing.high_risk_review_id);
+  if (review && TERMINAL_REVIEW_STATUSES.has(review.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: review.review_status,
+    });
+  }
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.assignment_status !== undefined) col('assignment_status', input.assignment_status);
+  if (input.acknowledged_at !== undefined) col('acknowledged_at', input.acknowledged_at, '::timestamptz');
+  if (input.completed_at !== undefined) col('completed_at', input.completed_at, '::timestamptz');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<HighRiskReviewAssignmentRow>(
+    `UPDATE govai.regulatory_high_risk_review_assignments SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${HIGH_RISK_REVIEW_ASSIGNMENT_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'high_risk_review_assignment_not_found');
+  const statusChanged =
+    input.assignment_status !== undefined && input.assignment_status !== existing.assignment_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review_assignment.updated',
+    subjectType: 'regulatory_high_risk_review_assignment',
+    subjectId: row.id,
+    metadata: {
+      assignment_id: row.id,
+      high_risk_review_id: row.high_risk_review_id,
+      reviewer_role: row.reviewer_role,
+      changed_fields: Object.keys(input),
+      assignment_status: row.assignment_status,
+      ...(statusChanged ? { previous_assignment_status: existing.assignment_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_high_risk_review_assignment.status_changed',
+      subjectType: 'regulatory_high_risk_review_assignment',
+      subjectId: row.id,
+      metadata: {
+        assignment_id: row.id,
+        high_risk_review_id: row.high_risk_review_id,
+        reviewer_role: row.reviewer_role,
+        previous_assignment_status: existing.assignment_status,
+        assignment_status: row.assignment_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listHighRiskReviewAssignments(
+  ctx: Ctx,
+  filters: {
+    high_risk_review_id?: string;
+    reviewer_role?: string;
+    assignment_status?: string;
+    assignee_user_id?: string;
+    assignee_participant_id?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<HighRiskReviewAssignmentRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('high_risk_review_id', filters.high_risk_review_id, '::uuid');
+  eq('reviewer_role', filters.reviewer_role);
+  eq('assignment_status', filters.assignment_status);
+  eq('assignee_user_id', filters.assignee_user_id, '::uuid');
+  eq('assignee_participant_id', filters.assignee_participant_id, '::uuid');
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<HighRiskReviewAssignmentRow>(
+    `SELECT ${HIGH_RISK_REVIEW_ASSIGNMENT_COLUMNS} FROM govai.regulatory_high_risk_review_assignments
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- decisions -----------------------------------------------------------
+
+export async function createHighRiskReviewDecision(
+  ctx: Ctx,
+  reviewId: string,
+  input: CreateHighRiskReviewDecisionInput,
+): Promise<{ decision: HighRiskReviewDecisionRow; review: HighRiskReviewRow }> {
+  const review = await getVisibleHighRiskReview(ctx, reviewId);
+  if (!review) throw new RegulatoryError(404, 'high_risk_review_not_found');
+  if (TERMINAL_REVIEW_STATUSES.has(review.review_status)) {
+    throw new RegulatoryError(409, 'high_risk_review_terminal', {
+      review_status: review.review_status,
+    });
+  }
+  if (review.review_status !== 'IN_REVIEW' && review.review_status !== 'CHANGES_REQUESTED') {
+    throw new RegulatoryError(409, 'high_risk_review_not_decidable', {
+      review_status: review.review_status,
+    });
+  }
+  // Service-level SoD: the requester (user or participant) cannot submit the
+  // decision themselves. The DB trigger is the row-level backstop.
+  if (
+    review.requester_user_id &&
+    review.requester_user_id === ctx.actor.userId
+  ) {
+    throw new RegulatoryError(403, 'high_risk_review_sod_violation', {
+      reason: 'requester cannot decide own review',
+    });
+  }
+  if (
+    review.requested_by_participant_id &&
+    input.decided_by_participant_id &&
+    review.requested_by_participant_id === input.decided_by_participant_id
+  ) {
+    throw new RegulatoryError(403, 'high_risk_review_sod_violation', {
+      reason: 'requester participant cannot decide own review',
+    });
+  }
+  if (input.decided_by_participant_id) {
+    const p = await ctx.client.query<{ id: string; workroom_id: string }>(
+      `SELECT id, workroom_id FROM govai.workroom_participants WHERE id = $1::uuid`,
+      [input.decided_by_participant_id],
+    );
+    if (p.rowCount === 0) throw new RegulatoryError(404, 'workroom_participant_not_found');
+    if (review.workroom_id && p.rows[0]!.workroom_id !== review.workroom_id) {
+      throw new RegulatoryError(400, 'workroom_participant_workroom_mismatch', {
+        workroom_id: review.workroom_id,
+        participant_id: input.decided_by_participant_id,
+      });
+    }
+  }
+
+  let decisionRes;
+  try {
+    decisionRes = await ctx.client.query<HighRiskReviewDecisionRow>(
+      `INSERT INTO govai.regulatory_high_risk_review_decisions
+         (org_id, high_risk_review_id, decision, decision_rationale, decided_by_user_id,
+          decided_by_participant_id, reviewer_role, evidence_snapshot_summary, conditions_summary,
+          expiry_at, metadata)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6::uuid, $7, $8, $9, $10::timestamptz, $11::jsonb)
+       RETURNING ${HIGH_RISK_REVIEW_DECISION_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        reviewId,
+        input.decision,
+        input.decision_rationale,
+        ctx.actor.userId,
+        input.decided_by_participant_id ?? null,
+        input.reviewer_role,
+        input.evidence_snapshot_summary,
+        input.conditions_summary,
+        input.expiry_at ?? null,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'high_risk_review_final_decision_exists', {
+        high_risk_review_id: reviewId,
+      });
+    }
+    throw err;
+  }
+  const decisionRow = decisionRes.rows[0]!;
+
+  // Lifecycle transition driven by the decision (in the same transaction).
+  let nextStatus: string;
+  let setDecidedAt = false;
+  let approvedEvent: string | null = null;
+  if (input.decision === 'APPROVE') {
+    nextStatus = 'APPROVED';
+    setDecidedAt = true;
+    approvedEvent = 'regulatory_high_risk_review.approved';
+  } else if (input.decision === 'REJECT') {
+    nextStatus = 'REJECTED';
+    setDecidedAt = true;
+    approvedEvent = 'regulatory_high_risk_review.rejected';
+  } else {
+    nextStatus = 'CHANGES_REQUESTED';
+    approvedEvent = 'regulatory_high_risk_review.changes_requested';
+  }
+
+  const updateRes = await ctx.client.query<HighRiskReviewRow>(
+    `UPDATE govai.regulatory_high_risk_reviews
+       SET review_status = $2,
+           decided_at = CASE WHEN $3::boolean THEN now() ELSE decided_at END,
+           updated_by_user_id = $4::uuid,
+           updated_at = now()
+     WHERE id = $1::uuid AND org_id = $5::uuid
+     RETURNING ${HIGH_RISK_REVIEW_COLUMNS}`,
+    [reviewId, nextStatus, setDecidedAt, ctx.actor.userId, ctx.actor.orgId],
+  );
+  const updatedReview = updateRes.rows[0]!;
+  const reviewMeta = highRiskReviewAuditMeta(updatedReview);
+
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review_decision.created',
+    subjectType: 'regulatory_high_risk_review_decision',
+    subjectId: decisionRow.id,
+    metadata: {
+      decision_id: decisionRow.id,
+      high_risk_review_id: updatedReview.id,
+      review_key: updatedReview.review_key,
+      decision: decisionRow.decision,
+      reviewer_role: decisionRow.reviewer_role,
+      decided_by_user_id: decisionRow.decided_by_user_id,
+      decided_by_participant_id: decisionRow.decided_by_participant_id,
+      review_status: updatedReview.review_status,
+    },
+  });
+  await appendAudit(ctx, {
+    eventType: approvedEvent,
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: updatedReview.id,
+    metadata: {
+      ...reviewMeta,
+      decision: decisionRow.decision,
+      reviewer_role: decisionRow.reviewer_role,
+      previous_review_status: review.review_status,
+    },
+  });
+  await appendAudit(ctx, {
+    eventType: 'regulatory_high_risk_review.status_changed',
+    subjectType: 'regulatory_high_risk_review',
+    subjectId: updatedReview.id,
+    metadata: { ...reviewMeta, previous_review_status: review.review_status },
+  });
+
+  return { decision: decisionRow, review: updatedReview };
+}
+
+export async function getVisibleHighRiskReviewDecision(
+  ctx: Ctx,
+  id: string,
+): Promise<HighRiskReviewDecisionRow | null> {
+  const r = await ctx.client.query<HighRiskReviewDecisionRow>(
+    `SELECT ${HIGH_RISK_REVIEW_DECISION_COLUMNS} FROM govai.regulatory_high_risk_review_decisions WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function listHighRiskReviewDecisions(
+  ctx: Ctx,
+  filters: {
+    high_risk_review_id?: string;
+    decision?: string;
+    reviewer_role?: string;
+    decided_by_user_id?: string;
+    decided_by_participant_id?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<HighRiskReviewDecisionRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('high_risk_review_id', filters.high_risk_review_id, '::uuid');
+  eq('decision', filters.decision);
+  eq('reviewer_role', filters.reviewer_role);
+  eq('decided_by_user_id', filters.decided_by_user_id, '::uuid');
+  eq('decided_by_participant_id', filters.decided_by_participant_id, '::uuid');
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<HighRiskReviewDecisionRow>(
+    `SELECT ${HIGH_RISK_REVIEW_DECISION_COLUMNS} FROM govai.regulatory_high_risk_review_decisions
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,
