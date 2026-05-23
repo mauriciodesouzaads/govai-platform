@@ -274,7 +274,7 @@ async function auditCount(orgId: string, subjectId: string, eventType: string): 
   }
 }
 
-const HIGH_INPUTS = { rights_affecting_automated_decision: true, automated_decisioning: 'BINDING_LEGAL_EFFECT' };
+const HIGH_INPUTS = { rights_affecting_automated_decision: true, automated_decisioning: 'AUTOMATED_EXTERNAL_EFFECT' };
 const MODERATE_INPUTS = { personal_data: true };
 const PROHIBITED_INPUTS = { social_scoring_signal: true };
 
@@ -445,12 +445,12 @@ describe('regulatory-risk / deterministic engine (evaluate)', () => {
   it('HIGH rules: rights-affecting automation, sensitive+automation, children, biometric, judicial-secret, attorney-client, employment+automation, public-sector+judicial-scope, agent autonomous side effects', async () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ rights_affecting_automated_decision: true }, 'INTERNAL_ASSISTANCE'],
-      [{ sensitive_data: true, automated_decisioning: 'ASSISTIVE_RECOMMENDATION' }, 'INTERNAL_ASSISTANCE'],
+      [{ sensitive_data: true, automated_decisioning: 'DECISION_SUPPORT' }, 'INTERNAL_ASSISTANCE'],
       [{ children_or_adolescents_data: true }, 'INTERNAL_ASSISTANCE'],
       [{ biometric_data: true }, 'INTERNAL_ASSISTANCE'],
       [{ judicial_secret_data: true }, 'INTERNAL_ASSISTANCE'],
       [{ attorney_client_privileged_data: true }, 'INTERNAL_ASSISTANCE'],
-      [{ employment_or_credit_access: true, automated_decisioning: 'BINDING_LEGAL_EFFECT' }, 'EXTERNAL_EFFECT'],
+      [{ employment_or_credit_access: true, automated_decisioning: 'AUTOMATED_EXTERNAL_EFFECT' }, 'EXTERNAL_EFFECT'],
       [{ public_sector_context: true }, 'JUDICIAL_SUPPORT'],
       [{ agent_external_side_effects: true, agent_autonomy_level: 'AUTONOMOUS_WITH_GUARDRAILS' }, 'INTERNAL_ASSISTANCE'],
       [{ health_data: true }, 'AUTOMATED_DECISION'],
@@ -893,7 +893,7 @@ describe('regulatory-risk / pagination + filters', () => {
 
 describe('regulatory-risk / RLS (direct DB) — methods', () => {
   it('tenant A cannot read tenant B methods; A cannot insert method with org_id of B', async () => {
-    const id = await mkMethod(orgA, { method_key: `RM-RLS-${randomUUID().slice(0, 8)}` });
+    const id = await mkMethod(orgA, { method_key: `RM-RLS-${randomUUID().slice(0, 8).toUpperCase()}` });
     const seen = await asOrg(orgB.org_id, async (c) => {
       const r = await c.query('SELECT id FROM govai.regulatory_risk_methods WHERE id = $1::uuid', [id]);
       return r.rowCount ?? 0;
