@@ -89,6 +89,22 @@ import {
   getVisibleReclassificationTrigger,
   updateReclassificationTrigger,
   listReclassificationTriggers,
+  createHighRiskReview,
+  getVisibleHighRiskReview,
+  updateHighRiskReview,
+  submitHighRiskReview,
+  cancelHighRiskReview,
+  listHighRiskReviews,
+  createHighRiskReviewEvidence,
+  getVisibleHighRiskReviewEvidence,
+  updateHighRiskReviewEvidence,
+  listHighRiskReviewEvidence,
+  createHighRiskReviewAssignment,
+  updateHighRiskReviewAssignment,
+  listHighRiskReviewAssignments,
+  createHighRiskReviewDecision,
+  getVisibleHighRiskReviewDecision,
+  listHighRiskReviewDecisions,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -112,6 +128,10 @@ import {
   type RiskClassificationRow,
   type RiskClassificationFactorRow,
   type ReclassificationTriggerRow,
+  type HighRiskReviewRow,
+  type HighRiskReviewEvidenceRow,
+  type HighRiskReviewAssignmentRow,
+  type HighRiskReviewDecisionRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -171,6 +191,19 @@ import {
   CreateReclassificationTriggerBody,
   UpdateReclassificationTriggerBody,
   ListReclassificationTriggersQuery,
+  CreateHighRiskReviewBody,
+  UpdateHighRiskReviewBody,
+  SubmitHighRiskReviewBody,
+  CancelHighRiskReviewBody,
+  CreateHighRiskReviewEvidenceBody,
+  UpdateHighRiskReviewEvidenceBody,
+  CreateHighRiskReviewAssignmentBody,
+  UpdateHighRiskReviewAssignmentBody,
+  CreateHighRiskReviewDecisionBody,
+  ListHighRiskReviewsQuery,
+  ListHighRiskReviewEvidenceQuery,
+  ListHighRiskReviewAssignmentsQuery,
+  ListHighRiskReviewDecisionsQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -826,6 +859,113 @@ function serializeReclassificationTrigger(r: ReclassificationTriggerRow): Record
     updated_by_user_id: r.updated_by_user_id,
     created_at: r.created_at.toISOString(),
     updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeHighRiskReview(r: HighRiskReviewRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    review_key: r.review_key,
+    review_status: r.review_status,
+    risk_classification_id: r.risk_classification_id,
+    risk_method_id: r.risk_method_id,
+    use_case_id: r.use_case_id,
+    ai_system_id: r.ai_system_id,
+    use_case_asset_link_id: r.use_case_asset_link_id,
+    model_id: r.model_id,
+    model_version_id: r.model_version_id,
+    agent_id: r.agent_id,
+    agent_version_id: r.agent_version_id,
+    inherent_risk_tier: r.inherent_risk_tier,
+    residual_risk_tier: r.residual_risk_tier,
+    risk_score: r.risk_score,
+    residual_risk_score: r.residual_risk_score,
+    requires_high_risk_review: r.requires_high_risk_review,
+    requires_prohibited_use_review: r.requires_prohibited_use_review,
+    review_basis: r.review_basis,
+    required_approver_count: r.required_approver_count,
+    requester_user_id: r.requester_user_id,
+    requested_by_participant_id: r.requested_by_participant_id,
+    workroom_id: r.workroom_id,
+    workroom_approval_request_id: r.workroom_approval_request_id,
+    rationale_summary: r.rationale_summary,
+    evidence_summary: r.evidence_summary,
+    reviewer_guidance: r.reviewer_guidance,
+    decision_summary: r.decision_summary,
+    cancellation_reason: r.cancellation_reason,
+    supersedes_review_id: r.supersedes_review_id,
+    superseded_by_review_id: r.superseded_by_review_id,
+    due_at: iso(r.due_at),
+    submitted_at: iso(r.submitted_at),
+    decided_at: iso(r.decided_at),
+    cancelled_at: iso(r.cancelled_at),
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeHighRiskReviewEvidence(r: HighRiskReviewEvidenceRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    high_risk_review_id: r.high_risk_review_id,
+    evidence_key: r.evidence_key,
+    evidence_type: r.evidence_type,
+    evidence_status: r.evidence_status,
+    title: r.title,
+    summary: r.summary,
+    evidence_reference: r.evidence_reference,
+    source_uri: r.source_uri,
+    source_hash: r.source_hash,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeHighRiskReviewAssignment(r: HighRiskReviewAssignmentRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    high_risk_review_id: r.high_risk_review_id,
+    assignee_user_id: r.assignee_user_id,
+    assignee_participant_id: r.assignee_participant_id,
+    reviewer_role: r.reviewer_role,
+    assignment_status: r.assignment_status,
+    assigned_by_user_id: r.assigned_by_user_id,
+    assigned_at: r.assigned_at.toISOString(),
+    acknowledged_at: iso(r.acknowledged_at),
+    completed_at: iso(r.completed_at),
+    metadata: r.metadata,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeHighRiskReviewDecision(r: HighRiskReviewDecisionRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    high_risk_review_id: r.high_risk_review_id,
+    decision: r.decision,
+    decision_rationale: r.decision_rationale,
+    decided_by_user_id: r.decided_by_user_id,
+    decided_by_participant_id: r.decided_by_participant_id,
+    reviewer_role: r.reviewer_role,
+    evidence_snapshot_summary: r.evidence_snapshot_summary,
+    conditions_summary: r.conditions_summary,
+    expiry_at: iso(r.expiry_at),
+    decision_audit_event_id: r.decision_audit_event_id,
+    metadata: r.metadata,
+    created_at: r.created_at.toISOString(),
   };
 }
 
@@ -2761,6 +2901,453 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       return { reclassification_trigger: serializeReclassificationTrigger(out.value) };
     } catch (err) {
       return onError(req, reply, err, 'update_reclassification_trigger');
+    }
+  });
+
+  // --- High-risk review workflow (PR-R8) -----------------------------------
+  //
+  // APPROVED on a high-risk review case is governance evidence only: it does
+  // not mean legal approval, does not mean compliance certification, does not
+  // mean safety certification, and does not authorize runtime execution.
+  // PR-R8 does NOT implement prohibited-use workflow, hard-deny enforcement,
+  // runtime enforcement, or legal advice.
+
+  app.post('/v1/regulatory/high-risk-reviews', async (req, reply) => {
+    const parsed = CreateHighRiskReviewBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createHighRiskReview(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { high_risk_review: serializeHighRiskReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_high_risk_review');
+    }
+  });
+
+  app.get('/v1/regulatory/high-risk-reviews', async (req, reply) => {
+    const parsed = ListHighRiskReviewsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listHighRiskReviews(
+          ctx,
+          {
+            review_status: parsed.data.review_status,
+            risk_classification_id: parsed.data.risk_classification_id,
+            risk_method_id: parsed.data.risk_method_id,
+            use_case_id: parsed.data.use_case_id,
+            ai_system_id: parsed.data.ai_system_id,
+            workroom_id: parsed.data.workroom_id,
+            review_basis: parsed.data.review_basis,
+            due_before: parsed.data.due_before,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        high_risk_reviews: out.value.rows.map(serializeHighRiskReview),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_high_risk_reviews');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleHighRiskReview(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'high_risk_review_not_found' };
+      }
+      return { high_risk_review: serializeHighRiskReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_high_risk_review');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = UpdateHighRiskReviewBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateHighRiskReview(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { high_risk_review: serializeHighRiskReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_high_risk_review');
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/submit', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = SubmitHighRiskReviewBody.safeParse(req.body ?? {});
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        submitHighRiskReview(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { high_risk_review: serializeHighRiskReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'submit_high_risk_review');
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/cancel', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = CancelHighRiskReviewBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        cancelHighRiskReview(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { high_risk_review: serializeHighRiskReview(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'cancel_high_risk_review');
+    }
+  });
+
+  // --- Evidence sub-resource ----------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/evidence', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = CreateHighRiskReviewEvidenceBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        createHighRiskReviewEvidence(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { high_risk_review_evidence: serializeHighRiskReviewEvidence(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_high_risk_review_evidence');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/evidence', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = ListHighRiskReviewEvidenceQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listHighRiskReviewEvidence(
+          ctx,
+          {
+            high_risk_review_id: req.params.id,
+            evidence_type: parsed.data.evidence_type,
+            evidence_status: parsed.data.evidence_status,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        high_risk_review_evidence: out.value.rows.map(serializeHighRiskReviewEvidence),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_high_risk_review_evidence_for_review');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/high-risk-review-evidence/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_evidence_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        getVisibleHighRiskReviewEvidence(ctx, req.params.id),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'high_risk_review_evidence_not_found' };
+      }
+      return { high_risk_review_evidence: serializeHighRiskReviewEvidence(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_high_risk_review_evidence');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/high-risk-review-evidence/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_evidence_id' };
+    }
+    const parsed = UpdateHighRiskReviewEvidenceBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateHighRiskReviewEvidence(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { high_risk_review_evidence: serializeHighRiskReviewEvidence(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_high_risk_review_evidence');
+    }
+  });
+
+  // --- Assignment sub-resource --------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/assignments', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = CreateHighRiskReviewAssignmentBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        createHighRiskReviewAssignment(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { high_risk_review_assignment: serializeHighRiskReviewAssignment(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_high_risk_review_assignment');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/assignments', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = ListHighRiskReviewAssignmentsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listHighRiskReviewAssignments(
+          ctx,
+          {
+            high_risk_review_id: req.params.id,
+            reviewer_role: parsed.data.reviewer_role,
+            assignment_status: parsed.data.assignment_status,
+            assignee_user_id: parsed.data.assignee_user_id,
+            assignee_participant_id: parsed.data.assignee_participant_id,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        high_risk_review_assignments: out.value.rows.map(serializeHighRiskReviewAssignment),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_high_risk_review_assignments_for_review');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/high-risk-review-assignments/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_assignment_id' };
+    }
+    const parsed = UpdateHighRiskReviewAssignmentBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateHighRiskReviewAssignment(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { high_risk_review_assignment: serializeHighRiskReviewAssignment(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_high_risk_review_assignment');
+    }
+  });
+
+  // --- Decision sub-resource ----------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/decisions', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = CreateHighRiskReviewDecisionBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        createHighRiskReviewDecision(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return {
+        high_risk_review_decision: serializeHighRiskReviewDecision(out.value.decision),
+        high_risk_review: serializeHighRiskReview(out.value.review),
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'create_high_risk_review_decision');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/high-risk-reviews/:id/decisions', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_id' };
+    }
+    const parsed = ListHighRiskReviewDecisionsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listHighRiskReviewDecisions(
+          ctx,
+          {
+            high_risk_review_id: req.params.id,
+            decision: parsed.data.decision,
+            reviewer_role: parsed.data.reviewer_role,
+            decided_by_user_id: parsed.data.decided_by_user_id,
+            decided_by_participant_id: parsed.data.decided_by_participant_id,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        high_risk_review_decisions: out.value.rows.map(serializeHighRiskReviewDecision),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_high_risk_review_decisions_for_review');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/high-risk-review-decisions/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_high_risk_review_decision_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        getVisibleHighRiskReviewDecision(ctx, req.params.id),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'high_risk_review_decision_not_found' };
+      }
+      return { high_risk_review_decision: serializeHighRiskReviewDecision(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_high_risk_review_decision');
     }
   });
 }

@@ -1898,3 +1898,265 @@ export const ListReclassificationTriggersQuery = z
     message: 'before_created_at and before_id must be provided together',
     path: ['before_id'],
   });
+
+// ---------------------------------------------------------------------------
+// High-risk Review Workflow (PR-R8)
+// ---------------------------------------------------------------------------
+//
+// APPROVED in PR-R8 means the high-risk governance review case has an approval
+// decision recorded as governance evidence only. It does not mean legal
+// approval; it does not mean compliance certification; it does not mean safety
+// certification; and it does not authorize runtime execution. Validation
+// enforces input shape only; the service + migration enforce SoD, terminal-
+// state, append-only, and HIGH-classification invariants.
+
+export const HighRiskReviewStatus = z.enum([
+  'OPEN',
+  'IN_REVIEW',
+  'CHANGES_REQUESTED',
+  'APPROVED',
+  'REJECTED',
+  'CANCELLED',
+  'SUPERSEDED',
+]);
+
+export const HighRiskReviewBasis = z.enum([
+  'RISK_CLASSIFICATION_REQUIRED_REVIEW',
+  'MATERIAL_CHANGE_REVIEW',
+  'PERIODIC_REVIEW',
+  'MANUAL_ESCALATION',
+  'IMPORTED_EVIDENCE',
+]);
+
+export const HighRiskEvidenceType = z.enum([
+  'CLASSIFICATION_RATIONALE',
+  'DATA_SCOPE',
+  'HUMAN_OVERSIGHT_PLAN',
+  'MODEL_DOCUMENTATION',
+  'PROVIDER_DOCUMENTATION',
+  'SECURITY_REVIEW',
+  'IMPACT_ASSESSMENT',
+  'LEGAL_REVIEW_REFERENCE',
+  'DPO_REVIEW_REFERENCE',
+  'BUSINESS_OWNER_ATTESTATION',
+  'TECHNICAL_CONTROL_EVIDENCE',
+  'OTHER',
+]);
+
+export const HighRiskEvidenceStatus = z.enum([
+  'DRAFT',
+  'SUBMITTED',
+  'ACCEPTED',
+  'REJECTED',
+  'SUPERSEDED',
+]);
+
+export const HighRiskReviewerRole = z.enum([
+  'BUSINESS_OWNER',
+  'DPO',
+  'LEGAL',
+  'SECURITY',
+  'COMPLIANCE',
+  'TECHNICAL_OWNER',
+  'RISK_OWNER',
+  'OTHER',
+]);
+
+export const HighRiskAssignmentStatus = z.enum([
+  'ASSIGNED',
+  'ACKNOWLEDGED',
+  'COMPLETED',
+  'CANCELLED',
+]);
+
+export const HighRiskDecision = z.enum(['APPROVE', 'REJECT', 'REQUEST_CHANGES']);
+
+// Create: client supplies the classification + key + basis + optional context.
+// Risk snapshot (tiers, scores, requires_high_risk_review,
+// requires_prohibited_use_review, risk_method_id, use_case_id, ai_system_id,
+// model/version/agent/version, use_case_asset_link_id) is copied from the
+// classification by the service and is never accepted from the client.
+export const CreateHighRiskReviewBody = z.object({
+  review_key: KeyField,
+  risk_classification_id: z.string().uuid(),
+  review_basis: HighRiskReviewBasis,
+  required_approver_count: z.number().int().min(1).max(10).optional(),
+  workroom_id: z.string().uuid().optional(),
+  workroom_approval_request_id: z.string().uuid().optional(),
+  requested_by_participant_id: z.string().uuid().optional(),
+  rationale_summary: SummaryText.default(''),
+  evidence_summary: SummaryText.default(''),
+  reviewer_guidance: SummaryText.default(''),
+  due_at: z.string().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateHighRiskReviewInput = z.infer<typeof CreateHighRiskReviewBody>;
+
+// PATCH: identity / risk snapshot / requester / workroom binding / supersedes
+// pointer are all immutable. Mutable: summaries, reviewer guidance, decision
+// summary, due_at, supersession-target pointer (when supersession is wired by
+// a later PR), and metadata. Lifecycle transitions go through dedicated
+// submit/cancel/decisions endpoints; PATCH does not accept review_status.
+export const UpdateHighRiskReviewBody = z
+  .object({
+    rationale_summary: SummaryText.optional(),
+    evidence_summary: SummaryText.optional(),
+    reviewer_guidance: SummaryText.optional(),
+    decision_summary: SummaryText.optional(),
+    due_at: z.string().datetime().nullable().optional(),
+    superseded_by_review_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateHighRiskReviewInput = z.infer<typeof UpdateHighRiskReviewBody>;
+
+export const CancelHighRiskReviewBody = z.object({
+  cancellation_reason: z.string().min(1).max(2000),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CancelHighRiskReviewInput = z.infer<typeof CancelHighRiskReviewBody>;
+
+// Submit moves OPEN/CHANGES_REQUESTED → IN_REVIEW. Optional metadata only.
+export const SubmitHighRiskReviewBody = z
+  .object({
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .optional();
+export type SubmitHighRiskReviewInput = z.infer<typeof SubmitHighRiskReviewBody>;
+
+export const CreateHighRiskReviewEvidenceBody = z.object({
+  evidence_key: KeyField,
+  evidence_type: HighRiskEvidenceType,
+  evidence_status: HighRiskEvidenceStatus.default('DRAFT'),
+  title: z.string().min(1).max(500),
+  summary: SummaryText.default(''),
+  evidence_reference: z.string().min(1).max(2048).optional(),
+  source_uri: z.string().min(1).max(2048).optional(),
+  source_hash: z.string().min(1).max(256).optional(),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateHighRiskReviewEvidenceInput = z.infer<typeof CreateHighRiskReviewEvidenceBody>;
+
+export const UpdateHighRiskReviewEvidenceBody = z
+  .object({
+    evidence_status: HighRiskEvidenceStatus.optional(),
+    title: z.string().min(1).max(500).optional(),
+    summary: SummaryText.optional(),
+    evidence_reference: z.string().min(1).max(2048).nullable().optional(),
+    source_uri: z.string().min(1).max(2048).nullable().optional(),
+    source_hash: z.string().min(1).max(256).nullable().optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateHighRiskReviewEvidenceInput = z.infer<typeof UpdateHighRiskReviewEvidenceBody>;
+
+export const CreateHighRiskReviewAssignmentBody = z
+  .object({
+    assignee_user_id: z.string().uuid().optional(),
+    assignee_participant_id: z.string().uuid().optional(),
+    reviewer_role: HighRiskReviewerRole,
+    assignment_status: HighRiskAssignmentStatus.default('ASSIGNED'),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => d.assignee_user_id !== undefined || d.assignee_participant_id !== undefined, {
+    message: 'assignee_user_id or assignee_participant_id is required',
+    path: ['assignee_user_id'],
+  });
+export type CreateHighRiskReviewAssignmentInput = z.infer<typeof CreateHighRiskReviewAssignmentBody>;
+
+export const UpdateHighRiskReviewAssignmentBody = z
+  .object({
+    assignment_status: HighRiskAssignmentStatus.optional(),
+    acknowledged_at: z.string().datetime().nullable().optional(),
+    completed_at: z.string().datetime().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateHighRiskReviewAssignmentInput = z.infer<typeof UpdateHighRiskReviewAssignmentBody>;
+
+// APPROVE / REJECT / REQUEST_CHANGES. REJECT and REQUEST_CHANGES require a
+// non-empty decision_rationale (the DB CHECK enforces this too).
+export const CreateHighRiskReviewDecisionBody = z
+  .object({
+    decision: HighRiskDecision,
+    decision_rationale: SummaryText.default(''),
+    decided_by_participant_id: z.string().uuid().optional(),
+    reviewer_role: HighRiskReviewerRole,
+    evidence_snapshot_summary: SummaryText.default(''),
+    conditions_summary: SummaryText.default(''),
+    expiry_at: z.string().datetime().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine(
+    (d) =>
+      !(d.decision === 'REJECT' || d.decision === 'REQUEST_CHANGES') ||
+      (typeof d.decision_rationale === 'string' && d.decision_rationale.length > 0),
+    {
+      message: 'decision_rationale is required for REJECT and REQUEST_CHANGES',
+      path: ['decision_rationale'],
+    },
+  );
+export type CreateHighRiskReviewDecisionInput = z.infer<typeof CreateHighRiskReviewDecisionBody>;
+
+export const ListHighRiskReviewsQuery = z
+  .object({
+    ...Cursor,
+    review_status: HighRiskReviewStatus.optional(),
+    risk_classification_id: z.string().uuid().optional(),
+    risk_method_id: z.string().uuid().optional(),
+    use_case_id: z.string().uuid().optional(),
+    ai_system_id: z.string().uuid().optional(),
+    workroom_id: z.string().uuid().optional(),
+    review_basis: HighRiskReviewBasis.optional(),
+    due_before: z.string().datetime().optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListHighRiskReviewEvidenceQuery = z
+  .object({
+    ...Cursor,
+    high_risk_review_id: z.string().uuid().optional(),
+    evidence_type: HighRiskEvidenceType.optional(),
+    evidence_status: HighRiskEvidenceStatus.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListHighRiskReviewAssignmentsQuery = z
+  .object({
+    ...Cursor,
+    high_risk_review_id: z.string().uuid().optional(),
+    reviewer_role: HighRiskReviewerRole.optional(),
+    assignment_status: HighRiskAssignmentStatus.optional(),
+    assignee_user_id: z.string().uuid().optional(),
+    assignee_participant_id: z.string().uuid().optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListHighRiskReviewDecisionsQuery = z
+  .object({
+    ...Cursor,
+    high_risk_review_id: z.string().uuid().optional(),
+    decision: HighRiskDecision.optional(),
+    reviewer_role: HighRiskReviewerRole.optional(),
+    decided_by_user_id: z.string().uuid().optional(),
+    decided_by_participant_id: z.string().uuid().optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });

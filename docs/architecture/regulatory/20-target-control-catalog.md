@@ -208,8 +208,24 @@ under which the control turns `COVERED`.
   high-risk approval records.
 - Frameworks: LGPD, ANPD, CNJ 615, EU AI Act, NIST AI RMF.
 - Current state: hard-deny floor is `IMPLEMENTED_FOUNDATIONAL_CONTROL`;
-  prohibited-use registry and high-risk workflow are
-  `REQUIRED_NATIVE_CAPABILITY` and `NATIVE_ENHANCEMENT_REQUIRED`.
+  the high-risk workflow portion is `IMPLEMENTED_FOUNDATIONAL_CONTROL`
+  (PR-R8) for high-risk review cases, evidence records, reviewer
+  assignments, append-only decisions, deterministic lifecycle transitions,
+  service + DB-trigger separation-of-duties, terminal-state backstops, audit
+  events, semantic DDL comments binding APPROVED/APPROVE to governance
+  evidence only, and tenant RLS; see the PR-R8 evidence in
+  `23-regulatory-core-roadmap.md` and the PR-R8 implementation section in
+  `README.md`. APPROVED in PR-R8 means the high-risk governance review case
+  has an approval decision recorded as governance evidence only; it does
+  not mean legal approval; it does not mean compliance certification; it
+  does not mean safety certification; and it does not authorize runtime
+  execution. High-risk review approval is governance evidence only; it does
+  not mutate the underlying risk classification, does not authorize runtime
+  execution, and does not make the AI system legally compliant. The prohibited-use registry and hard-deny workflow
+  remain `REQUIRED_NATIVE_CAPABILITY` / `NATIVE_ENHANCEMENT_REQUIRED` —
+  future work. Domain 6 is **not** `COVERED` (COVERED still requires per-
+  requirement framework-mapping citations, and the prohibited-use portion
+  is not yet implemented).
 - Turns COVERED when: prohibited-use records, high-risk workflow events,
   and tests exist and are cited in mappings.
 
