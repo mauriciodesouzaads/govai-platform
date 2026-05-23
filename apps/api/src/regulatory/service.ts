@@ -4055,6 +4055,26 @@ export async function listUseCaseReviews(
 // evidence flags only — PR-R7 does NOT create review workflows, assign
 // reviewers, block execution, or enforce runtime decisions.
 
+// Cross-row time-range guard shared by the classification + trigger PATCH
+// services. Returns true when the range is OK or under-specified (a null
+// endpoint means "unbounded on that side"). Accepts both ISO strings (from
+// validated input) and Date objects (from existing rows).
+function isValidTimeRange(
+  start: string | Date | null | undefined,
+  end: string | Date | null | undefined,
+): boolean {
+  if (start === undefined || start === null) return true;
+  if (end === undefined || end === null) return true;
+  const s = start instanceof Date ? start.getTime() : new Date(start).getTime();
+  const e = end instanceof Date ? end.getTime() : new Date(end).getTime();
+  return e >= s;
+}
+
+function toIsoOrNull(v: string | Date | null | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  return v instanceof Date ? v.toISOString() : v;
+}
+
 const RISK_TIER_ORDER = ['MINIMAL', 'LOW', 'MODERATE', 'HIGH', 'PROHIBITED'] as const;
 const RISK_TIER_SCORE: Record<string, number> = {
   MINIMAL: 5,
@@ -4968,6 +4988,19 @@ export async function updateRiskClassification(
       control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
     });
   }
+  // Cross-row effective-range guard: when only one endpoint is patched, the Zod
+  // refine cannot see the other endpoint on the existing row, so check it here
+  // before hitting the DB CHECK.
+  const nextEffectiveFrom =
+    input.effective_from !== undefined ? input.effective_from : existing.effective_from;
+  const nextEffectiveTo =
+    input.effective_to !== undefined ? input.effective_to : existing.effective_to;
+  if (!isValidTimeRange(nextEffectiveFrom, nextEffectiveTo)) {
+    throw new RegulatoryError(400, 'invalid_effective_range', {
+      effective_from: toIsoOrNull(nextEffectiveFrom),
+      effective_to: toIsoOrNull(nextEffectiveTo),
+    });
+  }
 
   const sets: string[] = [];
   const params: unknown[] = [];
@@ -5309,6 +5342,19 @@ export async function updateReclassificationTrigger(
       regulatory_source_id:
         input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
       control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+  // Cross-row detected/resolved guard: when only one endpoint is patched, the
+  // Zod refine cannot see the other endpoint on the existing row, so check it
+  // here before hitting the DB CHECK.
+  const nextDetectedAt =
+    input.detected_at !== undefined ? input.detected_at : existing.detected_at;
+  const nextResolvedAt =
+    input.resolved_at !== undefined ? input.resolved_at : existing.resolved_at;
+  if (!isValidTimeRange(nextDetectedAt, nextResolvedAt)) {
+    throw new RegulatoryError(400, 'invalid_trigger_time_range', {
+      detected_at: toIsoOrNull(nextDetectedAt),
+      resolved_at: toIsoOrNull(nextResolvedAt),
     });
   }
 

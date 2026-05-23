@@ -1057,3 +1057,219 @@ describe('regulatory-risk / RLS (direct DB) — triggers', () => {
     expect(inserted).toBe(1);
   });
 });
+
+// ===========================================================================
+// PR-R7 review-finding patches (P1 + 2× P2)
+// ===========================================================================
+
+describe('regulatory-risk / AutomatedDecisioning enum vocabulary (P1)', () => {
+  it('evaluate accepts ASSISTIVE_RECOMMENDATION as valid automated_decisioning value', async () => {
+    const r = await evaluate(orgA, { automated_decisioning: 'ASSISTIVE_RECOMMENDATION' });
+    expect(r.status).toBe(200);
+    expect(r.body['risk_classification_preview']).toBeTruthy();
+  });
+
+  it('evaluate accepts BINDING_LEGAL_EFFECT as valid automated_decisioning value', async () => {
+    const r = await evaluate(orgA, { automated_decisioning: 'BINDING_LEGAL_EFFECT' });
+    expect(r.status).toBe(200);
+    expect(r.body['risk_classification_preview']).toBeTruthy();
+  });
+
+  it('sensitive_data + ASSISTIVE_RECOMMENDATION produces HIGH (non-NONE automation triggers HIGH rule)', async () => {
+    const r = await evaluate(orgA, { sensitive_data: true, automated_decisioning: 'ASSISTIVE_RECOMMENDATION' });
+    expect(r.status).toBe(200);
+    const p = r.body['risk_classification_preview'] as Record<string, unknown>;
+    expect(p['inherent_risk_tier']).toBe('HIGH');
+    expect(p['residual_risk_tier']).toBe('HIGH');
+    expect(p['risk_score']).toBe(80);
+    expect(p['requires_high_risk_review']).toBe(true);
+  });
+
+  it('employment_or_credit_access + BINDING_LEGAL_EFFECT (EXTERNAL_EFFECT scope) produces HIGH', async () => {
+    const r = await evaluate(
+      orgA,
+      { employment_or_credit_access: true, automated_decisioning: 'BINDING_LEGAL_EFFECT' },
+      'EXTERNAL_EFFECT',
+    );
+    expect(r.status).toBe(200);
+    const p = r.body['risk_classification_preview'] as Record<string, unknown>;
+    expect(p['inherent_risk_tier']).toBe('HIGH');
+    expect(p['residual_risk_tier']).toBe('HIGH');
+    expect(p['risk_score']).toBe(80);
+  });
+
+  it('invalid automated_decisioning value still returns 400', async () => {
+    const r = await inject(stack, 'POST', '/v1/regulatory/risk-classifications/evaluate', orgA.api_key, {
+      risk_method_id: methodA, use_case_id: useCaseA, ai_system_id: aiSysA,
+      classification_basis: 'RULE_EVALUATION', decision_scope: 'INTERNAL_ASSISTANCE',
+      factor_inputs: { automated_decisioning: 'NOT_A_REAL_VALUE' },
+    });
+    expect(r.statusCode).toBe(400);
+  });
+});
+
+describe('regulatory-risk / classification effective range (P2)', () => {
+  const FROM_EARLY = '2026-05-01T00:00:00.000Z';
+  const TO_LATE = '2026-06-01T00:00:00.000Z';
+  const TO_EARLIER = '2026-04-01T00:00:00.000Z';
+
+  it('POST rejects effective_to before effective_from with 400', async () => {
+    const r = await mkClassificationResp(orgA, { factor_inputs: {} });
+    expect(r.status).toBe(201); // baseline to confirm helper still works
+    const bad = await inject(stack, 'POST', '/v1/regulatory/risk-classifications', orgA.api_key, {
+      ...baseClassification({ factor_inputs: {} }),
+      effective_from: FROM_EARLY, effective_to: TO_EARLIER,
+    });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it('POST accepts equal effective_from/effective_to', async () => {
+    const ok = await inject(stack, 'POST', '/v1/regulatory/risk-classifications', orgA.api_key, {
+      ...baseClassification({ factor_inputs: {} }),
+      effective_from: FROM_EARLY, effective_to: FROM_EARLY,
+    });
+    expect(ok.statusCode).toBe(201);
+  });
+
+  it('POST accepts valid effective_to after effective_from', async () => {
+    const ok = await inject(stack, 'POST', '/v1/regulatory/risk-classifications', orgA.api_key, {
+      ...baseClassification({ factor_inputs: {} }),
+      effective_from: FROM_EARLY, effective_to: TO_LATE,
+    });
+    expect(ok.statusCode).toBe(201);
+  });
+
+  it('PATCH rejects both-fields inverted range with 400', async () => {
+    const out = await mkClassification(orgA, { factor_inputs: {} });
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/risk-classifications/${out.id}`, orgA.api_key, {
+      effective_from: FROM_EARLY, effective_to: TO_EARLIER,
+    });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('PATCH rejects only effective_to before existing effective_from with 400', async () => {
+    const seeded = await inject(stack, 'POST', '/v1/regulatory/risk-classifications', orgA.api_key, {
+      ...baseClassification({ factor_inputs: {} }),
+      effective_from: FROM_EARLY,
+    });
+    expect(seeded.statusCode).toBe(201);
+    const id = ((bodyOf(seeded)['risk_classification']) as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/risk-classifications/${id}`, orgA.api_key, {
+      effective_to: TO_EARLIER,
+    });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('invalid_effective_range');
+  });
+
+  it('PATCH rejects only effective_from after existing effective_to with 400', async () => {
+    const seeded = await inject(stack, 'POST', '/v1/regulatory/risk-classifications', orgA.api_key, {
+      ...baseClassification({ factor_inputs: {} }),
+      effective_to: TO_LATE,
+    });
+    expect(seeded.statusCode).toBe(201);
+    const id = ((bodyOf(seeded)['risk_classification']) as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/risk-classifications/${id}`, orgA.api_key, {
+      effective_from: '2026-12-01T00:00:00.000Z',
+    });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('invalid_effective_range');
+  });
+
+  it('PATCH allows equal effective_from/effective_to', async () => {
+    const out = await mkClassification(orgA, { factor_inputs: {} });
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/risk-classifications/${out.id}`, orgA.api_key, {
+      effective_from: FROM_EARLY, effective_to: FROM_EARLY,
+    });
+    expect(r.statusCode).toBe(200);
+  });
+
+  it('PATCH allows valid effective_to after effective_from', async () => {
+    const out = await mkClassification(orgA, { factor_inputs: {} });
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/risk-classifications/${out.id}`, orgA.api_key, {
+      effective_from: FROM_EARLY, effective_to: TO_LATE,
+    });
+    expect(r.statusCode).toBe(200);
+  });
+});
+
+describe('regulatory-risk / reclassification trigger time range (P2)', () => {
+  const DETECTED = '2026-05-10T00:00:00.000Z';
+  const RESOLVED_LATER = '2026-05-20T00:00:00.000Z';
+  const RESOLVED_EARLIER = '2026-04-01T00:00:00.000Z';
+
+  it('POST rejects resolved_at before detected_at with 400', async () => {
+    const r = await mkTriggerResp(orgA, {
+      use_case_id: useCaseA, ai_system_id: aiSysA,
+      detected_at: DETECTED, resolved_at: RESOLVED_EARLIER,
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('POST accepts equal detected_at/resolved_at', async () => {
+    const r = await mkTriggerResp(orgA, {
+      use_case_id: useCaseA, ai_system_id: aiSysA,
+      detected_at: DETECTED, resolved_at: DETECTED,
+    });
+    expect(r.status).toBe(201);
+  });
+
+  it('POST accepts valid resolved_at after detected_at', async () => {
+    const r = await mkTriggerResp(orgA, {
+      use_case_id: useCaseA, ai_system_id: aiSysA,
+      detected_at: DETECTED, resolved_at: RESOLVED_LATER,
+    });
+    expect(r.status).toBe(201);
+  });
+
+  it('PATCH rejects both-fields inverted range with 400', async () => {
+    const seeded = await mkTriggerResp(orgA, { use_case_id: useCaseA, ai_system_id: aiSysA });
+    const tid = (seeded.body['reclassification_trigger'] as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/reclassification-triggers/${tid}`, orgA.api_key, {
+      detected_at: DETECTED, resolved_at: RESOLVED_EARLIER,
+    });
+    expect(r.statusCode).toBe(400);
+  });
+
+  it('PATCH rejects only resolved_at before existing detected_at with 400', async () => {
+    const seeded = await mkTriggerResp(orgA, {
+      use_case_id: useCaseA, ai_system_id: aiSysA, detected_at: DETECTED,
+    });
+    const tid = (seeded.body['reclassification_trigger'] as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/reclassification-triggers/${tid}`, orgA.api_key, {
+      resolved_at: RESOLVED_EARLIER,
+    });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('invalid_trigger_time_range');
+  });
+
+  it('PATCH rejects only detected_at after existing resolved_at with 400', async () => {
+    const seeded = await mkTriggerResp(orgA, {
+      use_case_id: useCaseA, ai_system_id: aiSysA,
+      detected_at: DETECTED, resolved_at: RESOLVED_LATER,
+    });
+    const tid = (seeded.body['reclassification_trigger'] as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/reclassification-triggers/${tid}`, orgA.api_key, {
+      detected_at: '2026-12-01T00:00:00.000Z',
+    });
+    expect(r.statusCode).toBe(400);
+    expect(bodyOf(r)['error']).toBe('invalid_trigger_time_range');
+  });
+
+  it('PATCH allows equal detected_at/resolved_at', async () => {
+    const seeded = await mkTriggerResp(orgA, { use_case_id: useCaseA, ai_system_id: aiSysA });
+    const tid = (seeded.body['reclassification_trigger'] as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/reclassification-triggers/${tid}`, orgA.api_key, {
+      detected_at: DETECTED, resolved_at: DETECTED,
+    });
+    expect(r.statusCode).toBe(200);
+  });
+
+  it('PATCH allows valid resolved_at after detected_at', async () => {
+    const seeded = await mkTriggerResp(orgA, { use_case_id: useCaseA, ai_system_id: aiSysA });
+    const tid = (seeded.body['reclassification_trigger'] as Record<string, unknown>)['id'] as string;
+    const r = await inject(stack, 'PATCH', `/v1/regulatory/reclassification-triggers/${tid}`, orgA.api_key, {
+      detected_at: DETECTED, resolved_at: RESOLVED_LATER,
+    });
+    expect(r.statusCode).toBe(200);
+  });
+});

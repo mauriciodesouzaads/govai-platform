@@ -1345,12 +1345,17 @@ export const ReclassificationRecommendedAction = z.enum([
   'OTHER',
 ]);
 
-// Engine input enums (used inside FactorInputs).
+// Engine input enums (used inside FactorInputs). Every value other than NONE is
+// treated as "automated decisioning is in play" by the engine — the specific
+// label is recorded as governance vocabulary and never becomes a downgrade
+// pathway by itself.
 export const AutomatedDecisioning = z.enum([
   'NONE',
   'DECISION_SUPPORT',
+  'ASSISTIVE_RECOMMENDATION',
   'AUTOMATED_INTERNAL',
   'AUTOMATED_EXTERNAL_EFFECT',
+  'BINDING_LEGAL_EFFECT',
 ]);
 
 export const FactorAgentAutonomy = z.enum([
@@ -1465,6 +1470,17 @@ export const EvaluateRiskClassificationBody = z
   });
 export type EvaluateRiskClassificationInput = z.infer<typeof EvaluateRiskClassificationBody>;
 
+// Shared range checker: both endpoints present and non-null ⇒ end >= start.
+// Returns true when the range is OK or under-specified. Used at the Zod layer
+// on CREATE (full input) and on PATCH (when both fields are present in the
+// request body). PATCH that touches only one endpoint is range-checked again
+// in the service against the existing row.
+const validRangeBoth = (start?: string | null, end?: string | null): boolean => {
+  if (start === undefined || start === null) return true;
+  if (end === undefined || end === null) return true;
+  return new Date(end).getTime() >= new Date(start).getTime();
+};
+
 export const CreateRiskClassificationBody = z
   .object({
     classification_key: KeyField,
@@ -1485,12 +1501,21 @@ export const CreateRiskClassificationBody = z
   .refine((d) => !(d.agent_version_id !== undefined && d.agent_id === undefined), {
     message: 'agent_version_id requires agent_id',
     path: ['agent_id'],
+  })
+  .refine((d) => validRangeBoth(d.effective_from, d.effective_to), {
+    message: 'effective_to must be greater than or equal to effective_from',
+    path: ['effective_to'],
   });
 export type CreateRiskClassificationInput = z.infer<typeof CreateRiskClassificationBody>;
 
 // PATCH: identity (classification_key, subject references, risk_method_id) and
 // computed tiers/scores are all immutable. Only status, timing, summaries, and
 // metadata move. Mitigation/residual summaries are evidence text only.
+//
+// effective_from/effective_to are also range-checked here when both are present
+// in the request body. When only one endpoint is patched, the service performs
+// the cross-field check against the existing row so the DB CHECK is never the
+// path that surfaces to the client.
 export const UpdateRiskClassificationBody = z
   .object({
     classification_status: ClassificationStatus.optional(),
@@ -1507,32 +1532,46 @@ export const UpdateRiskClassificationBody = z
     control_id: z.string().uuid().nullable().optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
-  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' })
+  .refine((d) => validRangeBoth(d.effective_from, d.effective_to), {
+    message: 'effective_to must be greater than or equal to effective_from',
+    path: ['effective_to'],
+  });
 export type UpdateRiskClassificationInput = z.infer<typeof UpdateRiskClassificationBody>;
 
-export const CreateReclassificationTriggerBody = z.object({
-  trigger_key: KeyField,
-  trigger_status: ReclassificationTriggerStatus.default('OPEN'),
-  trigger_type: ReclassificationTriggerType,
-  recommended_action: ReclassificationRecommendedAction,
-  classification_id: z.string().uuid().optional(),
-  use_case_id: z.string().uuid(),
-  ai_system_id: z.string().uuid(),
-  prior_risk_tier: RiskTier.optional(),
-  trigger_reason: SummaryText.default(''),
-  evidence_reference: z.string().min(1).max(2048).optional(),
-  detected_at: z.string().datetime().optional(),
-  due_at: z.string().datetime().optional(),
-  resolved_at: z.string().datetime().optional(),
-  regulatory_source_id: z.string().uuid().optional(),
-  control_id: z.string().uuid().optional(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-});
+export const CreateReclassificationTriggerBody = z
+  .object({
+    trigger_key: KeyField,
+    trigger_status: ReclassificationTriggerStatus.default('OPEN'),
+    trigger_type: ReclassificationTriggerType,
+    recommended_action: ReclassificationRecommendedAction,
+    classification_id: z.string().uuid().optional(),
+    use_case_id: z.string().uuid(),
+    ai_system_id: z.string().uuid(),
+    prior_risk_tier: RiskTier.optional(),
+    trigger_reason: SummaryText.default(''),
+    evidence_reference: z.string().min(1).max(2048).optional(),
+    detected_at: z.string().datetime().optional(),
+    due_at: z.string().datetime().optional(),
+    resolved_at: z.string().datetime().optional(),
+    regulatory_source_id: z.string().uuid().optional(),
+    control_id: z.string().uuid().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => validRangeBoth(d.detected_at, d.resolved_at), {
+    message: 'resolved_at must be greater than or equal to detected_at',
+    path: ['resolved_at'],
+  });
 export type CreateReclassificationTriggerInput = z.infer<typeof CreateReclassificationTriggerBody>;
 
 // PATCH: trigger_key + identity references (classification/use_case/ai_system)
 // are immutable. Mutable: status, recommended_action, type, reason, timing,
 // prior_risk_tier evidence, source/control, metadata.
+//
+// detected_at/resolved_at are range-checked here when both are present in the
+// request body. When only one endpoint is patched, the service performs the
+// cross-field check against the existing row so the DB CHECK is never the
+// path that surfaces to the client.
 export const UpdateReclassificationTriggerBody = z
   .object({
     trigger_status: ReclassificationTriggerStatus.optional(),
@@ -1548,7 +1587,11 @@ export const UpdateReclassificationTriggerBody = z
     control_id: z.string().uuid().nullable().optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
-  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' })
+  .refine((d) => validRangeBoth(d.detected_at, d.resolved_at), {
+    message: 'resolved_at must be greater than or equal to detected_at',
+    path: ['resolved_at'],
+  });
 export type UpdateReclassificationTriggerInput = z.infer<typeof UpdateReclassificationTriggerBody>;
 
 // ---------------------------------------------------------------------------
