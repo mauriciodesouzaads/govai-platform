@@ -43,6 +43,12 @@ import type {
   UpdateAgentVersionInput,
   CreateAgentCapabilityBindingInput,
   UpdateAgentCapabilityBindingInput,
+  CreateUseCaseInput,
+  UpdateUseCaseInput,
+  CreateUseCaseAssetLinkInput,
+  UpdateUseCaseAssetLinkInput,
+  CreateUseCaseReviewInput,
+  UpdateUseCaseReviewInput,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -3135,6 +3141,893 @@ export async function listAgentCapabilityBindings(
   params.push(cursor.limit);
   const res = await ctx.client.query<AgentCapabilityBindingRow>(
     `SELECT ${AGENT_BINDING_COLUMNS} FROM govai.regulatory_agent_capability_bindings
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// Use-case Registry (PR-R6)
+// ---------------------------------------------------------------------------
+
+export type UseCaseRow = {
+  id: string;
+  org_id: string;
+  use_case_key: string;
+  name: string;
+  description: string;
+  use_case_status: string;
+  use_case_category: string;
+  business_criticality: string;
+  deployment_scope: string;
+  primary_jurisdiction: string;
+  business_owner: string | null;
+  technical_owner: string | null;
+  legal_owner: string | null;
+  dpo_owner: string | null;
+  accountable_executive: string | null;
+  intended_purpose: string;
+  expected_benefits: string;
+  prohibited_uses: string;
+  restricted_uses: string;
+  target_users: string;
+  affected_subjects: string;
+  data_categories_summary: string;
+  sensitive_data_summary: string;
+  legal_basis_summary: string;
+  regulatory_basis_summary: string;
+  human_oversight_summary: string;
+  review_frequency: string;
+  last_reviewed_at: Date | null;
+  next_review_at: Date | null;
+  primary_ai_system_id: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const USE_CASE_COLUMNS = `id, org_id, use_case_key, name, description, use_case_status, use_case_category,
+  business_criticality, deployment_scope, primary_jurisdiction, business_owner, technical_owner, legal_owner,
+  dpo_owner, accountable_executive, intended_purpose, expected_benefits, prohibited_uses, restricted_uses,
+  target_users, affected_subjects, data_categories_summary, sensitive_data_summary, legal_basis_summary,
+  regulatory_basis_summary, human_oversight_summary, review_frequency, last_reviewed_at, next_review_at,
+  primary_ai_system_id, regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id,
+  created_at, updated_at`;
+
+export type UseCaseAssetLinkRow = {
+  id: string;
+  org_id: string;
+  use_case_id: string;
+  ai_system_id: string;
+  model_id: string | null;
+  model_version_id: string | null;
+  agent_id: string | null;
+  agent_version_id: string | null;
+  link_status: string;
+  usage_role: string;
+  deployment_environment: string;
+  effective_from: Date | null;
+  effective_to: Date | null;
+  rationale: string;
+  evidence_reference: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const USE_CASE_ASSET_LINK_COLUMNS = `id, org_id, use_case_id, ai_system_id, model_id, model_version_id,
+  agent_id, agent_version_id, link_status, usage_role, deployment_environment, effective_from, effective_to,
+  rationale, evidence_reference, regulatory_source_id, control_id, metadata, created_by_user_id,
+  updated_by_user_id, created_at, updated_at`;
+
+export type UseCaseReviewRow = {
+  id: string;
+  org_id: string;
+  use_case_id: string;
+  review_key: string;
+  review_type: string;
+  review_status: string;
+  review_outcome: string;
+  reviewer_user_id: string | null;
+  reviewer_name: string | null;
+  reviewed_at: Date | null;
+  next_review_at: Date | null;
+  findings_summary: string;
+  decision_summary: string;
+  conditions_summary: string;
+  evidence_reference: string | null;
+  evidence_hash: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const USE_CASE_REVIEW_COLUMNS = `id, org_id, use_case_id, review_key, review_type, review_status,
+  review_outcome, reviewer_user_id, reviewer_name, reviewed_at, next_review_at, findings_summary,
+  decision_summary, conditions_summary, evidence_reference, evidence_hash, regulatory_source_id, control_id,
+  metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+// Use cases reference an optional own-tenant AI system and optional own/system
+// source/control. Service-level checks give clean 404s; the DB RLS is the backstop.
+async function requireUseCaseParents(
+  ctx: Ctx,
+  refs: { primary_ai_system_id?: string | null; regulatory_source_id?: string | null; control_id?: string | null },
+): Promise<void> {
+  if (refs.primary_ai_system_id) {
+    if (!(await getVisibleAiSystem(ctx, refs.primary_ai_system_id)))
+      throw new RegulatoryError(404, 'ai_system_not_found');
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: refs.regulatory_source_id ?? null,
+    control_id: refs.control_id ?? null,
+  });
+}
+
+export async function createUseCase(ctx: Ctx, input: CreateUseCaseInput): Promise<UseCaseRow> {
+  await requireUseCaseParents(ctx, {
+    primary_ai_system_id: input.primary_ai_system_id ?? null,
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<UseCaseRow>(
+      `INSERT INTO govai.regulatory_use_cases
+         (org_id, use_case_key, name, description, use_case_status, use_case_category, business_criticality,
+          deployment_scope, primary_jurisdiction, business_owner, technical_owner, legal_owner, dpo_owner,
+          accountable_executive, intended_purpose, expected_benefits, prohibited_uses, restricted_uses,
+          target_users, affected_subjects, data_categories_summary, sensitive_data_summary, legal_basis_summary,
+          regulatory_basis_summary, human_oversight_summary, review_frequency, last_reviewed_at, next_review_at,
+          primary_ai_system_id, regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+               $21, $22, $23, $24, $25, $26, $27::timestamptz, $28::timestamptz, $29::uuid, $30::uuid, $31::uuid,
+               $32::jsonb, $33::uuid, $33::uuid)
+       RETURNING ${USE_CASE_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.use_case_key,
+        input.name,
+        input.description,
+        input.use_case_status,
+        input.use_case_category,
+        input.business_criticality,
+        input.deployment_scope,
+        input.primary_jurisdiction,
+        input.business_owner ?? null,
+        input.technical_owner ?? null,
+        input.legal_owner ?? null,
+        input.dpo_owner ?? null,
+        input.accountable_executive ?? null,
+        input.intended_purpose,
+        input.expected_benefits,
+        input.prohibited_uses,
+        input.restricted_uses,
+        input.target_users,
+        input.affected_subjects,
+        input.data_categories_summary,
+        input.sensitive_data_summary,
+        input.legal_basis_summary,
+        input.regulatory_basis_summary,
+        input.human_oversight_summary,
+        input.review_frequency,
+        input.last_reviewed_at ?? null,
+        input.next_review_at ?? null,
+        input.primary_ai_system_id ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'use_case_key_conflict', { use_case_key: input.use_case_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_use_case.created',
+    subjectType: 'regulatory_use_case',
+    subjectId: row.id,
+    metadata: useCaseAuditMeta(row),
+  });
+  return row;
+}
+
+function useCaseAuditMeta(row: UseCaseRow): Record<string, unknown> {
+  return {
+    use_case_id: row.id,
+    use_case_key: row.use_case_key,
+    use_case_status: row.use_case_status,
+    use_case_category: row.use_case_category,
+    business_criticality: row.business_criticality,
+    deployment_scope: row.deployment_scope,
+    primary_ai_system_id: row.primary_ai_system_id,
+  };
+}
+
+export async function getVisibleUseCase(ctx: Ctx, id: string): Promise<UseCaseRow | null> {
+  const r = await ctx.client.query<UseCaseRow>(
+    `SELECT ${USE_CASE_COLUMNS} FROM govai.regulatory_use_cases WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateUseCase(ctx: Ctx, id: string, input: UpdateUseCaseInput): Promise<UseCaseRow> {
+  const existing = await getVisibleUseCase(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'use_case_not_found');
+  await requireUseCaseParents(ctx, {
+    primary_ai_system_id:
+      input.primary_ai_system_id !== undefined ? input.primary_ai_system_id : existing.primary_ai_system_id,
+    regulatory_source_id:
+      input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+    control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+  });
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.name !== undefined) col('name', input.name);
+  if (input.description !== undefined) col('description', input.description);
+  if (input.use_case_status !== undefined) col('use_case_status', input.use_case_status);
+  if (input.use_case_category !== undefined) col('use_case_category', input.use_case_category);
+  if (input.business_criticality !== undefined) col('business_criticality', input.business_criticality);
+  if (input.deployment_scope !== undefined) col('deployment_scope', input.deployment_scope);
+  if (input.primary_jurisdiction !== undefined) col('primary_jurisdiction', input.primary_jurisdiction);
+  if (input.business_owner !== undefined) col('business_owner', input.business_owner);
+  if (input.technical_owner !== undefined) col('technical_owner', input.technical_owner);
+  if (input.legal_owner !== undefined) col('legal_owner', input.legal_owner);
+  if (input.dpo_owner !== undefined) col('dpo_owner', input.dpo_owner);
+  if (input.accountable_executive !== undefined) col('accountable_executive', input.accountable_executive);
+  if (input.intended_purpose !== undefined) col('intended_purpose', input.intended_purpose);
+  if (input.expected_benefits !== undefined) col('expected_benefits', input.expected_benefits);
+  if (input.prohibited_uses !== undefined) col('prohibited_uses', input.prohibited_uses);
+  if (input.restricted_uses !== undefined) col('restricted_uses', input.restricted_uses);
+  if (input.target_users !== undefined) col('target_users', input.target_users);
+  if (input.affected_subjects !== undefined) col('affected_subjects', input.affected_subjects);
+  if (input.data_categories_summary !== undefined) col('data_categories_summary', input.data_categories_summary);
+  if (input.sensitive_data_summary !== undefined) col('sensitive_data_summary', input.sensitive_data_summary);
+  if (input.legal_basis_summary !== undefined) col('legal_basis_summary', input.legal_basis_summary);
+  if (input.regulatory_basis_summary !== undefined) col('regulatory_basis_summary', input.regulatory_basis_summary);
+  if (input.human_oversight_summary !== undefined) col('human_oversight_summary', input.human_oversight_summary);
+  if (input.review_frequency !== undefined) col('review_frequency', input.review_frequency);
+  if (input.last_reviewed_at !== undefined) col('last_reviewed_at', input.last_reviewed_at, '::timestamptz');
+  if (input.next_review_at !== undefined) col('next_review_at', input.next_review_at, '::timestamptz');
+  if (input.primary_ai_system_id !== undefined) col('primary_ai_system_id', input.primary_ai_system_id, '::uuid');
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<UseCaseRow>(
+    `UPDATE govai.regulatory_use_cases SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${USE_CASE_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'use_case_not_found');
+
+  const statusChanged = input.use_case_status !== undefined && input.use_case_status !== existing.use_case_status;
+  const reviewDueChanged =
+    input.next_review_at !== undefined &&
+    (existing.next_review_at ? existing.next_review_at.toISOString() : null) !==
+      (row.next_review_at ? row.next_review_at.toISOString() : null);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_use_case.updated',
+    subjectType: 'regulatory_use_case',
+    subjectId: row.id,
+    metadata: {
+      ...useCaseAuditMeta(row),
+      changed_fields: Object.keys(input),
+      ...(statusChanged ? { previous_use_case_status: existing.use_case_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_use_case.status_changed',
+      subjectType: 'regulatory_use_case',
+      subjectId: row.id,
+      metadata: {
+        use_case_id: row.id,
+        use_case_key: row.use_case_key,
+        previous_use_case_status: existing.use_case_status,
+        use_case_status: row.use_case_status,
+      },
+    });
+  }
+  if (reviewDueChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_use_case.review_due_changed',
+      subjectType: 'regulatory_use_case',
+      subjectId: row.id,
+      metadata: {
+        use_case_id: row.id,
+        use_case_key: row.use_case_key,
+        previous_next_review_at: existing.next_review_at ? existing.next_review_at.toISOString() : null,
+        next_review_at: row.next_review_at ? row.next_review_at.toISOString() : null,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listUseCases(
+  ctx: Ctx,
+  filters: {
+    use_case_status?: string;
+    use_case_category?: string;
+    business_criticality?: string;
+    deployment_scope?: string;
+    primary_jurisdiction?: string;
+    primary_ai_system_id?: string;
+    next_review_before?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<UseCaseRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('use_case_status', filters.use_case_status);
+  eq('use_case_category', filters.use_case_category);
+  eq('business_criticality', filters.business_criticality);
+  eq('deployment_scope', filters.deployment_scope);
+  eq('primary_jurisdiction', filters.primary_jurisdiction);
+  eq('primary_ai_system_id', filters.primary_ai_system_id, '::uuid');
+  if (filters.next_review_before !== undefined) {
+    params.push(filters.next_review_before);
+    where.push(`next_review_at IS NOT NULL AND next_review_at <= $${params.length}::timestamptz`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(use_case_key ILIKE $${i} OR name ILIKE $${i} OR description ILIKE $${i} OR intended_purpose ILIKE $${i}
+        OR prohibited_uses ILIKE $${i} OR restricted_uses ILIKE $${i} OR legal_basis_summary ILIKE $${i}
+        OR regulatory_basis_summary ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<UseCaseRow>(
+    `SELECT ${USE_CASE_COLUMNS} FROM govai.regulatory_use_cases
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// --- Use-case asset links --------------------------------------------------
+
+async function requireOwnedUseCase(ctx: Ctx, id: string): Promise<UseCaseRow> {
+  const u = await getVisibleUseCase(ctx, id);
+  if (!u) throw new RegulatoryError(404, 'use_case_not_found');
+  return u;
+}
+
+// Validate all asset-link parents: own-tenant visibility, version-requires-parent,
+// and version-belongs-to-parent. Clean 404/400s; DB RLS is the backstop.
+async function requireAssetLinkParents(
+  ctx: Ctx,
+  refs: {
+    use_case_id: string;
+    ai_system_id: string;
+    model_id?: string | null;
+    model_version_id?: string | null;
+    agent_id?: string | null;
+    agent_version_id?: string | null;
+    regulatory_source_id?: string | null;
+    control_id?: string | null;
+  },
+): Promise<void> {
+  if (refs.model_version_id && !refs.model_id) throw new RegulatoryError(400, 'model_version_requires_model');
+  if (refs.agent_version_id && !refs.agent_id) throw new RegulatoryError(400, 'agent_version_requires_agent');
+  if (!(await getVisibleUseCase(ctx, refs.use_case_id))) throw new RegulatoryError(404, 'use_case_not_found');
+  if (!(await getVisibleAiSystem(ctx, refs.ai_system_id))) throw new RegulatoryError(404, 'ai_system_not_found');
+  if (refs.model_id) {
+    if (!(await getVisibleModel(ctx, refs.model_id))) throw new RegulatoryError(404, 'model_not_found');
+  }
+  if (refs.model_version_id) {
+    const v = await getVisibleModelVersion(ctx, refs.model_version_id);
+    if (!v) throw new RegulatoryError(404, 'model_version_not_found');
+    if (v.model_id !== refs.model_id) {
+      throw new RegulatoryError(400, 'model_version_model_mismatch', {
+        model_id: refs.model_id,
+        model_version_id: refs.model_version_id,
+      });
+    }
+  }
+  if (refs.agent_id) {
+    if (!(await getVisibleAgent(ctx, refs.agent_id))) throw new RegulatoryError(404, 'agent_not_found');
+  }
+  if (refs.agent_version_id) {
+    const v = await getVisibleAgentVersion(ctx, refs.agent_version_id);
+    if (!v) throw new RegulatoryError(404, 'agent_version_not_found');
+    if (v.agent_id !== refs.agent_id) {
+      throw new RegulatoryError(400, 'agent_version_agent_mismatch', {
+        agent_id: refs.agent_id,
+        agent_version_id: refs.agent_version_id,
+      });
+    }
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: refs.regulatory_source_id ?? null,
+    control_id: refs.control_id ?? null,
+  });
+}
+
+export async function createUseCaseAssetLink(
+  ctx: Ctx,
+  input: CreateUseCaseAssetLinkInput,
+): Promise<UseCaseAssetLinkRow> {
+  await requireAssetLinkParents(ctx, {
+    use_case_id: input.use_case_id,
+    ai_system_id: input.ai_system_id,
+    model_id: input.model_id ?? null,
+    model_version_id: input.model_version_id ?? null,
+    agent_id: input.agent_id ?? null,
+    agent_version_id: input.agent_version_id ?? null,
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<UseCaseAssetLinkRow>(
+      `INSERT INTO govai.regulatory_use_case_asset_links
+         (org_id, use_case_id, ai_system_id, model_id, model_version_id, agent_id, agent_version_id,
+          link_status, usage_role, deployment_environment, effective_from, effective_to, rationale,
+          evidence_reference, regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8, $9, $10,
+               $11::timestamptz, $12::timestamptz, $13, $14, $15::uuid, $16::uuid, $17::jsonb, $18::uuid, $18::uuid)
+       RETURNING ${USE_CASE_ASSET_LINK_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.use_case_id,
+        input.ai_system_id,
+        input.model_id ?? null,
+        input.model_version_id ?? null,
+        input.agent_id ?? null,
+        input.agent_version_id ?? null,
+        input.link_status,
+        input.usage_role,
+        input.deployment_environment,
+        input.effective_from ?? null,
+        input.effective_to ?? null,
+        input.rationale,
+        input.evidence_reference ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'use_case_asset_link_conflict', {
+        usage_role: input.usage_role,
+        deployment_environment: input.deployment_environment,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_use_case_asset_link.created',
+    subjectType: 'regulatory_use_case_asset_link',
+    subjectId: row.id,
+    metadata: assetLinkAuditMeta(row),
+  });
+  return row;
+}
+
+function assetLinkAuditMeta(row: UseCaseAssetLinkRow): Record<string, unknown> {
+  return {
+    link_id: row.id,
+    use_case_id: row.use_case_id,
+    ai_system_id: row.ai_system_id,
+    model_id: row.model_id,
+    model_version_id: row.model_version_id,
+    agent_id: row.agent_id,
+    agent_version_id: row.agent_version_id,
+    link_status: row.link_status,
+    usage_role: row.usage_role,
+    deployment_environment: row.deployment_environment,
+  };
+}
+
+export async function getVisibleUseCaseAssetLink(
+  ctx: Ctx,
+  id: string,
+): Promise<UseCaseAssetLinkRow | null> {
+  const r = await ctx.client.query<UseCaseAssetLinkRow>(
+    `SELECT ${USE_CASE_ASSET_LINK_COLUMNS} FROM govai.regulatory_use_case_asset_links WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateUseCaseAssetLink(
+  ctx: Ctx,
+  id: string,
+  input: UpdateUseCaseAssetLinkInput,
+): Promise<UseCaseAssetLinkRow> {
+  const existing = await getVisibleUseCaseAssetLink(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'use_case_asset_link_not_found');
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.link_status !== undefined) col('link_status', input.link_status);
+  if (input.effective_from !== undefined) col('effective_from', input.effective_from, '::timestamptz');
+  if (input.effective_to !== undefined) col('effective_to', input.effective_to, '::timestamptz');
+  if (input.rationale !== undefined) col('rationale', input.rationale);
+  if (input.evidence_reference !== undefined) col('evidence_reference', input.evidence_reference);
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<UseCaseAssetLinkRow>(
+    `UPDATE govai.regulatory_use_case_asset_links SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${USE_CASE_ASSET_LINK_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'use_case_asset_link_not_found');
+
+  const statusChanged = input.link_status !== undefined && input.link_status !== existing.link_status;
+  const retiredTransition =
+    (statusChanged && row.link_status === 'RETIRED') ||
+    (input.effective_to !== undefined && input.effective_to !== null && existing.effective_to === null);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_use_case_asset_link.updated',
+    subjectType: 'regulatory_use_case_asset_link',
+    subjectId: row.id,
+    metadata: {
+      ...assetLinkAuditMeta(row),
+      changed_fields: Object.keys(input),
+      ...(statusChanged ? { previous_link_status: existing.link_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_use_case_asset_link.status_changed',
+      subjectType: 'regulatory_use_case_asset_link',
+      subjectId: row.id,
+      metadata: { ...assetLinkAuditMeta(row), previous_link_status: existing.link_status },
+    });
+  }
+  if (retiredTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_use_case_asset_link.retired',
+      subjectType: 'regulatory_use_case_asset_link',
+      subjectId: row.id,
+      metadata: {
+        ...assetLinkAuditMeta(row),
+        effective_to: row.effective_to ? row.effective_to.toISOString() : null,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listUseCaseAssetLinks(
+  ctx: Ctx,
+  filters: {
+    use_case_id?: string;
+    ai_system_id?: string;
+    model_id?: string;
+    model_version_id?: string;
+    agent_id?: string;
+    agent_version_id?: string;
+    link_status?: string;
+    usage_role?: string;
+    deployment_environment?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<UseCaseAssetLinkRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('use_case_id', filters.use_case_id, '::uuid');
+  eq('ai_system_id', filters.ai_system_id, '::uuid');
+  eq('model_id', filters.model_id, '::uuid');
+  eq('model_version_id', filters.model_version_id, '::uuid');
+  eq('agent_id', filters.agent_id, '::uuid');
+  eq('agent_version_id', filters.agent_version_id, '::uuid');
+  eq('link_status', filters.link_status);
+  eq('usage_role', filters.usage_role);
+  eq('deployment_environment', filters.deployment_environment);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(`(rationale ILIKE $${i} OR evidence_reference ILIKE $${i})`);
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<UseCaseAssetLinkRow>(
+    `SELECT ${USE_CASE_ASSET_LINK_COLUMNS} FROM govai.regulatory_use_case_asset_links
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// --- Use-case reviews ------------------------------------------------------
+
+export async function createUseCaseReview(
+  ctx: Ctx,
+  useCaseId: string,
+  input: CreateUseCaseReviewInput,
+): Promise<UseCaseReviewRow> {
+  await requireOwnedUseCase(ctx, useCaseId);
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<UseCaseReviewRow>(
+      `INSERT INTO govai.regulatory_use_case_reviews
+         (org_id, use_case_id, review_key, review_type, review_status, review_outcome, reviewer_user_id,
+          reviewer_name, reviewed_at, next_review_at, findings_summary, decision_summary, conditions_summary,
+          evidence_reference, evidence_hash, regulatory_source_id, control_id, metadata, created_by_user_id,
+          updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::uuid, $8, $9::timestamptz, $10::timestamptz, $11, $12,
+               $13, $14, $15, $16::uuid, $17::uuid, $18::jsonb, $19::uuid, $19::uuid)
+       RETURNING ${USE_CASE_REVIEW_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        useCaseId,
+        input.review_key,
+        input.review_type,
+        input.review_status,
+        input.review_outcome,
+        input.reviewer_user_id ?? null,
+        input.reviewer_name ?? null,
+        input.reviewed_at ?? null,
+        input.next_review_at ?? null,
+        input.findings_summary,
+        input.decision_summary,
+        input.conditions_summary,
+        input.evidence_reference ?? null,
+        input.evidence_hash ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'use_case_review_key_conflict', { review_key: input.review_key });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_use_case_review.created',
+    subjectType: 'regulatory_use_case_review',
+    subjectId: row.id,
+    metadata: reviewAuditMeta(row),
+  });
+  return row;
+}
+
+function reviewAuditMeta(row: UseCaseReviewRow): Record<string, unknown> {
+  return {
+    review_id: row.id,
+    use_case_id: row.use_case_id,
+    review_key: row.review_key,
+    review_type: row.review_type,
+    review_status: row.review_status,
+    review_outcome: row.review_outcome,
+  };
+}
+
+export async function getVisibleUseCaseReview(ctx: Ctx, id: string): Promise<UseCaseReviewRow | null> {
+  const r = await ctx.client.query<UseCaseReviewRow>(
+    `SELECT ${USE_CASE_REVIEW_COLUMNS} FROM govai.regulatory_use_case_reviews WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateUseCaseReview(
+  ctx: Ctx,
+  id: string,
+  input: UpdateUseCaseReviewInput,
+): Promise<UseCaseReviewRow> {
+  const existing = await getVisibleUseCaseReview(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'use_case_review_not_found');
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.review_type !== undefined) col('review_type', input.review_type);
+  if (input.review_status !== undefined) col('review_status', input.review_status);
+  if (input.review_outcome !== undefined) col('review_outcome', input.review_outcome);
+  if (input.reviewer_user_id !== undefined) col('reviewer_user_id', input.reviewer_user_id, '::uuid');
+  if (input.reviewer_name !== undefined) col('reviewer_name', input.reviewer_name);
+  if (input.reviewed_at !== undefined) col('reviewed_at', input.reviewed_at, '::timestamptz');
+  if (input.next_review_at !== undefined) col('next_review_at', input.next_review_at, '::timestamptz');
+  if (input.findings_summary !== undefined) col('findings_summary', input.findings_summary);
+  if (input.decision_summary !== undefined) col('decision_summary', input.decision_summary);
+  if (input.conditions_summary !== undefined) col('conditions_summary', input.conditions_summary);
+  if (input.evidence_reference !== undefined) col('evidence_reference', input.evidence_reference);
+  if (input.evidence_hash !== undefined) col('evidence_hash', input.evidence_hash);
+  if (input.regulatory_source_id !== undefined) col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<UseCaseReviewRow>(
+    `UPDATE govai.regulatory_use_case_reviews SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${USE_CASE_REVIEW_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'use_case_review_not_found');
+
+  const statusChanged = input.review_status !== undefined && input.review_status !== existing.review_status;
+  const completedTransition = statusChanged && row.review_status === 'COMPLETED';
+  const outcomeChanged = input.review_outcome !== undefined && input.review_outcome !== existing.review_outcome;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_use_case_review.updated',
+    subjectType: 'regulatory_use_case_review',
+    subjectId: row.id,
+    metadata: {
+      ...reviewAuditMeta(row),
+      changed_fields: Object.keys(input),
+      ...(statusChanged ? { previous_review_status: existing.review_status } : {}),
+      ...(outcomeChanged ? { previous_review_outcome: existing.review_outcome } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_use_case_review.status_changed',
+      subjectType: 'regulatory_use_case_review',
+      subjectId: row.id,
+      metadata: { ...reviewAuditMeta(row), previous_review_status: existing.review_status },
+    });
+  }
+  if (completedTransition) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_use_case_review.completed',
+      subjectType: 'regulatory_use_case_review',
+      subjectId: row.id,
+      metadata: {
+        ...reviewAuditMeta(row),
+        reviewed_at: row.reviewed_at ? row.reviewed_at.toISOString() : null,
+      },
+    });
+  }
+  if (outcomeChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_use_case_review.outcome_changed',
+      subjectType: 'regulatory_use_case_review',
+      subjectId: row.id,
+      metadata: { ...reviewAuditMeta(row), previous_review_outcome: existing.review_outcome },
+    });
+  }
+  return row;
+}
+
+export async function listUseCaseReviews(
+  ctx: Ctx,
+  useCaseId: string,
+  filters: {
+    review_type?: string;
+    review_status?: string;
+    review_outcome?: string;
+    reviewed_before?: string;
+    next_review_before?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<UseCaseReviewRow>> {
+  await requireOwnedUseCase(ctx, useCaseId);
+  const where: string[] = ['use_case_id = $1::uuid'];
+  const params: unknown[] = [useCaseId];
+  const eq = (column: string, val: string | undefined) => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}`);
+  };
+  eq('review_type', filters.review_type);
+  eq('review_status', filters.review_status);
+  eq('review_outcome', filters.review_outcome);
+  if (filters.reviewed_before !== undefined) {
+    params.push(filters.reviewed_before);
+    where.push(`reviewed_at IS NOT NULL AND reviewed_at <= $${params.length}::timestamptz`);
+  }
+  if (filters.next_review_before !== undefined) {
+    params.push(filters.next_review_before);
+    where.push(`next_review_at IS NOT NULL AND next_review_at <= $${params.length}::timestamptz`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(review_key ILIKE $${i} OR findings_summary ILIKE $${i} OR decision_summary ILIKE $${i}
+        OR conditions_summary ILIKE $${i} OR evidence_reference ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<UseCaseReviewRow>(
+    `SELECT ${USE_CASE_REVIEW_COLUMNS} FROM govai.regulatory_use_case_reviews
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,
