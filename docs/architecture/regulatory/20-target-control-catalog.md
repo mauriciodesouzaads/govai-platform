@@ -119,7 +119,7 @@ under which the control turns `COVERED`.
   Use-case Registry (PR-R6) are all `IMPLEMENTED_FOUNDATIONAL_CONTROL` (see the
   PR-R2 through PR-R6 implementation evidence below). All five registry
   categories now have foundational schema, routes, audit events, and tests.
-  This domain is still **not** `COVERED`: COVERED additionally requires these
+  This domain is still not `COVERED`: COVERED additionally requires these
   registries to be cited in the per-requirement framework mappings (the BR-core,
   judiciary/sector, and international mapping PRs), which remains future work.
 - Turns COVERED when: schemas, routes, audit events, and tests for each
@@ -159,7 +159,7 @@ under which the control turns `COVERED`.
   identity, intended purpose, ownership/accountability, jurisdiction/regulatory-
   basis evidence, AI-system/asset linkage, lifecycle/status evidence, and
   periodic-review evidence (see the PR-R6 implementation evidence below). This
-  domain is **not** `COVERED`: PR-R6 records review *evidence*, not a review
+  domain is not `COVERED`: PR-R6 records review *evidence*, not a review
   *workflow engine*, and risk classification, high-risk approval workflow,
   prohibited-use enforcement, legal-basis automation, and runtime enforcement
   remain future work.
@@ -180,7 +180,7 @@ under which the control turns `COVERED`.
   (methodology records, classification records, per-factor evidence rows,
   reclassification triggers, audit events) is `IMPLEMENTED_FOUNDATIONAL_CONTROL`
   (PR-R7); see the PR-R7 evidence in `23-regulatory-core-roadmap.md` and the
-  PR-R7 implementation section in `README.md`. Domain 5 is **not** `COVERED`
+  PR-R7 implementation section in `README.md`. Domain 5 is not `COVERED`
   (COVERED still requires per-requirement framework-mapping citations). In
   PR-R7 the residual risk tier and score always mirror the inherent risk tier
   and score (DB-enforced); mitigation_strength is recorded as an evidence-only
@@ -221,11 +221,31 @@ under which the control turns `COVERED`.
   does not mean safety certification; and it does not authorize runtime
   execution. High-risk review approval is governance evidence only; it does
   not mutate the underlying risk classification, does not authorize runtime
-  execution, and does not make the AI system legally compliant. The prohibited-use registry and hard-deny workflow
-  remain `REQUIRED_NATIVE_CAPABILITY` / `NATIVE_ENHANCEMENT_REQUIRED` —
-  future work. Domain 6 is **not** `COVERED` (COVERED still requires per-
-  requirement framework-mapping citations, and the prohibited-use portion
-  is not yet implemented).
+  execution, and does not make the AI system legally compliant. The
+  prohibited-use governance workflow portion is
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R9) for prohibited-use policy
+  records, case records, evidence records, append-only determinations,
+  deterministic lifecycle transitions, mandatory service + DB-trigger
+  separation-of-duties for final determinations (PROHIBITED_CONFIRMED,
+  FALSE_POSITIVE), terminal-state backstops, classification + capability-
+  binding intake, semantic DDL comments binding DENIED /
+  HARD_DENY_EXPECTED / PROHIBITED_CONFIRMED to governance evidence only,
+  and tenant RLS; see the PR-R9 evidence in
+  `23-regulatory-core-roadmap.md` and the PR-R9 implementation section in
+  `README.md`. DENIED in PR-R9 means the prohibited-use governance case has
+  a denial determination recorded as governance evidence only; it does not
+  mean runtime execution was blocked, a provider call was intercepted,
+  legal compliance was determined, or enforcement was executed.
+  HARD_DENY_EXPECTED records an expected governance denial posture for
+  future or adjacent enforcement systems; PR-R9 itself does not perform
+  runtime hard-deny enforcement. The runtime hard-deny enforcement engine,
+  runtime gateway blocking, live tool enforcement, connector enforcement,
+  and provider-side blocking remain `REQUIRED_NATIVE_CAPABILITY` /
+  `NATIVE_ENHANCEMENT_REQUIRED` — future work. Domain 6 is **not**
+  `COVERED` (COVERED still requires per-framework, per-requirement mapping
+  citations in a separate future PR; the prohibited-use governance
+  workflow slice is shipped as `IMPLEMENTED_FOUNDATIONAL_CONTROL` only, and
+  runtime enforcement primitives have not yet been implemented).
 - Turns COVERED when: prohibited-use records, high-risk workflow events,
   and tests exist and are cited in mappings.
 

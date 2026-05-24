@@ -105,6 +105,23 @@ import {
   createHighRiskReviewDecision,
   getVisibleHighRiskReviewDecision,
   listHighRiskReviewDecisions,
+  createProhibitedUsePolicy,
+  getVisibleProhibitedUsePolicy,
+  updateProhibitedUsePolicy,
+  listProhibitedUsePolicies,
+  createProhibitedUseCase,
+  getVisibleProhibitedUseCase,
+  updateProhibitedUseCase,
+  submitProhibitedUseCase,
+  cancelProhibitedUseCase,
+  listProhibitedUseCases,
+  createProhibitedUseEvidence,
+  getVisibleProhibitedUseEvidence,
+  updateProhibitedUseEvidence,
+  listProhibitedUseEvidence,
+  createProhibitedUseDetermination,
+  getVisibleProhibitedUseDetermination,
+  listProhibitedUseDeterminations,
   type Ctx,
   type Cursor,
   type SourceRow,
@@ -132,6 +149,10 @@ import {
   type HighRiskReviewEvidenceRow,
   type HighRiskReviewAssignmentRow,
   type HighRiskReviewDecisionRow,
+  type ProhibitedUsePolicyRow,
+  type ProhibitedUseCaseRow,
+  type ProhibitedUseEvidenceRow,
+  type ProhibitedUseDeterminationRow,
 } from '../regulatory/service.js';
 import {
   CreateSourceBody,
@@ -204,6 +225,19 @@ import {
   ListHighRiskReviewEvidenceQuery,
   ListHighRiskReviewAssignmentsQuery,
   ListHighRiskReviewDecisionsQuery,
+  CreateProhibitedUsePolicyBody,
+  UpdateProhibitedUsePolicyBody,
+  CreateProhibitedUseCaseBody,
+  UpdateProhibitedUseCaseBody,
+  SubmitProhibitedUseCaseBody,
+  CancelProhibitedUseCaseBody,
+  CreateProhibitedUseEvidenceBody,
+  UpdateProhibitedUseEvidenceBody,
+  CreateProhibitedUseDeterminationBody,
+  ListProhibitedUsePoliciesQuery,
+  ListProhibitedUseCasesQuery,
+  ListProhibitedUseEvidenceQuery,
+  ListProhibitedUseDeterminationsQuery,
 } from '../regulatory/validation.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -964,6 +998,124 @@ function serializeHighRiskReviewDecision(r: HighRiskReviewDecisionRow): Record<s
     conditions_summary: r.conditions_summary,
     expiry_at: iso(r.expiry_at),
     decision_audit_event_id: r.decision_audit_event_id,
+    metadata: r.metadata,
+    created_at: r.created_at.toISOString(),
+  };
+}
+
+function serializeProhibitedUsePolicy(r: ProhibitedUsePolicyRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    policy_key: r.policy_key,
+    policy_version: r.policy_version,
+    name: r.name,
+    policy_status: r.policy_status,
+    policy_category: r.policy_category,
+    policy_basis: r.policy_basis,
+    prohibited_use_summary: r.prohibited_use_summary,
+    rationale_summary: r.rationale_summary,
+    detection_guidance: r.detection_guidance,
+    required_evidence_summary: r.required_evidence_summary,
+    denial_guidance: r.denial_guidance,
+    framework_profile: r.framework_profile,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeProhibitedUseCase(r: ProhibitedUseCaseRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    case_key: r.case_key,
+    case_status: r.case_status,
+    case_basis: r.case_basis,
+    prohibited_use_policy_id: r.prohibited_use_policy_id,
+    risk_classification_id: r.risk_classification_id,
+    risk_method_id: r.risk_method_id,
+    use_case_id: r.use_case_id,
+    ai_system_id: r.ai_system_id,
+    use_case_asset_link_id: r.use_case_asset_link_id,
+    model_id: r.model_id,
+    model_version_id: r.model_version_id,
+    agent_id: r.agent_id,
+    agent_version_id: r.agent_version_id,
+    agent_capability_binding_id: r.agent_capability_binding_id,
+    inherent_risk_tier: r.inherent_risk_tier,
+    residual_risk_tier: r.residual_risk_tier,
+    risk_score: r.risk_score,
+    residual_risk_score: r.residual_risk_score,
+    requires_high_risk_review: r.requires_high_risk_review,
+    requires_prohibited_use_review: r.requires_prohibited_use_review,
+    capability_key: r.capability_key,
+    capability_risk_posture: r.capability_risk_posture,
+    hard_deny_floor_expected: r.hard_deny_floor_expected,
+    denial_posture: r.denial_posture,
+    requester_user_id: r.requester_user_id,
+    requested_by_participant_id: r.requested_by_participant_id,
+    rationale_summary: r.rationale_summary,
+    evidence_summary: r.evidence_summary,
+    denial_summary: r.denial_summary,
+    review_notes: r.review_notes,
+    cancellation_reason: r.cancellation_reason,
+    supersedes_case_id: r.supersedes_case_id,
+    superseded_by_case_id: r.superseded_by_case_id,
+    due_at: iso(r.due_at),
+    submitted_at: iso(r.submitted_at),
+    determined_at: iso(r.determined_at),
+    cancelled_at: iso(r.cancelled_at),
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeProhibitedUseEvidence(r: ProhibitedUseEvidenceRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    prohibited_use_case_id: r.prohibited_use_case_id,
+    evidence_key: r.evidence_key,
+    evidence_type: r.evidence_type,
+    evidence_status: r.evidence_status,
+    title: r.title,
+    summary: r.summary,
+    evidence_reference: r.evidence_reference,
+    source_uri: r.source_uri,
+    source_hash: r.source_hash,
+    regulatory_source_id: r.regulatory_source_id,
+    control_id: r.control_id,
+    metadata: r.metadata,
+    created_by_user_id: r.created_by_user_id,
+    updated_by_user_id: r.updated_by_user_id,
+    created_at: r.created_at.toISOString(),
+    updated_at: r.updated_at.toISOString(),
+  };
+}
+
+function serializeProhibitedUseDetermination(r: ProhibitedUseDeterminationRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    org_id: r.org_id,
+    prohibited_use_case_id: r.prohibited_use_case_id,
+    determination: r.determination,
+    denial_posture: r.denial_posture,
+    determination_rationale: r.determination_rationale,
+    determined_by_user_id: r.determined_by_user_id,
+    determined_by_participant_id: r.determined_by_participant_id,
+    reviewer_role: r.reviewer_role,
+    evidence_snapshot_summary: r.evidence_snapshot_summary,
+    required_controls_summary: r.required_controls_summary,
+    future_enforcement_reference: r.future_enforcement_reference,
+    determination_audit_event_id: r.determination_audit_event_id,
     metadata: r.metadata,
     created_at: r.created_at.toISOString(),
   };
@@ -3348,6 +3500,469 @@ export async function regulatoryRoute(app: FastifyInstance): Promise<void> {
       return { high_risk_review_decision: serializeHighRiskReviewDecision(out.value) };
     } catch (err) {
       return onError(req, reply, err, 'get_high_risk_review_decision');
+    }
+  });
+
+  // --- Prohibited-use governance workflow (PR-R9) --------------------------
+  //
+  // DENIED on a prohibited-use case is governance evidence only: it does not
+  // mean runtime execution was blocked, does not implement gateway
+  // enforcement, does not intercept provider calls, does not implement legal
+  // advice, and does not certify compliance. HARD_DENY_EXPECTED records an
+  // expected governance denial posture for future or adjacent enforcement
+  // systems; PR-R9 itself does not perform runtime hard-deny enforcement.
+
+  app.post('/v1/regulatory/prohibited-use-policies', async (req, reply) => {
+    const parsed = CreateProhibitedUsePolicyBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createProhibitedUsePolicy(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { prohibited_use_policy: serializeProhibitedUsePolicy(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_prohibited_use_policy');
+    }
+  });
+
+  app.get('/v1/regulatory/prohibited-use-policies', async (req, reply) => {
+    const parsed = ListProhibitedUsePoliciesQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listProhibitedUsePolicies(
+          ctx,
+          {
+            policy_status: parsed.data.policy_status,
+            policy_category: parsed.data.policy_category,
+            framework_profile: parsed.data.framework_profile,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        prohibited_use_policies: out.value.rows.map(serializeProhibitedUsePolicy),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_prohibited_use_policies');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-policies/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_policy_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleProhibitedUsePolicy(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'prohibited_use_policy_not_found' };
+      }
+      return { prohibited_use_policy: serializeProhibitedUsePolicy(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_prohibited_use_policy');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-policies/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_policy_id' };
+    }
+    const parsed = UpdateProhibitedUsePolicyBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateProhibitedUsePolicy(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { prohibited_use_policy: serializeProhibitedUsePolicy(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_prohibited_use_policy');
+    }
+  });
+
+  // --- Cases ----------------------------------------------------------------
+
+  app.post('/v1/regulatory/prohibited-use-cases', async (req, reply) => {
+    const parsed = CreateProhibitedUseCaseBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => createProhibitedUseCase(ctx, parsed.data));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { prohibited_use_case: serializeProhibitedUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_prohibited_use_case');
+    }
+  });
+
+  app.get('/v1/regulatory/prohibited-use-cases', async (req, reply) => {
+    const parsed = ListProhibitedUseCasesQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listProhibitedUseCases(
+          ctx,
+          {
+            case_status: parsed.data.case_status,
+            case_basis: parsed.data.case_basis,
+            prohibited_use_policy_id: parsed.data.prohibited_use_policy_id,
+            risk_classification_id: parsed.data.risk_classification_id,
+            use_case_id: parsed.data.use_case_id,
+            ai_system_id: parsed.data.ai_system_id,
+            agent_id: parsed.data.agent_id,
+            agent_capability_binding_id: parsed.data.agent_capability_binding_id,
+            denial_posture: parsed.data.denial_posture,
+            due_before: parsed.data.due_before,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        prohibited_use_cases: out.value.rows.map(serializeProhibitedUseCase),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_prohibited_use_cases');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) => getVisibleProhibitedUseCase(ctx, req.params.id));
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'prohibited_use_case_not_found' };
+      }
+      return { prohibited_use_case: serializeProhibitedUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_prohibited_use_case');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const parsed = UpdateProhibitedUseCaseBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateProhibitedUseCase(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { prohibited_use_case: serializeProhibitedUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_prohibited_use_case');
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id/submit', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const parsed = SubmitProhibitedUseCaseBody.safeParse(req.body ?? {});
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        submitProhibitedUseCase(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { prohibited_use_case: serializeProhibitedUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'submit_prohibited_use_case');
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id/cancel', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const parsed = CancelProhibitedUseCaseBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        cancelProhibitedUseCase(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { prohibited_use_case: serializeProhibitedUseCase(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'cancel_prohibited_use_case');
+    }
+  });
+
+  // --- Evidence sub-resource ----------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id/evidence', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const parsed = CreateProhibitedUseEvidenceBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        createProhibitedUseEvidence(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return { prohibited_use_evidence: serializeProhibitedUseEvidence(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'create_prohibited_use_evidence');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id/evidence', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const parsed = ListProhibitedUseEvidenceQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listProhibitedUseEvidence(
+          ctx,
+          {
+            prohibited_use_case_id: req.params.id,
+            evidence_type: parsed.data.evidence_type,
+            evidence_status: parsed.data.evidence_status,
+            q: parsed.data.q,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        prohibited_use_evidence: out.value.rows.map(serializeProhibitedUseEvidence),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_prohibited_use_evidence_for_case');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-evidence/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_evidence_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        getVisibleProhibitedUseEvidence(ctx, req.params.id),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'prohibited_use_evidence_not_found' };
+      }
+      return { prohibited_use_evidence: serializeProhibitedUseEvidence(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_prohibited_use_evidence');
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-evidence/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_evidence_id' };
+    }
+    const parsed = UpdateProhibitedUseEvidenceBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        updateProhibitedUseEvidence(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return { prohibited_use_evidence: serializeProhibitedUseEvidence(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'update_prohibited_use_evidence');
+    }
+  });
+
+  // --- Determinations -----------------------------------------------------
+
+  app.post<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id/determinations', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const parsed = CreateProhibitedUseDeterminationBody.safeParse(req.body);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    if (!requireWriteRole(identity, reply)) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        createProhibitedUseDetermination(ctx, req.params.id, parsed.data),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      reply.code(201);
+      return {
+        prohibited_use_determination: serializeProhibitedUseDetermination(out.value.determination),
+        prohibited_use_case: serializeProhibitedUseCase(out.value.case),
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'create_prohibited_use_determination');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-cases/:id/determinations', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_case_id' };
+    }
+    const parsed = ListProhibitedUseDeterminationsQuery.safeParse(req.query);
+    if (!parsed.success) return zodError(reply, parsed);
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        listProhibitedUseDeterminations(
+          ctx,
+          {
+            prohibited_use_case_id: req.params.id,
+            determination: parsed.data.determination,
+            denial_posture: parsed.data.denial_posture,
+            reviewer_role: parsed.data.reviewer_role,
+            determined_by_user_id: parsed.data.determined_by_user_id,
+            determined_by_participant_id: parsed.data.determined_by_participant_id,
+          },
+          cursorFromQuery(parsed.data),
+        ),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      return {
+        prohibited_use_determinations: out.value.rows.map(serializeProhibitedUseDetermination),
+        next_cursor: out.value.nextCursor,
+      };
+    } catch (err) {
+      return onError(req, reply, err, 'list_prohibited_use_determinations_for_case');
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/v1/regulatory/prohibited-use-determinations/:id', async (req, reply) => {
+    if (!validId(req.params.id)) {
+      reply.code(400);
+      return { error: 'invalid_prohibited_use_determination_id' };
+    }
+    const identity = await authenticate(app, req, reply);
+    if (!identity) return reply;
+    try {
+      const out = await runTenant(app, identity, (ctx) =>
+        getVisibleProhibitedUseDetermination(ctx, req.params.id),
+      );
+      if (!out.ok) {
+        reply.code(out.status);
+        return out.body;
+      }
+      if (!out.value) {
+        reply.code(404);
+        return { error: 'prohibited_use_determination_not_found' };
+      }
+      return { prohibited_use_determination: serializeProhibitedUseDetermination(out.value) };
+    } catch (err) {
+      return onError(req, reply, err, 'get_prohibited_use_determination');
     }
   });
 }
