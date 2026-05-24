@@ -66,6 +66,15 @@ import type {
   CreateHighRiskReviewAssignmentInput,
   UpdateHighRiskReviewAssignmentInput,
   CreateHighRiskReviewDecisionInput,
+  CreateProhibitedUsePolicyInput,
+  UpdateProhibitedUsePolicyInput,
+  CreateProhibitedUseCaseInput,
+  UpdateProhibitedUseCaseInput,
+  SubmitProhibitedUseCaseInput,
+  CancelProhibitedUseCaseInput,
+  CreateProhibitedUseEvidenceInput,
+  UpdateProhibitedUseEvidenceInput,
+  CreateProhibitedUseDeterminationInput,
 } from './validation.js';
 
 // Same audit key id/version the rest of the platform uses for the policy chain.
@@ -6588,6 +6597,1261 @@ export async function listHighRiskReviewDecisions(
   params.push(cursor.limit);
   const res = await ctx.client.query<HighRiskReviewDecisionRow>(
     `SELECT ${HIGH_RISK_REVIEW_DECISION_COLUMNS} FROM govai.regulatory_high_risk_review_decisions
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---------------------------------------------------------------------------
+// Prohibited-use Governance Workflow (PR-R9)
+// ---------------------------------------------------------------------------
+//
+// DENIED in PR-R9 records a governance denial determination as evidence only;
+// it does not mean runtime execution was blocked, does not implement gateway
+// enforcement, does not intercept provider calls or tool execution, does not
+// implement legal advice, and does not certify compliance. HARD_DENY_EXPECTED
+// records an expected governance denial posture for future or adjacent
+// enforcement systems — PR-R9 itself does not perform runtime hard-deny
+// enforcement, gateway blocking, live tool enforcement, connector enforcement,
+// or provider-side blocking. PR-R9 does not mutate the underlying risk
+// classification tier/score (preserves PR-R7 doctrine) and does not mutate
+// agent capability binding rows. Service + DB trigger together enforce
+// mandatory separation-of-duties for final determinations
+// (PROHIBITED_CONFIRMED, FALSE_POSITIVE): the requester cannot submit either
+// final determination on their own case.
+
+const TERMINAL_PROHIBITED_USE_STATUSES = new Set([
+  'DENIED',
+  'FALSE_POSITIVE',
+  'CANCELLED',
+  'SUPERSEDED',
+]);
+
+export type ProhibitedUsePolicyRow = {
+  id: string;
+  org_id: string;
+  policy_key: string;
+  policy_version: string;
+  name: string;
+  policy_status: string;
+  policy_category: string;
+  policy_basis: string;
+  prohibited_use_summary: string;
+  rationale_summary: string;
+  detection_guidance: string;
+  required_evidence_summary: string;
+  denial_guidance: string;
+  framework_profile: string;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const PROHIBITED_USE_POLICY_COLUMNS = `id, org_id, policy_key, policy_version, name, policy_status,
+  policy_category, policy_basis, prohibited_use_summary, rationale_summary, detection_guidance,
+  required_evidence_summary, denial_guidance, framework_profile, regulatory_source_id, control_id,
+  metadata, created_by_user_id, updated_by_user_id, created_at, updated_at`;
+
+export type ProhibitedUseCaseRow = {
+  id: string;
+  org_id: string;
+  case_key: string;
+  case_status: string;
+  case_basis: string;
+  prohibited_use_policy_id: string | null;
+  risk_classification_id: string | null;
+  risk_method_id: string | null;
+  use_case_id: string | null;
+  ai_system_id: string | null;
+  use_case_asset_link_id: string | null;
+  model_id: string | null;
+  model_version_id: string | null;
+  agent_id: string | null;
+  agent_version_id: string | null;
+  agent_capability_binding_id: string | null;
+  inherent_risk_tier: string | null;
+  residual_risk_tier: string | null;
+  risk_score: number | null;
+  residual_risk_score: number | null;
+  requires_high_risk_review: boolean | null;
+  requires_prohibited_use_review: boolean | null;
+  capability_key: string | null;
+  capability_risk_posture: string | null;
+  hard_deny_floor_expected: boolean | null;
+  denial_posture: string;
+  requester_user_id: string | null;
+  requested_by_participant_id: string | null;
+  rationale_summary: string;
+  evidence_summary: string;
+  denial_summary: string;
+  review_notes: string;
+  cancellation_reason: string | null;
+  supersedes_case_id: string | null;
+  superseded_by_case_id: string | null;
+  due_at: Date | null;
+  submitted_at: Date | null;
+  determined_at: Date | null;
+  cancelled_at: Date | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const PROHIBITED_USE_CASE_COLUMNS = `id, org_id, case_key, case_status, case_basis,
+  prohibited_use_policy_id, risk_classification_id, risk_method_id, use_case_id, ai_system_id,
+  use_case_asset_link_id, model_id, model_version_id, agent_id, agent_version_id,
+  agent_capability_binding_id, inherent_risk_tier, residual_risk_tier, risk_score,
+  residual_risk_score, requires_high_risk_review, requires_prohibited_use_review, capability_key,
+  capability_risk_posture, hard_deny_floor_expected, denial_posture, requester_user_id,
+  requested_by_participant_id, rationale_summary, evidence_summary, denial_summary, review_notes,
+  cancellation_reason, supersedes_case_id, superseded_by_case_id, due_at, submitted_at,
+  determined_at, cancelled_at, metadata, created_by_user_id, updated_by_user_id, created_at,
+  updated_at`;
+
+export type ProhibitedUseEvidenceRow = {
+  id: string;
+  org_id: string;
+  prohibited_use_case_id: string;
+  evidence_key: string;
+  evidence_type: string;
+  evidence_status: string;
+  title: string;
+  summary: string;
+  evidence_reference: string | null;
+  source_uri: string | null;
+  source_hash: string | null;
+  regulatory_source_id: string | null;
+  control_id: string | null;
+  metadata: Record<string, unknown>;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+const PROHIBITED_USE_EVIDENCE_COLUMNS = `id, org_id, prohibited_use_case_id, evidence_key,
+  evidence_type, evidence_status, title, summary, evidence_reference, source_uri, source_hash,
+  regulatory_source_id, control_id, metadata, created_by_user_id, updated_by_user_id, created_at,
+  updated_at`;
+
+export type ProhibitedUseDeterminationRow = {
+  id: string;
+  org_id: string;
+  prohibited_use_case_id: string;
+  determination: string;
+  denial_posture: string;
+  determination_rationale: string;
+  determined_by_user_id: string | null;
+  determined_by_participant_id: string | null;
+  reviewer_role: string;
+  evidence_snapshot_summary: string;
+  required_controls_summary: string;
+  future_enforcement_reference: string | null;
+  determination_audit_event_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+};
+
+const PROHIBITED_USE_DETERMINATION_COLUMNS = `id, org_id, prohibited_use_case_id, determination,
+  denial_posture, determination_rationale, determined_by_user_id, determined_by_participant_id,
+  reviewer_role, evidence_snapshot_summary, required_controls_summary, future_enforcement_reference,
+  determination_audit_event_id, metadata, created_at`;
+
+function prohibitedUseCaseAuditMeta(row: ProhibitedUseCaseRow): Record<string, unknown> {
+  return {
+    prohibited_use_case_id: row.id,
+    case_key: row.case_key,
+    case_status: row.case_status,
+    case_basis: row.case_basis,
+    prohibited_use_policy_id: row.prohibited_use_policy_id,
+    risk_classification_id: row.risk_classification_id,
+    risk_method_id: row.risk_method_id,
+    use_case_id: row.use_case_id,
+    ai_system_id: row.ai_system_id,
+    model_id: row.model_id,
+    model_version_id: row.model_version_id,
+    agent_id: row.agent_id,
+    agent_version_id: row.agent_version_id,
+    agent_capability_binding_id: row.agent_capability_binding_id,
+    capability_key: row.capability_key,
+    capability_risk_posture: row.capability_risk_posture,
+    hard_deny_floor_expected: row.hard_deny_floor_expected,
+    inherent_risk_tier: row.inherent_risk_tier,
+    residual_risk_tier: row.residual_risk_tier,
+    risk_score: row.risk_score,
+    residual_risk_score: row.residual_risk_score,
+    denial_posture: row.denial_posture,
+    requester_user_id: row.requester_user_id,
+    requested_by_participant_id: row.requested_by_participant_id,
+  };
+}
+
+// ---- policies ------------------------------------------------------------
+
+export async function createProhibitedUsePolicy(
+  ctx: Ctx,
+  input: CreateProhibitedUsePolicyInput,
+): Promise<ProhibitedUsePolicyRow> {
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<ProhibitedUsePolicyRow>(
+      `INSERT INTO govai.regulatory_prohibited_use_policies
+         (org_id, policy_key, policy_version, name, policy_status, policy_category, policy_basis,
+          prohibited_use_summary, rationale_summary, detection_guidance, required_evidence_summary,
+          denial_guidance, framework_profile, regulatory_source_id, control_id, metadata,
+          created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+               $14::uuid, $15::uuid, $16::jsonb, $17::uuid, $17::uuid)
+       RETURNING ${PROHIBITED_USE_POLICY_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        input.policy_key,
+        input.policy_version,
+        input.name,
+        input.policy_status,
+        input.policy_category,
+        input.policy_basis,
+        input.prohibited_use_summary,
+        input.rationale_summary,
+        input.detection_guidance,
+        input.required_evidence_summary,
+        input.denial_guidance,
+        input.framework_profile,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'prohibited_use_policy_key_conflict', {
+        policy_key: input.policy_key,
+        policy_version: input.policy_version,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_policy.created',
+    subjectType: 'regulatory_prohibited_use_policy',
+    subjectId: row.id,
+    metadata: {
+      prohibited_use_policy_id: row.id,
+      policy_key: row.policy_key,
+      policy_version: row.policy_version,
+      policy_status: row.policy_status,
+      policy_category: row.policy_category,
+      framework_profile: row.framework_profile,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleProhibitedUsePolicy(
+  ctx: Ctx,
+  id: string,
+): Promise<ProhibitedUsePolicyRow | null> {
+  const r = await ctx.client.query<ProhibitedUsePolicyRow>(
+    `SELECT ${PROHIBITED_USE_POLICY_COLUMNS} FROM govai.regulatory_prohibited_use_policies WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateProhibitedUsePolicy(
+  ctx: Ctx,
+  id: string,
+  input: UpdateProhibitedUsePolicyInput,
+): Promise<ProhibitedUsePolicyRow> {
+  const existing = await getVisibleProhibitedUsePolicy(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'prohibited_use_policy_not_found');
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.name !== undefined) col('name', input.name);
+  if (input.policy_status !== undefined) col('policy_status', input.policy_status);
+  if (input.policy_category !== undefined) col('policy_category', input.policy_category);
+  if (input.policy_basis !== undefined) col('policy_basis', input.policy_basis);
+  if (input.framework_profile !== undefined) col('framework_profile', input.framework_profile);
+  if (input.prohibited_use_summary !== undefined) col('prohibited_use_summary', input.prohibited_use_summary);
+  if (input.rationale_summary !== undefined) col('rationale_summary', input.rationale_summary);
+  if (input.detection_guidance !== undefined) col('detection_guidance', input.detection_guidance);
+  if (input.required_evidence_summary !== undefined)
+    col('required_evidence_summary', input.required_evidence_summary);
+  if (input.denial_guidance !== undefined) col('denial_guidance', input.denial_guidance);
+  if (input.regulatory_source_id !== undefined)
+    col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<ProhibitedUsePolicyRow>(
+    `UPDATE govai.regulatory_prohibited_use_policies SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${PROHIBITED_USE_POLICY_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'prohibited_use_policy_not_found');
+
+  const statusChanged = input.policy_status !== undefined && input.policy_status !== existing.policy_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_policy.updated',
+    subjectType: 'regulatory_prohibited_use_policy',
+    subjectId: row.id,
+    metadata: {
+      prohibited_use_policy_id: row.id,
+      policy_key: row.policy_key,
+      policy_version: row.policy_version,
+      changed_fields: Object.keys(input),
+      policy_status: row.policy_status,
+      ...(statusChanged ? { previous_policy_status: existing.policy_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_prohibited_use_policy.status_changed',
+      subjectType: 'regulatory_prohibited_use_policy',
+      subjectId: row.id,
+      metadata: {
+        prohibited_use_policy_id: row.id,
+        policy_key: row.policy_key,
+        policy_version: row.policy_version,
+        previous_policy_status: existing.policy_status,
+        policy_status: row.policy_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listProhibitedUsePolicies(
+  ctx: Ctx,
+  filters: {
+    policy_status?: string;
+    policy_category?: string;
+    framework_profile?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<ProhibitedUsePolicyRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined) => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}`);
+  };
+  eq('policy_status', filters.policy_status);
+  eq('policy_category', filters.policy_category);
+  eq('framework_profile', filters.framework_profile);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(policy_key ILIKE $${i} OR name ILIKE $${i} OR prohibited_use_summary ILIKE $${i}
+        OR rationale_summary ILIKE $${i} OR detection_guidance ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ProhibitedUsePolicyRow>(
+    `SELECT ${PROHIBITED_USE_POLICY_COLUMNS} FROM govai.regulatory_prohibited_use_policies
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- cases ---------------------------------------------------------------
+
+export async function createProhibitedUseCase(
+  ctx: Ctx,
+  input: CreateProhibitedUseCaseInput,
+): Promise<ProhibitedUseCaseRow> {
+  if (
+    input.risk_classification_id === undefined &&
+    input.agent_capability_binding_id === undefined &&
+    input.prohibited_use_policy_id === undefined
+  ) {
+    throw new RegulatoryError(400, 'prohibited_use_case_anchor_required', {
+      message: 'one of risk_classification_id, agent_capability_binding_id, or prohibited_use_policy_id is required',
+    });
+  }
+  if (input.prohibited_use_policy_id) {
+    const p = await getVisibleProhibitedUsePolicy(ctx, input.prohibited_use_policy_id);
+    if (!p) throw new RegulatoryError(404, 'prohibited_use_policy_not_found');
+  }
+  let classification: RiskClassificationRow | null = null;
+  if (input.risk_classification_id) {
+    classification = await getVisibleRiskClassification(ctx, input.risk_classification_id);
+    if (!classification) throw new RegulatoryError(404, 'risk_classification_not_found');
+    if (classification.residual_risk_tier === 'HIGH' || classification.inherent_risk_tier === 'HIGH') {
+      throw new RegulatoryError(400, 'high_risk_review_required', {
+        risk_classification_id: classification.id,
+        residual_risk_tier: classification.residual_risk_tier,
+      });
+    }
+    if (
+      classification.residual_risk_tier !== 'PROHIBITED' ||
+      classification.inherent_risk_tier !== 'PROHIBITED' ||
+      classification.requires_prohibited_use_review !== true
+    ) {
+      throw new RegulatoryError(400, 'classification_not_prohibited', {
+        risk_classification_id: classification.id,
+        residual_risk_tier: classification.residual_risk_tier,
+        inherent_risk_tier: classification.inherent_risk_tier,
+        requires_prohibited_use_review: classification.requires_prohibited_use_review,
+      });
+    }
+  }
+  let binding: AgentCapabilityBindingRow | null = null;
+  if (input.agent_capability_binding_id) {
+    binding = await getVisibleAgentCapabilityBinding(ctx, input.agent_capability_binding_id);
+    if (!binding) throw new RegulatoryError(404, 'agent_capability_binding_not_found');
+    if (binding.risk_posture !== 'PROHIBITED' && binding.hard_deny_floor_expected !== true) {
+      throw new RegulatoryError(400, 'capability_not_prohibited_or_denied', {
+        agent_capability_binding_id: binding.id,
+        risk_posture: binding.risk_posture,
+        hard_deny_floor_expected: binding.hard_deny_floor_expected,
+      });
+    }
+  }
+
+  // Build the snapshot fields from the classification and/or binding. When a
+  // classification is present we copy its full risk snapshot (the DB RLS
+  // WITH CHECK enforces equality on every copied column). When a binding is
+  // present we copy agent_id/agent_version_id/capability_key/risk_posture/
+  // hard_deny_floor_expected. When both anchors are present they must describe
+  // a single coherent agent — null-safe equality on agent_id AND
+  // agent_version_id — otherwise the case snapshot would mix two different
+  // anchor sets. We return 400 deterministically rather than rely on the DB
+  // RLS WITH CHECK (which would surface as a generic 500). RLS remains the
+  // defense-in-depth backstop.
+  const riskMethodId = classification?.risk_method_id ?? null;
+  const useCaseId = classification?.use_case_id ?? null;
+  const aiSystemId = classification?.ai_system_id ?? null;
+  const assetLinkId = classification?.use_case_asset_link_id ?? null;
+  const modelId = classification?.model_id ?? null;
+  const modelVersionId = classification?.model_version_id ?? null;
+  const inheritedAgentId = classification?.agent_id ?? null;
+  const inheritedAgentVersionId = classification?.agent_version_id ?? null;
+  const bindingAgentId = binding?.agent_id ?? null;
+  const bindingAgentVersionId = binding?.agent_version_id ?? null;
+  if (classification && binding) {
+    if (inheritedAgentId !== bindingAgentId) {
+      throw new RegulatoryError(400, 'prohibited_use_case_agent_mismatch', {
+        classification_agent_id: inheritedAgentId,
+        binding_agent_id: bindingAgentId,
+      });
+    }
+    if (inheritedAgentVersionId !== bindingAgentVersionId) {
+      throw new RegulatoryError(400, 'prohibited_use_case_agent_version_mismatch', {
+        classification_agent_version_id: inheritedAgentVersionId,
+        binding_agent_version_id: bindingAgentVersionId,
+      });
+    }
+  }
+  const agentId = bindingAgentId ?? inheritedAgentId;
+  const agentVersionId = bindingAgentVersionId ?? inheritedAgentVersionId;
+  const capabilityKey = binding?.capability_key ?? null;
+  const capabilityRiskPosture = binding?.risk_posture ?? null;
+  const hardDenyFloorExpected = binding?.hard_deny_floor_expected ?? null;
+  // PROHIBITED capability posture requires HARD_DENY_EXPECTED or
+  // GOVERNANCE_DENY_RECORDED (the DB CHECK also enforces this).
+  if (
+    capabilityRiskPosture === 'PROHIBITED' &&
+    input.denial_posture !== 'HARD_DENY_EXPECTED' &&
+    input.denial_posture !== 'GOVERNANCE_DENY_RECORDED'
+  ) {
+    throw new RegulatoryError(400, 'prohibited_capability_requires_deny_posture', {
+      denial_posture: input.denial_posture,
+    });
+  }
+
+  let res;
+  try {
+    res = await ctx.client.query<ProhibitedUseCaseRow>(
+      `INSERT INTO govai.regulatory_prohibited_use_cases
+         (org_id, case_key, case_status, case_basis, prohibited_use_policy_id, risk_classification_id,
+          risk_method_id, use_case_id, ai_system_id, use_case_asset_link_id, model_id, model_version_id,
+          agent_id, agent_version_id, agent_capability_binding_id, inherent_risk_tier, residual_risk_tier,
+          risk_score, residual_risk_score, requires_high_risk_review, requires_prohibited_use_review,
+          capability_key, capability_risk_posture, hard_deny_floor_expected, denial_posture,
+          requester_user_id, requested_by_participant_id, rationale_summary, evidence_summary,
+          denial_summary, review_notes, due_at, metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2, 'OPEN', $3, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8::uuid, $9::uuid,
+               $10::uuid, $11::uuid, $12::uuid, $13::uuid, $14::uuid, $15, $16, $17, $18, $19, $20,
+               $21, $22, $23, $24, $25::uuid, $26::uuid, $27, $28, '', $29, $30::timestamptz,
+               $31::jsonb, $32::uuid, $32::uuid)
+       RETURNING ${PROHIBITED_USE_CASE_COLUMNS}`,
+      [
+        ctx.actor.orgId,                                            // $1
+        input.case_key,                                             // $2
+        input.case_basis,                                           // $3
+        input.prohibited_use_policy_id ?? null,                     // $4
+        classification?.id ?? null,                                 // $5
+        riskMethodId,                                               // $6
+        useCaseId,                                                  // $7
+        aiSystemId,                                                 // $8
+        assetLinkId,                                                // $9
+        modelId,                                                    // $10
+        modelVersionId,                                             // $11
+        agentId,                                                    // $12
+        agentVersionId,                                             // $13
+        binding?.id ?? null,                                        // $14
+        classification?.inherent_risk_tier ?? null,                 // $15
+        classification?.residual_risk_tier ?? null,                 // $16
+        classification?.risk_score ?? null,                         // $17
+        classification?.residual_risk_score ?? null,                // $18
+        classification?.requires_high_risk_review ?? null,          // $19
+        classification?.requires_prohibited_use_review ?? null,     // $20
+        capabilityKey,                                              // $21
+        capabilityRiskPosture,                                      // $22
+        hardDenyFloorExpected,                                      // $23
+        input.denial_posture,                                       // $24
+        ctx.actor.userId,                                           // $25  requester
+        input.requested_by_participant_id ?? null,                  // $26
+        input.rationale_summary,                                    // $27
+        input.evidence_summary,                                     // $28
+        input.review_notes,                                         // $29
+        input.due_at ?? null,                                       // $30
+        JSON.stringify(input.metadata ?? {}),                       // $31
+        ctx.actor.userId,                                           // $32  created/updated_by
+      ],
+    );
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === UNIQUE_VIOLATION) {
+      const constraint = (err as { constraint?: string }).constraint ?? '';
+      if (constraint.includes('one_active_per_classification')) {
+        throw new RegulatoryError(409, 'prohibited_use_case_active_for_classification', {
+          risk_classification_id: classification?.id,
+        });
+      }
+      if (constraint.includes('one_active_per_binding')) {
+        throw new RegulatoryError(409, 'prohibited_use_case_active_for_binding', {
+          agent_capability_binding_id: binding?.id,
+        });
+      }
+      throw new RegulatoryError(409, 'prohibited_use_case_key_conflict', {
+        case_key: input.case_key,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_case.created',
+    subjectType: 'regulatory_prohibited_use_case',
+    subjectId: row.id,
+    metadata: prohibitedUseCaseAuditMeta(row),
+  });
+  return row;
+}
+
+export async function getVisibleProhibitedUseCase(
+  ctx: Ctx,
+  id: string,
+): Promise<ProhibitedUseCaseRow | null> {
+  const r = await ctx.client.query<ProhibitedUseCaseRow>(
+    `SELECT ${PROHIBITED_USE_CASE_COLUMNS} FROM govai.regulatory_prohibited_use_cases WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateProhibitedUseCase(
+  ctx: Ctx,
+  id: string,
+  input: UpdateProhibitedUseCaseInput,
+): Promise<ProhibitedUseCaseRow> {
+  const existing = await getVisibleProhibitedUseCase(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  if (TERMINAL_PROHIBITED_USE_STATUSES.has(existing.case_status)) {
+    throw new RegulatoryError(409, 'prohibited_use_case_terminal', {
+      case_status: existing.case_status,
+    });
+  }
+  if (input.superseded_by_case_id !== undefined && input.superseded_by_case_id !== null) {
+    const next = await getVisibleProhibitedUseCase(ctx, input.superseded_by_case_id);
+    if (!next) throw new RegulatoryError(404, 'superseded_by_case_not_found');
+  }
+  if (
+    input.denial_posture !== undefined &&
+    existing.capability_risk_posture === 'PROHIBITED' &&
+    input.denial_posture !== 'HARD_DENY_EXPECTED' &&
+    input.denial_posture !== 'GOVERNANCE_DENY_RECORDED'
+  ) {
+    throw new RegulatoryError(400, 'prohibited_capability_requires_deny_posture', {
+      denial_posture: input.denial_posture,
+    });
+  }
+
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.denial_posture !== undefined) col('denial_posture', input.denial_posture);
+  if (input.rationale_summary !== undefined) col('rationale_summary', input.rationale_summary);
+  if (input.evidence_summary !== undefined) col('evidence_summary', input.evidence_summary);
+  if (input.denial_summary !== undefined) col('denial_summary', input.denial_summary);
+  if (input.review_notes !== undefined) col('review_notes', input.review_notes);
+  if (input.due_at !== undefined) col('due_at', input.due_at, '::timestamptz');
+  if (input.superseded_by_case_id !== undefined)
+    col('superseded_by_case_id', input.superseded_by_case_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<ProhibitedUseCaseRow>(
+    `UPDATE govai.regulatory_prohibited_use_cases SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${PROHIBITED_USE_CASE_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_case.updated',
+    subjectType: 'regulatory_prohibited_use_case',
+    subjectId: row.id,
+    metadata: { ...prohibitedUseCaseAuditMeta(row), changed_fields: Object.keys(input) },
+  });
+  return row;
+}
+
+export async function submitProhibitedUseCase(
+  ctx: Ctx,
+  id: string,
+  _input: SubmitProhibitedUseCaseInput,
+): Promise<ProhibitedUseCaseRow> {
+  const existing = await getVisibleProhibitedUseCase(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  if (TERMINAL_PROHIBITED_USE_STATUSES.has(existing.case_status)) {
+    throw new RegulatoryError(409, 'prohibited_use_case_terminal', {
+      case_status: existing.case_status,
+    });
+  }
+  if (existing.case_status !== 'OPEN') {
+    throw new RegulatoryError(409, 'prohibited_use_case_not_submittable', {
+      case_status: existing.case_status,
+    });
+  }
+  const res = await ctx.client.query<ProhibitedUseCaseRow>(
+    `UPDATE govai.regulatory_prohibited_use_cases
+       SET case_status = 'UNDER_REVIEW',
+           submitted_at = now(),
+           updated_by_user_id = $2::uuid,
+           updated_at = now()
+     WHERE id = $1::uuid AND org_id = $3::uuid
+     RETURNING ${PROHIBITED_USE_CASE_COLUMNS}`,
+    [id, ctx.actor.userId, ctx.actor.orgId],
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  const baseMeta = prohibitedUseCaseAuditMeta(row);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_case.submitted',
+    subjectType: 'regulatory_prohibited_use_case',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_case_status: existing.case_status },
+  });
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_case.status_changed',
+    subjectType: 'regulatory_prohibited_use_case',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_case_status: existing.case_status },
+  });
+  return row;
+}
+
+export async function cancelProhibitedUseCase(
+  ctx: Ctx,
+  id: string,
+  input: CancelProhibitedUseCaseInput,
+): Promise<ProhibitedUseCaseRow> {
+  const existing = await getVisibleProhibitedUseCase(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  if (TERMINAL_PROHIBITED_USE_STATUSES.has(existing.case_status)) {
+    throw new RegulatoryError(409, 'prohibited_use_case_terminal', {
+      case_status: existing.case_status,
+    });
+  }
+  const res = await ctx.client.query<ProhibitedUseCaseRow>(
+    `UPDATE govai.regulatory_prohibited_use_cases
+       SET case_status = 'CANCELLED',
+           cancellation_reason = $2,
+           cancelled_at = now(),
+           metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+           updated_by_user_id = $4::uuid,
+           updated_at = now()
+     WHERE id = $1::uuid AND org_id = $5::uuid
+     RETURNING ${PROHIBITED_USE_CASE_COLUMNS}`,
+    [id, input.cancellation_reason, JSON.stringify(input.metadata ?? {}), ctx.actor.userId, ctx.actor.orgId],
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  const baseMeta = prohibitedUseCaseAuditMeta(row);
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_case.cancelled',
+    subjectType: 'regulatory_prohibited_use_case',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_case_status: existing.case_status, cancellation_reason: input.cancellation_reason },
+  });
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_case.status_changed',
+    subjectType: 'regulatory_prohibited_use_case',
+    subjectId: row.id,
+    metadata: { ...baseMeta, previous_case_status: existing.case_status },
+  });
+  return row;
+}
+
+export async function listProhibitedUseCases(
+  ctx: Ctx,
+  filters: {
+    case_status?: string;
+    case_basis?: string;
+    prohibited_use_policy_id?: string;
+    risk_classification_id?: string;
+    use_case_id?: string;
+    ai_system_id?: string;
+    agent_id?: string;
+    agent_capability_binding_id?: string;
+    denial_posture?: string;
+    due_before?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<ProhibitedUseCaseRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('case_status', filters.case_status);
+  eq('case_basis', filters.case_basis);
+  eq('prohibited_use_policy_id', filters.prohibited_use_policy_id, '::uuid');
+  eq('risk_classification_id', filters.risk_classification_id, '::uuid');
+  eq('use_case_id', filters.use_case_id, '::uuid');
+  eq('ai_system_id', filters.ai_system_id, '::uuid');
+  eq('agent_id', filters.agent_id, '::uuid');
+  eq('agent_capability_binding_id', filters.agent_capability_binding_id, '::uuid');
+  eq('denial_posture', filters.denial_posture);
+  if (filters.due_before !== undefined) {
+    params.push(filters.due_before);
+    where.push(`due_at IS NOT NULL AND due_at <= $${params.length}::timestamptz`);
+  }
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(case_key ILIKE $${i} OR rationale_summary ILIKE $${i} OR evidence_summary ILIKE $${i}
+        OR denial_summary ILIKE $${i} OR review_notes ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ProhibitedUseCaseRow>(
+    `SELECT ${PROHIBITED_USE_CASE_COLUMNS} FROM govai.regulatory_prohibited_use_cases
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- evidence ------------------------------------------------------------
+
+export async function createProhibitedUseEvidence(
+  ctx: Ctx,
+  caseId: string,
+  input: CreateProhibitedUseEvidenceInput,
+): Promise<ProhibitedUseEvidenceRow> {
+  const parent = await getVisibleProhibitedUseCase(ctx, caseId);
+  if (!parent) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  if (TERMINAL_PROHIBITED_USE_STATUSES.has(parent.case_status)) {
+    throw new RegulatoryError(409, 'prohibited_use_case_terminal', {
+      case_status: parent.case_status,
+    });
+  }
+  await requireVisibleParents(ctx, {
+    regulatory_source_id: input.regulatory_source_id ?? null,
+    control_id: input.control_id ?? null,
+  });
+  let res;
+  try {
+    res = await ctx.client.query<ProhibitedUseEvidenceRow>(
+      `INSERT INTO govai.regulatory_prohibited_use_evidence
+         (org_id, prohibited_use_case_id, evidence_key, evidence_type, evidence_status, title,
+          summary, evidence_reference, source_uri, source_hash, regulatory_source_id, control_id,
+          metadata, created_by_user_id, updated_by_user_id)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12::uuid,
+               $13::jsonb, $14::uuid, $14::uuid)
+       RETURNING ${PROHIBITED_USE_EVIDENCE_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        caseId,
+        input.evidence_key,
+        input.evidence_type,
+        input.evidence_status,
+        input.title,
+        input.summary,
+        input.evidence_reference ?? null,
+        input.source_uri ?? null,
+        input.source_hash ?? null,
+        input.regulatory_source_id ?? null,
+        input.control_id ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        ctx.actor.userId,
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'prohibited_use_evidence_key_conflict', {
+        evidence_key: input.evidence_key,
+      });
+    }
+    throw err;
+  }
+  const row = res.rows[0]!;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_evidence.created',
+    subjectType: 'regulatory_prohibited_use_evidence',
+    subjectId: row.id,
+    metadata: {
+      evidence_id: row.id,
+      evidence_key: row.evidence_key,
+      evidence_type: row.evidence_type,
+      evidence_status: row.evidence_status,
+      prohibited_use_case_id: row.prohibited_use_case_id,
+      case_key: parent.case_key,
+    },
+  });
+  return row;
+}
+
+export async function getVisibleProhibitedUseEvidence(
+  ctx: Ctx,
+  id: string,
+): Promise<ProhibitedUseEvidenceRow | null> {
+  const r = await ctx.client.query<ProhibitedUseEvidenceRow>(
+    `SELECT ${PROHIBITED_USE_EVIDENCE_COLUMNS} FROM govai.regulatory_prohibited_use_evidence WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function updateProhibitedUseEvidence(
+  ctx: Ctx,
+  id: string,
+  input: UpdateProhibitedUseEvidenceInput,
+): Promise<ProhibitedUseEvidenceRow> {
+  const existing = await getVisibleProhibitedUseEvidence(ctx, id);
+  if (!existing) throw new RegulatoryError(404, 'prohibited_use_evidence_not_found');
+  const parent = await getVisibleProhibitedUseCase(ctx, existing.prohibited_use_case_id);
+  if (parent && TERMINAL_PROHIBITED_USE_STATUSES.has(parent.case_status)) {
+    throw new RegulatoryError(409, 'prohibited_use_case_terminal', {
+      case_status: parent.case_status,
+    });
+  }
+  if (input.regulatory_source_id !== undefined || input.control_id !== undefined) {
+    await requireVisibleParents(ctx, {
+      regulatory_source_id:
+        input.regulatory_source_id !== undefined ? input.regulatory_source_id : existing.regulatory_source_id,
+      control_id: input.control_id !== undefined ? input.control_id : existing.control_id,
+    });
+  }
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const col = (name: string, value: unknown, cast = '') => {
+    params.push(value);
+    sets.push(`${name} = $${params.length}${cast}`);
+  };
+  if (input.evidence_status !== undefined) col('evidence_status', input.evidence_status);
+  if (input.title !== undefined) col('title', input.title);
+  if (input.summary !== undefined) col('summary', input.summary);
+  if (input.evidence_reference !== undefined) col('evidence_reference', input.evidence_reference);
+  if (input.source_uri !== undefined) col('source_uri', input.source_uri);
+  if (input.source_hash !== undefined) col('source_hash', input.source_hash);
+  if (input.regulatory_source_id !== undefined)
+    col('regulatory_source_id', input.regulatory_source_id, '::uuid');
+  if (input.control_id !== undefined) col('control_id', input.control_id, '::uuid');
+  if (input.metadata !== undefined) col('metadata', JSON.stringify(input.metadata), '::jsonb');
+  col('updated_by_user_id', ctx.actor.userId, '::uuid');
+  sets.push('updated_at = now()');
+
+  params.push(id);
+  const idIdx = params.length;
+  params.push(ctx.actor.orgId);
+  const orgIdx = params.length;
+  const res = await ctx.client.query<ProhibitedUseEvidenceRow>(
+    `UPDATE govai.regulatory_prohibited_use_evidence SET ${sets.join(', ')}
+      WHERE id = $${idIdx}::uuid AND org_id = $${orgIdx}::uuid
+      RETURNING ${PROHIBITED_USE_EVIDENCE_COLUMNS}`,
+    params,
+  );
+  const row = res.rows[0];
+  if (!row) throw new RegulatoryError(404, 'prohibited_use_evidence_not_found');
+  const statusChanged =
+    input.evidence_status !== undefined && input.evidence_status !== existing.evidence_status;
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_evidence.updated',
+    subjectType: 'regulatory_prohibited_use_evidence',
+    subjectId: row.id,
+    metadata: {
+      evidence_id: row.id,
+      evidence_key: row.evidence_key,
+      prohibited_use_case_id: row.prohibited_use_case_id,
+      changed_fields: Object.keys(input),
+      evidence_status: row.evidence_status,
+      ...(statusChanged ? { previous_evidence_status: existing.evidence_status } : {}),
+    },
+  });
+  if (statusChanged) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_prohibited_use_evidence.status_changed',
+      subjectType: 'regulatory_prohibited_use_evidence',
+      subjectId: row.id,
+      metadata: {
+        evidence_id: row.id,
+        evidence_key: row.evidence_key,
+        prohibited_use_case_id: row.prohibited_use_case_id,
+        previous_evidence_status: existing.evidence_status,
+        evidence_status: row.evidence_status,
+      },
+    });
+  }
+  return row;
+}
+
+export async function listProhibitedUseEvidence(
+  ctx: Ctx,
+  filters: {
+    prohibited_use_case_id?: string;
+    evidence_type?: string;
+    evidence_status?: string;
+    q?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<ProhibitedUseEvidenceRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('prohibited_use_case_id', filters.prohibited_use_case_id, '::uuid');
+  eq('evidence_type', filters.evidence_type);
+  eq('evidence_status', filters.evidence_status);
+  if (filters.q !== undefined) {
+    params.push(`%${filters.q}%`);
+    const i = params.length;
+    where.push(
+      `(evidence_key ILIKE $${i} OR title ILIKE $${i} OR summary ILIKE $${i}
+        OR evidence_reference ILIKE $${i} OR source_uri ILIKE $${i})`,
+    );
+  }
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ProhibitedUseEvidenceRow>(
+    `SELECT ${PROHIBITED_USE_EVIDENCE_COLUMNS} FROM govai.regulatory_prohibited_use_evidence
+      WHERE ${where.join(' AND ')}
+      ORDER BY created_at DESC, id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return { rows: res.rows, nextCursor: nextCursorFrom(res.rows, cursor.limit) };
+}
+
+// ---- determinations ------------------------------------------------------
+
+export async function createProhibitedUseDetermination(
+  ctx: Ctx,
+  caseId: string,
+  input: CreateProhibitedUseDeterminationInput,
+): Promise<{ determination: ProhibitedUseDeterminationRow; case: ProhibitedUseCaseRow }> {
+  const parent = await getVisibleProhibitedUseCase(ctx, caseId);
+  if (!parent) throw new RegulatoryError(404, 'prohibited_use_case_not_found');
+  if (TERMINAL_PROHIBITED_USE_STATUSES.has(parent.case_status)) {
+    throw new RegulatoryError(409, 'prohibited_use_case_terminal', {
+      case_status: parent.case_status,
+    });
+  }
+  if (parent.case_status !== 'UNDER_REVIEW') {
+    throw new RegulatoryError(409, 'prohibited_use_case_not_decidable', {
+      case_status: parent.case_status,
+    });
+  }
+  // Service-level SoD: the requester cannot submit a final determination on
+  // their own case (PROHIBITED_CONFIRMED or FALSE_POSITIVE). The DB trigger
+  // is the row-level backstop. NEEDS_MORE_INFORMATION is allowed from any
+  // identity (including the requester) so the requester can ask for more
+  // evidence on their own case during review.
+  if (
+    input.determination === 'PROHIBITED_CONFIRMED' ||
+    input.determination === 'FALSE_POSITIVE'
+  ) {
+    if (parent.requester_user_id && parent.requester_user_id === ctx.actor.userId) {
+      throw new RegulatoryError(403, 'prohibited_use_determination_sod_violation', {
+        reason: 'requester cannot submit final determination on own case',
+      });
+    }
+    if (
+      parent.requested_by_participant_id &&
+      input.determined_by_participant_id &&
+      parent.requested_by_participant_id === input.determined_by_participant_id
+    ) {
+      throw new RegulatoryError(403, 'prohibited_use_determination_sod_violation', {
+        reason: 'requester participant cannot submit final determination on own case',
+      });
+    }
+  }
+  // PROHIBITED capability posture on the case implies HARD_DENY_EXPECTED or
+  // GOVERNANCE_DENY_RECORDED for the final determination's denial posture.
+  if (
+    input.determination === 'PROHIBITED_CONFIRMED' &&
+    input.denial_posture !== 'HARD_DENY_EXPECTED' &&
+    input.denial_posture !== 'GOVERNANCE_DENY_RECORDED'
+  ) {
+    throw new RegulatoryError(400, 'prohibited_confirmed_requires_deny_posture', {
+      denial_posture: input.denial_posture,
+    });
+  }
+  if (
+    input.determination === 'FALSE_POSITIVE' &&
+    input.denial_posture !== 'NOT_APPLICABLE'
+  ) {
+    throw new RegulatoryError(400, 'false_positive_requires_not_applicable_posture', {
+      denial_posture: input.denial_posture,
+    });
+  }
+  if (
+    input.determination === 'NEEDS_MORE_INFORMATION' &&
+    input.denial_posture !== 'MONITORING_ONLY' &&
+    input.denial_posture !== 'NOT_APPLICABLE'
+  ) {
+    throw new RegulatoryError(400, 'needs_more_information_requires_monitoring_or_not_applicable', {
+      denial_posture: input.denial_posture,
+    });
+  }
+  // Service-level tenant pre-check: scope determined_by_participant_id by
+  // org_id so a nonexistent or cross-tenant participant id surfaces as a clean
+  // 404 RegulatoryError, instead of falling through to the FK / RLS WITH CHECK
+  // on INSERT and producing a generic DB 500. RLS and the DB FK remain the
+  // defense-in-depth backstop.
+  if (input.determined_by_participant_id) {
+    const participantRes = await ctx.client.query<{ id: string }>(
+      `SELECT id FROM govai.workroom_participants
+        WHERE id = $1::uuid AND org_id = $2::uuid`,
+      [input.determined_by_participant_id, ctx.actor.orgId],
+    );
+    if (participantRes.rowCount === 0) {
+      throw new RegulatoryError(404, 'workroom_participant_not_found', {
+        determined_by_participant_id: input.determined_by_participant_id,
+      });
+    }
+  }
+
+  let determinationRes;
+  try {
+    determinationRes = await ctx.client.query<ProhibitedUseDeterminationRow>(
+      `INSERT INTO govai.regulatory_prohibited_use_determinations
+         (org_id, prohibited_use_case_id, determination, denial_posture, determination_rationale,
+          determined_by_user_id, determined_by_participant_id, reviewer_role,
+          evidence_snapshot_summary, required_controls_summary, future_enforcement_reference,
+          metadata)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::uuid, $7::uuid, $8, $9, $10, $11, $12::jsonb)
+       RETURNING ${PROHIBITED_USE_DETERMINATION_COLUMNS}`,
+      [
+        ctx.actor.orgId,
+        caseId,
+        input.determination,
+        input.denial_posture,
+        input.determination_rationale,
+        ctx.actor.userId,
+        input.determined_by_participant_id ?? null,
+        input.reviewer_role,
+        input.evidence_snapshot_summary,
+        input.required_controls_summary,
+        input.future_enforcement_reference ?? null,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+  } catch (err) {
+    if ((err as { code?: string }).code === UNIQUE_VIOLATION) {
+      throw new RegulatoryError(409, 'prohibited_use_case_final_determination_exists', {
+        prohibited_use_case_id: caseId,
+      });
+    }
+    throw err;
+  }
+  const determinationRow = determinationRes.rows[0]!;
+
+  // Lifecycle transition driven by the determination (same DB transaction).
+  let nextStatus: string;
+  let setDeterminedAt = false;
+  let lifecycleEvent: string;
+  if (input.determination === 'PROHIBITED_CONFIRMED') {
+    nextStatus = 'DENIED';
+    setDeterminedAt = true;
+    lifecycleEvent = 'regulatory_prohibited_use_case.denied';
+  } else if (input.determination === 'FALSE_POSITIVE') {
+    nextStatus = 'FALSE_POSITIVE';
+    setDeterminedAt = true;
+    lifecycleEvent = 'regulatory_prohibited_use_case.false_positive';
+  } else {
+    nextStatus = 'UNDER_REVIEW';
+    lifecycleEvent = 'regulatory_prohibited_use_case.needs_more_information';
+  }
+
+  const updateRes = await ctx.client.query<ProhibitedUseCaseRow>(
+    `UPDATE govai.regulatory_prohibited_use_cases
+       SET case_status = $2,
+           denial_posture = $3,
+           determined_at = CASE WHEN $4::boolean THEN now() ELSE determined_at END,
+           updated_by_user_id = $5::uuid,
+           updated_at = now()
+     WHERE id = $1::uuid AND org_id = $6::uuid
+     RETURNING ${PROHIBITED_USE_CASE_COLUMNS}`,
+    [
+      caseId,
+      nextStatus,
+      input.denial_posture,
+      setDeterminedAt,
+      ctx.actor.userId,
+      ctx.actor.orgId,
+    ],
+  );
+  const updatedCase = updateRes.rows[0]!;
+  const caseMeta = prohibitedUseCaseAuditMeta(updatedCase);
+
+  await appendAudit(ctx, {
+    eventType: 'regulatory_prohibited_use_determination.created',
+    subjectType: 'regulatory_prohibited_use_determination',
+    subjectId: determinationRow.id,
+    metadata: {
+      determination_id: determinationRow.id,
+      prohibited_use_case_id: updatedCase.id,
+      case_key: updatedCase.case_key,
+      determination: determinationRow.determination,
+      denial_posture: determinationRow.denial_posture,
+      reviewer_role: determinationRow.reviewer_role,
+      determined_by_user_id: determinationRow.determined_by_user_id,
+      determined_by_participant_id: determinationRow.determined_by_participant_id,
+      case_status: updatedCase.case_status,
+    },
+  });
+  await appendAudit(ctx, {
+    eventType: lifecycleEvent,
+    subjectType: 'regulatory_prohibited_use_case',
+    subjectId: updatedCase.id,
+    metadata: {
+      ...caseMeta,
+      determination: determinationRow.determination,
+      reviewer_role: determinationRow.reviewer_role,
+      previous_case_status: parent.case_status,
+    },
+  });
+  // status_changed only when the status actually changed (NEEDS_MORE_INFORMATION
+  // can leave the case in UNDER_REVIEW; emitting status_changed in that case
+  // would be misleading).
+  if (updatedCase.case_status !== parent.case_status) {
+    await appendAudit(ctx, {
+      eventType: 'regulatory_prohibited_use_case.status_changed',
+      subjectType: 'regulatory_prohibited_use_case',
+      subjectId: updatedCase.id,
+      metadata: { ...caseMeta, previous_case_status: parent.case_status },
+    });
+  }
+
+  return { determination: determinationRow, case: updatedCase };
+}
+
+export async function getVisibleProhibitedUseDetermination(
+  ctx: Ctx,
+  id: string,
+): Promise<ProhibitedUseDeterminationRow | null> {
+  const r = await ctx.client.query<ProhibitedUseDeterminationRow>(
+    `SELECT ${PROHIBITED_USE_DETERMINATION_COLUMNS} FROM govai.regulatory_prohibited_use_determinations WHERE id = $1::uuid`,
+    [id],
+  );
+  return r.rows[0] ?? null;
+}
+
+export async function listProhibitedUseDeterminations(
+  ctx: Ctx,
+  filters: {
+    prohibited_use_case_id?: string;
+    determination?: string;
+    denial_posture?: string;
+    reviewer_role?: string;
+    determined_by_user_id?: string;
+    determined_by_participant_id?: string;
+  },
+  cursor: Cursor,
+): Promise<ListResult<ProhibitedUseDeterminationRow>> {
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+  const eq = (column: string, val: string | undefined, cast = '') => {
+    if (val === undefined) return;
+    params.push(val);
+    where.push(`${column} = $${params.length}${cast}`);
+  };
+  eq('prohibited_use_case_id', filters.prohibited_use_case_id, '::uuid');
+  eq('determination', filters.determination);
+  eq('denial_posture', filters.denial_posture);
+  eq('reviewer_role', filters.reviewer_role);
+  eq('determined_by_user_id', filters.determined_by_user_id, '::uuid');
+  eq('determined_by_participant_id', filters.determined_by_participant_id, '::uuid');
+  applyCursor(where, params, cursor);
+  params.push(cursor.limit);
+  const res = await ctx.client.query<ProhibitedUseDeterminationRow>(
+    `SELECT ${PROHIBITED_USE_DETERMINATION_COLUMNS} FROM govai.regulatory_prohibited_use_determinations
       WHERE ${where.join(' AND ')}
       ORDER BY created_at DESC, id DESC
       LIMIT $${params.length}`,

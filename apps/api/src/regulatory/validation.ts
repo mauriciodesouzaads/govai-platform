@@ -2160,3 +2160,322 @@ export const ListHighRiskReviewDecisionsQuery = z
     message: 'before_created_at and before_id must be provided together',
     path: ['before_id'],
   });
+
+// ---------------------------------------------------------------------------
+// Prohibited-use Governance Workflow (PR-R9)
+// ---------------------------------------------------------------------------
+//
+// DENIED in PR-R9 means the prohibited-use governance case has a denial
+// determination recorded as governance evidence only. It does not mean
+// runtime execution was blocked; it does not implement gateway enforcement;
+// it does not intercept provider calls; it does not implement legal advice;
+// and it does not certify compliance. HARD_DENY_EXPECTED records an expected
+// governance denial posture for future or adjacent enforcement systems —
+// PR-R9 itself does not perform runtime hard-deny enforcement. Validation
+// enforces input shape only; the service + migration enforce SoD, terminal-
+// state, append-only, and PROHIBITED-classification + capability-binding
+// snapshot invariants.
+
+export const ProhibitedUsePolicyStatus = z.enum([
+  'DRAFT',
+  'ACTIVE',
+  'SUPERSEDED',
+  'RETIRED',
+]);
+
+export const ProhibitedUsePolicyCategory = z.enum([
+  'SOCIAL_SCORING',
+  'BIOMETRIC_EMOTION_RECOGNITION',
+  'RIGHTS_DETERMINATION_WITHOUT_HUMAN_REVIEW',
+  'JUDICIAL_MERIT_OR_RIGHT_PLAUSIBILITY_RANKING',
+  'TESTIMONY_OR_CREDIBILITY_RANKING',
+  'SENSITIVE_DATA_UNLAWFUL_PROCESSING',
+  'CHILDREN_OR_ADOLESCENTS_UNSAFE_USE',
+  'JUDICIAL_SECRET_UNAUTHORIZED_PROCESSING',
+  'ATTORNEY_CLIENT_PRIVILEGE_UNAUTHORIZED_PROCESSING',
+  'UNAUTHORIZED_EXTERNAL_SIDE_EFFECT',
+  'UNSUPERVISED_HIGH_IMPACT_AUTOMATION',
+  'OTHER',
+]);
+
+export const ProhibitedUsePolicyBasis = z.enum([
+  'GOVAI_BASELINE',
+  'RISK_CLASSIFICATION',
+  'REGULATORY_MAPPING',
+  'CUSTOMER_POLICY',
+  'IMPORTED_EVIDENCE',
+]);
+
+export const ProhibitedUseCaseStatus = z.enum([
+  'OPEN',
+  'UNDER_REVIEW',
+  'DENIED',
+  'FALSE_POSITIVE',
+  'CANCELLED',
+  'SUPERSEDED',
+]);
+
+export const ProhibitedUseCaseBasis = z.enum([
+  'RISK_CLASSIFICATION_PROHIBITED',
+  'AGENT_CAPABILITY_PROHIBITED',
+  'MANUAL_ESCALATION',
+  'IMPORTED_EVIDENCE',
+  'POLICY_REVIEW',
+]);
+
+export const ProhibitedUseDenialPosture = z.enum([
+  'HARD_DENY_EXPECTED',
+  'GOVERNANCE_DENY_RECORDED',
+  'MONITORING_ONLY',
+  'NOT_APPLICABLE',
+]);
+
+export const ProhibitedUseEvidenceType = z.enum([
+  'RISK_CLASSIFICATION',
+  'CLASSIFICATION_FACTOR',
+  'USE_CASE_PURPOSE',
+  'DATA_SCOPE',
+  'HUMAN_OVERSIGHT_GAP',
+  'AGENT_CAPABILITY',
+  'POLICY_RULE',
+  'LEGAL_REVIEW_REFERENCE',
+  'DPO_REVIEW_REFERENCE',
+  'SECURITY_REVIEW_REFERENCE',
+  'BUSINESS_OWNER_ATTESTATION',
+  'OTHER',
+]);
+
+export const ProhibitedUseEvidenceStatus = z.enum([
+  'DRAFT',
+  'SUBMITTED',
+  'ACCEPTED',
+  'REJECTED',
+  'SUPERSEDED',
+]);
+
+export const ProhibitedUseDetermination = z.enum([
+  'PROHIBITED_CONFIRMED',
+  'FALSE_POSITIVE',
+  'NEEDS_MORE_INFORMATION',
+]);
+
+export const ProhibitedUseReviewerRole = z.enum([
+  'BUSINESS_OWNER',
+  'DPO',
+  'LEGAL',
+  'SECURITY',
+  'COMPLIANCE',
+  'TECHNICAL_OWNER',
+  'RISK_OWNER',
+  'OTHER',
+]);
+
+// Create policy
+export const CreateProhibitedUsePolicyBody = z.object({
+  policy_key: KeyField,
+  policy_version: z.string().min(1).max(120),
+  name: z.string().min(1).max(500),
+  policy_status: ProhibitedUsePolicyStatus,
+  policy_category: ProhibitedUsePolicyCategory,
+  policy_basis: ProhibitedUsePolicyBasis,
+  framework_profile: FrameworkProfile,
+  prohibited_use_summary: SummaryText.default(''),
+  rationale_summary: SummaryText.default(''),
+  detection_guidance: SummaryText.default(''),
+  required_evidence_summary: SummaryText.default(''),
+  denial_guidance: SummaryText.default(''),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateProhibitedUsePolicyInput = z.infer<typeof CreateProhibitedUsePolicyBody>;
+
+// PATCH policy: policy_key + policy_version are immutable; mutable fields
+// cover name, status, category, basis, summaries, framework, source/control,
+// metadata.
+export const UpdateProhibitedUsePolicyBody = z
+  .object({
+    name: z.string().min(1).max(500).optional(),
+    policy_status: ProhibitedUsePolicyStatus.optional(),
+    policy_category: ProhibitedUsePolicyCategory.optional(),
+    policy_basis: ProhibitedUsePolicyBasis.optional(),
+    framework_profile: FrameworkProfile.optional(),
+    prohibited_use_summary: SummaryText.optional(),
+    rationale_summary: SummaryText.optional(),
+    detection_guidance: SummaryText.optional(),
+    required_evidence_summary: SummaryText.optional(),
+    denial_guidance: SummaryText.optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateProhibitedUsePolicyInput = z.infer<typeof UpdateProhibitedUsePolicyBody>;
+
+// Create case: client supplies anchors (classification + binding + policy)
+// + key + basis + denial_posture + optional context. Risk snapshot AND
+// capability snapshot are copied by the service from the referenced rows
+// and are never accepted from the client.
+export const CreateProhibitedUseCaseBody = z.object({
+  case_key: KeyField,
+  case_basis: ProhibitedUseCaseBasis,
+  denial_posture: ProhibitedUseDenialPosture.default('GOVERNANCE_DENY_RECORDED'),
+  prohibited_use_policy_id: z.string().uuid().optional(),
+  risk_classification_id: z.string().uuid().optional(),
+  agent_capability_binding_id: z.string().uuid().optional(),
+  requested_by_participant_id: z.string().uuid().optional(),
+  rationale_summary: SummaryText.default(''),
+  evidence_summary: SummaryText.default(''),
+  review_notes: SummaryText.default(''),
+  due_at: z.string().datetime().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateProhibitedUseCaseInput = z.infer<typeof CreateProhibitedUseCaseBody>;
+
+// PATCH case: identity / risk snapshot / capability snapshot / requester /
+// policy binding are all immutable. Lifecycle transitions go through
+// dedicated submit/cancel/determinations endpoints; PATCH does not accept
+// case_status.
+export const UpdateProhibitedUseCaseBody = z
+  .object({
+    denial_posture: ProhibitedUseDenialPosture.optional(),
+    rationale_summary: SummaryText.optional(),
+    evidence_summary: SummaryText.optional(),
+    denial_summary: SummaryText.optional(),
+    review_notes: SummaryText.optional(),
+    due_at: z.string().datetime().nullable().optional(),
+    superseded_by_case_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateProhibitedUseCaseInput = z.infer<typeof UpdateProhibitedUseCaseBody>;
+
+export const SubmitProhibitedUseCaseBody = z
+  .object({
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .optional();
+export type SubmitProhibitedUseCaseInput = z.infer<typeof SubmitProhibitedUseCaseBody>;
+
+export const CancelProhibitedUseCaseBody = z.object({
+  cancellation_reason: z.string().min(1).max(2000),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CancelProhibitedUseCaseInput = z.infer<typeof CancelProhibitedUseCaseBody>;
+
+export const CreateProhibitedUseEvidenceBody = z.object({
+  evidence_key: KeyField,
+  evidence_type: ProhibitedUseEvidenceType,
+  evidence_status: ProhibitedUseEvidenceStatus.default('DRAFT'),
+  title: z.string().min(1).max(500),
+  summary: SummaryText.default(''),
+  evidence_reference: z.string().min(1).max(2048).optional(),
+  source_uri: z.string().min(1).max(2048).optional(),
+  source_hash: z.string().min(1).max(256).optional(),
+  regulatory_source_id: z.string().uuid().optional(),
+  control_id: z.string().uuid().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CreateProhibitedUseEvidenceInput = z.infer<typeof CreateProhibitedUseEvidenceBody>;
+
+export const UpdateProhibitedUseEvidenceBody = z
+  .object({
+    evidence_status: ProhibitedUseEvidenceStatus.optional(),
+    title: z.string().min(1).max(500).optional(),
+    summary: SummaryText.optional(),
+    evidence_reference: z.string().min(1).max(2048).nullable().optional(),
+    source_uri: z.string().min(1).max(2048).nullable().optional(),
+    source_hash: z.string().min(1).max(256).nullable().optional(),
+    regulatory_source_id: z.string().uuid().nullable().optional(),
+    control_id: z.string().uuid().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine((d) => Object.keys(d).length > 0, { message: 'at least one field is required' });
+export type UpdateProhibitedUseEvidenceInput = z.infer<typeof UpdateProhibitedUseEvidenceBody>;
+
+// PROHIBITED_CONFIRMED / FALSE_POSITIVE require a non-empty rationale (the DB
+// CHECK enforces this too). Allowed denial_posture per determination is
+// enforced both by service and DB CHECK.
+export const CreateProhibitedUseDeterminationBody = z
+  .object({
+    determination: ProhibitedUseDetermination,
+    denial_posture: ProhibitedUseDenialPosture,
+    determination_rationale: SummaryText.default(''),
+    determined_by_participant_id: z.string().uuid().optional(),
+    reviewer_role: ProhibitedUseReviewerRole,
+    evidence_snapshot_summary: SummaryText.default(''),
+    required_controls_summary: SummaryText.default(''),
+    future_enforcement_reference: z.string().min(1).max(2048).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .refine(
+    (d) =>
+      !(d.determination === 'PROHIBITED_CONFIRMED' || d.determination === 'FALSE_POSITIVE') ||
+      (typeof d.determination_rationale === 'string' && d.determination_rationale.length > 0),
+    {
+      message: 'determination_rationale is required for PROHIBITED_CONFIRMED and FALSE_POSITIVE',
+      path: ['determination_rationale'],
+    },
+  );
+export type CreateProhibitedUseDeterminationInput = z.infer<typeof CreateProhibitedUseDeterminationBody>;
+
+export const ListProhibitedUsePoliciesQuery = z
+  .object({
+    ...Cursor,
+    policy_status: ProhibitedUsePolicyStatus.optional(),
+    policy_category: ProhibitedUsePolicyCategory.optional(),
+    framework_profile: FrameworkProfile.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListProhibitedUseCasesQuery = z
+  .object({
+    ...Cursor,
+    case_status: ProhibitedUseCaseStatus.optional(),
+    case_basis: ProhibitedUseCaseBasis.optional(),
+    prohibited_use_policy_id: z.string().uuid().optional(),
+    risk_classification_id: z.string().uuid().optional(),
+    use_case_id: z.string().uuid().optional(),
+    ai_system_id: z.string().uuid().optional(),
+    agent_id: z.string().uuid().optional(),
+    agent_capability_binding_id: z.string().uuid().optional(),
+    denial_posture: ProhibitedUseDenialPosture.optional(),
+    due_before: z.string().datetime().optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListProhibitedUseEvidenceQuery = z
+  .object({
+    ...Cursor,
+    prohibited_use_case_id: z.string().uuid().optional(),
+    evidence_type: ProhibitedUseEvidenceType.optional(),
+    evidence_status: ProhibitedUseEvidenceStatus.optional(),
+    q: z.string().min(1).max(200).optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });
+
+export const ListProhibitedUseDeterminationsQuery = z
+  .object({
+    ...Cursor,
+    prohibited_use_case_id: z.string().uuid().optional(),
+    determination: ProhibitedUseDetermination.optional(),
+    denial_posture: ProhibitedUseDenialPosture.optional(),
+    reviewer_role: ProhibitedUseReviewerRole.optional(),
+    determined_by_user_id: z.string().uuid().optional(),
+    determined_by_participant_id: z.string().uuid().optional(),
+  })
+  .refine(cursorPaired, {
+    message: 'before_created_at and before_id must be provided together',
+    path: ['before_id'],
+  });

@@ -220,7 +220,7 @@ RLS coverage. Implementation evidence is recorded in
 This is a foundational, production-focused slice within its declared scope. It
 stores provenance/metadata only — no model artifact bytes, training data,
 evaluation datasets, or credentials. The agent registry and use-case registry
-(so control domain 2 is **not** complete and not `COVERED`), the
+(so control domain 2 is not `COVERED` complete and not `COVERED`), the
 risk-classification engine, model runtime enforcement, live provider/ModelOps
 integration, connectors, and CNJ/Sinapses readiness remain future work;
 certification and legal interpretation remain external. GovAI does not guarantee
@@ -252,7 +252,7 @@ whether the hard-deny floor is expected to apply, but PR-R5 does not implement
 runtime enforcement, live tool invocation blocking, or gateway-level denial
 behavior. This is a foundational registry-evidence slice only — it stores no
 prompts, tool-manifest bodies, or credentials. The use-case registry (so
-control domain 2 remains **not** `COVERED`), the risk-classification engine,
+control domain 2 remains not `COVERED`), the risk-classification engine,
 runtime agent enforcement, live tool invocation, connectors, and CNJ/Sinapses
 readiness remain future work; certification and legal interpretation remain
 external. GovAI does not guarantee compliance, does not provide legal advice,
@@ -284,8 +284,8 @@ ownership, jurisdiction, regulatory/legal-basis summaries, and review cadence,
 but PR-R6 does not implement risk classification, high-risk approval workflow,
 prohibited-use hard-deny workflow, legal advice, or runtime enforcement. All
 five domain-2 registry categories now have foundational implementations, but
-control domain 2 remains **not** `COVERED` (COVERED requires per-requirement
-framework-mapping citations), and domains 4, 5, and 6 are **not** `COVERED`. The
+control domain 2 remains not `COVERED` (COVERED requires per-requirement
+framework-mapping citations), and domains 4, 5, and 6 are not `COVERED`. The
 risk-classification engine, high-risk and prohibited-use workflows, review
 workflow engine, legal-basis automation, runtime enforcement, connectors, and
 CNJ/Sinapses readiness remain future work; certification and legal interpretation
@@ -322,10 +322,10 @@ governance evidence — it does not implement a high-risk approval workflow, a
 prohibited-use hard-deny workflow, runtime enforcement, gateway-level blocking,
 DSR/RIPD/DPIA/AIA workflows, incident response, retention or legal hold,
 evidence-bundle export, CNJ/Sinapses submission, credential vaulting, or legal,
-medical, or financial advice; control domains 5 and 6 are **not** `COVERED`
+medical, or financial advice; control domains 5 and 6 are not `COVERED`
 (domain 5 has its first foundational primitive but COVERED requires
 per-requirement framework-mapping citations, and domain 6 has no implementation
-in PR-R7), and domain 4 also remains **not** `COVERED`. In PR-R7 the residual
+in PR-R7), and domain 4 also remains not `COVERED`. In PR-R7 the residual
 risk tier and score always mirror the inherent risk tier and score
 (DB-enforced); mitigation_strength is recorded as an evidence-only factor and
 does not downgrade tier or score, because no methodology PR has yet defined and
@@ -396,7 +396,7 @@ error code `prohibited_classification_requires_future_workflow`; attempts to
 open a review from LOW/MODERATE/MINIMAL/UNKNOWN classifications are rejected
 with `classification_not_high_risk`. The prohibited-use registry and hard-deny
 workflow remain future work and are out of scope for PR-R8. Control domain 6
-remains **not** `COVERED` — PR-R8 ships the high-risk workflow portion of
+remains not `COVERED` — PR-R8 ships the high-risk workflow portion of
 domain 6 as `IMPLEMENTED_FOUNDATIONAL_CONTROL`, while the prohibited-use
 registry and hard-deny workflow remain `REQUIRED_NATIVE_CAPABILITY` / future
 work, and `COVERED` still requires per-requirement framework-mapping
@@ -407,3 +407,88 @@ operating model, connectors, and CNJ/Sinapses submission remain future work;
 certification and legal interpretation remain external. GovAI does not
 guarantee compliance, does not provide legal advice, and does not guarantee
 judicial validity or evidence admissibility.
+
+## PR-R9 implementation
+
+PR-R9 adds the next P0 Native Regulatory Core foundation after the source
+registry, control catalog, AI-system registry, provider registry, model
+registry, agent registry, use-case registry, Risk Classification Engine
+(PR-R7), and High-risk Review Workflow (PR-R8): a production-focused
+prohibited-use governance workflow. It lands four tenant-only tables —
+`govai.regulatory_prohibited_use_policies`,
+`govai.regulatory_prohibited_use_cases`,
+`govai.regulatory_prohibited_use_evidence`, and
+`govai.regulatory_prohibited_use_determinations` — as
+`IMPLEMENTED_FOUNDATIONAL_CONTROL` for prohibited-use governance policies,
+cases, evidence, append-only determinations, lifecycle transitions
+(OPEN → UNDER_REVIEW → DENIED / FALSE_POSITIVE / CANCELLED, with SUPERSEDED
+supported), mandatory separation-of-duties for final determinations
+(PROHIBITED_CONFIRMED, FALSE_POSITIVE) enforced in both service and DB
+trigger, terminal-state backstops blocking further evidence / determination
+mutation, deterministic intake from PROHIBITED PR-R7 risk classifications and
+from PROHIBITED / hard-deny-expected PR-R5 agent capability bindings,
+migration, validation, service, routes, tenant isolation (RLS with DB-enforced
+parent visibility, classification snapshot equality and capability snapshot
+equality enforced in the INSERT WITH CHECK, table-qualified guards,
+version-requires-parent CHECKs, partial unique indexes — one non-terminal case
+per classification, one non-terminal case per binding, one final
+PROHIBITED_CONFIRMED/FALSE_POSITIVE determination per case), audit events
+(`regulatory_prohibited_use_policy.*`, `regulatory_prohibited_use_case.*`
+including `.denied` / `.false_positive` / `.needs_more_information`,
+`regulatory_prohibited_use_evidence.*`, and
+`regulatory_prohibited_use_determination.created`), and DDL semantic comments
+binding DENIED / HARD_DENY_EXPECTED / PROHIBITED_CONFIRMED to governance
+evidence only. Implementation evidence is recorded in
+`23-regulatory-core-roadmap.md` (P0) and `20-target-control-catalog.md`
+(control domain 6, prohibited-use workflow portion only).
+
+PR-R9 implements prohibited-use governance policy, case, evidence,
+determination, denial-posture, audit, SoD, and tenant-isolation primitives;
+it does not implement runtime gateway blocking, live tool enforcement,
+connector enforcement, legal advice, compliance certification, or
+CNJ/Sinapses submission.
+
+DENIED in PR-R9 means the prohibited-use governance case has a denial
+determination recorded as governance evidence only; it does not mean runtime
+execution was blocked, a provider call was intercepted, legal compliance was
+determined, or enforcement was executed.
+
+HARD_DENY_EXPECTED in PR-R9 records an expected governance denial posture for
+future or adjacent enforcement systems; PR-R9 itself does not perform runtime
+hard-deny enforcement.
+
+FALSE_POSITIVE in PR-R9 records a governance determination that the case is
+not treated as prohibited based on submitted evidence; it does not certify
+safety, legality, or compliance.
+
+A prohibited-use case can only be opened from a PR-R7 risk classification
+whose `residual_risk_tier = inherent_risk_tier = PROHIBITED` and
+`requires_prohibited_use_review = true`, or from a PR-R5 agent capability
+binding with `risk_posture = PROHIBITED` or `hard_deny_floor_expected = true`
+(both the service and the DB RLS WITH CHECK enforce this; snapshot fields
+copied into the case must equal the referenced row exactly). HIGH
+classifications are rejected with `high_risk_review_required` (they belong to
+the PR-R8 high-risk review workflow); LOW/MODERATE/MINIMAL/UNKNOWN
+classifications are rejected with `classification_not_prohibited`;
+non-prohibited / non-hard-deny capability bindings are rejected with
+`capability_not_prohibited_or_denied`. Mandatory service-level and DB-level
+SoD ensure the requester cannot submit either final determination
+(PROHIBITED_CONFIRMED or FALSE_POSITIVE) on their own case — service returns
+403 `prohibited_use_determination_sod_violation` and the DB trigger raises
+`insufficient_privilege` as the row-level backstop.
+NEEDS_MORE_INFORMATION may be raised by the requester so they can ask for
+additional evidence on their own case; it keeps the case in UNDER_REVIEW and
+emits a dedicated audit event.
+
+Domain status: Domain 6 is not COVERED in PR-R9; PR-R9 marks only the
+prohibited-use governance workflow slice as `IMPLEMENTED_FOUNDATIONAL_CONTROL`,
+while COVERED requires a separate future mapping PR with per-framework,
+per-requirement citations. Domain 5 remains the PR-R7
+`IMPLEMENTED_FOUNDATIONAL_CONTROL` (not `COVERED`). The high-risk workflow
+portion of domain 6 remains the PR-R8 `IMPLEMENTED_FOUNDATIONAL_CONTROL`.
+Runtime enforcement, gateway blocking, live tool invocation, connector
+enforcement, mitigation-weighted downgrading, sensitive-data operating model,
+and CNJ/Sinapses submission remain future work; certification and legal
+interpretation remain external. GovAI does not guarantee compliance, does
+not provide legal advice, and does not guarantee judicial validity or
+evidence admissibility.

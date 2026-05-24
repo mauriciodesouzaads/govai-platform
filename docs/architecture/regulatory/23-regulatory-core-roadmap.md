@@ -271,6 +271,21 @@ implementation timeline.
 - Done when: registry, workflow, evidence, and tests exist.
 - Mapping update triggered: control 6 in `20-target-control-catalog.md`.
 - Tests expected: registry tests, hard-deny integration tests.
+- Status: `IMPLEMENTED_FOUNDATIONAL_CONTROL` (PR-R9) for prohibited-use
+  governance policy records, case records, evidence records, append-only
+  determination records, deterministic lifecycle transitions, mandatory
+  service- + DB-level separation-of-duties on final determinations
+  (PROHIBITED_CONFIRMED, FALSE_POSITIVE), terminal-state backstops,
+  classification + capability-binding intake, and tenant RLS; see the PR-R9
+  evidence below. DENIED in PR-R9 means the prohibited-use governance case
+  has a denial determination recorded as governance evidence only; it does
+  not mean runtime execution was blocked, a provider call was intercepted,
+  legal compliance was determined, or enforcement was executed.
+  HARD_DENY_EXPECTED records an expected governance denial posture for
+  future or adjacent enforcement systems; PR-R9 itself does not perform
+  runtime hard-deny enforcement. Runtime gateway blocking, live tool
+  enforcement, connector enforcement, provider-side blocking, and
+  CNJ/Sinapses submission remain future work.
 
 ### CNJ and Sinapses data model
 
@@ -773,7 +788,7 @@ Limitations (remain future work or external):
 - Governance evidence only — no prompts, credentials, legal opinions,
   medical records, raw sensitive data samples, or financial advice outputs
   are stored.
-- Domain 6 is **not** `COVERED`: PR-R8 ships the high-risk workflow portion
+- Domain 6 is not `COVERED`: PR-R8 ships the high-risk workflow portion
   as `IMPLEMENTED_FOUNDATIONAL_CONTROL`; the prohibited-use registry and
   hard-deny workflow remain `REQUIRED_NATIVE_CAPABILITY` / future work, and
   `COVERED` requires per-requirement framework-mapping citations.
@@ -784,6 +799,117 @@ Limitations (remain future work or external):
   runtime invocation, and mitigation-weighted downgrading remain future
   work.
 - CNJ/Sinapses submission model remains future work.
+- Certification/legal interpretation remains external.
+- GovAI does not guarantee compliance.
+- GovAI does not provide legal advice.
+- GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-R9 implementation evidence (foundational slice)
+
+PR-R9 delivers the Prohibited-use Governance Workflow, the next P0 foundation
+after the High-risk Review Workflow (PR-R8). It is a production-focused
+foundational slice — prohibited-use policy records, case records, evidence
+records, append-only determinations, deterministic lifecycle transitions,
+mandatory separation-of-duties for final determinations, terminal-state
+backstops, audit events, tenant RLS, and semantic DDL comments — not a
+runtime hard-deny engine, not a gateway, not a connector, not a provider-call
+interceptor, and not a legal-advice engine.
+
+Status:
+
+- Prohibited-use Governance Workflow: IMPLEMENTED_FOUNDATIONAL_CONTROL for
+  prohibited-use policies, cases, evidence records, append-only
+  determinations, deterministic lifecycle transitions (OPEN → UNDER_REVIEW →
+  DENIED / FALSE_POSITIVE / CANCELLED / SUPERSEDED), mandatory service +
+  DB-trigger separation-of-duties for PROHIBITED_CONFIRMED and FALSE_POSITIVE,
+  terminal-state backstops, deterministic intake from PROHIBITED PR-R7 risk
+  classifications and from PROHIBITED / hard-deny-expected PR-R5 agent
+  capability bindings, and tenant RLS.
+
+PR-R9 implements prohibited-use governance policy, case, evidence,
+determination, denial-posture, audit, SoD, and tenant-isolation primitives;
+it does not implement runtime gateway blocking, live tool enforcement,
+connector enforcement, legal advice, compliance certification, or
+CNJ/Sinapses submission.
+
+DENIED in PR-R9 means the prohibited-use governance case has a denial
+determination recorded as governance evidence only; it does not mean runtime
+execution was blocked, a provider call was intercepted, legal compliance was
+determined, or enforcement was executed.
+
+HARD_DENY_EXPECTED in PR-R9 records an expected governance denial posture for
+future or adjacent enforcement systems; PR-R9 itself does not perform runtime
+hard-deny enforcement.
+
+FALSE_POSITIVE in PR-R9 records a governance determination that the case is
+not treated as prohibited based on submitted evidence; it does not certify
+safety, legality, or compliance.
+
+Implementation evidence:
+
+- Migration: `apps/api/src/db/migrations/0024_regulatory_prohibited_use_governance_workflow.sql`
+  (`govai.regulatory_prohibited_use_policies`,
+  `govai.regulatory_prohibited_use_cases`,
+  `govai.regulatory_prohibited_use_evidence`,
+  `govai.regulatory_prohibited_use_determinations`; tenant-only; RLS ENABLE
+  + FORCE; classification-anchored cases are CHECK-pinned to
+  `residual_risk_tier = inherent_risk_tier = PROHIBITED`,
+  `residual_risk_score = risk_score`, and `requires_prohibited_use_review =
+  true`; capability-anchored cases CHECK-require the minimum binding
+  snapshot fields; PROHIBITED capability posture CHECK-requires
+  `denial_posture` in (`HARD_DENY_EXPECTED`, `GOVERNANCE_DENY_RECORDED`);
+  `version-requires-parent` CHECKs; INSERT WITH CHECK uses table-qualified
+  EXISTS guards enforcing exact equality of all copied classification and
+  capability snapshot fields against the referenced rows; partial unique
+  indexes for one non-terminal case per classification, one non-terminal
+  case per binding, and one final PROHIBITED_CONFIRMED/FALSE_POSITIVE
+  determination per case; guarded-update triggers on policies/cases/
+  evidence freezing identity and snapshot; append-only trigger on
+  determinations; mandatory SoD trigger blocking PROHIBITED_CONFIRMED and
+  FALSE_POSITIVE when the decider equals the case requester; terminal-case
+  trigger blocking evidence and determination inserts after DENIED /
+  FALSE_POSITIVE / CANCELLED / SUPERSEDED; semantic DDL comments binding
+  DENIED, HARD_DENY_EXPECTED, and PROHIBITED_CONFIRMED to governance
+  evidence only on the policies, cases, and determinations tables and on
+  the `case_status`, `denial_posture`, `determination`, and
+  `denial_posture` columns).
+- Validation / service / routes: `apps/api/src/regulatory/validation.ts`,
+  `apps/api/src/regulatory/service.ts`,
+  `apps/api/src/routes/regulatory.ts` (policy + case
+  CRUD-without-delete + submit/cancel + evidence + append-only
+  determinations, with service-level SoD and terminal-state checks; risk
+  classification snapshot copied from the PR-R7 classification by the
+  service and never accepted from the client; capability snapshot copied
+  from the PR-R5 binding; client-supplied snapshot fields are stripped).
+- Tests: `tests/integration/regulatory-prohibited-use-workflow.test.ts`.
+
+Audit events emitted:
+
+- `regulatory_prohibited_use_policy.created` / `.updated` / `.status_changed`
+- `regulatory_prohibited_use_case.created` / `.submitted` / `.updated` /
+  `.status_changed` / `.cancelled` / `.denied` / `.false_positive` /
+  `.needs_more_information`
+- `regulatory_prohibited_use_evidence.created` / `.updated` /
+  `.status_changed`
+- `regulatory_prohibited_use_determination.created` (determinations are
+  append-only)
+
+Limitations (remain future work or external):
+
+- Governance evidence only — no provider prompts, tool manifest bodies,
+  credentials, raw sensitive data, legal opinions generated by GovAI,
+  medical records, or financial advice outputs are stored.
+- Domain 6 is not `COVERED` in PR-R9: PR-R9 marks only the
+  prohibited-use governance workflow slice as
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL`. The high-risk workflow portion of
+  domain 6 is the PR-R8 `IMPLEMENTED_FOUNDATIONAL_CONTROL` (also not
+  `COVERED`). `COVERED` requires a separate future mapping PR with
+  per-framework, per-requirement citations.
+- Runtime hard-deny enforcement, gateway-level blocking, live tool
+  invocation, provider-side blocking, and connector enforcement remain
+  future work.
+- Mitigation-weighted downgrading, sensitive-data operating model, and
+  CNJ/Sinapses submission remain future work.
 - Certification/legal interpretation remains external.
 - GovAI does not guarantee compliance.
 - GovAI does not provide legal advice.
