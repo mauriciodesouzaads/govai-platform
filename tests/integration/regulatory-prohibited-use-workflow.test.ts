@@ -982,6 +982,283 @@ describe('regulatory-prohibited-use / mandatory SoD (service)', () => {
 });
 
 // ===========================================================================
+// Tenant pre-checks — anchor snapshot validation (Codex P1) and
+// determination participant visibility (Codex P2). Both paths must surface
+// deterministic 400 / 404 RegulatoryError responses, never generic 500s, and
+// must not mutate the source classification/binding rows on rejection. RLS
+// WITH CHECK, the DB FK, and the DB SoD trigger remain defense-in-depth.
+// ===========================================================================
+
+describe('regulatory-prohibited-use / anchor snapshot pre-check (Codex P1)', () => {
+  // Helper: create a PROHIBITED risk classification anchored to a given
+  // agent (and optionally agent_version). The tier is determined by the
+  // engine from PROHIBITED_INPUTS; the agent fields are anchor metadata.
+  async function mkAnchoredProhibitedClassification(
+    org: AdminOrg,
+    methodId: string,
+    ucId: string,
+    aiId: string,
+    anchor: { agent_id: string; agent_version_id?: string | null },
+  ): Promise<string> {
+    const body: Record<string, unknown> = {
+      classification_key: `CLS-A-${randomUUID().slice(0, 8).toUpperCase()}`,
+      risk_method_id: methodId,
+      use_case_id: ucId,
+      ai_system_id: aiId,
+      classification_basis: 'RULE_EVALUATION',
+      decision_scope: 'INTERNAL_ASSISTANCE',
+      factor_inputs: PROHIBITED_INPUTS,
+      agent_id: anchor.agent_id,
+    };
+    if (anchor.agent_version_id) body['agent_version_id'] = anchor.agent_version_id;
+    const r = await inject(stack, 'POST', '/v1/regulatory/risk-classifications', org.api_key, body);
+    expect(r.statusCode).toBe(201);
+    return ((bodyOf(r)['risk_classification']) as Record<string, unknown>)['id'] as string;
+  }
+
+  it('agent_id mismatch (classification.agent_id != binding.agent_id) returns 400 prohibited_use_case_agent_mismatch, not 500', async () => {
+    const agentX = await mkAgent(orgA);
+    const agentY = await mkAgent(orgA);
+    const cls = await mkAnchoredProhibitedClassification(orgA, methodA, useCaseA, aiSysA, { agent_id: agentX });
+    const bind = await mkBinding(orgA, agentY, { risk_posture: 'PROHIBITED' });
+    const r = await mkCaseResp(orgA, {
+      case_basis: 'AGENT_CAPABILITY_PROHIBITED',
+      risk_classification_id: cls,
+      agent_capability_binding_id: bind,
+      denial_posture: 'HARD_DENY_EXPECTED',
+    });
+    expect(r.status).toBe(400);
+    expect(r.body['error']).toBe('prohibited_use_case_agent_mismatch');
+  });
+
+  it('agent_version_id mismatch (same agent, different versions) returns 400 prohibited_use_case_agent_version_mismatch, not 500', async () => {
+    const agent = await mkAgent(orgA);
+    const v1 = await mkAgentVersion(orgA, agent);
+    const v2 = await mkAgentVersion(orgA, agent);
+    const cls = await mkAnchoredProhibitedClassification(orgA, methodA, useCaseA, aiSysA, {
+      agent_id: agent,
+      agent_version_id: v1,
+    });
+    const bind = await mkBinding(orgA, agent, {
+      risk_posture: 'PROHIBITED',
+      agent_version_id: v2,
+    });
+    const r = await mkCaseResp(orgA, {
+      case_basis: 'AGENT_CAPABILITY_PROHIBITED',
+      risk_classification_id: cls,
+      agent_capability_binding_id: bind,
+      denial_posture: 'HARD_DENY_EXPECTED',
+    });
+    expect(r.status).toBe(400);
+    expect(r.body['error']).toBe('prohibited_use_case_agent_version_mismatch');
+  });
+
+  it('classification agent_version_id null + binding agent_version_id non-null returns 400 prohibited_use_case_agent_version_mismatch, not 500', async () => {
+    const agent = await mkAgent(orgA);
+    const v = await mkAgentVersion(orgA, agent);
+    // Classification anchored only to the agent (no agent_version_id).
+    const cls = await mkAnchoredProhibitedClassification(orgA, methodA, useCaseA, aiSysA, { agent_id: agent });
+    // Binding anchored to the agent AND a specific version.
+    const bind = await mkBinding(orgA, agent, { risk_posture: 'PROHIBITED', agent_version_id: v });
+    const r = await mkCaseResp(orgA, {
+      case_basis: 'AGENT_CAPABILITY_PROHIBITED',
+      risk_classification_id: cls,
+      agent_capability_binding_id: bind,
+      denial_posture: 'HARD_DENY_EXPECTED',
+    });
+    expect(r.status).toBe(400);
+    expect(r.body['error']).toBe('prohibited_use_case_agent_version_mismatch');
+  });
+
+  it('matching classification + binding (same agent + same agent_version) succeeds (201) and copies the coherent anchor snapshot', async () => {
+    const agent = await mkAgent(orgA);
+    const v = await mkAgentVersion(orgA, agent);
+    const cls = await mkAnchoredProhibitedClassification(orgA, methodA, useCaseA, aiSysA, {
+      agent_id: agent,
+      agent_version_id: v,
+    });
+    const bind = await mkBinding(orgA, agent, { risk_posture: 'PROHIBITED', agent_version_id: v });
+    const r = await mkCaseResp(orgA, {
+      case_basis: 'AGENT_CAPABILITY_PROHIBITED',
+      risk_classification_id: cls,
+      agent_capability_binding_id: bind,
+      denial_posture: 'HARD_DENY_EXPECTED',
+    });
+    expect(r.status).toBe(201);
+    const c = r.body['prohibited_use_case'] as Record<string, unknown>;
+    expect(c['risk_classification_id']).toBe(cls);
+    expect(c['agent_capability_binding_id']).toBe(bind);
+    expect(c['agent_id']).toBe(agent);
+    expect(c['agent_version_id']).toBe(v);
+  });
+
+  it('rejected anchor pair (agent_version_id mismatch) does not mutate the classification row nor the binding row', async () => {
+    const agent = await mkAgent(orgA);
+    const v1 = await mkAgentVersion(orgA, agent);
+    const v2 = await mkAgentVersion(orgA, agent);
+    const cls = await mkAnchoredProhibitedClassification(orgA, methodA, useCaseA, aiSysA, {
+      agent_id: agent,
+      agent_version_id: v1,
+    });
+    const bind = await mkBinding(orgA, agent, { risk_posture: 'PROHIBITED', agent_version_id: v2 });
+
+    const clsBefore = await inject(stack, 'GET', `/v1/regulatory/risk-classifications/${cls}`, orgA.api_key);
+    const bindBefore = await inject(stack, 'GET', `/v1/regulatory/agent-capability-bindings/${bind}`, orgA.api_key);
+    expect(clsBefore.statusCode).toBe(200);
+    expect(bindBefore.statusCode).toBe(200);
+
+    const reject = await mkCaseResp(orgA, {
+      case_basis: 'AGENT_CAPABILITY_PROHIBITED',
+      risk_classification_id: cls,
+      agent_capability_binding_id: bind,
+      denial_posture: 'HARD_DENY_EXPECTED',
+    });
+    expect(reject.status).toBe(400);
+    expect(reject.body['error']).toBe('prohibited_use_case_agent_version_mismatch');
+
+    const clsAfter = await inject(stack, 'GET', `/v1/regulatory/risk-classifications/${cls}`, orgA.api_key);
+    const bindAfter = await inject(stack, 'GET', `/v1/regulatory/agent-capability-bindings/${bind}`, orgA.api_key);
+    expect(clsAfter.statusCode).toBe(200);
+    expect(bindAfter.statusCode).toBe(200);
+    expect(bodyOf(clsAfter)['risk_classification']).toEqual(bodyOf(clsBefore)['risk_classification']);
+    expect(bodyOf(bindAfter)['agent_capability_binding']).toEqual(bodyOf(bindBefore)['agent_capability_binding']);
+  });
+});
+
+// ===========================================================================
+// Determination participant pre-check (Codex P2): determined_by_participant_id
+// must be a same-tenant, visible workroom_participant before the determination
+// INSERT — otherwise return 404 RegulatoryError, not a generic 500 from the
+// downstream FK / RLS. Pre-existing user-id SoD and participant-id SoD checks
+// remain authoritative for requester self-determination of
+// PROHIBITED_CONFIRMED and FALSE_POSITIVE; the new pre-check is additive.
+// ===========================================================================
+
+describe('regulatory-prohibited-use / determination participant pre-check (Codex P2)', () => {
+  async function seedParticipant(
+    org: AdminOrg,
+  ): Promise<{ workroomId: string; participantId: string }> {
+    const wr = await inject(stack, 'POST', '/v1/workrooms', org.api_key, {
+      workspace_id: randomUUID(),
+      name: `wr-${randomUUID().slice(0, 6)}`,
+      governance_mode: 'governance_active',
+    });
+    expect(wr.statusCode).toBe(201);
+    const workroomId = ((bodyOf(wr)['workroom']) as Record<string, unknown>)['id'] as string;
+    const part = await inject(stack, 'POST', `/v1/workrooms/${workroomId}/participants`, org.api_key, {
+      kind: 'human',
+      role: 'human_reviewer',
+      user_id: randomUUID(),
+    });
+    expect(part.statusCode).toBe(201);
+    const participantId = ((bodyOf(part)['participant']) as Record<string, unknown>)['id'] as string;
+    return { workroomId, participantId };
+  }
+
+  it('nonexistent determined_by_participant_id returns 404 workroom_participant_not_found, not 500', async () => {
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, PROHIBITED_INPUTS);
+    const out = await mkCase(orgA, { risk_classification_id: cls });
+    await submitCase(orgA, out.id);
+    const r = await inject(stack, 'POST', `/v1/regulatory/prohibited-use-cases/${out.id}/determinations`, approverApiKey, {
+      determination: 'PROHIBITED_CONFIRMED',
+      denial_posture: 'GOVERNANCE_DENY_RECORDED',
+      determination_rationale: 'x',
+      reviewer_role: 'COMPLIANCE',
+      determined_by_participant_id: randomUUID(),
+    });
+    expect(r.statusCode).toBe(404);
+    expect(bodyOf(r)['error']).toBe('workroom_participant_not_found');
+  });
+
+  it('cross-tenant determined_by_participant_id returns 404 workroom_participant_not_found, not 500', async () => {
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, PROHIBITED_INPUTS);
+    const out = await mkCase(orgA, { risk_classification_id: cls });
+    await submitCase(orgA, out.id);
+    const bundleB = await seedParticipant(orgB);
+    const r = await inject(stack, 'POST', `/v1/regulatory/prohibited-use-cases/${out.id}/determinations`, approverApiKey, {
+      determination: 'PROHIBITED_CONFIRMED',
+      denial_posture: 'GOVERNANCE_DENY_RECORDED',
+      determination_rationale: 'x',
+      reviewer_role: 'COMPLIANCE',
+      determined_by_participant_id: bundleB.participantId,
+    });
+    expect(r.statusCode).toBe(404);
+    expect(bodyOf(r)['error']).toBe('workroom_participant_not_found');
+  });
+
+  it('same-tenant valid non-requester participant succeeds (201)', async () => {
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, PROHIBITED_INPUTS);
+    const out = await mkCase(orgA, { risk_classification_id: cls });
+    await submitCase(orgA, out.id);
+    const bundleA = await seedParticipant(orgA);
+    const r = await inject(stack, 'POST', `/v1/regulatory/prohibited-use-cases/${out.id}/determinations`, approverApiKey, {
+      determination: 'PROHIBITED_CONFIRMED',
+      denial_posture: 'GOVERNANCE_DENY_RECORDED',
+      determination_rationale: 'reviewed by compliance team',
+      reviewer_role: 'COMPLIANCE',
+      determined_by_participant_id: bundleA.participantId,
+    });
+    expect(r.statusCode).toBe(201);
+    const det = (bodyOf(r)['prohibited_use_determination']) as Record<string, unknown>;
+    expect(det['determined_by_participant_id']).toBe(bundleA.participantId);
+    const c = (bodyOf(r)['prohibited_use_case']) as Record<string, unknown>;
+    expect(c['case_status']).toBe('DENIED');
+  });
+
+  it('requester participant remains blocked by SoD for PROHIBITED_CONFIRMED (403 prohibited_use_determination_sod_violation, not 404)', async () => {
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, PROHIBITED_INPUTS);
+    const requesterPart = await seedParticipant(orgA);
+    // Create the case carrying requested_by_participant_id; mkCase helper does
+    // not surface that field, so route the request through inject directly.
+    const created = await inject(stack, 'POST', '/v1/regulatory/prohibited-use-cases', orgA.api_key, {
+      case_key: `PUC-SOD-${randomUUID().slice(0, 8).toUpperCase()}`,
+      case_basis: 'RISK_CLASSIFICATION_PROHIBITED',
+      denial_posture: 'GOVERNANCE_DENY_RECORDED',
+      risk_classification_id: cls,
+      requested_by_participant_id: requesterPart.participantId,
+    });
+    expect(created.statusCode).toBe(201);
+    const caseId = ((bodyOf(created)['prohibited_use_case']) as Record<string, unknown>)['id'] as string;
+    await submitCase(orgA, caseId);
+    // approverApiKey is a different user — user-id SoD does not fire — so the
+    // participant-id SoD check is the one that must block.
+    const r = await inject(stack, 'POST', `/v1/regulatory/prohibited-use-cases/${caseId}/determinations`, approverApiKey, {
+      determination: 'PROHIBITED_CONFIRMED',
+      denial_posture: 'GOVERNANCE_DENY_RECORDED',
+      determination_rationale: 'x',
+      reviewer_role: 'COMPLIANCE',
+      determined_by_participant_id: requesterPart.participantId,
+    });
+    expect(r.statusCode).toBe(403);
+    expect(bodyOf(r)['error']).toBe('prohibited_use_determination_sod_violation');
+  });
+
+  it('requester participant remains blocked by SoD for FALSE_POSITIVE (403 prohibited_use_determination_sod_violation, not 404)', async () => {
+    const cls = await mkClassification(orgA, methodA, useCaseA, aiSysA, PROHIBITED_INPUTS);
+    const requesterPart = await seedParticipant(orgA);
+    const created = await inject(stack, 'POST', '/v1/regulatory/prohibited-use-cases', orgA.api_key, {
+      case_key: `PUC-SOD-${randomUUID().slice(0, 8).toUpperCase()}`,
+      case_basis: 'RISK_CLASSIFICATION_PROHIBITED',
+      denial_posture: 'GOVERNANCE_DENY_RECORDED',
+      risk_classification_id: cls,
+      requested_by_participant_id: requesterPart.participantId,
+    });
+    expect(created.statusCode).toBe(201);
+    const caseId = ((bodyOf(created)['prohibited_use_case']) as Record<string, unknown>)['id'] as string;
+    await submitCase(orgA, caseId);
+    const r = await inject(stack, 'POST', `/v1/regulatory/prohibited-use-cases/${caseId}/determinations`, approverApiKey, {
+      determination: 'FALSE_POSITIVE',
+      denial_posture: 'NOT_APPLICABLE',
+      determination_rationale: 'self review says ok',
+      reviewer_role: 'COMPLIANCE',
+      determined_by_participant_id: requesterPart.participantId,
+    });
+    expect(r.statusCode).toBe(403);
+    expect(bodyOf(r)['error']).toBe('prohibited_use_determination_sod_violation');
+  });
+});
+
+// ===========================================================================
 // DDL semantic comments
 // ===========================================================================
 

@@ -7055,9 +7055,12 @@ export async function createProhibitedUseCase(
   // classification is present we copy its full risk snapshot (the DB RLS
   // WITH CHECK enforces equality on every copied column). When a binding is
   // present we copy agent_id/agent_version_id/capability_key/risk_posture/
-  // hard_deny_floor_expected. If both are present and disagree on
-  // agent_id/agent_version_id, return 400 — the case cannot describe two
-  // different agents.
+  // hard_deny_floor_expected. When both anchors are present they must describe
+  // a single coherent agent — null-safe equality on agent_id AND
+  // agent_version_id — otherwise the case snapshot would mix two different
+  // anchor sets. We return 400 deterministically rather than rely on the DB
+  // RLS WITH CHECK (which would surface as a generic 500). RLS remains the
+  // defense-in-depth backstop.
   const riskMethodId = classification?.risk_method_id ?? null;
   const useCaseId = classification?.use_case_id ?? null;
   const aiSystemId = classification?.ai_system_id ?? null;
@@ -7068,15 +7071,19 @@ export async function createProhibitedUseCase(
   const inheritedAgentVersionId = classification?.agent_version_id ?? null;
   const bindingAgentId = binding?.agent_id ?? null;
   const bindingAgentVersionId = binding?.agent_version_id ?? null;
-  if (
-    inheritedAgentId !== null &&
-    bindingAgentId !== null &&
-    inheritedAgentId !== bindingAgentId
-  ) {
-    throw new RegulatoryError(400, 'prohibited_use_case_agent_mismatch', {
-      classification_agent_id: inheritedAgentId,
-      binding_agent_id: bindingAgentId,
-    });
+  if (classification && binding) {
+    if (inheritedAgentId !== bindingAgentId) {
+      throw new RegulatoryError(400, 'prohibited_use_case_agent_mismatch', {
+        classification_agent_id: inheritedAgentId,
+        binding_agent_id: bindingAgentId,
+      });
+    }
+    if (inheritedAgentVersionId !== bindingAgentVersionId) {
+      throw new RegulatoryError(400, 'prohibited_use_case_agent_version_mismatch', {
+        classification_agent_version_id: inheritedAgentVersionId,
+        binding_agent_version_id: bindingAgentVersionId,
+      });
+    }
   }
   const agentId = bindingAgentId ?? inheritedAgentId;
   const agentVersionId = bindingAgentVersionId ?? inheritedAgentVersionId;
@@ -7671,6 +7678,23 @@ export async function createProhibitedUseDetermination(
     throw new RegulatoryError(400, 'needs_more_information_requires_monitoring_or_not_applicable', {
       denial_posture: input.denial_posture,
     });
+  }
+  // Service-level tenant pre-check: scope determined_by_participant_id by
+  // org_id so a nonexistent or cross-tenant participant id surfaces as a clean
+  // 404 RegulatoryError, instead of falling through to the FK / RLS WITH CHECK
+  // on INSERT and producing a generic DB 500. RLS and the DB FK remain the
+  // defense-in-depth backstop.
+  if (input.determined_by_participant_id) {
+    const participantRes = await ctx.client.query<{ id: string }>(
+      `SELECT id FROM govai.workroom_participants
+        WHERE id = $1::uuid AND org_id = $2::uuid`,
+      [input.determined_by_participant_id, ctx.actor.orgId],
+    );
+    if (participantRes.rowCount === 0) {
+      throw new RegulatoryError(404, 'workroom_participant_not_found', {
+        determined_by_participant_id: input.determined_by_participant_id,
+      });
+    }
   }
 
   let determinationRes;
