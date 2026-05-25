@@ -13,7 +13,7 @@
 // additive metadata; the legacy `findings` / `configByDetector` /
 // `highestAction` triple remains the sole enforcement input.
 
-import { detectAllBaseline } from './baseline-detectors.js';
+import { detectAllBaseline, type DetectorFinding } from './baseline-detectors.js';
 import { detectCnjCaseNumbers } from './court-detectors.js';
 import { detectSecrets } from './secret-detectors.js';
 import {
@@ -33,8 +33,19 @@ export type ScanSensitiveDataContext = {
    * When true, baseline PII findings (cpf/cnpj/email/phone_br) are lifted into
    * the rich output. Defaults to true; set to false when the caller already
    * has the baseline list and wants only the SD1 NEW detector output.
+   *
+   * Ignored when `baseline_findings` is supplied — the supplied list is
+   * authoritative and is lifted as-is.
    */
   include_baseline?: boolean;
+  /**
+   * Pre-computed baseline findings. When supplied, `scanSensitiveData` lifts
+   * these into the rich stream instead of re-running `detectAllBaseline`
+   * on `text` — the hot-path optimization used by the API pipeline to
+   * avoid double-scanning the same input (Codex PR-SD1 P2). Pass `[]` to
+   * explicitly attach no baseline lifts without paying for a re-scan.
+   */
+  baseline_findings?: ReadonlyArray<DetectorFinding>;
 };
 
 /**
@@ -52,8 +63,17 @@ export function scanSensitiveData(
   const origin: SensitiveDataOrigin = context.origin ?? 'govai_native';
   const out: SensitiveDataFinding[] = [];
 
-  if (context.include_baseline !== false) {
-    const baseline = detectAllBaseline(text);
+  // Baseline lift order of precedence (Codex PR-SD1 P2):
+  //   1. Supplied `baseline_findings` — authoritative, no re-scan.
+  //   2. Else, when `include_baseline !== false`, compute via detectAllBaseline.
+  //   3. Else, skip baseline entirely.
+  const baseline: ReadonlyArray<DetectorFinding> | null =
+    context.baseline_findings !== undefined
+      ? context.baseline_findings
+      : context.include_baseline !== false
+        ? detectAllBaseline(text)
+        : null;
+  if (baseline) {
     for (const f of baseline) {
       out.push(
         baselineFindingToSensitiveFinding(f, {

@@ -71,7 +71,11 @@ const BEARER_TOKEN_RE = new RE2(
 //
 // OpenAI: classic `sk-...` and project keys `sk-proj-...`. Conservative 20-char
 // floor on the secret body to skip short test strings; cap at 256 to bound the
-// matcher.
+// matcher. RE2 lacks negative lookahead, so the regex still matches
+// `sk-ant-...` strings; an `acceptMatch` filter (see SECRET_DETECTORS below)
+// drops those before they are emitted so a single Anthropic credential never
+// appears as both `openai_api_key_candidate` and `anthropic_api_key_candidate`.
+// (Codex PR-SD1 P2.)
 const OPENAI_API_KEY_RE = new RE2(/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,256}\b/g);
 
 // Anthropic: `sk-ant-...`. Same length envelope as OpenAI.
@@ -83,9 +87,17 @@ const ANTHROPIC_API_KEY_RE = new RE2(/\bsk-ant-[A-Za-z0-9_-]{20,256}\b/g);
 // model to detect reliably — out of scope for SD1.)
 const AWS_ACCESS_KEY_ID_RE = new RE2(/\b(?:AKIA|ASIA|AIDA|AROA|AGPA|ANPA|ANVA|APKA)[0-9A-Z]{16}\b/g);
 
-// GitHub tokens (PAT classic `ghp_`, OAuth `gho_`, server-to-server `ghs_`,
-// user-to-server `ghu_`, refresh `ghr_`). All ≥36 chars of base62 body.
-const GITHUB_TOKEN_RE = new RE2(/\bgh[pousr]_[A-Za-z0-9]{36,80}\b/g);
+// GitHub tokens — two shapes under one detector name:
+//   - classic (PAT `ghp_`, OAuth `gho_`, server-to-server `ghs_`,
+//     user-to-server `ghu_`, refresh `ghr_`): ≥36 chars of base62 body;
+//   - fine-grained PATs (`github_pat_`): ≥20 chars of base62 / underscore body,
+//     bounded at 255 to stay under RE2's repetition cap.
+// Both shapes emit the same detector token (`github_token_candidate`) so
+// downstream triage routes on credential family, not on the prefix variant.
+// (Codex PR-SD1 P1.)
+const GITHUB_TOKEN_RE = new RE2(
+  /\b(?:gh[pousr]_[A-Za-z0-9]{36,80}|github_pat_[A-Za-z0-9_]{20,255})\b/g,
+);
 
 // Generic api_key=... contextual detector. Two-step pattern:
 //   1) the context term ("api_key" | "secret" | "token" | "credential" | "bearer"),
@@ -109,6 +121,13 @@ type CompiledSecretDetector = {
   confidence: number;
   rationale_code: string;
   category: 'authentication_credentials' | 'secrets_api_keys' | 'model_provider_credentials';
+  /**
+   * Optional secondary filter applied to every regex match before it becomes
+   * a finding. Used to encode constraints that RE2 cannot express directly
+   * (e.g., "OpenAI matches must not start with `sk-ant-`" — RE2 has no
+   * negative lookahead). Returning `false` drops the match silently.
+   */
+  acceptMatch?: (match: string) => boolean;
 };
 
 const SECRET_DETECTORS: ReadonlyArray<CompiledSecretDetector> = [
@@ -132,6 +151,11 @@ const SECRET_DETECTORS: ReadonlyArray<CompiledSecretDetector> = [
     confidence: 0.9,
     rationale_code: 'openai_prefix_match',
     category: 'model_provider_credentials',
+    // Codex PR-SD1 P2: the OpenAI regex `\bsk-(?:proj-)?...` also matches
+    // Anthropic `sk-ant-...` tokens. Drop those so a single Anthropic
+    // credential is attributed only to `anthropic_api_key_candidate`. RE2
+    // does not support negative lookahead, so the filter lives here.
+    acceptMatch: (m) => !m.startsWith('sk-ant-'),
   },
   {
     detector: 'anthropic_api_key_candidate',
@@ -219,6 +243,7 @@ export function detectSecrets(
   const out: SensitiveDataFinding[] = [];
   for (const d of SECRET_DETECTORS) {
     for (const m of findAll(d.re, text)) {
+      if (d.acceptMatch && !d.acceptMatch(m.match)) continue;
       out.push(compiledToFinding(d, m, context));
     }
   }

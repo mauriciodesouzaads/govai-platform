@@ -60,6 +60,32 @@ describe('detectSecrets / provider keys', () => {
     expect(detectorsOf(t)).toContain('anthropic_api_key_candidate');
   });
 
+  // Codex PR-SD1 P2: the OpenAI regex `\bsk-(?:proj-)?[A-Za-z0-9_-]+\b` also
+  // matches `sk-ant-...` tokens. The detector must attribute Anthropic keys
+  // ONLY to `anthropic_api_key_candidate`; without the `acceptMatch` filter
+  // the same span would be emitted twice (once per provider).
+  it('attributes sk-ant-... only to anthropic_api_key_candidate, not openai_api_key_candidate', () => {
+    const t = 'export ANTHROPIC_API_KEY=sk-ant-api03_AbCdEfGhIjKlMnOpQrStUvWxYz';
+    const detectors = detectorsOf(t);
+    expect(detectors).toContain('anthropic_api_key_candidate');
+    expect(detectors).not.toContain('openai_api_key_candidate');
+    // And the Anthropic finding count for that span is exactly one.
+    const findings = detectSecrets(t, ctx).filter((f) =>
+      f.detector === 'anthropic_api_key_candidate' || f.detector === 'openai_api_key_candidate',
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.detector).toBe('anthropic_api_key_candidate');
+  });
+
+  it('still attributes classic non-Anthropic sk- tokens to openai_api_key_candidate', () => {
+    // `sk-AbCdEfGhIjKlMnOpQrStUvWxYz` does not start with `sk-ant-` so the
+    // OpenAI acceptMatch filter must keep it.
+    const t = 'OPENAI_API_KEY=sk-AbCdEfGhIjKlMnOpQrStUvWxYz';
+    const detectors = detectorsOf(t);
+    expect(detectors).toContain('openai_api_key_candidate');
+    expect(detectors).not.toContain('anthropic_api_key_candidate');
+  });
+
   it('does not match short sk- prefixes that are obviously placeholders', () => {
     expect(detectorsOf('sk-short')).not.toContain('openai_api_key_candidate');
   });
@@ -101,6 +127,43 @@ describe('detectSecrets / GitHub tokens', () => {
       'github_token_candidate',
     );
     expect(detectorsOf('ghp_short')).not.toContain('github_token_candidate');
+  });
+
+  // Codex PR-SD1 P1: fine-grained PATs use the `github_pat_` prefix and were
+  // not previously detected. They must surface under the same
+  // `github_token_candidate` detector token so triage routes on credential
+  // family rather than on the prefix variant.
+  it('detects fine-grained PAT github_pat_... tokens', () => {
+    const t = 'export GH_TOKEN=github_pat_11ABCDEFG0H_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
+    const findings = detectSecrets(t, ctx);
+    const gh = findings.filter((f) => f.detector === 'github_token_candidate');
+    expect(gh).toHaveLength(1);
+    const f = gh[0]!;
+    expect(f.match_preview_redacted).toBe('[REDACTED:github_token_candidate]');
+    expect(f.match_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(f.recommended_action).toBe('review');
+    expect(f.category).toBe('secrets_api_keys');
+    // The rich finding does not carry the raw token plaintext.
+    expect(JSON.stringify(f)).not.toContain('github_pat_11ABCDEFG0H_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhIjKlMnOpQrStUvWxYz0123456789');
+    expect(f).not.toHaveProperty('match');
+  });
+
+  it('detects shorter github_pat_ tokens that still satisfy the body floor', () => {
+    // 20 char body is the conservative floor; anything below should not match.
+    expect(detectorsOf('github_pat_AAAAAAAAAAAAAAAAAAAA')).toContain('github_token_candidate');
+    expect(detectorsOf('github_pat_short')).not.toContain('github_token_candidate');
+  });
+
+  it('classic ghp_ + fine-grained github_pat_ coexist under the same detector', () => {
+    const t = [
+      'ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789',
+      'github_pat_11ABCDEFG0H_AbCdEfGhIjKlMnOpQrStUvWxYz01234567890123456789ABCDEFGHIJ',
+    ].join(' ');
+    const findings = detectSecrets(t, ctx).filter((f) => f.detector === 'github_token_candidate');
+    expect(findings).toHaveLength(2);
+    // Each match has a distinct match_hash (detector token is the same).
+    const hashes = new Set(findings.map((f) => f.match_hash));
+    expect(hashes.size).toBe(2);
   });
 });
 

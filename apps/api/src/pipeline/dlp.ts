@@ -68,7 +68,14 @@ export async function dlpPreScan(client: PoolClient, text: string): Promise<DlpS
   // legacy stream. These are observability/preparation metadata only; nothing
   // in this file or in `decidePolicy` consumes them. The legacy `findings`
   // array drives every enforcement decision in PR-SD1.
-  const sensitiveFindings = scanSensitiveData(text, { source_surface: 'govai_runs' });
+  //
+  // Codex PR-SD1 P2: hand the already-computed baseline `findings` to
+  // `scanSensitiveData` so it lifts them as-is instead of running
+  // `detectAllBaseline` a second time on the same input.
+  const sensitiveFindings = scanSensitiveData(text, {
+    source_surface: 'govai_runs',
+    baseline_findings: findings,
+  });
 
   return { findings, configByDetector, highestAction, sensitiveFindings };
 }
