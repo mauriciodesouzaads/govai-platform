@@ -154,6 +154,51 @@ describe('detectFinancialData / iban_candidate', () => {
       'iban_candidate',
     );
   });
+
+  // Codex SD2A P2: with the old permissive `[ A-Z0-9]{10,38}` body, an IBAN
+  // followed by uppercase prose was absorbed into a longer string that then
+  // failed mod-97 and was silently dropped (false negative). The
+  // unformatted + grouped split pins exactly one detection on each shape and
+  // never trails into the prose.
+  it('detects exactly one iban_candidate for a grouped IBAN followed by uppercase prose', () => {
+    const t = 'IBAN GB82 WEST 1234 5698 7654 32 PARA PAGAMENTO';
+    const out = detectFinancialData(t, ctx);
+    const ibans = out.filter((f) => f.detector === 'iban_candidate');
+    expect(ibans).toHaveLength(1);
+    const ser = JSON.stringify(ibans[0]);
+    // The match span does not absorb the trailing words.
+    expect(ser).not.toContain('PARA');
+    expect(ser).not.toContain('PAGAMENTO');
+    expect(ser).not.toContain('GB82WEST12345698765432');
+  });
+
+  it('detects exactly one iban_candidate for an unformatted IBAN followed by uppercase prose', () => {
+    const t = 'IBAN GB82WEST12345698765432 PARA PAGAMENTO';
+    const out = detectFinancialData(t, ctx);
+    const ibans = out.filter((f) => f.detector === 'iban_candidate');
+    expect(ibans).toHaveLength(1);
+    const ser = JSON.stringify(ibans[0]);
+    expect(ser).not.toContain('PARA');
+    expect(ser).not.toContain('PAGAMENTO');
+    expect(ser).not.toContain('GB82WEST12345698765432');
+  });
+
+  it('does not fire on an invalid-checksum IBAN-shaped string followed by uppercase prose', () => {
+    expect(detectorsOf(`IBAN ${IBAN_INVALID} PARA PAGAMENTO`)).not.toContain('iban_candidate');
+  });
+
+  it('does not fire on uppercase prose without an IBAN', () => {
+    expect(detectorsOf('TRANSFERENCIA RECEBIDA PARA PAGAMENTO DA FATURA')).not.toContain(
+      'iban_candidate',
+    );
+  });
+
+  it('does not fire when the IBAN is embedded inside a larger alphanumeric token', () => {
+    // No spaces or punctuation separating the IBAN from trailing alnum: the
+    // greedy unformatted body absorbs extra chars and the post-filter drops
+    // the candidate because mod-97 fails on the longer string.
+    expect(detectorsOf(`XX${IBAN_GB}PARAPAGAMENTO`)).not.toContain('iban_candidate');
+  });
 });
 
 describe('detectFinancialData / br_boleto_linha_digitavel_candidate', () => {

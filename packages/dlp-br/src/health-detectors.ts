@@ -86,11 +86,20 @@ function distanceBetween(
 // `E11.9` without "CID" / "ICD" / "CID-10" / "ICD-10" context, because that
 // shape collides with too many non-medical strings.
 //
-// Code shape: letter (A–Z) + 2 digits + optional `.` + 1–2 more digits.
-// We restrict the letter to uppercase A–Z; case-insensitivity on the body
-// would let plain words like "ab12.3" match.
+// Codex SD2A P2: the context label is matched case-insensitively via
+// per-letter character classes (`[Cc][Ii][Dd]` / `[Ii][Cc][Dd]`) so that
+// common inputs like `cid-10 E11.9`, `icd-10 J45`, and `Cid C50.9` all
+// fire. JS RegExp literals cannot carry RE2 inline group flags like
+// `(?i:…)`, so the per-letter class form is the portable expression of
+// "case-insensitive on the label only" that keeps the JS parser happy.
+//
+// Code shape: uppercase letter (A–Z) + 2 digits + optional `.` + 1–2
+// digits. The code letter stays strictly `[A-Z]` so that plain words like
+// `ab12.3` cannot satisfy the code portion even when context appears in
+// any case. SD2A NEVER infers, stores, or maps the clinical meaning of a
+// CID/ICD code — only the format-in-context signal is emitted.
 const CID10_CONTEXT_RE = new RE2(
-  /\b(?:CID|ICD)(?:[- ]?10)?[\s:.#-]{1,10}([A-Z]\d{2}(?:\.\d{1,2})?)\b/g,
+  /\b(?:[Cc][Ii][Dd]|[Ii][Cc][Dd])(?:[- ]?10)?[\s:.#-]{1,10}([A-Z]\d{2}(?:\.\d{1,2})?)\b/g,
 );
 
 function detectCid10(

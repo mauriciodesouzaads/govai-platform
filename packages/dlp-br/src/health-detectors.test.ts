@@ -45,6 +45,59 @@ describe('detectHealthData / cid10_code_candidate', () => {
     expect(detectorsOf('cid-10 j45')).not.toContain('cid10_code_candidate'); // lowercase code rejected
   });
 
+  // Codex SD2A P2: context label MUST match case-insensitively while the
+  // code portion stays strictly uppercase. The five tests below pin the
+  // four common case variants for the label plus the lowercase-code reject
+  // so a future regression cannot quietly drop recall for lower/mixed-case
+  // inputs.
+  it('matches case-insensitive context "cid-10 E11.9"', () => {
+    expect(detectorsOf('cid-10 E11.9')).toContain('cid10_code_candidate');
+  });
+
+  it('matches case-insensitive context "icd-10 J45"', () => {
+    expect(detectorsOf('icd-10 J45')).toContain('cid10_code_candidate');
+  });
+
+  it('matches mixed-case context "Cid C50.9"', () => {
+    expect(detectorsOf('Cid C50.9')).toContain('cid10_code_candidate');
+  });
+
+  it('matches mixed-case context "Icd-10 E11.9"', () => {
+    expect(detectorsOf('Icd-10 E11.9')).toContain('cid10_code_candidate');
+  });
+
+  it('still does not match a bare code without CID/ICD context, regardless of code case', () => {
+    expect(detectorsOf('E11.9')).not.toContain('cid10_code_candidate');
+    expect(detectorsOf('e11.9')).not.toContain('cid10_code_candidate');
+  });
+
+  it('case-insensitive context match still emits no clinical interpretation', () => {
+    const out = detectHealthData('cid-10 E11.9 noted', ctx);
+    expect(out.some((f) => f.detector === 'cid10_code_candidate')).toBe(true);
+    const ser = JSON.stringify(out).toLowerCase();
+    for (const banned of [
+      'diabetes',
+      'mellitus',
+      'asthma',
+      'asma',
+      'breast cancer',
+      'câncer de mama',
+      'cancer de mama',
+      'diagnosed',
+      'diagnostico',
+      'diagnóstico',
+      'disease: ',
+      'doença: ',
+      'medical advice',
+      'clinical decision',
+    ]) {
+      expect(ser).not.toContain(banned);
+    }
+    // Raw fixture (code) is still not retained on the rich finding.
+    const cidFinding = out.find((f) => f.detector === 'cid10_code_candidate')!;
+    expect(JSON.stringify(cidFinding)).not.toContain('E11.9');
+  });
+
   it('rejects common letter+digits strings without CID context', () => {
     expect(detectorsOf('seat A12 or row B45')).not.toContain('cid10_code_candidate');
   });

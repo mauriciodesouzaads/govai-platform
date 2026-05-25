@@ -163,12 +163,29 @@ function detectPaymentCardLuhn(
 // ---------------------------------------------------------------------------
 
 // IBAN: 2-letter country code + 2 check digits + 11–30 alphanumeric BBAN.
-// Total normalized length is 15–34. Display form allows spaces grouping the
-// BBAN every 4 characters. The regex captures the lenient on-page shape; the
-// post-filter normalizes and runs mod-97. The pattern is anchored on a
-// trailing alphanumeric (not a space) so the match never trails into a
-// terminal whitespace and the post-boundary check stays clean.
-const IBAN_CANDIDATE_RE = new RE2(/\b[A-Z]{2}\d{2}[ A-Z0-9]{10,38}[A-Z0-9]\b/g);
+// Total normalized length is 15–34. The post-filter normalizes and runs
+// mod-97. (Codex SD2A P2.) Two separate bounded patterns instead of one
+// permissive `[ A-Z0-9]{…}` body:
+//
+//   - `IBAN_UNFORMATTED_RE` captures a single contiguous 15–34-char alnum
+//     run, anchored by `\b` so it stops at any whitespace or punctuation
+//     boundary. A valid IBAN followed by uppercase prose (e.g.
+//     "GB82WEST12345698765432 PARA PAGAMENTO") matches the IBAN exactly
+//     and never absorbs the trailing prose.
+//
+//   - `IBAN_GROUPED_RE` requires the display-grouping shape: 4-char
+//     country+check followed by 1–7 groups of " " + exactly 4 alnum chars
+//     and an optional final " " + 1–4 alnum chars. The 4-char group
+//     constraint refuses to consume arbitrary words like "PARA"+"PAGAMENTO"
+//     because the second group there isn't exactly 4 alnum (it would be
+//     "PAGA" but then "MENTO" still leaks). In practice the regex stops at
+//     the IBAN's natural grouping boundary; the post-filter then verifies
+//     mod-97. This is the SD2A fix for a true-positive being silently
+//     dropped when an IBAN appears inside uppercase prose.
+const IBAN_UNFORMATTED_RE = new RE2(/\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g);
+const IBAN_GROUPED_RE = new RE2(
+  /\b[A-Z]{2}\d{2}(?: [A-Z0-9]{4}){1,7}(?: [A-Z0-9]{1,4})?\b/g,
+);
 
 /**
  * IBAN mod-97 validation (ISO 13616). Move the first four characters to the
@@ -201,10 +218,20 @@ function detectIban(
   context: FinancialDetectorContext,
 ): SensitiveDataFinding[] {
   const out: SensitiveDataFinding[] = [];
-  for (const m of findAll(IBAN_CANDIDATE_RE, text)) {
+  // Deduplicate by (index, normalized) so that a candidate matched by both
+  // the unformatted and grouped patterns is emitted only once. In practice
+  // the two patterns are disjoint because grouped requires a space and
+  // unformatted is contiguous, but the guard keeps the result stable if
+  // future tweaks soften that boundary.
+  const seen = new Set<string>();
+  const candidates = [...findAll(IBAN_UNFORMATTED_RE, text), ...findAll(IBAN_GROUPED_RE, text)];
+  for (const m of candidates) {
     if (!isBoundedByNonAlnum(text, m.index, m.match.length)) continue;
     const normalized = m.match.replace(/\s+/g, '').toUpperCase();
     if (!isValidIbanMod97(normalized)) continue;
+    const key = `${m.index}:${normalized}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({
       detector: 'iban_candidate',
       detector_family: 'financial',
