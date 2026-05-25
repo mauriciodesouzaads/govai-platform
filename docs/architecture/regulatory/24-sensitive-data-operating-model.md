@@ -222,13 +222,36 @@ substitutes a native detector.
 
 ## State of the Sensitive Data OS
 
-- The current baseline of cpf, cnpj, email, and phone_br is
+- The baseline of cpf, cnpj, email, and phone_br is
   `IMPLEMENTED_FOUNDATIONAL_CONTROL`.
-- The full Sensitive Data OS described above is
+- PR-SD1 adds the typed Sensitive Data OS finding/taxonomy/provenance
+  foundation as `IMPLEMENTED_FOUNDATIONAL_CONTROL`, plus deterministic
+  detector families for credentials/secrets
+  (`private_key_pem`, `bearer_token`, `generic_api_key_contextual`,
+  `aws_access_key_id_candidate`, `github_token_candidate`,
+  `openai_api_key_candidate`, `anthropic_api_key_candidate`) and CNJ
+  court-case identifiers (`cnj_case_number` — CNJ format and mod-97
+  verification digits only; not a process-existence check, not a legal
+  conclusion, not a segredo-de-justiça classification). PR-SD1 does NOT
+  implement classification persistence, routes, UI, connector ingestion,
+  the segredo-de-justiça classifier, the attorney-client privilege
+  classifier, or the professional-secrecy classifier — those remain
+  `NATIVE_ENHANCEMENT_REQUIRED` and are scoped for SD2/SD3/SD4/SD5.
+- PR-SD1 `recommended_action` on a rich finding is ADVISORY/PREPARATORY
+  metadata only. It does NOT alter `DlpScanResult.highestAction`, does
+  NOT change `decidePolicy`, and does NOT implement runtime blocking.
+  Existing baseline detect/redact/deny per-tenant configuration remains
+  the sole enforcement input.
+- The full Sensitive Data OS described above (the broader per-category
+  detector set, classifiers, redaction, encryption, retention,
+  legal-hold, approval, and hard-deny bindings) is
   `NATIVE_ENHANCEMENT_REQUIRED` and `REQUIRED_NATIVE_CAPABILITY` for the
   categories not yet implemented.
 - External DLP integrations are `CONNECTOR_ENRICHMENT`. They do not
-  replace native protections.
+  replace native protections. PR-SD1 introduces a typed provenance
+  precedence rule (`primary_govai_evidence` cannot be downgraded by
+  connector or external evidence) so future connector-ingested
+  classifications normalize cleanly into the same vocabulary.
 
 ## Relationship to other docs
 

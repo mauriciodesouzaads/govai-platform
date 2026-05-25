@@ -275,8 +275,17 @@ under which the control turns `COVERED`.
   metadata.
 - Frameworks: LGPD, ANPD, CNJ 615, GDPR, sector overlays.
 - Current state: baseline detectors for cpf, cnpj, email, and phone_br are
-  `IMPLEMENTED_FOUNDATIONAL_CONTROL`; full categorical OS is
-  `NATIVE_ENHANCEMENT_REQUIRED`.
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL`; PR-SD1 adds an
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` typed Sensitive Data OS foundation
+  (taxonomy, provenance, rich finding model with match-hash + redacted
+  preview, baseline ↔ rich adapters, and the credentials/secrets +
+  CNJ-case-number detector families). Classification persistence,
+  per-tenant policy bindings, routes/UI, connector ingestion, and the
+  broader per-category detector set remain
+  `NATIVE_ENHANCEMENT_REQUIRED` for SD2/SD3/SD4/SD5. Domain 8 is **not**
+  `COVERED` in PR-SD1; the rich-finding `recommended_action` is advisory
+  metadata only and does not alter `decidePolicy`, `highestAction`, or
+  runtime enforcement.
 - Turns COVERED when: classifiers, schema, audit events, and tests exist
   per the sensitive-data category list.
 
