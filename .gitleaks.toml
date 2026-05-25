@@ -17,10 +17,12 @@ description = "OpenAI API key"
 regex = '''sk-[A-Za-z0-9_-]{32,}'''
 
 [allowlist]
-description = "PR3.1a deterministic provider-key-shaped canaries used by plaintext-leak and tenant-isolation tests; these are NEVER real credentials. The canaries intentionally preserve the sk-ant-/sk-proj- prefix shape so the leak tests exercise realistic provider key formats."
+description = "PR3.1a deterministic provider-key-shaped canaries used by plaintext-leak and tenant-isolation tests; these are NEVER real credentials. The canaries intentionally preserve the sk-ant-/sk-proj- prefix shape so the leak tests exercise realistic provider key formats. PR-SD1 extends this allowlist to cover the @govai/dlp-br secret-detector test files and the SD1 pipeline policy leak test — those tests MUST contain provider-key-shaped fixtures because their job is to prove the detector correctly recognizes the shape, and to prove that the rich-finding stream carries match_hash + redacted preview only (never the raw fixture)."
 paths = [
   '''\.env\.example$''',
   '''docs/.*''',
+  '''packages/dlp-br/src/.*\.test\.ts$''',
+  '''apps/api/src/pipeline/policy-sensitive-findings\.test\.ts$''',
 ]
 regexes = [
   '''sk-ant-leak-canary-XYZABC123(-DO-NOT-LEAK)?''',

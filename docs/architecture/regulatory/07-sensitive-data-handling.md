@@ -81,11 +81,36 @@ Each primitive cited is implemented in the repository:
 
 - **DLP detectors (BR-only, limited set)** — `packages/dlp-br/src/baseline-detectors.ts`
   (`detectAllBaseline`: `cpf`, `cnpj`, `email`, `phone_br`); custom detectors
-  via `packages/dlp-br/src/custom-detectors.ts`. The current detector set is
+  via `packages/dlp-br/src/custom-detectors.ts`. The baseline detector set is
   intentionally narrow and is **not** a full sensitive-category classifier.
+- **Sensitive Data OS foundation (PR-SD1)** — `packages/dlp-br/src/sensitive-taxonomy.ts`
+  (typed categories, advisory action vocabulary, review-flag taxonomy),
+  `packages/dlp-br/src/sensitive-provenance.ts` (origin / source-surface /
+  source-quality vocabulary; native primary cannot be downgraded by
+  connector or external evidence), `packages/dlp-br/src/sensitive-findings.ts`
+  (`SensitiveDataFinding`, `matchHash`, `redactPreview`,
+  `confidenceBandForScore`, baseline ↔ rich adapters,
+  `strictestFinding`, `mergeFindingsWithPrecedence`),
+  `packages/dlp-br/src/secret-detectors.ts` (credentials/secrets detector
+  family: `private_key_pem`, `bearer_token`, `generic_api_key_contextual`,
+  `aws_access_key_id_candidate`, `github_token_candidate`,
+  `openai_api_key_candidate`, `anthropic_api_key_candidate`),
+  `packages/dlp-br/src/court-detectors.ts` (`cnj_case_number` — format and
+  mod-97 verification digits only; not a process-existence check, not a
+  legal conclusion, not a segredo-de-justiça classifier),
+  `packages/dlp-br/src/scan-sensitive.ts` (`scanSensitiveData`
+  orchestrator). PR-SD1 does **not** implement classification persistence,
+  routes, UI, connector ingestion, segredo-de-justiça /
+  attorney-client / professional-secrecy classifiers, or a runtime PR-R9
+  hard-deny bridge. `SensitiveDataFinding.recommended_action` is **advisory
+  metadata** in SD1 — it does not alter `highestAction`, does not change
+  `decidePolicy`, and does not implement runtime blocking.
 - **DLP pipeline** — `apps/api/src/pipeline/dlp.ts` (`dlpPreScan`,
   `redactFindings`), wired into `executeGovernedRun`
-  (`apps/api/src/pipeline/run-orchestrator.ts`).
+  (`apps/api/src/pipeline/run-orchestrator.ts`). PR-SD1 exposes rich
+  findings via the optional additive `DlpScanResult.sensitiveFindings`
+  field; the legacy `findings / configByDetector / highestAction` triple
+  remains the sole enforcement input.
 - **DLP findings persistence** — `govai.dlp_findings` (signal class metadata)
   in the runs/governed pipeline.
 - **Redaction metadata** — `audit_events.redaction_metadata` (`jsonb`) is
@@ -134,14 +159,15 @@ sector-specific classifiers, are not implemented and are noted as gaps.
 | Financial data | BR-DP-01; BR-NET-01 | Indirect — `cpf` / `cnpj` are common financial-identity tokens but are not the same as financial-data classification. | Generic. | Same uniform envelope encryption. | Sector approval/escalation is a future concern. | PARTIAL | Financial-data classifier; sector profile (PR-C). |
 | Criminal / penal data | BR-DP-01 | None. | None. | Same uniform envelope encryption. | None category-specific. | GAP | Criminal-data classifier; per-category policy. |
 | Employment / labor data | BR-DP-01 | None. | None. | Same uniform envelope encryption. | None category-specific. | GAP | Employment-data classifier; per-category policy. |
-| Authentication credentials | BR-DP-01 Art. 46 | None as audit-payload classifier; out-of-band credentials never enter audit content by design. | None category-specific. | Provider credentials at rest are envelope-encrypted (`provider_credentials.dek_wrapped`). | Hard-deny floor: credential exfiltration is a reserved hard-deny example in `governance-philosophy.md`. | PARTIAL | In-payload credential pattern detection; documented credential-handling runbook. |
-| Secrets / API keys | BR-DP-01 Art. 46 | None as audit-payload classifier. | None category-specific. | Provider credentials at rest are envelope-encrypted; payloads carrying secrets benefit from uniform envelope encryption. | Hard-deny floor: secret exfiltration is a reserved hard-deny example. | PARTIAL | Secret pattern detection; explicit secret-hardening posture. |
-| Attorney-client privileged content | BR-NET-05 | None. | None category-specific. | Same uniform envelope encryption. | Privilege-aware policy is a future concern. | GAP | Privilege-aware classification; legal-sector profile (PR-C). |
-| Judicial secrecy content (segredo de justiça) | BR-NET-05 | None. | None. | Same uniform envelope encryption. | Stricter handling required where applicable. | GAP | Judicial-secrecy classification; CNJ mapping (PR-C). |
+| Authentication credentials | BR-DP-01 Art. 46 | PR-SD1 detects `private_key_pem` and `bearer_token` payload candidates (rich findings with match-hash and redacted preview only); out-of-band credentials never enter audit content by design. | None category-specific in enforcement; PR-SD1 emits redaction hints as metadata only. | Provider credentials at rest are envelope-encrypted (`provider_credentials.dek_wrapped`). | Hard-deny floor: credential exfiltration is a reserved hard-deny example in `governance-philosophy.md`. PR-SD1 `recommended_action` is advisory metadata only and does not drive enforcement. | PARTIAL | Persisted classification records; per-tenant policy bindings; runtime bridge to PR-R9. |
+| Secrets / API keys | BR-DP-01 Art. 46 | PR-SD1 detects `aws_access_key_id_candidate`, `github_token_candidate`, `openai_api_key_candidate`, `anthropic_api_key_candidate`, and `generic_api_key_contextual` (contextual term required). | None category-specific in enforcement; PR-SD1 emits redaction hints as metadata only. | Provider credentials at rest are envelope-encrypted; payloads carrying secrets benefit from uniform envelope encryption. | Hard-deny floor: secret exfiltration is a reserved hard-deny example. PR-SD1 `recommended_action` is advisory metadata only and does not drive enforcement. | PARTIAL | Persisted classification records; secret-hardening posture; runtime bridge to PR-R9. |
+| Attorney-client privileged content | BR-NET-05 | None. PR-SD1 introduces the typed `attorney_client_privilege_signal` taxonomy token but does **not** classify content under it. | None category-specific. | Same uniform envelope encryption. | Privilege-aware policy is a future concern. | GAP | Privilege-aware classification (SD3/SD4); legal-sector profile. |
+| Judicial secrecy content (segredo de justiça) | BR-NET-05 | None. PR-SD1 introduces the typed `judicial_secrecy_signal` taxonomy token but does **not** classify content under it. PR-SD1's `cnj_case_number` detector matches CNJ-format process numbers and is a **format identifier only** — it makes no segredo-de-justiça determination. | None. | Same uniform envelope encryption. | Stricter handling required where applicable. | GAP | Judicial-secrecy classifier (SD3); CNJ mapping. |
 | Trade secrets | BR-DP-01; BR-NET-01 | None. | None. | Same uniform envelope encryption. | Hard-deny floor: exfiltration outside granted authority is a reserved example. | GAP | Trade-secret marking; per-customer policy. |
 | Confidential business data | BR-DP-01; BR-NET-01 | None. | None. | Same uniform envelope encryption. | Same as trade secrets. | GAP | Customer-defined sensitivity policy. |
 | Public-sector restricted data | BR-DP-01; BR-NET-01 | None. | None. | Same uniform envelope encryption. | Sector profile is a future concern. | GAP | Public-sector profile (PR-C); access-to-information rules. |
-| Provider credentials / model keys (GovAI-specific) | BR-DP-01 Art. 46 | None at content level; out-of-band storage is dedicated. | None category-specific at content level. | Provider credential storage is covered as an encrypted storage primitive (`provider_credentials.dek_wrapped` and `tests/integration/provider-credentials-plaintext-leak.test.ts`), but lifecycle governance remains partial. | Operationally tenant-isolated; covered by RLS plus `0009_provider_credentials.sql` admin route guard. | PARTIAL | Rotation cadence; per-tenant CMK / BYOK; lifecycle policy. |
+| Provider credentials / model keys (GovAI-specific) | BR-DP-01 Art. 46 | PR-SD1 detects `openai_api_key_candidate` and `anthropic_api_key_candidate` in audit payload content as `model_provider_credentials`-category rich findings (match-hash and redacted preview only). Out-of-band provider-credential storage remains the canonical credential store. | None category-specific at content level; PR-SD1 emits redaction hints as metadata only. | Provider credential storage is covered as an encrypted storage primitive (`provider_credentials.dek_wrapped` and `tests/integration/provider-credentials-plaintext-leak.test.ts`), but lifecycle governance remains partial. | Operationally tenant-isolated; covered by RLS plus `0009_provider_credentials.sql` admin route guard. PR-SD1 `recommended_action` is advisory metadata only. | PARTIAL | Rotation cadence; per-tenant CMK / BYOK; lifecycle policy. |
+| Court-case identifiers (CNJ-format) | BR-NET-05 | PR-SD1 detects `cnj_case_number` as a `court_case_identifier`-category rich finding (CNJ-format and mod-97 verification digits only — no process-existence claim, no legal meaning, no segredo-de-justiça determination). | None category-specific in enforcement; PR-SD1 emits redaction hints as metadata only. | Same uniform envelope encryption. | None category-specific. PR-SD1 `recommended_action` is advisory metadata only. | PARTIAL | Process-existence / segredo-de-justiça classifier (SD3); court-system connector enrichment. |
 
 Coverage is honestly skewed toward `PARTIAL` and `GAP`. The implemented
 primitives — envelope encryption, RLS, append-only audit, redaction metadata,

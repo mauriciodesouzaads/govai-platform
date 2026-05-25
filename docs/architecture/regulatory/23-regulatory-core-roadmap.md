@@ -318,6 +318,11 @@ implementation timeline.
   `24-sensitive-data-operating-model.md`.
 - Mapping update triggered: control 8 in `20-target-control-catalog.md`.
 - Tests expected: per-category detector tests.
+- Current state: typed taxonomy + provenance + rich finding model + the
+  first two detector families (credentials/secrets, CNJ case identifier)
+  are `IMPLEMENTED_FOUNDATIONAL_CONTROL` via PR-SD1 (see "PR-SD1
+  implementation evidence" below). The broader per-category detector set
+  remains `NATIVE_ENHANCEMENT_REQUIRED` for SD2/SD3/SD4/SD5.
 
 ### Segredo de justiça classifier
 
@@ -914,6 +919,103 @@ Limitations (remain future work or external):
 - GovAI does not guarantee compliance.
 - GovAI does not provide legal advice.
 - GovAI does not guarantee judicial validity or evidence admissibility.
+
+### PR-SD1 implementation evidence (foundational slice)
+
+PR-SD1 delivers the first implementation slice of the Sensitive Data OS
+described in `24-sensitive-data-operating-model.md`: the typed taxonomy,
+the provenance / source-quality vocabulary, a rich finding model with
+match-hash + redacted preview (no plaintext), an adapter back to the
+legacy `DetectorFinding` shape, and deterministic detector families for
+credentials/secrets and CNJ court-case identifiers. PR-SD1 does NOT
+implement classification persistence, routes, UI, connector ingestion, a
+runtime PR-R9 hard-deny bridge, a segredo-de-justiça classifier, an
+attorney-client privilege classifier, or any professional-secrecy
+classifier — those remain `NATIVE_ENHANCEMENT_REQUIRED` and are scoped
+for SD2/SD3/SD4/SD5.
+
+Status:
+
+- Sensitive Data OS finding contract + foundation:
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` for typed sensitive-data taxonomy,
+  origin / source-surface / source-quality vocabulary, deterministic
+  source-precedence rule (native primary cannot be downgraded by
+  connector or external evidence), rich `SensitiveDataFinding` model
+  (match_hash, redacted preview, confidence band, rationale code,
+  review-flag hints), baseline ↔ rich adapters, and the SD1 detector
+  families below.
+- Credentials/secrets detector family:
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` for `private_key_pem`,
+  `bearer_token`, `generic_api_key_contextual`,
+  `aws_access_key_id_candidate`, `github_token_candidate`,
+  `openai_api_key_candidate`, `anthropic_api_key_candidate`.
+- CNJ court-case identifier detector:
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` for `cnj_case_number` (format and
+  mod-97 verification digits only — NOT a process-existence check, NOT
+  a segredo-de-justiça classification, NOT a legal conclusion).
+- Baseline DLP behavior for cpf/cnpj/email/phone_br is unchanged.
+
+PR-SD1 explicit boundaries:
+
+- `SensitiveDataFinding.recommended_action` is ADVISORY METADATA in SD1.
+  It does NOT alter `DlpScanResult.highestAction`. It does NOT influence
+  `decidePolicy`. It does NOT cause runtime blocking. Any future code
+  consuming `recommended_action` as enforcement input must update SD1
+  docs first; the invariant constant `SD1_RECOMMENDED_ACTION_IS_ADVISORY`
+  exists for that.
+- Rich findings are exposed only as the new optional
+  `DlpScanResult.sensitiveFindings` field; existing consumers continue
+  to read `findings`, `configByDetector`, `highestAction` and remain the
+  sole enforcement inputs.
+- Raw match plaintext never leaves a detector function. Rich findings
+  carry only `match_hash` (sha256 of `detector:match`) and
+  `match_preview_redacted` (e.g., `[REDACTED:openai_api_key_candidate]`).
+  The legacy `DetectorFinding.match` is preserved only for in-process
+  redaction (`redactFindings`); `dlp_findings` persistence already stores
+  only `detector_id`, `detector_kind`, `count`, `action`, and policy
+  reasons already contain only `detector` + `index`.
+- `judicial_secrecy_signal`, `attorney_client_privilege_signal`, and
+  `professional_secrecy_signal` categories exist in the SD1 taxonomy as
+  TYPED TOKENS ONLY — SD1 does NOT classify any content under those
+  categories. The `_signal` suffix marks the distinction.
+
+Implementation evidence:
+
+- Package: `packages/dlp-br/src/sensitive-taxonomy.ts`,
+  `packages/dlp-br/src/sensitive-provenance.ts`,
+  `packages/dlp-br/src/sensitive-findings.ts`,
+  `packages/dlp-br/src/secret-detectors.ts`,
+  `packages/dlp-br/src/court-detectors.ts`,
+  `packages/dlp-br/src/scan-sensitive.ts`.
+- Pipeline integration: `apps/api/src/pipeline/dlp.ts` exposes
+  `DlpScanResult.sensitiveFindings?` as an additive optional field.
+- Tests: `packages/dlp-br/src/sensitive-taxonomy.test.ts`,
+  `packages/dlp-br/src/sensitive-provenance.test.ts`,
+  `packages/dlp-br/src/sensitive-findings.test.ts`,
+  `packages/dlp-br/src/secret-detectors.test.ts`,
+  `packages/dlp-br/src/court-detectors.test.ts`,
+  `packages/dlp-br/src/scan-sensitive.test.ts`,
+  `apps/api/src/pipeline/policy-sensitive-findings.test.ts`.
+
+Limitations (remain future work or external):
+
+- Classification persistence, RLS-scoped sensitive-finding tables,
+  reviewer-workflow records, and per-tenant policy bindings remain
+  `NATIVE_ENHANCEMENT_REQUIRED` (SD2+).
+- Routes, UI, and a normalized connector ingestion framework remain
+  `NATIVE_ENHANCEMENT_REQUIRED` (SD2/SD3+).
+- Segredo-de-justiça classifier, attorney-client privilege classifier,
+  professional-secrecy classifier, health / financial / criminal /
+  employment context detectors, and prompt-injection / exfiltration
+  indicators remain `NATIVE_ENHANCEMENT_REQUIRED` (SD3/SD4/SD5).
+- A runtime bridge from rich-finding `recommended_action` to PR-R9 /
+  hard-deny enforcement remains future work; SD1 keeps the advisory
+  boundary explicit so accidental coupling cannot happen by omission.
+- GovAI does not guarantee LGPD or CNJ compliance for any
+  sensitive-data processing. GovAI does not certify CNJ acceptance,
+  judicial validity, or court admissibility. GovAI does not provide
+  legal advice. GovAI does not substitute DPO, qualified counsel,
+  auditors, peritos, or sector specialists.
 
 ## P1 — Legal, Sensitive, and Evidence Workflows
 
