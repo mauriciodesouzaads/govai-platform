@@ -23,11 +23,13 @@ import {
   type SensitiveDataReviewFlags,
 } from './sensitive-taxonomy.js';
 import {
+  decideSourcePrecedence,
   mergeBySourcePrecedence,
   type FindingForMerge,
   type SensitiveDataOrigin,
   type SensitiveDataSourceQuality,
   type SensitiveDataSourceSurface,
+  type SourcePrecedenceDecision,
 } from './sensitive-provenance.js';
 
 export type SensitiveDataFinding = {
@@ -252,40 +254,102 @@ export function strictestFinding(
  * native-vs-connector precedence rules per-key. The grouping key defaults to
  * `${detector}:${match_hash}` so the same hit reported by GovAI native AND a
  * connector lands in one merged record.
+ *
+ * IMPORTANT: this helper returns ONLY the selected finding per key. When an
+ * external/connector finding is stricter than the native-primary finding it
+ * accompanies, that escalation signal is dropped from the output here.
+ * Callers that need to preserve escalation metadata (e.g., for routing to
+ * qualified-counsel / DPO / security review in later SD slices) should use
+ * `mergeFindingsWithPrecedenceDecisions` instead, which keeps both selected
+ * and escalation per key. SD1 itself does not act on the escalation signal —
+ * routing it into enforcement is future SD/RT work.
  */
 export function mergeFindingsWithPrecedence(
   a: ReadonlyArray<SensitiveDataFinding>,
   b: ReadonlyArray<SensitiveDataFinding>,
   keyOf?: (f: SensitiveDataFinding) => string,
 ): SensitiveDataFinding[] {
+  return mergeFindingsWithPrecedenceDecisions(a, b, keyOf).map((d) => d.decision.selected.value);
+}
+
+/**
+ * Decision-preserving variant of `mergeFindingsWithPrecedence`. Returns one
+ * entry per key carrying the full `SourcePrecedenceDecision` — selected
+ * finding plus optional `escalation` and the rule that fired. Use this when
+ * the caller must keep external/connector escalation metadata alongside the
+ * authoritative native finding (e.g., to surface a stricter external review
+ * recommendation in audit/review UIs).
+ *
+ * SD1 contract: the `escalation` field is metadata only. It does NOT alter
+ * `DlpScanResult.highestAction`, does NOT influence `decidePolicy`, and does
+ * NOT trigger runtime blocking. Connector ingestion is not implemented in
+ * SD1; this helper is the SD1 foundation that later slices build on.
+ */
+export type FindingDecisionEntry = {
+  key: string;
+  decision: SourcePrecedenceDecision<SensitiveDataFinding>;
+};
+
+export function mergeFindingsWithPrecedenceDecisions(
+  a: ReadonlyArray<SensitiveDataFinding>,
+  b: ReadonlyArray<SensitiveDataFinding>,
+  keyOf?: (f: SensitiveDataFinding) => string,
+): FindingDecisionEntry[] {
   const key = keyOf ?? ((f: SensitiveDataFinding) => `${f.detector}:${f.match_hash}`);
-  const byKey = new Map<string, SensitiveDataFinding>();
+  const order: string[] = [];
+  const byKey = new Map<string, SourcePrecedenceDecision<SensitiveDataFinding>>();
+  const wrap = (f: SensitiveDataFinding): FindingForMerge<SensitiveDataFinding> => ({
+    value: f,
+    source_quality: f.source_quality,
+    action_rank: recommendedActionRank(f.recommended_action),
+  });
   const consider = (f: SensitiveDataFinding): void => {
     const k = key(f);
     const existing = byKey.get(k);
     if (!existing) {
-      byKey.set(k, f);
+      // First sighting becomes the selected baseline with no escalation yet.
+      byKey.set(k, { selected: wrap(f), reason: 'deterministic_tie' });
+      order.push(k);
       return;
     }
-    const merged = mergeBySourcePrecedence<SensitiveDataFinding>(
-      {
-        value: existing,
-        source_quality: existing.source_quality,
-        action_rank: recommendedActionRank(existing.recommended_action),
-      },
-      {
-        value: f,
-        source_quality: f.source_quality,
-        action_rank: recommendedActionRank(f.recommended_action),
-      },
-    );
-    byKey.set(k, merged.value);
+    // Re-decide against the current selected; if there was already an
+    // escalation, fold it back in by re-deciding so the strictest external
+    // signal is preserved.
+    const decided = decideSourcePrecedence<SensitiveDataFinding>(existing.selected, wrap(f));
+    let merged: SourcePrecedenceDecision<SensitiveDataFinding> = decided;
+    if (existing.escalation) {
+      // Reconcile the prior escalation against the new decision: keep the
+      // strictest non-selected external signal as the escalation.
+      const priorEsc = existing.escalation;
+      const currentEsc = decided.escalation;
+      const isSelected = (cand: FindingForMerge<SensitiveDataFinding>): boolean =>
+        cand.value === decided.selected.value;
+      const candidates = [priorEsc, currentEsc].filter(
+        (x): x is FindingForMerge<SensitiveDataFinding> => x !== undefined && !isSelected(x),
+      );
+      if (candidates.length === 2) {
+        const better = decideSourcePrecedence(candidates[0]!, candidates[1]!);
+        merged = { ...decided, escalation: better.selected };
+      } else if (candidates.length === 1) {
+        merged = { ...decided, escalation: candidates[0] };
+      }
+      // If both prior and current escalations resolved to the selected, drop
+      // them — there is nothing left to escalate.
+    }
+    byKey.set(k, merged);
   };
   for (const f of a) consider(f);
   for (const f of b) consider(f);
-  return Array.from(byKey.values());
+  return order.map((k) => ({ key: k, decision: byKey.get(k)! }));
 }
 
-/** Re-export the merge primitive for callers that want it standalone. */
-export { mergeBySourcePrecedence } from './sensitive-provenance.js';
-export type { FindingForMerge };
+/** Re-export the merge primitive and decision helper for standalone callers. */
+export {
+  decideSourcePrecedence,
+  mergeBySourcePrecedence,
+} from './sensitive-provenance.js';
+export type {
+  FindingForMerge,
+  SourcePrecedenceDecision,
+  SourcePrecedenceReason,
+} from './sensitive-provenance.js';

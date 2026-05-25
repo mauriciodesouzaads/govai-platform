@@ -5,6 +5,7 @@ import {
   confidenceBandForScore,
   matchHash,
   mergeFindingsWithPrecedence,
+  mergeFindingsWithPrecedenceDecisions,
   recommendedActionRank,
   redactPreview,
   sensitiveFindingToLegacyFinding,
@@ -226,5 +227,100 @@ describe('mergeFindingsWithPrecedence', () => {
     });
     const merged = mergeFindingsWithPrecedence([a], [b]);
     expect(merged).toHaveLength(2);
+  });
+});
+
+// Decision-preserving aggregator: the SD1 doctrine fix at the finding-set
+// level. The selected-only `mergeFindingsWithPrecedence` above drops stricter
+// external signals when a native finding wins; this variant keeps them as
+// `escalation` so audit / review UIs in later SD slices can route on them
+// without losing the doctrine. The output `decision.escalation` is metadata
+// only — SD1 never consumes it for enforcement.
+describe('mergeFindingsWithPrecedenceDecisions', () => {
+  it('keeps the native finding selected AND preserves a stricter external signal as escalation', () => {
+    const native = baseRich(); // primary_govai_evidence, observe
+    const external = baseRich({
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'deny',
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions([native], [external]);
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0]!.decision;
+    expect(d.selected.source_quality).toBe('primary_govai_evidence');
+    expect(d.selected.value.recommended_action).toBe('observe');
+    expect(d.escalation?.source_quality).toBe('normalized_external');
+    expect(d.escalation?.value.recommended_action).toBe('deny');
+    expect(d.reason).toBe('external_escalation_preserved');
+  });
+
+  it('drops escalation when no external signal is stricter than the native finding', () => {
+    const native = baseRich({ recommended_action: 'review' });
+    const externalEqual = baseRich({
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'observe',
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions([native], [externalEqual]);
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0]!.decision;
+    expect(d.selected.source_quality).toBe('primary_govai_evidence');
+    expect(d.escalation).toBeUndefined();
+    expect(d.reason).toBe('native_primary_selected');
+  });
+
+  it('selected-only `mergeFindingsWithPrecedence` matches `decisions[].selected` (no doctrine drift)', () => {
+    const native = baseRich();
+    const external = baseRich({
+      source_quality: 'unverified_external',
+      origin: 'external_import',
+      source_surface: 'connector_other',
+      recommended_action: 'deny',
+    });
+    const selected = mergeFindingsWithPrecedence([native], [external]);
+    const decisions = mergeFindingsWithPrecedenceDecisions([native], [external]);
+    expect(selected.map((f) => f.source_quality)).toEqual(
+      decisions.map((d) => d.decision.selected.value.source_quality),
+    );
+  });
+
+  it('reconciles the strictest external escalation across three sightings for the same key', () => {
+    // Two external sightings arrive in addition to the native; the stricter
+    // external must be preserved as escalation, not silently overwritten.
+    const native = baseRich(); // observe
+    const externalMild = baseRich({
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'warn',
+    });
+    const externalStrict = baseRich({
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'deny',
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions(
+      [native],
+      [externalMild, externalStrict],
+    );
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0]!.decision;
+    expect(d.selected.source_quality).toBe('primary_govai_evidence');
+    expect(d.escalation?.value.recommended_action).toBe('deny');
+  });
+
+  it('keeps distinct hits independent and surfaces them in input order', () => {
+    const a = baseRich();
+    const b = baseRich({
+      detector: 'private_key_pem',
+      match_hash: matchHash('private_key_pem', '-----BEGIN PRIVATE KEY-----X-----END PRIVATE KEY-----'),
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions([a], [b]);
+    expect(decisions).toHaveLength(2);
+    expect(decisions[0]!.decision.selected.value.detector).toBe('cpf');
+    expect(decisions[1]!.decision.selected.value.detector).toBe('private_key_pem');
   });
 });

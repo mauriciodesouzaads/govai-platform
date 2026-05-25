@@ -100,20 +100,10 @@ export function isNativeQuality(q: SensitiveDataSourceQuality): boolean {
 }
 
 /**
- * Deterministic merge rule for two findings reporting on the same subject.
- * Encodes the SD1 safety invariants:
- *
- *  - Native GovAI evidence (`primary_govai_evidence`) cannot be downgraded by
- *    connector/external evidence, ever — even when the external evidence
- *    arrives with a structurally stricter recommended action.
- *  - Connector/external evidence MAY escalate a native finding if it is
- *    stricter AND the native finding is not itself native-primary.
- *  - When both are native-primary, the stricter one wins.
- *  - Tie-breaks resolve conservatively: keep the finding with the higher
- *    quality; if quality ties, keep the stricter recommended action; if those
- *    tie too, return `a` to keep the call site deterministic.
- *
- * This is pure: callers pass two opaque records and a `stricter` decider.
+ * Opaque record describing one finding for the deterministic precedence
+ * helpers below. Callers wrap their domain object (`value`) with the source
+ * quality and a numeric strictness rank (see `recommendedActionRank` in
+ * `sensitive-findings.ts`); the helpers stay pure and reusable.
  */
 export type FindingForMerge<T> = {
   value: T;
@@ -126,26 +116,107 @@ export type FindingForMerge<T> = {
   action_rank: number;
 };
 
+/**
+ * Reason code explaining how `decideSourcePrecedence` reached its result.
+ * Useful for audit trails and tests that need to assert the rule that fired,
+ * not just the selected value.
+ */
+export type SourcePrecedenceReason =
+  | 'native_primary_selected'
+  | 'external_escalation_preserved'
+  | 'higher_quality_selected'
+  | 'stricter_action_selected'
+  | 'deterministic_tie';
+
+/**
+ * Result of comparing two findings under SD1 precedence rules. `selected` is
+ * the authoritative finding; `escalation` (optional) is the OTHER finding when
+ * it carries a stricter signal worth preserving as metadata — typically the
+ * case when external/connector evidence is stricter than a native-primary
+ * finding it cannot downgrade. `reason` records which rule fired.
+ *
+ * SD1 contract: `escalation` is metadata only. It does NOT alter
+ * `DlpScanResult.highestAction`, does NOT influence `decidePolicy`, and does
+ * NOT trigger runtime blocking. Later SD/RT slices may consume it to route
+ * findings for qualified-counsel / DPO / security review.
+ */
+export type SourcePrecedenceDecision<T> = {
+  selected: FindingForMerge<T>;
+  escalation?: FindingForMerge<T>;
+  reason: SourcePrecedenceReason;
+};
+
+/**
+ * Decide precedence between two findings reporting on the same subject.
+ * Encodes the SD1 safety invariants from the regulatory operating model:
+ *
+ *  - Native GovAI evidence (`primary_govai_evidence`) cannot be downgraded by
+ *    connector/external evidence, ever — even when the external evidence
+ *    arrives with a structurally stricter recommended action.
+ *  - Connector/external evidence MAY be preserved as `escalation` metadata
+ *    when it carries a stricter action than the native-primary finding it
+ *    accompanies. The native finding stays `selected`; the external signal is
+ *    surfaced as `escalation` so callers do not silently discard a stricter
+ *    review signal.
+ *  - Unverified external evidence can become an escalation signal, but it
+ *    never overrides primary GovAI evidence — provenance stays explicit.
+ *  - When both findings are native-primary, the stricter action wins.
+ *  - When neither is native-primary, higher quality wins; on quality tie the
+ *    stricter action wins; on a full tie `a` is returned for determinism.
+ *
+ * This is a pure function over opaque records — no IO, no enforcement.
+ */
+export function decideSourcePrecedence<T>(
+  a: FindingForMerge<T>,
+  b: FindingForMerge<T>,
+): SourcePrecedenceDecision<T> {
+  const aNative = isNativeQuality(a.source_quality);
+  const bNative = isNativeQuality(b.source_quality);
+
+  // Mixed native vs non-native: the native finding is authoritative, but a
+  // stricter non-native signal is preserved as escalation metadata.
+  if (aNative && !bNative) {
+    if (b.action_rank > a.action_rank) {
+      return { selected: a, escalation: b, reason: 'external_escalation_preserved' };
+    }
+    return { selected: a, reason: 'native_primary_selected' };
+  }
+  if (bNative && !aNative) {
+    if (a.action_rank > b.action_rank) {
+      return { selected: b, escalation: a, reason: 'external_escalation_preserved' };
+    }
+    return { selected: b, reason: 'native_primary_selected' };
+  }
+
+  // Both native-primary or both non-native: quality wins, then strictness.
+  const qcmp = compareSourceQuality(a.source_quality, b.source_quality);
+  if (qcmp > 0) return { selected: a, reason: 'higher_quality_selected' };
+  if (qcmp < 0) return { selected: b, reason: 'higher_quality_selected' };
+
+  // Quality tie: stricter action wins.
+  if (a.action_rank > b.action_rank) {
+    return { selected: a, reason: 'stricter_action_selected' };
+  }
+  if (b.action_rank > a.action_rank) {
+    return { selected: b, reason: 'stricter_action_selected' };
+  }
+
+  // Full tie: keep `a` for determinism.
+  return { selected: a, reason: 'deterministic_tie' };
+}
+
+/**
+ * Selected-only convenience wrapper over `decideSourcePrecedence`. Returns the
+ * authoritative finding without the escalation metadata. Callers that need to
+ * preserve external escalation signals should use `decideSourcePrecedence`
+ * directly so the stricter external signal is not silently discarded.
+ *
+ * This wrapper exists for backward compatibility and for call sites where a
+ * single representative finding is the right contract.
+ */
 export function mergeBySourcePrecedence<T>(
   a: FindingForMerge<T>,
   b: FindingForMerge<T>,
 ): FindingForMerge<T> {
-  const aNative = isNativeQuality(a.source_quality);
-  const bNative = isNativeQuality(b.source_quality);
-
-  // Rule 1: native primary cannot be downgraded by non-native.
-  if (aNative && !bNative) return a;
-  if (bNative && !aNative) return b;
-
-  // Rule 2 & 3: same native-ness — quality wins, then strictness.
-  const qcmp = compareSourceQuality(a.source_quality, b.source_quality);
-  if (qcmp > 0) return a;
-  if (qcmp < 0) return b;
-
-  // Quality tie: stricter action wins.
-  if (a.action_rank > b.action_rank) return a;
-  if (b.action_rank > a.action_rank) return b;
-
-  // Full tie: keep `a` for determinism.
-  return a;
+  return decideSourcePrecedence(a, b).selected;
 }

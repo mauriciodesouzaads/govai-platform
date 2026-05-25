@@ -252,6 +252,15 @@ substitutes a native detector.
   precedence rule (`primary_govai_evidence` cannot be downgraded by
   connector or external evidence) so future connector-ingested
   classifications normalize cleanly into the same vocabulary.
+- PR-SD1 preserves stricter external/connector signals as `escalation`
+  metadata alongside the authoritative native finding via
+  `decideSourcePrecedence` /
+  `mergeFindingsWithPrecedenceDecisions`. The native finding remains
+  selected; the external signal is surfaced for later review-routing
+  consumers. `escalation` is metadata only in SD1 — it does NOT alter
+  `DlpScanResult.highestAction`, does NOT change `decidePolicy`, and
+  does NOT trigger runtime blocking. Connector ingestion that would
+  produce real escalation entries is not implemented in SD1.
 
 ## Relationship to other docs
 
