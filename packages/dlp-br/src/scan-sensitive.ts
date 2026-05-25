@@ -1,20 +1,23 @@
-// Sensitive Data OS — top-level rich scan orchestrator (PR-SD1).
+// Sensitive Data OS — top-level rich scan orchestrator (PR-SD1, extended by PR-SD2A).
 //
-// `scanSensitiveData` runs the SD1 detector families against `text` and
+// `scanSensitiveData` runs every native SD detector family against `text` and
 // returns the rich `SensitiveDataFinding[]` aggregate. Baseline PII findings
 // (cpf/cnpj/email/phone_br) are also lifted into rich findings so the
 // resulting list is a single homogeneous stream. The legacy
 // `detectAllBaseline` / `DetectorFinding[]` contract is NOT altered — callers
 // that need the legacy shape continue to use the baseline detectors directly.
 //
-// `recommended_action` on the returned findings is ADVISORY ONLY in SD1.
-// `scanSensitiveData` does NOT compute a `highestAction` and does NOT
-// influence enforcement. Adding rich findings to `DlpScanResult` is purely
-// additive metadata; the legacy `findings` / `configByDetector` /
-// `highestAction` triple remains the sole enforcement input.
+// `recommended_action` on the returned findings is ADVISORY ONLY (SD1
+// invariant). `scanSensitiveData` does NOT compute a `highestAction` and
+// does NOT influence enforcement. Adding rich findings to `DlpScanResult`
+// is purely additive metadata; the legacy `findings` / `configByDetector` /
+// `highestAction` triple remains the sole enforcement input. SD2A health
+// and financial detectors abide by the same advisory boundary.
 
 import { detectAllBaseline, type DetectorFinding } from './baseline-detectors.js';
 import { detectCnjCaseNumbers } from './court-detectors.js';
+import { detectFinancialData } from './financial-detectors.js';
+import { detectHealthData } from './health-detectors.js';
 import { detectSecrets } from './secret-detectors.js';
 import {
   baselineFindingToSensitiveFinding,
@@ -49,9 +52,14 @@ export type ScanSensitiveDataContext = {
 };
 
 /**
- * Run every SD1 detector family against `text` and return a single
+ * Run every native SD detector family against `text` and return a single
  * homogeneous `SensitiveDataFinding[]`. The result ordering is detector-stable
- * within each family; the family ordering is baseline → secret → court.
+ * within each family; the family ordering is:
+ *
+ *     baseline → secret → court → financial → health
+ *
+ * Tests pin this ordering so observers can rely on it. New SD slices must
+ * extend, not reorder, this sequence.
  *
  * NOTE on safety: raw matches never leave a detector. Each finding in the
  * returned list carries a `match_hash` and a `match_preview_redacted` only.
@@ -85,10 +93,13 @@ export function scanSensitiveData(
     }
   }
 
-  out.push(...detectSecrets(text, { source_surface: context.source_surface, origin }));
-  out.push(
-    ...detectCnjCaseNumbers(text, { source_surface: context.source_surface, origin }),
-  );
+  const inner = { source_surface: context.source_surface, origin };
+  out.push(...detectSecrets(text, inner));
+  out.push(...detectCnjCaseNumbers(text, inner));
+  // SD2A — financial and health detector foundations. Advisory only; no
+  // enforcement coupling; no clinical/financial interpretation.
+  out.push(...detectFinancialData(text, inner));
+  out.push(...detectHealthData(text, inner));
 
   return out;
 }

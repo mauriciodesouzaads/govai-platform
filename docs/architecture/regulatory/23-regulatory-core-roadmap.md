@@ -321,8 +321,12 @@ implementation timeline.
 - Current state: typed taxonomy + provenance + rich finding model + the
   first two detector families (credentials/secrets, CNJ case identifier)
   are `IMPLEMENTED_FOUNDATIONAL_CONTROL` via PR-SD1 (see "PR-SD1
-  implementation evidence" below). The broader per-category detector set
-  remains `NATIVE_ENHANCEMENT_REQUIRED` for SD2/SD3/SD4/SD5.
+  implementation evidence" below). PR-SD2A adds conservative foundational
+  detector families in the `financial_data` and `health_data` categories
+  (see "PR-SD2A implementation evidence" below). The broader per-category
+  detector set, classification persistence, policy bindings, routes/UI,
+  and connector ingestion remain `NATIVE_ENHANCEMENT_REQUIRED` for
+  SD2B/SD3/SD4/SD5.
 
 ### Segredo de justiça classifier
 
@@ -1016,6 +1020,99 @@ Limitations (remain future work or external):
   judicial validity, or court admissibility. GovAI does not provide
   legal advice. GovAI does not substitute DPO, qualified counsel,
   auditors, peritos, or sector specialists.
+
+### PR-SD2A implementation evidence (foundational slice)
+
+PR-SD2A extends the SD1 foundation with conservative native detector
+families for the `financial_data` and `health_data` categories. SD2A is a
+DETECTOR foundation, not a full health or financial classifier. SD2A does
+NOT implement classification persistence, routes, UI, connector
+ingestion, runtime enforcement, approval workflows, retention/legal-hold
+bindings, segredo-de-justiça / attorney-client / professional-secrecy
+classifiers, medical-device behavior, clinical decision support, financial
+or investment advice, credit decisioning, suitability workflows, or any
+compliance/certification claim.
+
+Status:
+
+- `financial_data` foundational detector family:
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` for `payment_card_luhn_candidate`
+  (Luhn checksum), `iban_candidate` (ISO 13616 mod-97 validated format),
+  `br_boleto_linha_digitavel_candidate` (context-required, NO
+  módulo 10/11 validation), and `br_bank_account_context_candidate`
+  (paired agência + conta context).
+- `health_data` foundational detector family:
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL` for `cid10_code_candidate`
+  (CID/ICD format + explicit context; NO clinical-meaning mapping),
+  `medical_record_identifier_candidate`,
+  `prescription_context_candidate` (context + dosage),
+  `lab_result_context_candidate` (context + value/unit; NO clinical
+  interpretation of the value).
+- Baseline DLP behavior for cpf/cnpj/email/phone_br is unchanged.
+
+PR-SD2A explicit boundaries:
+
+- Health findings record only that a health SIGNAL appears in context.
+  The disease, condition, or diagnosis a CID/ICD code might map to is
+  out of scope for SD2A and is not derived, stored, or transmitted. SD2A
+  does not infer diagnosis, triage, prognosis, treatment, prescription
+  correctness, or lab-value interpretation.
+- Financial findings record only that a financial CANDIDATE or validated
+  format appears in context. They do not prove that any real account,
+  card, payment, or customer financial relationship exists. They do not
+  provide financial / investment / credit advice, suitability
+  classification, or AML conclusions.
+- `SensitiveDataFinding.recommended_action` on every SD2A finding is
+  ADVISORY METADATA. It does not alter `DlpScanResult.highestAction`,
+  does not influence `decidePolicy`, and does not implement runtime
+  blocking. The legacy `findings / configByDetector / highestAction`
+  triple remains the sole enforcement input.
+- Raw match plaintext never leaves a detector function. Rich findings
+  carry only `match_hash` (sha256 of `detector:<normalized match>`) and
+  `match_preview_redacted` (e.g., `[REDACTED:payment_card_luhn_candidate]`).
+
+Implementation evidence:
+
+- Package: `packages/dlp-br/src/financial-detectors.ts`,
+  `packages/dlp-br/src/health-detectors.ts`,
+  `packages/dlp-br/src/sensitive-taxonomy.ts` (additive
+  `SD2A_FOUNDATIONAL_DETECTED_CATEGORIES` constant),
+  `packages/dlp-br/src/scan-sensitive.ts` (family ordering extended to
+  baseline → secret → court → financial → health),
+  `packages/dlp-br/src/index.ts` (additive barrel exports).
+- Pipeline: `apps/api/src/pipeline/dlp.ts` (no behavior change — SD2A
+  findings flow through the existing optional
+  `DlpScanResult.sensitiveFindings` field added in SD1).
+- Tests: `packages/dlp-br/src/financial-detectors.test.ts`,
+  `packages/dlp-br/src/health-detectors.test.ts`,
+  `packages/dlp-br/src/sensitive-taxonomy.test.ts` (extended),
+  `packages/dlp-br/src/scan-sensitive.test.ts` (extended),
+  `apps/api/src/pipeline/policy-sensitive-findings.test.ts` (extended
+  with SD2A advisory-boundary pins).
+
+Limitations (remain future work or external):
+
+- Classification persistence, RLS-scoped sensitive-finding tables,
+  reviewer-workflow records, and per-tenant policy bindings remain
+  `NATIVE_ENHANCEMENT_REQUIRED` (SD2B+).
+- Routes, UI, and a normalized connector ingestion framework remain
+  `NATIVE_ENHANCEMENT_REQUIRED` (SD2B/SD3+).
+- Segredo-de-justiça classifier, attorney-client privilege classifier,
+  professional-secrecy classifier, biometric / genetic detectors,
+  criminal / employment context detectors, broader health / financial
+  classifiers (e.g., boleto módulo 10/11 validation, account-existence
+  proof, clinical concept mapping), and prompt-injection / exfiltration
+  indicators remain `NATIVE_ENHANCEMENT_REQUIRED` (SD2B/SD3/SD4/SD5).
+- A runtime bridge from rich-finding `recommended_action` to PR-R9 /
+  hard-deny enforcement remains future work; SD2A keeps the advisory
+  boundary explicit, just like SD1.
+- GovAI does not guarantee LGPD, CNJ, Bacen, CVM, SUSEP, CFM, ANS,
+  ANVISA, ISO, or PCI compliance for any sensitive-data processing.
+  GovAI does not provide medical advice, clinical decision support,
+  financial advice, investment advice, or credit decisioning. GovAI
+  does not substitute physicians, nurses, pharmacists, financial
+  professionals, DPO, qualified counsel, auditors, peritos, or sector
+  specialists.
 
 ## P1 — Legal, Sensitive, and Evidence Workflows
 

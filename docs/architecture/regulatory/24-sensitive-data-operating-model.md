@@ -262,6 +262,68 @@ substitutes a native detector.
   does NOT trigger runtime blocking. Connector ingestion that would
   produce real escalation entries is not implemented in SD1.
 
+## PR-SD2A implementation evidence
+
+PR-SD2A extends the PR-SD1 foundation with conservative native detector
+families for the `financial_data` and `health_data` categories. SD2A is a
+DETECTOR foundation only; it does **not** elevate either category to
+COVERED.
+
+Financial-data detectors (foundational, signal only):
+
+- `payment_card_luhn_candidate` — Luhn-checksum-validated PAN shape.
+- `iban_candidate` — ISO 13616 mod-97 validated IBAN shape.
+- `br_boleto_linha_digitavel_candidate` — context-required candidate
+  signal; SD2A does **not** implement módulo 10/11 validation.
+- `br_bank_account_context_candidate` — requires paired agência + conta
+  context within close proximity.
+
+Health-data detectors (foundational, signal only):
+
+- `cid10_code_candidate` — CID/ICD code format with explicit CID/ICD
+  context. SD2A records that a CID-style code appears in context; it
+  does **not** map the code to a disease, condition, diagnosis, or any
+  clinical concept.
+- `medical_record_identifier_candidate` — Brazilian medical-record
+  context (prontuário / registro médico / ficha clínica) with a nearby
+  alphanumeric identifier.
+- `prescription_context_candidate` — prescription/medical-order context
+  (prescrição / receita médica / posologia / medicamento / tomar /
+  uso contínuo) paired with a dosage/unit (mg, mcg, mL, UI, comprimido,
+  cápsula). SD2A does **not** infer prescribed treatment or clinical
+  correctness.
+- `lab_result_context_candidate` — lab/exam context (exame /
+  laboratório / resultado / glicemia / hemoglobina / colesterol /
+  creatinina / PCR) paired with a value+unit (mg/dL, g/dL, mmol/L,
+  UI/L, etc.). SD2A does **not** interpret whether a value is normal,
+  abnormal, high, low, or clinically meaningful.
+
+PR-SD2A explicit boundaries (in addition to the SD1 invariants above):
+
+- SD2A health detectors are STRICTLY non-clinical. They do NOT infer
+  diagnosis, triage, prognosis, treatment, or prescription correctness;
+  they do NOT interpret lab values; they do NOT map CID/ICD codes to
+  clinical meaning; they do NOT claim to be a medical device,
+  health-record system, telemedicine platform, or clinical decision
+  support tool; and they do NOT assert ANS / CFM / ANVISA / sector
+  certification.
+- SD2A financial detectors are signal/foundational only. They do NOT
+  prove account/card/payment existence; they do NOT provide financial
+  / investment / credit advice; they do NOT classify customer
+  suitability or AML risk; and they do NOT assert Bacen / CVM / SUSEP /
+  PCI / ISO compliance.
+- SD2A `recommended_action` on every finding is advisory metadata only
+  (same boundary as SD1). It does NOT alter `highestAction`, does NOT
+  change `decidePolicy`, and does NOT implement runtime blocking.
+- SD2A does NOT implement classification persistence, routes, UI,
+  connector ingestion, approval workflows, retention/legal-hold
+  bindings, or a runtime bridge to PR-R9 hard-deny enforcement. Those
+  remain `NATIVE_ENHANCEMENT_REQUIRED` for SD2B+ and SD3/SD4/SD5.
+
+Domain 8 in `20-target-control-catalog.md` remains **not COVERED** in
+PR-SD2A — SD2A advances the foundational detector surface without
+upgrading the operating-model coverage of either category.
+
 ## Relationship to other docs
 
 - `01-lgpd-anpd-mapping.md` and `09-sector-health-mapping.md` for LGPD

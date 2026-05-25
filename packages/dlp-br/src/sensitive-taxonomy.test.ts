@@ -5,6 +5,8 @@ import {
   SD1_IMPLEMENTED_CATEGORY_SET,
   SD1_RECOMMENDED_ACTION_IS_ADVISORY,
   SD1_TAXONOMY_ONLY_CATEGORIES,
+  SD2A_FOUNDATIONAL_DETECTED_CATEGORIES,
+  SD2A_FOUNDATIONAL_DETECTED_CATEGORY_SET,
   SENSITIVE_DATA_CATEGORIES,
   SENSITIVE_DATA_CATEGORY_SET,
   SENSITIVE_DATA_RECOMMENDED_ACTIONS,
@@ -59,6 +61,18 @@ describe('sensitive-taxonomy / categories', () => {
     expect(isSensitiveDataCategory('secrets_api_keys')).toBe(true);
     expect(isSensitiveDataCategory('not_a_category')).toBe(false);
     expect(isSensitiveDataCategory('')).toBe(false);
+  });
+
+  it('SD2A foundational-detected categories are exactly financial_data + health_data', () => {
+    expect([...SD2A_FOUNDATIONAL_DETECTED_CATEGORIES].sort()).toEqual(
+      ['financial_data', 'health_data'],
+    );
+    for (const c of SD2A_FOUNDATIONAL_DETECTED_CATEGORIES) {
+      expect(SD2A_FOUNDATIONAL_DETECTED_CATEGORY_SET.has(c)).toBe(true);
+      expect(SENSITIVE_DATA_CATEGORY_SET.has(c)).toBe(true);
+      // SD2A categories were not implemented in SD1.
+      expect(SD1_IMPLEMENTED_CATEGORY_SET.has(c)).toBe(false);
+    }
   });
 });
 

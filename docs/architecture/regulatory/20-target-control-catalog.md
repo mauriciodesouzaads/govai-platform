@@ -279,13 +279,23 @@ under which the control turns `COVERED`.
   `IMPLEMENTED_FOUNDATIONAL_CONTROL` typed Sensitive Data OS foundation
   (taxonomy, provenance, rich finding model with match-hash + redacted
   preview, baseline ↔ rich adapters, and the credentials/secrets +
-  CNJ-case-number detector families). Classification persistence,
-  per-tenant policy bindings, routes/UI, connector ingestion, and the
-  broader per-category detector set remain
-  `NATIVE_ENHANCEMENT_REQUIRED` for SD2/SD3/SD4/SD5. Domain 8 is **not**
-  `COVERED` in PR-SD1; the rich-finding `recommended_action` is advisory
-  metadata only and does not alter `decidePolicy`, `highestAction`, or
-  runtime enforcement.
+  CNJ-case-number detector families); PR-SD2A extends that foundation
+  with conservative foundational detector families in the
+  `financial_data` category (`payment_card_luhn_candidate`,
+  `iban_candidate`, `br_boleto_linha_digitavel_candidate`,
+  `br_bank_account_context_candidate`) and the `health_data` category
+  (`cid10_code_candidate`, `medical_record_identifier_candidate`,
+  `prescription_context_candidate`, `lab_result_context_candidate`).
+  Classification persistence, per-tenant policy bindings, routes/UI,
+  connector ingestion, and the broader per-category detector set remain
+  `NATIVE_ENHANCEMENT_REQUIRED` for SD2B/SD3/SD4/SD5. Domain 8 is **not**
+  `COVERED` in PR-SD2A; SD2A detectors are signal/foundational only —
+  they do not provide medical or financial classification, advice,
+  diagnosis, triage, treatment, prescription correctness, lab-value
+  interpretation, account/card/payment existence proof, credit
+  decisioning, suitability classification, or AML conclusions. The
+  rich-finding `recommended_action` remains advisory metadata only and
+  does not alter `decidePolicy`, `highestAction`, or runtime enforcement.
 - Turns COVERED when: classifiers, schema, audit events, and tests exist
   per the sensitive-data category list.
 

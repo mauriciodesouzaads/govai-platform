@@ -166,4 +166,66 @@ describe('decidePolicy / advisory-action boundary (SD1)', () => {
       'sk-ant-api03_AbCdEfGhIjKlMnOpQrStUvW',
     );
   });
+
+  // SD2A — adding financial / health rich findings must not alter decidePolicy
+  // in any direction. The legacy `findings / configByDetector / highestAction`
+  // triple remains the sole enforcement input; `recommended_action='review'`
+  // on a card / IBAN / CID-10 / prescription / lab finding is metadata only.
+  it('SD2A: financial sensitiveFindings do not change kind from allow when legacy findings are empty', () => {
+    const sensitiveFindings = scanSensitiveData(
+      'card 4111111111111111 IBAN GB82WEST12345698765432',
+      { source_surface: 'govai_runs' },
+    );
+    expect(sensitiveFindings.some((f) => f.detector === 'payment_card_luhn_candidate')).toBe(true);
+    expect(sensitiveFindings.some((f) => f.detector === 'iban_candidate')).toBe(true);
+    const dlp = buildDlp([], [], sensitiveFindings);
+    const { decision } = decidePolicy(ctx, dlp);
+    expect(decision.kind).toBe('allow');
+    expect(decision.reasons).toEqual(['no findings']);
+  });
+
+  it('SD2A: health sensitiveFindings do not change kind from allow when legacy findings are empty', () => {
+    const sensitiveFindings = scanSensitiveData(
+      'CID-10 E11.9 prontuário nº 9999 receita médica 500 mg exame glicemia 110 mg/dL',
+      { source_surface: 'govai_runs' },
+    );
+    expect(sensitiveFindings.some((f) => f.detector === 'cid10_code_candidate')).toBe(true);
+    expect(sensitiveFindings.some((f) => f.detector === 'medical_record_identifier_candidate')).toBe(
+      true,
+    );
+    const dlp = buildDlp([], [], sensitiveFindings);
+    const { decision } = decidePolicy(ctx, dlp);
+    expect(decision.kind).toBe('allow');
+    expect(decision.reasons).toEqual(['no findings']);
+  });
+
+  it('SD2A: financial/health recommended_action="review" never raises highestAction', () => {
+    const sensitiveFindings = scanSensitiveData(
+      'card 4111111111111111 CID-10 E11.9',
+      { source_surface: 'govai_runs' },
+    );
+    // Construct a DLP result whose legacy state is detect — the rich review
+    // findings must not promote highestAction or kind beyond that.
+    const dlp = buildDlp([], [], sensitiveFindings);
+    expect(dlp.highestAction).toBe('detect');
+    const { decision } = decidePolicy(ctx, dlp);
+    expect(decision.kind).toBe('allow');
+  });
+
+  it('SD2A: financial/health raw fixtures never appear in policy reasons', () => {
+    const sensitiveFindings = scanSensitiveData(
+      'card 4111111111111111 CID-10 E11.9 prontuário nº 9999',
+      { source_surface: 'govai_runs' },
+    );
+    const dlp = buildDlp(
+      [{ detector: 'cpf', match: '111.444.777-35', index: 0, length: 14 }],
+      [{ detector: 'cpf', action: 'redact' }],
+      sensitiveFindings,
+    );
+    const { decision } = decidePolicy(ctx, dlp);
+    const ser = JSON.stringify(decision.reasons);
+    for (const banned of ['4111111111111111', 'E11.9', '9999']) {
+      expect(ser).not.toContain(banned);
+    }
+  });
 });
