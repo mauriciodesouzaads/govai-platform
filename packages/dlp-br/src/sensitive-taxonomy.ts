@@ -87,6 +87,24 @@ export const SD1_IMPLEMENTED_CATEGORY_SET: ReadonlySet<SensitiveDataCategory> = 
 export const SD1_TAXONOMY_ONLY_CATEGORIES: ReadonlyArray<SensitiveDataCategory> =
   SENSITIVE_DATA_CATEGORIES.filter((c) => !SD1_IMPLEMENTED_CATEGORY_SET.has(c));
 
+/**
+ * Categories that gained a CONSERVATIVE FOUNDATIONAL native detector in
+ * PR-SD2A. SD2A is not a full classifier for these categories — the
+ * detectors emit candidate signals only and never imply clinical or
+ * financial interpretation. The broader operating model (persistence,
+ * routes, UI, policy binding, connector ingestion, enforcement) remains
+ * `NATIVE_ENHANCEMENT_REQUIRED` / `REQUIRED_NATIVE_CAPABILITY` per
+ * `docs/architecture/regulatory/24-sensitive-data-operating-model.md`.
+ */
+export const SD2A_FOUNDATIONAL_DETECTED_CATEGORIES: ReadonlyArray<SensitiveDataCategory> = [
+  'financial_data',
+  'health_data',
+] as const;
+
+export const SD2A_FOUNDATIONAL_DETECTED_CATEGORY_SET: ReadonlySet<SensitiveDataCategory> = new Set(
+  SD2A_FOUNDATIONAL_DETECTED_CATEGORIES,
+);
+
 // ---------------------------------------------------------------------------
 // Confidence + recommended-action vocabularies.
 // ---------------------------------------------------------------------------

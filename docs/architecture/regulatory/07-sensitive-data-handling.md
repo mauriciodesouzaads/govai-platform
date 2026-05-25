@@ -105,6 +105,32 @@ Each primitive cited is implemented in the repository:
   hard-deny bridge. `SensitiveDataFinding.recommended_action` is **advisory
   metadata** in SD1 — it does not alter `highestAction`, does not change
   `decidePolicy`, and does not implement runtime blocking.
+- **Sensitive Data OS foundational financial detectors (PR-SD2A)** —
+  `packages/dlp-br/src/financial-detectors.ts` (`payment_card_luhn_candidate`
+  with Luhn checksum, `iban_candidate` with ISO 13616 mod-97 validation,
+  `br_boleto_linha_digitavel_candidate` as a context-required candidate
+  with **no** módulo 10/11 validation, `br_bank_account_context_candidate`
+  requiring paired agência + conta context). Each emits a rich
+  `SensitiveDataFinding` with `match_hash` and redacted preview only — no
+  raw value is retained. SD2A financial detectors do **not** classify a
+  full financial-data ontology, do **not** prove account/card/payment
+  existence, do **not** provide financial / investment / credit advice,
+  and do **not** assert Bacen / CVM / SUSEP / PCI / ISO compliance.
+- **Sensitive Data OS foundational health detectors (PR-SD2A)** —
+  `packages/dlp-br/src/health-detectors.ts` (`cid10_code_candidate`,
+  `medical_record_identifier_candidate`, `prescription_context_candidate`,
+  `lab_result_context_candidate`). All four require explicit medical
+  context; each emits a rich `SensitiveDataFinding` with `match_hash` and
+  redacted preview only. SD2A health detectors are STRICTLY non-clinical:
+  they do **not** infer, store, or imply what any CID/ICD code clinically
+  means; they do **not** infer diagnosis, triage, prognosis, treatment, or
+  prescription correctness; they do **not** interpret lab values as
+  normal/abnormal; they do **not** claim to be a medical device,
+  health-record system, telemedicine platform, or clinical decision
+  support tool; and they do **not** assert ANS / CFM / ANVISA / sector
+  certification. `recommended_action` on every SD2A finding is advisory
+  metadata only — it does not alter `highestAction`, does not change
+  `decidePolicy`, and does not implement runtime blocking.
 - **DLP pipeline** — `apps/api/src/pipeline/dlp.ts` (`dlpPreScan`,
   `redactFindings`), wired into `executeGovernedRun`
   (`apps/api/src/pipeline/run-orchestrator.ts`). PR-SD1 exposes rich
@@ -153,10 +179,10 @@ sector-specific classifiers, are not implemented and are noted as gaps.
 | Personal data | BR-DP-01 | Limited (`cpf`, `cnpj`, `email`, `phone_br` only). | Generic `redaction_metadata`; not category-driven. | Envelope-encrypted in `audit_event_payloads`. | Approval loop available as a general governance control. | PARTIAL | Broader detectors; category-aware redaction; data catalog. |
 | Sensitive personal data (LGPD Art. 11) | BR-DP-01 | None category-specific; baseline detectors apply uniformly. | Generic; not driven by sensitive-category flag. | Same uniform envelope encryption. | No category-specific approval ceiling. | PARTIAL | Sensitive-category classifier; per-category policy ceiling; per-category retention. |
 | Children and adolescents (LGPD Art. 14) | BR-DP-01 | None. | None. | Same uniform envelope encryption. | None category-specific. | GAP | Age-bracket detection; consent capture; special-case policy. |
-| Health data | BR-DP-01 | None. | None. | Same uniform envelope encryption. | None category-specific. | GAP | Health-data classifier; sector profile (PR-C). |
+| Health data | BR-DP-01 | PR-SD2A adds conservative `cid10_code_candidate` (CID/ICD format + explicit context), `medical_record_identifier_candidate`, `prescription_context_candidate`, and `lab_result_context_candidate` rich findings (match-hash + redacted preview only). SD2A is **not** a full clinical classifier and does **not** infer disease, diagnosis, triage, prognosis, treatment, prescription correctness, or lab-value interpretation. | None category-specific. PR-SD2A emits redaction hints as metadata only. | Same uniform envelope encryption. | None category-specific. PR-SD2A `recommended_action` is advisory metadata only and does not drive enforcement. | PARTIAL | Persisted clinical-data classification; sector profile; ANS / CFM / ANVISA alignment work. |
 | Biometric data | BR-DP-01 | None. | None. | Same uniform envelope encryption (applies if such data lands in evidence payloads). | None category-specific. | GAP | Biometric classifier; per-category policy. |
 | Genetic data | BR-DP-01 | None. | None. | Same uniform envelope encryption. | None category-specific. | GAP | Genetic-data classifier; per-category policy. |
-| Financial data | BR-DP-01; BR-NET-01 | Indirect — `cpf` / `cnpj` are common financial-identity tokens but are not the same as financial-data classification. | Generic. | Same uniform envelope encryption. | Sector approval/escalation is a future concern. | PARTIAL | Financial-data classifier; sector profile (PR-C). |
+| Financial data | BR-DP-01; BR-NET-01 | Indirect via `cpf` / `cnpj`; PR-SD2A adds `payment_card_luhn_candidate` (Luhn checksum), `iban_candidate` (ISO 13616 mod-97 validated format), `br_boleto_linha_digitavel_candidate` (context-required, **no** módulo 10/11 validation), and `br_bank_account_context_candidate` (paired agência + conta context). Rich findings carry match-hash + redacted preview only. SD2A does **not** prove account/card/payment existence, does **not** provide financial / investment / credit advice, and does **not** assert Bacen / CVM / SUSEP / PCI / ISO compliance. | Generic. PR-SD2A emits redaction hints as metadata only. | Same uniform envelope encryption. | Sector approval/escalation is a future concern. PR-SD2A `recommended_action` is advisory metadata only and does not drive enforcement. | PARTIAL | Persisted financial-data classification; sector profile; Bacen / CVM / SUSEP alignment work. |
 | Criminal / penal data | BR-DP-01 | None. | None. | Same uniform envelope encryption. | None category-specific. | GAP | Criminal-data classifier; per-category policy. |
 | Employment / labor data | BR-DP-01 | None. | None. | Same uniform envelope encryption. | None category-specific. | GAP | Employment-data classifier; per-category policy. |
 | Authentication credentials | BR-DP-01 Art. 46 | PR-SD1 detects `private_key_pem` and `bearer_token` payload candidates (rich findings with match-hash and redacted preview only); out-of-band credentials never enter audit content by design. | None category-specific in enforcement; PR-SD1 emits redaction hints as metadata only. | Provider credentials at rest are envelope-encrypted (`provider_credentials.dek_wrapped`). | Hard-deny floor: credential exfiltration is a reserved hard-deny example in `governance-philosophy.md`. PR-SD1 `recommended_action` is advisory metadata only and does not drive enforcement. | PARTIAL | Persisted classification records; per-tenant policy bindings; runtime bridge to PR-R9. |

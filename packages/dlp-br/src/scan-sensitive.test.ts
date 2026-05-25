@@ -36,7 +36,7 @@ describe('scanSensitiveData', () => {
     );
   });
 
-  it('combines all three families (baseline + secret + court) into one homogeneous stream', () => {
+  it('combines baseline + secret + court detector families into one homogeneous stream', () => {
     const text =
       'cpf 111.444.777-35 chave sk-ant-api03_AbCdEfGhIjKlMnOpQrStUv processo 0000001-30.2010.8.26.0100';
     const out = scanSensitiveData(text, ctx);
@@ -46,6 +46,92 @@ describe('scanSensitiveData', () => {
     );
     const families = new Set(out.map((f) => f.detector_family));
     expect(families).toEqual(new Set(['baseline_pii_br', 'secret', 'court']));
+  });
+
+  it('SD2A: combines baseline + secret + court + financial + health into one homogeneous stream', () => {
+    const text = [
+      'cpf 111.444.777-35',
+      'chave sk-ant-api03_AbCdEfGhIjKlMnOpQrStUv',
+      'processo 0000001-30.2010.8.26.0100',
+      'card 4111111111111111',
+      'IBAN GB82 WEST 1234 5698 7654 32',
+      'agência 1234-5 conta corrente 67890-1',
+      'paciente CID-10 E11.9 prontuário nº 9999',
+      'receita médica 500 mg',
+      'exame de glicemia 110 mg/dL',
+    ].join(' / ');
+    const out = scanSensitiveData(text, ctx);
+    const families = new Set(out.map((f) => f.detector_family));
+    expect(families).toEqual(
+      new Set(['baseline_pii_br', 'secret', 'court', 'financial', 'health']),
+    );
+    const detectors = out.map((f) => f.detector);
+    expect(detectors).toEqual(
+      expect.arrayContaining([
+        'cpf',
+        'anthropic_api_key_candidate',
+        'cnj_case_number',
+        'payment_card_luhn_candidate',
+        'iban_candidate',
+        'br_bank_account_context_candidate',
+        'cid10_code_candidate',
+        'medical_record_identifier_candidate',
+        'prescription_context_candidate',
+        'lab_result_context_candidate',
+      ]),
+    );
+  });
+
+  it('SD2A: family ordering is stable (baseline → secret → court → financial → health)', () => {
+    const text =
+      'cpf 111.444.777-35 sk-ant-api03_AbCdEfGhIjKlMnOpQrStUv 0000001-30.2010.8.26.0100 card 4111111111111111 CID-10 E11.9';
+    const out = scanSensitiveData(text, ctx);
+    const sequence = out.map((f) => f.detector_family);
+    const rankOf: Record<string, number> = {
+      baseline_pii_br: 0,
+      secret: 1,
+      court: 2,
+      financial: 3,
+      health: 4,
+    };
+    for (let i = 1; i < sequence.length; i++) {
+      const prev = rankOf[sequence[i - 1]!] ?? -1;
+      const cur = rankOf[sequence[i]!] ?? -1;
+      expect(cur).toBeGreaterThanOrEqual(prev);
+    }
+  });
+
+  it('SD2A: include_baseline=false still allows financial + health detectors to fire', () => {
+    const text = 'card 4111111111111111 CID-10 E11.9';
+    const out = scanSensitiveData(text, { ...ctx, include_baseline: false });
+    expect(out.some((f) => f.detector === 'payment_card_luhn_candidate')).toBe(true);
+    expect(out.some((f) => f.detector === 'cid10_code_candidate')).toBe(true);
+    expect(out.some((f) => f.detector_family === 'baseline_pii_br')).toBe(false);
+  });
+
+  it('SD2A: supplied baseline_findings does not affect financial + health detection', () => {
+    const text =
+      'card 4111111111111111 CID-10 E11.9 cpf 111.444.777-35 in the actual text';
+    const out = scanSensitiveData(text, { ...ctx, baseline_findings: [] });
+    expect(out.some((f) => f.detector === 'payment_card_luhn_candidate')).toBe(true);
+    expect(out.some((f) => f.detector === 'cid10_code_candidate')).toBe(true);
+    expect(out.filter((f) => f.detector_family === 'baseline_pii_br')).toHaveLength(0);
+  });
+
+  it('SD2A: no raw plaintext for financial or health fixtures appears in JSON.stringify(findings)', () => {
+    const text =
+      'card 4111111111111111 IBAN GB82WEST12345698765432 CID-10 E11.9 prontuário nº 9999 exame glicemia 110 mg/dL';
+    const out = scanSensitiveData(text, ctx);
+    const ser = JSON.stringify(out);
+    for (const banned of [
+      '4111111111111111',
+      'GB82WEST12345698765432',
+      'E11.9',
+      '9999',
+      '110 mg/dL',
+    ]) {
+      expect(ser).not.toContain(banned);
+    }
   });
 
   it('does not compute a highestAction — rich findings are advisory only', () => {
