@@ -23,6 +23,7 @@ import {
   type SensitiveDataReviewFlags,
 } from './sensitive-taxonomy.js';
 import {
+  compareSourceQuality,
   decideSourcePrecedence,
   mergeBySourcePrecedence,
   type FindingForMerge,
@@ -290,6 +291,37 @@ export type FindingDecisionEntry = {
   decision: SourcePrecedenceDecision<SensitiveDataFinding>;
 };
 
+/**
+ * Tie-breaker for choosing between two non-selected escalation candidates.
+ *
+ * The escalation slot represents "the strictest external review signal that
+ * should not be silently discarded." Action strictness is therefore the
+ * primary key — a stricter action MUST win even when the strictness comes
+ * from a lower-quality source (otherwise an unverified `deny` would be
+ * downgraded to a normalized `warn`, defeating the doctrine). Source quality
+ * is the secondary tie-breaker, and first-seen wins on full ties for
+ * determinism.
+ *
+ * This is intentionally NOT `decideSourcePrecedence`: that helper governs
+ * which finding is authoritative (`selected`), where quality must outrank
+ * action so an unverified external cannot override primary GovAI evidence.
+ * Escalation is a different question — by construction neither candidate is
+ * the selected finding, so quality-first is wrong for this slot.
+ */
+function chooseEscalationCandidate(
+  a: FindingForMerge<SensitiveDataFinding>,
+  b: FindingForMerge<SensitiveDataFinding>,
+): FindingForMerge<SensitiveDataFinding> {
+  if (a.action_rank !== b.action_rank) {
+    return a.action_rank > b.action_rank ? a : b;
+  }
+  const qcmp = compareSourceQuality(a.source_quality, b.source_quality);
+  if (qcmp !== 0) {
+    return qcmp > 0 ? a : b;
+  }
+  return a;
+}
+
 export function mergeFindingsWithPrecedenceDecisions(
   a: ReadonlyArray<SensitiveDataFinding>,
   b: ReadonlyArray<SensitiveDataFinding>,
@@ -312,14 +344,16 @@ export function mergeFindingsWithPrecedenceDecisions(
       order.push(k);
       return;
     }
-    // Re-decide against the current selected; if there was already an
-    // escalation, fold it back in by re-deciding so the strictest external
-    // signal is preserved.
+    // Re-decide which finding is selected (authoritative) under the
+    // native-vs-connector rules; native primary cannot be displaced here.
     const decided = decideSourcePrecedence<SensitiveDataFinding>(existing.selected, wrap(f));
     let merged: SourcePrecedenceDecision<SensitiveDataFinding> = decided;
     if (existing.escalation) {
-      // Reconcile the prior escalation against the new decision: keep the
-      // strictest non-selected external signal as the escalation.
+      // Reconcile the prior escalation against the new decision and keep the
+      // strictest non-selected external signal. Action-first via
+      // chooseEscalationCandidate so an unverified `deny` is NOT downgraded
+      // to a normalized `warn` — escalation cares about strictness, not
+      // about which source is most trustworthy.
       const priorEsc = existing.escalation;
       const currentEsc = decided.escalation;
       const isSelected = (cand: FindingForMerge<SensitiveDataFinding>): boolean =>
@@ -328,8 +362,10 @@ export function mergeFindingsWithPrecedenceDecisions(
         (x): x is FindingForMerge<SensitiveDataFinding> => x !== undefined && !isSelected(x),
       );
       if (candidates.length === 2) {
-        const better = decideSourcePrecedence(candidates[0]!, candidates[1]!);
-        merged = { ...decided, escalation: better.selected };
+        merged = {
+          ...decided,
+          escalation: chooseEscalationCandidate(candidates[0]!, candidates[1]!),
+        };
       } else if (candidates.length === 1) {
         merged = { ...decided, escalation: candidates[0] };
       }

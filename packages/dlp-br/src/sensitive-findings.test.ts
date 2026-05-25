@@ -323,4 +323,115 @@ describe('mergeFindingsWithPrecedenceDecisions', () => {
     expect(decisions[0]!.decision.selected.value.detector).toBe('cpf');
     expect(decisions[1]!.decision.selected.value.detector).toBe('private_key_pem');
   });
+
+  // Codex P1: when two external candidates compete for the escalation slot,
+  // action strictness MUST win over source quality. Otherwise an unverified
+  // `deny` would be silently downgraded to a normalized `warn` — defeating
+  // the doctrine "preserve the strictest external signal, never silently
+  // discard." Quality remains the primary precedence rule for `selected`;
+  // it is only the tie-breaker for `escalation`.
+  it('preserves an unverified_external deny over a normalized_external warn (Codex P1)', () => {
+    const native = baseRich(); // primary_govai_evidence, observe
+    const unverifiedDeny = baseRich({
+      source_quality: 'unverified_external',
+      origin: 'external_import',
+      source_surface: 'connector_other',
+      recommended_action: 'deny',
+    });
+    const normalizedWarn = baseRich({
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'warn',
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions(
+      [native],
+      [unverifiedDeny, normalizedWarn],
+    );
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0]!.decision;
+    expect(d.selected.source_quality).toBe('primary_govai_evidence');
+    expect(d.selected.value.recommended_action).toBe('observe');
+    expect(d.escalation?.source_quality).toBe('unverified_external');
+    expect(d.escalation?.value.recommended_action).toBe('deny');
+    expect(d.reason).toBe('external_escalation_preserved');
+  });
+
+  it('preserves the same stricter escalation regardless of arrival order (warn then deny)', () => {
+    const native = baseRich();
+    const normalizedWarn = baseRich({
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'warn',
+    });
+    const unverifiedDeny = baseRich({
+      source_quality: 'unverified_external',
+      origin: 'external_import',
+      source_surface: 'connector_other',
+      recommended_action: 'deny',
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions(
+      [native],
+      [normalizedWarn, unverifiedDeny],
+    );
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0]!.decision;
+    expect(d.selected.source_quality).toBe('primary_govai_evidence');
+    expect(d.escalation?.value.recommended_action).toBe('deny');
+    expect(d.escalation?.source_quality).toBe('unverified_external');
+  });
+
+  it('at equal action_rank, higher source_quality wins the escalation slot', () => {
+    const native = baseRich();
+    const unverifiedReview = baseRich({
+      source_quality: 'unverified_external',
+      origin: 'external_import',
+      source_surface: 'connector_other',
+      recommended_action: 'review',
+    });
+    const normalizedReview = baseRich({
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'review',
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions(
+      [native],
+      [unverifiedReview, normalizedReview],
+    );
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0]!.decision;
+    expect(d.escalation?.source_quality).toBe('normalized_external');
+    expect(d.escalation?.value.recommended_action).toBe('review');
+  });
+
+  it('at equal action_rank and equal source_quality, the first-seen escalation wins (deterministic)', () => {
+    const native = baseRich();
+    const firstWarn = baseRich({
+      detector: 'cpf',
+      match_hash: matchHash('cpf', '11144477735'),
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'warn',
+    });
+    const secondWarn = baseRich({
+      detector: 'cpf',
+      match_hash: matchHash('cpf', '11144477735'),
+      source_quality: 'normalized_external',
+      origin: 'connector_ingested',
+      source_surface: 'connector_other',
+      recommended_action: 'warn',
+    });
+    const decisions = mergeFindingsWithPrecedenceDecisions(
+      [native],
+      [firstWarn, secondWarn],
+    );
+    expect(decisions).toHaveLength(1);
+    const d = decisions[0]!.decision;
+    // The first external sighting is the one that survives the
+    // chooseEscalationCandidate tie-break.
+    expect(d.escalation?.value).toBe(firstWarn);
+  });
 });
