@@ -12,6 +12,22 @@ EXCEPTION
 END
 $$;
 
+-- Role: govai_audit_sealer (B0 — Audit Capture Outbox foundation).
+-- NOLOGIN. Acts via SET LOCAL ROLE only inside trusted callers (the future
+-- AuditSealer worker). Receives EXECUTE on SECURITY DEFINER claim/seal/fail
+-- functions in migration 0025; no direct UPDATE/INSERT on outbox tables.
+-- Per SPEC v2.1 §5.1, the sealer role lives in bootstrap (admin-owned),
+-- not in an application migration, so the migration runner does not need
+-- CREATEROLE.
+DO $$
+BEGIN
+  CREATE ROLE govai_audit_sealer NOINHERIT NOLOGIN;
+EXCEPTION
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'role govai_audit_sealer already exists, skipping';
+END
+$$;
+
 -- Role: govai_app (role de aplicação, LOGIN, sem BYPASSRLS, sem SUPERUSER).
 -- A senha NÃO é hardcoded. O caller deve definir o GUC `govai.app_password` via
 -- `SET govai.app_password = '<segredo>'` na MESMA sessão antes de rodar este script.
