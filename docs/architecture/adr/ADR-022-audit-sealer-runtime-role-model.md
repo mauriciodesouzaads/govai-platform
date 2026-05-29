@@ -36,6 +36,46 @@ Status: Proposed
 - A sealer role failure must not cripple the provider-native experience for
   low-risk traffic; it surfaces as an evidence-plane health issue.
 
+## Final role/session model for B3
+
+- B3 uses one dedicated deploy identity for the AuditSealer process.
+- The deploy identity must use a separate DB pool from `apps/api`.
+- The deploy identity must not share the request pool.
+- The library does not execute `SET ROLE`.
+- The library does not open or commit transactions.
+- The runner owns session, transaction, retry, and phase orchestration.
+- The runner must use the least-privilege role required for each phase.
+- If existing grants require separate phases, the runner must make those phase boundaries explicit.
+- `withSealerPhaseRole` is allowed only in the dedicated runner/test harness, not in `apps/api`.
+- Provider requests never depend on sealer role/session state.
+- Sealer role/session failure is evidence-plane degraded state for low-risk traffic, not provider UX failure.
+
+The current B0 grants split responsibilities across two roles: claim,
+mark_sealed, and mark_failed are granted to `govai_audit_sealer`, while the
+`auditAppend` path (`audit_append_locked`) is granted to `govai_app`. The B3
+runner must therefore treat claim/mark and append as distinct least-privilege
+phases inside a single caller-owned transaction, switching role explicitly at
+each phase boundary via `withSealerPhaseRole`. The runner identity must hold
+membership in both roles; it must not collapse them into a broad owner role.
+
+## Prohibited role models
+
+- No production sealing loop in `apps/api`.
+- No shared `apps/api` request pool for sealing.
+- No implicit role switching inside core library.
+- No superuser/broad-owner role for convenience.
+- No provider request waiting on sealer role availability.
+- No role model that requires AuditSealer to proxy OpenAI/Anthropic/Claude Code traffic.
+
+## B3 acceptance defaults
+
+- dedicated DB pool: required;
+- max pool size initial default: 2;
+- transaction ownership: runner-owned;
+- role switching: runner/test-harness only if required by grants;
+- startup validation: verify required SQL functions/permissions before readiness;
+- failure mode: not ready for sealer, provider-native low-risk path remains available.
+
 ## Acceptance criteria
 
 - dedicated role documented;

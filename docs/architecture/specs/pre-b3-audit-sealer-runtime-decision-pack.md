@@ -150,6 +150,33 @@ confirming it does not degrade OpenAI, Anthropic, or Claude Code.
 | Logs | Sanitized, no raw payloads | B3 logs structured, redacted events | Raw prompts/responses/secrets logged |
 | apps/api separation | Sealer independent of apps/api | B3 keeps deploy units separate | apps/api runs the production sealing loop |
 
+## Final pre-B3 decisions closed by this pack
+
+| Decision area | Final decision | B3 default | Stop condition |
+| --- | --- | --- | --- |
+| Provider-native UX | Native parity preserved by default; governance is additive and async | observe/capture-first, no default degradation | user feels meaningful difference without explicit high-risk policy |
+| Claude Code | Production compatibility is non-waivable | must pass compatibility harness | Claude Code cannot complete the harness |
+| `/v1/runs` | GovAI high-level API, not parity surface | not used as native-parity proof | /v1/runs used as the only proof of native parity |
+| High-risk policy source | capability registry + org policy overlays | explicit policy + machine-readable reason | inline block from generic sealer/evidence unavailability |
+| AuditSealer role/session | dedicated identity, runner-owned tx, least-privilege per phase | dedicated DB pool, max pool size 2 | sealing loop in apps/api or shared request pool |
+| Stale threshold | age-based recovery in dedicated runner | 10 minutes initial default | stale recovery breaks the state machine |
+| Retry policy | bounded retries with backoff | 3 attempts, exponential backoff with jitter | unbounded retries or duplicate appends |
+| Duplicate append prevention | explicit B3 requirement; never process-memory-only | check state + claim under lock before append | duplicate audit append for same capture |
+| Claim batch/concurrency | bounded loop, no busy loop | batch 10, max in-flight 2 | provider-path throttling or unbounded concurrency |
+| Metrics format | OTel-compatible semantics | Prometheus acceptable adapter | high-cardinality/raw-payload labels |
+| Health readiness | sealer readiness fails if it cannot seal | readiness validates DB + permissions + backlog | sealer readiness failure implies provider endpoints down |
+| Evidence-plane degradation | evidence-plane health issue for low-risk traffic | metric/work item, no provider block | low-risk provider-native traffic blocked by sealer state |
+
+Closure summary:
+
+- High-risk policy source = capability registry + org policy overlays.
+- Stale threshold = 10 minutes initial default.
+- Retry policy = 3 attempts, exponential backoff with jitter.
+- Claim batch/concurrency = batch 10, max in-flight 2.
+- Metrics = OTel-compatible semantics, Prometheus acceptable adapter.
+- Duplicate append prevention = explicit B3 requirement.
+- Evidence-plane degradation does not block low-risk provider-native traffic.
+
 ## Non-goals
 
 - Do not implement B3.

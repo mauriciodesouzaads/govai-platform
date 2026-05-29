@@ -29,6 +29,27 @@ Status: Proposed
 - Recovery must not block the provider hot path.
 - Recovery must not affect Claude Code, OpenAI, or Anthropic.
 
+## B3 default recovery policy
+
+- stale threshold initial default: 10 minutes;
+- max retry attempts initial default: 3;
+- retry backoff initial default: exponential backoff with jitter, starting at 30 seconds, capped at 5 minutes;
+- terminal failure after max retries or unrecoverable integrity error;
+- recovery batch initial default: 10 rows;
+- recovery is transactional;
+- recovery never appends duplicate audit events for the same capture.
+
+## Duplicate append prevention
+
+- audit append must be idempotent per capture sealing attempt;
+- runner must check capture state before append;
+- runner must claim row under row-level lock or equivalent existing B0 claim function;
+- runner must not append if capture is already sealed;
+- runner must not append twice for same capture/attempt;
+- if append succeeded but mark sealed failed, recovery must detect existing append/evidence before deciding retry vs failed;
+- if exact append idempotency key does not yet exist, B3 must either introduce one explicitly or document why existing capture state/functions guarantee idempotency;
+- no duplicate append prevention may rely only on process memory.
+
 ## Provider-native impact
 
 - Stale recovery runs outside the provider path.
@@ -36,6 +57,8 @@ Status: Proposed
 - A recovery backlog must not cripple providers.
 - A governance gap must be reported as an evidence / sealer health issue, not as
   a provider failure.
+- stale recovery does not block low-risk provider-native traffic;
+- stale backlog is evidence-plane health, not OpenAI/Anthropic/Claude Code UX degradation.
 
 ## Acceptance criteria
 

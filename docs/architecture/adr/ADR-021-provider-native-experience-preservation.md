@@ -128,6 +128,39 @@ provider integrations.
 - Any cap/default in /v1/runs, including generated request defaults, does not satisfy provider-native parity.
 - Provider-native parity must be proven on native-shaped provider surfaces.
 
+## Risk-proportional intervention model
+
+- Risk-proportional intervention means governance action must be justified by a concrete policy source and risk signal.
+- Low-risk/default traffic must prefer observe/capture/audit over interruption.
+- Inline blocking is allowed only for explicit high-risk policy.
+- Generic evidence-plane or sealer unavailability is not high-risk policy.
+- High-risk policy lives in the capability registry plus organization policy overlays, not in ad-hoc runner code.
+- High-risk policy changes require explicit product/security review.
+- High-risk decisions must emit a machine-readable reason.
+- User/provider errors must not be disguised as governance errors, and governance errors must not be disguised as provider errors.
+
+### Canonical intervention scenarios
+
+1. Low-risk normal prompt:
+   - allow/observe/capture;
+   - no user-visible degradation.
+
+2. PII finding in low-risk mode:
+   - warn/audit or policy-specific redaction only if explicitly configured;
+   - no default provider block.
+
+3. Disallowed/destructive tool:
+   - block only if tool classifier/capability policy says high-risk block.
+
+4. Sealer down/backlog:
+   - mark evidence-plane degraded;
+   - emit metric/work item;
+   - do not block low-risk provider-native traffic.
+
+5. Unknown provider beta/header/field:
+   - pass through by default;
+   - block only with explicit high-risk policy.
+
 ## Non-goals
 
 - Do not implement a provider proxy in this ADR.

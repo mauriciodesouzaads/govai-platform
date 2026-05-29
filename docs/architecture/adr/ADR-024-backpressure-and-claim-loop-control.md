@@ -25,6 +25,26 @@ Status: Proposed
 - If the backlog grows, emit metrics / work items / alerts.
 - Do not use provider request latency as a backpressure mechanism.
 
+## B3 initial runtime defaults
+
+- claim batch size default: 10;
+- max in-flight seals default: 2;
+- idle sleep default: 1000 ms;
+- empty-queue backoff default: exponential 1s to 30s with jitter;
+- error backoff default: exponential 30s to 5m with jitter;
+- lock wait timeout default: fail fast / no long blocking wait;
+- graceful shutdown drain timeout default: 30s;
+- max loop CPU behavior: no busy loop;
+- provider request path throttling: forbidden;
+- backlog alert threshold default: oldest pending age > 5 minutes or backlog > 1000 pending captures.
+
+## Provider-native protection
+
+- sealer backlog cannot throttle provider requests;
+- sealer loop cannot run in apps/api;
+- sealer CPU/DB backpressure must be bounded to its own deploy unit/pool;
+- no model/token/stream/tool caps may be used to reduce sealer backlog.
+
 ## Provider-native impact
 
 - Backpressure must not make the user feel slowness in the providers.

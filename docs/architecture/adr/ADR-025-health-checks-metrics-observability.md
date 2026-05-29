@@ -52,6 +52,63 @@ Status: Proposed
 
 Provider-native SLO must be tracked separately from sealer SLO.
 
+## Metrics format
+
+- Metrics format default: OpenTelemetry-compatible names and labels.
+- Prometheus exposition is acceptable as deployment adapter, but metric semantics must remain OTel-compatible.
+- Required labels:
+  - org_id only if cardinality-safe or hashed;
+  - tenant_tier;
+  - operational_mode;
+  - result;
+  - reason;
+  - provider only when relevant;
+  - capability_id only when relevant.
+- High-cardinality labels prohibited:
+  - raw run_id;
+  - raw capture_id;
+  - raw provider_request_id;
+  - raw prompt;
+  - raw response;
+  - user email;
+  - secret identifiers.
+
+## Required metric names
+
+- `govai_audit_sealer_claim_total`
+- `govai_audit_sealer_sealed_total`
+- `govai_audit_sealer_failed_total`
+- `govai_audit_sealer_claim_latency_ms`
+- `govai_audit_sealer_seal_latency_ms`
+- `govai_audit_sealer_backlog_depth`
+- `govai_audit_sealer_oldest_pending_age_seconds`
+- `govai_audit_sealer_stale_count`
+- `govai_audit_sealer_retry_total`
+- `govai_audit_sealer_terminal_failure_total`
+- `govai_provider_native_latency_ms`
+- `govai_provider_native_error_total`
+
+## Health response shape
+
+- liveness: process alive only;
+- readiness: DB reachable, required permissions validated, backlog below critical threshold, no fatal config error;
+- readiness must fail for sealer if sealer cannot seal;
+- readiness failure of sealer must not imply provider-native endpoints are down;
+- health payload must not include raw prompts/responses/secrets.
+
+## Structured log fields
+
+- event;
+- component;
+- result;
+- reason;
+- provider when relevant;
+- capability_id when relevant;
+- org_hash or tenant tier, not raw sensitive org details;
+- no raw prompt;
+- no raw response;
+- no secrets.
+
 ## Provider-native impact
 
 - Observability must prove the sealer is not degrading OpenAI, Anthropic, or
