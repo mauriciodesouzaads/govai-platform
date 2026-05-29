@@ -76,6 +76,58 @@ provider integrations.
 - There is no transformation to a common denominator.
 - Any governance interruption is explicit and testable.
 
+## Provider-native compatibility baseline
+
+- Provider-native compatibility is a release gate, not an aspiration.
+- B3 must not start until this baseline is specified.
+- B3 must not be marked ready until the compatibility harness exists and passes.
+- Claude Code production compatibility cannot be waived.
+- OpenAI and Anthropic parity waivers require explicit documented product/security approval and cannot permit silent downgrade, silent token caps, default stream buffering, tool/function loss, or header loss.
+- /v1/runs is a GovAI high-level governed execution API, not the provider-native parity surface.
+- Provider-native audited/governed-native endpoints are the surfaces that must preserve official SDK/CLI behavior.
+- Unknown provider fields, headers, streaming events, beta flags, usage metadata, and error fields must pass through by default unless an explicit high-risk policy blocks the request.
+- Common-denominator schemas must not be used on the hot path if they lose provider-specific semantics.
+- Sealer/evidence degradation is an evidence-plane issue for low-risk traffic, not a provider UX failure.
+
+### Claude Code baseline
+
+- Claude Code must run through the compatible provider-native path without a mandatory GovAI wrapper.
+- Long-running sessions must remain interactive.
+- Streaming must remain responsive.
+- Tool/file workflows must not be truncated, rewritten, or blocked by default.
+- Cancellation/interruption behavior must be preserved.
+- Provider errors, rate limits, and authentication failures must not be disguised as generic GovAI errors.
+- Claude Code must not be blocked by AuditSealer downtime, stale sealing, or evidence backlog for low-risk traffic.
+- Claude Code production compatibility is a non-waivable release blocker.
+
+### Anthropic baseline
+
+- Messages create and Messages stream must preserve native request/response semantics.
+- Tool use must be preserved.
+- Provider-specific headers must be preserved.
+- `anthropic-beta` and prompt caching headers must be preserved unless an explicit high-risk policy blocks them.
+- Files, models, and count_tokens behavior must be preserved where supported.
+- Error semantics, rate-limit behavior, request IDs, and usage metadata must be preserved.
+- Unknown Anthropic fields and future-compatible fields must pass through by default.
+
+### OpenAI baseline
+
+- Responses create/stream must preserve native semantics.
+- Chat Completions create/stream must preserve native semantics.
+- Tool/function calling must be preserved.
+- Model choice and max token parameters must not be silently rewritten or capped.
+- Provider-specific headers, request IDs, rate-limit headers, errors, and usage metadata must be preserved.
+- Files, vector stores, embeddings, and models behavior must be preserved where supported.
+- Unknown OpenAI fields and future-compatible fields must pass through by default.
+
+### Explicit non-native surface
+
+- /v1/runs is useful and strategic, but it is not the provider-native parity surface.
+- /v1/runs may provide simplified governed execution semantics.
+- /v1/runs must not be used as evidence that Claude Code/OpenAI/Anthropic native parity is complete.
+- Any cap/default in /v1/runs, including generated request defaults, does not satisfy provider-native parity.
+- Provider-native parity must be proven on native-shaped provider surfaces.
+
 ## Non-goals
 
 - Do not implement a provider proxy in this ADR.

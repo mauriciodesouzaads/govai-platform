@@ -49,6 +49,47 @@ Native parity covers streaming, tool/function calling, provider-specific
 headers, prompt caching and beta features, model choice, token limits, error
 semantics, and usage metadata.
 
+## Provider-Native Compatibility Baseline before B3
+
+- The provider-native compatibility baseline is a release gate.
+- B3 must not start until the harness plan is documented.
+- B3 must not be marked ready until the harness is implemented and green.
+- Claude Code production compatibility cannot be waived.
+- /v1/runs is not the provider-native parity surface.
+- Provider-native audited/governed-native endpoints must preserve SDK/CLI behavior.
+- Unknown fields/headers/events must pass through by default.
+- Common-denominator schemas are forbidden in the hot path when they lose provider semantics.
+- Evidence-plane degradation must not degrade low-risk provider UX.
+
+### Compatibility harness matrix
+
+| Surface | Must prove | Required before B3 starts | Required before B3 ready | Waiver allowed |
+| --- | --- | --- | --- | --- |
+| Claude Code CLI | official CLI workflow, long-running session, streaming, tool/file workflow, cancellation, provider errors/rate limits | harness plan | green harness | No for production |
+| Anthropic Messages | create, stream, tool use, beta headers, prompt caching headers, errors, usage metadata | harness plan | green harness | only explicit product/security waiver, never silent downgrade |
+| OpenAI Responses | create, stream, tools, model choice, max tokens, headers, errors, usage metadata | harness plan | green harness | only explicit product/security waiver, never silent downgrade |
+| OpenAI Chat Completions | create, stream, tool/function calling, model choice, max tokens, headers, errors | harness plan | green harness | only explicit product/security waiver, never silent downgrade |
+| Provider files/models/metadata endpoints | native behavior where supported | coverage matrix | green tests for supported endpoints | explicit coverage note only |
+
+### Non-native surfaces
+
+- /v1/runs is GovAI high-level execution API.
+- /v1/runs does not prove provider-native parity.
+- /v1/runs may intentionally simplify payloads.
+- Provider-native parity must be assessed on native-shaped provider surfaces.
+- Any /v1/runs cap/default must be treated as GovAI API behavior, not provider-native behavior.
+
+### B3 hard stop conditions
+
+- B3 hard stops if Claude Code cannot complete the compatibility harness.
+- B3 hard stops if streaming latency/shape differs materially from provider native.
+- B3 hard stops if tool/function calling is rewritten or dropped.
+- B3 hard stops if unknown fields/headers/events are stripped by default.
+- B3 hard stops if model or max token parameters are silently changed.
+- B3 hard stops if provider errors/rate limits are replaced by generic GovAI errors.
+- B3 hard stops if AuditSealer downtime blocks low-risk provider traffic.
+- B3 hard stops if /v1/runs is used as the only proof of native parity.
+
 ## ADR-022..026 as decisions required before B3
 
 - ADR-022: AuditSealer runtime role model.
