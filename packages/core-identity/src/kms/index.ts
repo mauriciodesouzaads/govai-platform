@@ -1,4 +1,6 @@
 import { createHmac, hkdfSync, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { AwsKms, createRealAwsKmsClient, type AwsKmsClient } from './aws-kms.js';
 
 export type KmsKeyId = string;
 
@@ -204,11 +206,25 @@ export class KmsBootError extends Error {
   }
 }
 
-export function createKmsFromEnv(env: {
-  NODE_ENV: 'development' | 'test' | 'production';
-  GOVAI_KMS_PROVIDER: 'dev' | 'aws' | 'gcp' | 'azure';
-  KMS_DEV_SEED?: string | undefined;
-}): Kms {
+/** Optional dependency injection for {@link createKmsFromEnv} (used by tests). */
+export interface CreateKmsDeps {
+  /** Inject a fake AWS KMS client so tests never reach real AWS. */
+  awsKmsClientFactory?: (region: string) => AwsKmsClient;
+}
+
+export function createKmsFromEnv(
+  env: {
+    NODE_ENV: 'development' | 'test' | 'production';
+    GOVAI_KMS_PROVIDER: 'dev' | 'aws' | 'gcp' | 'azure';
+    KMS_DEV_SEED?: string | undefined;
+    GOVAI_KMS_AWS_REGION?: string | undefined;
+    GOVAI_KMS_AWS_KEY_ID?: string | undefined;
+    GOVAI_KMS_AWS_MASTER_CIPHERTEXT_FILE?: string | undefined;
+    GOVAI_KMS_SEED_CACHE_TTL_SECONDS?: number | undefined;
+  },
+  deps?: CreateKmsDeps,
+): Kms {
+  // Production safety gates: never allow dev material in production.
   if (env.NODE_ENV === 'production') {
     if (env.GOVAI_KMS_PROVIDER === 'dev') {
       throw new KmsBootError(
@@ -220,13 +236,73 @@ export function createKmsFromEnv(env: {
         'KMS_DEV_SEED set in production. Remove env var. Runbook: docs/runbooks/kms-production.md',
       );
     }
-    return new ProductionKmsRequired();
   }
+  // AWS production adapter (any NODE_ENV; requires full config + a readable, non-empty ciphertext file).
+  if (env.GOVAI_KMS_PROVIDER === 'aws') {
+    return createAwsKmsFromEnv(env, deps);
+  }
+  // DevKMS (dev/test only; production already rejected above).
   if (env.GOVAI_KMS_PROVIDER === 'dev') {
     if (!env.KMS_DEV_SEED) {
       throw new KmsBootError('DevKms requires KMS_DEV_SEED env var (hex 32+ chars).');
     }
     return new DevKms(env.KMS_DEV_SEED);
   }
+  // gcp/azure not implemented — explicit fail on use.
   return new ProductionKmsRequired();
 }
+
+function createAwsKmsFromEnv(
+  env: {
+    GOVAI_KMS_AWS_REGION?: string | undefined;
+    GOVAI_KMS_AWS_KEY_ID?: string | undefined;
+    GOVAI_KMS_AWS_MASTER_CIPHERTEXT_FILE?: string | undefined;
+    GOVAI_KMS_SEED_CACHE_TTL_SECONDS?: number | undefined;
+  },
+  deps?: CreateKmsDeps,
+): Kms {
+  const region = env.GOVAI_KMS_AWS_REGION;
+  const keyId = env.GOVAI_KMS_AWS_KEY_ID;
+  const file = env.GOVAI_KMS_AWS_MASTER_CIPHERTEXT_FILE;
+  if (!region || !keyId || !file) {
+    const missing: string[] = [];
+    if (!region) missing.push('GOVAI_KMS_AWS_REGION');
+    if (!keyId) missing.push('GOVAI_KMS_AWS_KEY_ID');
+    if (!file) missing.push('GOVAI_KMS_AWS_MASTER_CIPHERTEXT_FILE');
+    throw new KmsBootError(
+      `GOVAI_KMS_PROVIDER=aws requires ${missing.join(', ')}. Runbook: docs/runbooks/kms-production.md`,
+    );
+  }
+  const ttlSeconds = env.GOVAI_KMS_SEED_CACHE_TTL_SECONDS ?? 900;
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds <= 0) {
+    throw new KmsBootError('GOVAI_KMS_SEED_CACHE_TTL_SECONDS must be a positive integer (seconds).');
+  }
+
+  let masterCiphertext: Buffer;
+  try {
+    masterCiphertext = readFileSync(file);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code ?? 'unknown';
+    throw new KmsBootError(
+      `unable to read master ciphertext file (${code}) at ${file}. Runbook: docs/runbooks/kms-production.md`,
+    );
+  }
+  if (masterCiphertext.length === 0) {
+    throw new KmsBootError(`master ciphertext file is empty at ${file}.`);
+  }
+
+  const client = deps?.awsKmsClientFactory
+    ? deps.awsKmsClientFactory(region)
+    : createRealAwsKmsClient(region);
+
+  return new AwsKms({ client, keyId, masterCiphertext, ttlSeconds });
+}
+
+// Public KMS adapter surface (re-exported for consumers and tests).
+export {
+  AwsKms,
+  AwsKmsError,
+  createRealAwsKmsClient,
+  MASTER_SEED_ENCRYPTION_CONTEXT,
+} from './aws-kms.js';
+export type { AwsKmsClient, AwsKmsDecryptRequest, AwsKmsOptions } from './aws-kms.js';

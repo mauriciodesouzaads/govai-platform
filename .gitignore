@@ -13,3 +13,12 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# KMS / cryptographic material — never commit. The GovAI master seed lives ONLY as
+# KMS-encrypted ciphertext in a file OUTSIDE this repo (see docs/runbooks/kms-production.md).
+*.ciphertext
+*.seed
+*master-seed*
+*.key
+*.pem
+*.bin
