@@ -106,9 +106,14 @@ describe('createKmsFromEnv', () => {
       createKmsFromEnv({ NODE_ENV: 'production', GOVAI_KMS_PROVIDER: 'aws', KMS_DEV_SEED: 'a'.repeat(64) }),
     ).toThrow(KmsBootError);
   });
-  it('production + aws provider + no dev seed → ProductionKmsRequired', () => {
-    const k = createKmsFromEnv({ NODE_ENV: 'production', GOVAI_KMS_PROVIDER: 'aws' });
-    expect(k.providerName).toBe('production_required');
+  it('production + aws provider + missing AWS config → KmsBootError (fail closed)', () => {
+    // The aws provider path is now handled by the AwsKms adapter (see aws-kms.test.ts
+    // for the full configured/fake-client behavior). Without region/keyId/ciphertext
+    // file it must fail closed rather than returning the legacy ProductionKmsRequired
+    // placeholder.
+    expect(() => createKmsFromEnv({ NODE_ENV: 'production', GOVAI_KMS_PROVIDER: 'aws' })).toThrow(
+      KmsBootError,
+    );
   });
   it('development + DevKms with seed → DevKms instance', () => {
     const k = createKmsFromEnv({

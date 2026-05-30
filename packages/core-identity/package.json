@@ -17,6 +17,7 @@
     "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "3.1057.0",
     "argon2": "0.44.0",
     "jose": "6.2.3",
     "zod": "4.4.2"

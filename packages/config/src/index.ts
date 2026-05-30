@@ -6,6 +6,15 @@ const EnvSchema = z.object({
   KMS_DEV_SEED: z.string().optional(),
   GOVAI_KMS_PROVIDER: z.enum(['dev', 'aws', 'gcp', 'azure']).default('dev'),
 
+  // AWS KMS production adapter — consumed by createKmsFromEnv (@govai/core-identity) when
+  // GOVAI_KMS_PROVIDER=aws, which is the authoritative fail-closed gate for region/key-id/
+  // ciphertext-file. Never store secrets here: the master seed lives only as KMS-encrypted
+  // ciphertext in a file OUTSIDE the repo, referenced by GOVAI_KMS_AWS_MASTER_CIPHERTEXT_FILE.
+  GOVAI_KMS_AWS_REGION: z.string().optional(),
+  GOVAI_KMS_AWS_KEY_ID: z.string().optional(),
+  GOVAI_KMS_AWS_MASTER_CIPHERTEXT_FILE: z.string().optional(),
+  GOVAI_KMS_SEED_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+
   DATABASE_URL: z.string().min(1).optional(),
   DATABASE_ADMIN_URL: z.string().min(1).optional(),
   REDIS_URL: z.string().min(1).optional(),
@@ -72,6 +81,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): GovAIEnv {
         'DevKMS detected in production. Configure GOVAI_KMS_PROVIDER. Runbook: docs/runbooks/kms-production.md',
       );
     }
+    // NOTE: when GOVAI_KMS_PROVIDER=aws, the required region/key-id/ciphertext-file
+    // (and a readable, non-empty ciphertext file) are validated authoritatively by
+    // createKmsFromEnv() in @govai/core-identity, which is the single fail-closed gate
+    // for the AWS adapter. We deliberately do NOT duplicate that check here so loadEnv
+    // stays decoupled from KMS bootstrapping.
     if (env.GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION) {
       throw new BootError(
         'GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION cannot be set in production. Remove env var. Runbook: docs/runbooks/planned-capability-guard.md',
