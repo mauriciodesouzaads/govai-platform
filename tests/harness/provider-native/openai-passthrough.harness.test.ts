@@ -34,8 +34,8 @@ beforeAll(async () => {
     resolveTenant: async () => ({
       org_id: '00000000-0000-0000-0000-000000000001',
       user_id: '00000000-0000-0000-0000-000000000002',
-      tier: 'beta',
-      operational_mode: 'pilot',
+      tier: 'enterprise',
+      operational_mode: 'production',
     }),
     resolveProviderKey: async () => 'sk-fake-test-key-not-real',
     activeOverridesLoader: async () => [],
