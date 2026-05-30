@@ -16,6 +16,8 @@
     "@govai/core-identity": "workspace:*",
     "@govai/core-tenant": "workspace:*",
     "@govai/dlp-br": "workspace:*",
+    "@govai/provider-anthropic": "workspace:*",
+    "@govai/provider-openai": "workspace:*",
     "@govai/signing": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "fastify": "5.8.5",

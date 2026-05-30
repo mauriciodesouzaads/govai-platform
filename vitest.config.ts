@@ -8,6 +8,7 @@ export default defineConfig({
       'packages/*/src/**/*.test.ts',
       'apps/*/src/**/*.test.ts',
       'tests/integration/**/*.test.ts',
+      'tests/harness/**/*.test.ts',
     ],
     exclude: [
       '**/node_modules/**',

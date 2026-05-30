@@ -11,7 +11,7 @@
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import getPort from 'get-port';
+import type { AddressInfo } from 'node:net';
 
 export type CapturedRequest = {
   method: string;
@@ -82,10 +82,15 @@ export async function startFakeProvider(): Promise<FakeProvider> {
     });
   });
 
-  const port = await getPort();
-  server.listen(port);
+  // Bind an ephemeral loopback port (no external dependency): listen(0) lets the
+  // OS assign a free port, which we read back from address().
+  server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  const url = `http://127.0.0.1:${port}`;
+  const addr = server.address();
+  if (addr === null || typeof addr === 'string') {
+    throw new Error('fake provider failed to bind a loopback TCP port');
+  }
+  const url = `http://127.0.0.1:${(addr as AddressInfo).port}`;
 
   return {
     url,

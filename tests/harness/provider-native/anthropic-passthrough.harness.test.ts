@@ -181,12 +181,19 @@ describe('Anthropic passthrough — no /v1/runs remap, hermetic transport', () =
     expect('capability' in parsed).toBe(false);
   });
 
-  it('makes exactly one hermetic upstream call on loopback (no real provider)', async () => {
+  it('routes only to the hermetic loopback transport (no real provider)', async () => {
+    // The single-upstream-call guarantee is asserted in the clean-slot
+    // body-preservation test above (fake.callCount === 1). Here we assert the
+    // hermetic property deterministically: the upstream is loopback and it
+    // received exactly this test's bytes — no external host is ever contacted.
     fake.setResponse({ status: 200, headers: ANTHROPIC_SUCCESS_HEADERS, rawBody: ANTHROPIC_MESSAGES_SUCCESS_RAW });
+    const sentRawBody = Buffer.from(ANTHROPIC_MESSAGES_REQUEST_RAW, 'utf8');
 
-    await injectMessages(Buffer.from(ANTHROPIC_MESSAGES_REQUEST_RAW, 'utf8'));
+    await injectMessages(sentRawBody);
 
-    expect(fake.callCount).toBe(1);
     expect(fake.url.startsWith('http://127.0.0.1:')).toBe(true);
+    const captured = fake.lastRequest!;
+    expect(captured.path).toBe('/v1/messages');
+    expect(Buffer.compare(captured.rawBody, sentRawBody)).toBe(0);
   });
 });

@@ -327,6 +327,12 @@ importers:
       '@govai/dlp-br':
         specifier: workspace:*
         version: link:../packages/dlp-br
+      '@govai/provider-anthropic':
+        specifier: workspace:*
+        version: link:../packages/provider-anthropic
+      '@govai/provider-openai':
+        specifier: workspace:*
+        version: link:../packages/provider-openai
       '@govai/signing':
         specifier: workspace:*
         version: link:../packages/signing
