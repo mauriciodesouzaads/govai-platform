@@ -96,8 +96,30 @@ function bufferifyBody(body: unknown): Buffer {
   return Buffer.from(JSON.stringify(body), 'utf8');
 }
 
+// Detect a streaming request by reading ONLY the top-level `stream` field.
+//
+// The body is the client's raw Buffer (provider-native passthrough does not
+// pre-parse it). We JSON.parse a copy purely for read-only inspection and read
+// the top-level `stream` — never a substring/regex match, which could
+// false-positive on a nested `"stream": true` (e.g. inside message content).
+// A parse failure means the body is not JSON we can inspect: per the
+// provider-native passthrough decision we DO NOT reject it — it is forwarded
+// byte-for-byte to the provider — and we simply treat it as non-streaming.
+// The original Buffer is never mutated or reassigned; parsing produces a
+// separate object.
 function isStreamBody(body: unknown): boolean {
-  if (Buffer.isBuffer(body)) return /"stream"\s*:\s*true/.test(body.toString('utf8'));
+  if (Buffer.isBuffer(body)) {
+    try {
+      const parsed: unknown = JSON.parse(body.toString('utf8'));
+      return (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        (parsed as { stream?: unknown }).stream === true
+      );
+    } catch {
+      return false;
+    }
+  }
   if (body && typeof body === 'object') {
     return (body as { stream?: boolean }).stream === true;
   }
@@ -108,6 +130,15 @@ export async function registerOpenAIPassthrough(
   app: FastifyInstance,
   deps: OpenAIPassthroughDeps,
 ): Promise<void> {
+  // Fastify ships a built-in EXACT-string `application/json` parser. Its
+  // getParser() resolves exact/media-type matches BEFORE the RegExp list, so
+  // that default would shadow the buffer parser below and hand the route a
+  // parsed object — defeating byte-for-byte preservation and making
+  // `native_request_hash` attest a re-serialized body instead of the client's
+  // original bytes. Remove it in THIS (encapsulated) plugin scope so the regex
+  // buffer parser receives the untouched bytes for both `application/json` and
+  // `application/json; charset=utf-8`. Other plugins keep the default parser.
+  app.removeContentTypeParser('application/json');
   app.addContentTypeParser(
     /^application\/json/,
     { parseAs: 'buffer' },
