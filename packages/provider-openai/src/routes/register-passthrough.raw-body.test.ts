@@ -315,17 +315,19 @@ describe('OpenAI passthrough raw-body preservation (real socket, app.listen + fe
     // `upgrade` are surfaced by undici on the fetch Response (so the forwarder
     // actually receives them) and are NOT re-added by Node to GovAI's own
     // response — so their absence here proves GovAI's HOP_BY_HOP policy, not
-    // incidental runtime stripping. `connection`/`keep-alive` are set on the fake
-    // too but are deliberately NOT asserted: Node manages them on GovAI's own
-    // response (it emits its own values, e.g. a different keep-alive timeout), so
-    // the client always sees a runtime value, not the upstream one.
-    // `transfer-encoding`/`content-length` are runtime-recomputed and excluded.
+    // incidental runtime stripping. `connection` is also hop-by-hop, but Node
+    // emits its OWN Connection header on GovAI's response, so we cannot assert
+    // null. Instead the fake sends a sentinel value the runtime never emits
+    // (`x-govai-hop-by-hop-sentinel`) and we assert it does not reach the client,
+    // which makes a connection leak observable (per Codex review on PR #83).
+    // `keep-alive` / `transfer-encoding` / `content-length` are
+    // runtime-managed/recomputed and remain unasserted.
     fakeResponse = {
       status: 201,
       headers: {
         'content-type': 'application/json',
         'x-provider-custom': 'preserved',
-        connection: 'keep-alive',
+        connection: 'x-govai-hop-by-hop-sentinel',
         'keep-alive': 'timeout=5',
         'proxy-authenticate': 'TestScheme realm=harness',
         'proxy-authorization': 'TestScheme harness-token',
@@ -354,5 +356,10 @@ describe('OpenAI passthrough raw-body preservation (real socket, app.listen + fe
     expect(res.headers.get('te')).toBeNull();
     expect(res.headers.get('trailer')).toBeNull();
     expect(res.headers.get('upgrade')).toBeNull();
+
+    // `connection` is re-emitted by Node on GovAI's own response, so we assert the
+    // distinguishable upstream sentinel value did NOT leak (not that it is null).
+    const connection = (res.headers.get('connection') ?? '').toLowerCase();
+    expect(connection).not.toContain('x-govai-hop-by-hop-sentinel');
   });
 });
