@@ -80,6 +80,28 @@ function buildOutboundHeaders(
   return out;
 }
 
+/**
+ * Filter upstream response headers, dropping hop-by-hop headers (per the
+ * HOP_BY_HOP policy above) and preserving all others. Pure: it decides which
+ * headers pass, independently of how each call-site applies them
+ * (`reply.raw.writeHead` for streaming, `reply.header` for non-streaming).
+ * Extracted from the inline response loops so the policy can be unit-tested
+ * before Node/Fastify response normalization — which owns connection /
+ * keep-alive / transfer-encoding / content-length on the outgoing socket and
+ * would otherwise mask their removal from a downstream HTTP assertion. Does not
+ * mutate its input.
+ */
+export function filterResponseHeaders(
+  headers: Iterable<[string, string]>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of headers) {
+    if (HOP_BY_HOP.has(k.toLowerCase())) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 function bufferifyBody(body: unknown): Buffer {
   if (body === undefined || body === null) return Buffer.alloc(0);
   if (Buffer.isBuffer(body)) return body;
@@ -295,11 +317,9 @@ export async function registerAnthropicPassthrough(
         // text/event-stream). Matches the governed pattern in
         // packages/provider-anthropic/src/governed/register-governed.ts.
         reply.hijack();
-        const respHeaders: Record<string, string> = {};
-        for (const [k, v] of Object.entries(streamRes.responseHeaders)) {
-          if (HOP_BY_HOP.has(k.toLowerCase())) continue;
-          respHeaders[k] = v;
-        }
+        const respHeaders = filterResponseHeaders(
+          Object.entries(streamRes.responseHeaders),
+        );
         reply.raw.writeHead(streamRes.status, respHeaders);
         const reader = streamRes.body.getReader();
         const nodeStream = (async function* () {
@@ -376,8 +396,9 @@ export async function registerAnthropicPassthrough(
       });
 
       // Mirror response headers (strip hop-by-hop).
-      for (const [k, v] of Object.entries(fwd.responseHeaders)) {
-        if (HOP_BY_HOP.has(k.toLowerCase())) continue;
+      for (const [k, v] of Object.entries(
+        filterResponseHeaders(Object.entries(fwd.responseHeaders)),
+      )) {
         reply.header(k, v);
       }
       reply.code(fwd.status);
