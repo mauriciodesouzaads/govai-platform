@@ -4,10 +4,15 @@
 
 - **Document status:** Draft — pending review.
 - **Source spec:** `docs/architecture/specs/provider-native-compatibility-harness.md`
-- **Source main commit:** `5452d6d3e55285455b68447f12199b3e2d3ad157`
+- **Source main commit:** `9d94fedd1ec509f127284b8542f61ea46674d018` (main after the
+  PR #86 merge). The raw-body and integration anchors below are unchanged from
+  `5452d6d3e55285455b68447f12199b3e2d3ad157`; PR #86 added the response-header unit
+  tests (RH-OAI / RH-ANT) and the `filterResponseHeaders` helper without touching the
+  raw-body tests, and did not shift the cited `HOP_BY_HOP` set anchors.
 - **Generated from:** direct inspection of the executing tests and route source on
-  the commit above (raw-body tests re-run green locally under Node 24; integration
-  tests green in CI for the merge commits).
+  the commit above (raw-body tests re-run green locally under Node 24; the response
+  hop-by-hop unit tests pass in CI on the PR #86 merge; integration tests green in CI
+  for the merge commits).
 - **B3 status:** B3 is still blocked pending review of this coverage map and a
   separate explicit authorization decision.
 - **Last updated:** 2026-06-03
@@ -30,6 +35,8 @@
 - Tests:
   - `packages/provider-openai/src/routes/register-passthrough.raw-body.test.ts` (RB-OAI)
   - `packages/provider-anthropic/src/routes/register-passthrough.raw-body.test.ts` (RB-ANT)
+  - `packages/provider-openai/src/routes/response-headers.test.ts` (RH-OAI)
+  - `packages/provider-anthropic/src/routes/response-headers.test.ts` (RH-ANT)
   - `tests/integration/openai-passthrough.test.ts` (INT-OAI)
   - `tests/integration/anthropic-passthrough.test.ts` (INT-ANT)
 - Route source (for static-structure checks):
@@ -41,6 +48,7 @@
   - PR #82 — H1 v2 provider-native compatibility harness spec (`ac94a8e`)
   - PR #83 — response hop-by-hop header fidelity tests (`4331dc7`)
   - PR #84 — observable `connection` header stripping via sentinel (`5452d6d`)
+  - PR #86 — response hop-by-hop header filter executing unit coverage (`9d94fed`)
 
 ## Method
 
@@ -64,7 +72,7 @@
 | INV-004 | `body_forward_mode:"raw"` truthful | covered_by_raw_body_test | RB-OAI:149, RB-ANT:149 | no | asserted with `Buffer.compare===0` in the same test |
 | INV-005 | No `JSON.stringify` / re-serialization | covered_by_raw_body_test | RB-OAI:130,142; RB-ANT:132,143 | no | re-serialization would change the bytes |
 | INV-006 | Read-only inspection only (parse a copy, no mutation) | covered_by_raw_body_test | RB-OAI:142, RB-ANT:143 | no | see note: valid-tools pass-through byte-for-byte not separately asserted |
-| INV-007 | Response status/header/body fidelity (minus hop-by-hop) | covered_by_raw_body_test | RB-OAI:195,196,349,350,354-358,363; RB-ANT:194,195,305,306,310-314,319 | no | keep-alive/transfer-encoding/content-length are runtime-managed (static-structure only) |
+| INV-007 | Response status/header/body fidelity (minus hop-by-hop) | covered_by_multiple_tests | RB-OAI:195,196,349,350,354-358,363; RB-ANT:194,195,305,306,310-314,319; RH-OAI:40-86; RH-ANT:40-86 | no | downstream raw-body tests cover the HTTP-observable stripping incl. the `connection` sentinel; RH-OAI/RH-ANT add executing **pre-normalization** unit coverage of the full hop-by-hop filter incl. keep-alive/transfer-encoding/content-length — these three are no longer static-structure only |
 | INV-008 | No hidden defaults/caps/remaps in body | covered_by_raw_body_test | RB-OAI:157-159; RB-ANT:154,158 | no | OpenAI: no caps injected; Anthropic: `max_tokens` kept, no `1024` |
 | INV-009 | No schema narrowing / common-denominator | covered_by_raw_body_test | RB-OAI:154; RB-ANT:155 | no | see note: valid-tools pass-through positive not separately asserted |
 | STREAM-001 | Stream detection reads only top-level `stream===true` | covered_by_multiple_tests | RB-OAI:260 + INT-OAI:138; RB-ANT:218 + INT-ANT:185 | no | nested-negative + top-level-positive together |
@@ -84,7 +92,7 @@
 | CT-005 | gzip / `Content-Encoding` policy | out_of_scope_followup | spec §12, §15 | no | spec-declared policy gap |
 | EXEC-001 | `app.listen()` + real `fetch` for raw-byte proof | covered_by_static_structure | RB-OAI:111-113 + per-test `fetch(... body: sentRawBody)`; RB-ANT equivalent | no | |
 | EXEC-002 | `app.inject` not used for raw-body proof | covered_by_static_structure | RB-OAI/RB-ANT use `fetch`, no `.inject(` call | no | integration uses `app.inject` for SSE/audit only |
-| EXEC-003 | Node `>=24` | covered_by_static_structure | `.github/workflows/ci.yml` node 24; `package.json` engines.node `>=24.0.0` | no | |
+| EXEC-003 | Node `>=24` + pnpm `>=10.33.2` | covered_by_static_structure | node: `.github/workflows/ci.yml:18` (node 24), `package.json:8` (engines.node `>=24.0.0`); pnpm: `package.json:6` (packageManager `pnpm@10.33.2`), `package.json:9` (engines.pnpm `>=10.33.2`), `.github/workflows/ci.yml:19-20` (`pnpm/action-setup@v4` version 10.33.2), `.github/workflows/ci.yml:21` (`pnpm install --frozen-lockfile`) | no | spec §7 requires `Node >=24; pnpm >=10.33.2` — both conditions now mapped |
 | EXEC-004 | No live providers | covered_by_static_structure | RB fake provider loopback; INT `server-fixture` sets provider keys undefined + `GOVAI_LIVE_TESTS:false` | no | |
 | EXEC-005 | No AWS/KMS | covered_by_static_structure | INT `server-fixture` uses `DevKms` (`GOVAI_KMS_PROVIDER:'dev'`) | no | |
 | ANT-001 | Anthropic `max_tokens` preserved (777; never 1024) | covered_by_raw_body_test | RB-ANT:154,158 | no | |
@@ -128,15 +136,21 @@
 - **B3 impact:** does not block (mandatory invariant proven; the extra valid-tools-forward case is robustness, not a spec-matrix item).
 
 ### INV-007 — Response status/header/body fidelity (minus hop-by-hop)
-- **Status:** covered_by_raw_body_test
-- **Evidence:**
+- **Status:** covered_by_multiple_tests
+- **Evidence (downstream HTTP-observable — PR #83 / PR #84):**
   - status preserved: RB-OAI:195 (201) and L349 (201); RB-ANT:194 (202) and L305 (202).
   - allowed custom header preserved: RB-OAI:196 (`x-provider-custom: v1`) and L350 (`preserved`); RB-ANT:195 (`a1`) and L306 (`preserved`).
   - body bytes preserved: RB-OAI it `preserves upstream status, headers, and response body bytes` (L178) and it `strips hop-by-hop...` (L312); RB-ANT L177 and L268.
   - `proxy-authenticate`, `proxy-authorization`, `te`, `trailer`, `upgrade` absent: RB-OAI:354-358 (`toBeNull`); RB-ANT:310-314.
   - `connection` not leaked: the fake sends a sentinel `connection: x-govai-hop-by-hop-sentinel` (RB-OAI:330 / RB-ANT:286) and the test asserts the client `Connection` header does not contain it (RB-OAI:363 / RB-ANT:319). Per PR #84, this is observable because Node never emits that value on its own.
-- **Notes:** `keep-alive`, `transfer-encoding`, and `content-length` are managed or recomputed by Node/Fastify on GovAI's own response and therefore are **not** asserted by a downstream response test. Their membership in the route's hop-by-hop policy is verifiable by static structure (the `HOP_BY_HOP` set in REG-OAI:56-67 / REG-ANT:46-57), but downstream-response coverage for these three is intentionally not claimed.
-- **B3 impact:** does not block.
+- **Evidence (pre-normalization filter — PR #86):** PR #86 extracted the inline response hop-by-hop filtering into a pure, exported `filterResponseHeaders` helper (REG-OAI:103-112 / REG-ANT:94-103, each using its own file-local `HOP_BY_HOP` set via `HOP_BY_HOP.has(k.toLowerCase())`) and added executing unit tests (RH-OAI / RH-ANT) that call it directly, **before** Node/Fastify response normalization:
+  - every hop-by-hop header removed across the full set — `host`, `connection`, `content-length`, `keep-alive`, `transfer-encoding`, `upgrade`, `proxy-authorization`, `proxy-authenticate`, `te`, `trailer` (RH-OAI:40-42 / RH-ANT:40-42), with `keep-alive`/`transfer-encoding`/`content-length` asserted explicitly (RH-OAI:44-46 / RH-ANT:44-46);
+  - allowed headers preserved with exact key+value — `content-type`, `x-request-id`, `x-provider-custom` (RH-OAI:49-54 / RH-ANT:49-54);
+  - case-insensitive detection (RH-OAI:57-74 / RH-ANT:57-74);
+  - input not mutated (RH-OAI:76-86 / RH-ANT:76-86).
+- **How this addresses the Codex P2 (INV-007):** the three runtime-managed headers — `keep-alive`, `transfer-encoding`, `content-length` — now have **executing** unit-test coverage of the route's hop-by-hop filter (RH-OAI/RH-ANT), not merely static-structure evidence. The P2 was addressed by adding an executing test, not by rewording. **Scope of the proof:** RH-OAI/RH-ANT prove the filter step **before** Node/Fastify normalization; they do **not** assert these three headers on the final downstream HTTP response, because Node/Fastify owns and recomputes them on GovAI's own outgoing response. That downstream surface remains runtime-owned and is intentionally not claimed for these three — it is a property of the runtime, not a missing test.
+- **Notes:** the downstream raw-body tests (RB-OAI/RB-ANT) cover the HTTP-observable subset (including the `connection` sentinel); the pre-normalization unit tests (RH-OAI/RH-ANT) cover the full hop-by-hop policy including the runtime-managed three. Together they map INV-007 to executing coverage. The `HOP_BY_HOP` sets remain at REG-OAI:56-67 / REG-ANT:46-57.
+- **B3 impact:** does not block. This executing coverage does not by itself authorize B3; the process gate (review of this map + a separate explicit decision) still applies.
 
 ### INV-008 — No hidden defaults/caps/remaps in body
 - **Status:** covered_by_raw_body_test
@@ -207,7 +221,9 @@ Each required §8 case maps to a cited assertion:
 
 - `app.listen()` + real `fetch` for raw-byte proof → RB-OAI/RB-ANT `beforeAll` calls `app.listen({ port: 0, host: '127.0.0.1' })` and each test uses `fetch(..., { body: sentRawBody })` (covered_by_static_structure).
 - `app.inject` not used for raw-byte proof → the raw-body files contain no `.inject(` call (only a header comment); integration tests use `app.inject` for SSE/audit checks, which the spec permits.
-- Node `>=24` → CI (`.github/workflows/ci.yml`, node 24) + `package.json` engines (covered_by_static_structure).
+- Node `>=24` + pnpm `>=10.33.2` (spec §7) → covered_by_static_structure:
+  - Node: `.github/workflows/ci.yml:18` (`node-version: 24`) + `package.json:8` (`engines.node >=24.0.0`).
+  - pnpm: `package.json:6` (`packageManager: pnpm@10.33.2`) + `package.json:9` (`engines.pnpm >=10.33.2`) + `.github/workflows/ci.yml:19-20` (`pnpm/action-setup@v4`, `version: 10.33.2`) + `.github/workflows/ci.yml:21` (`pnpm install --frozen-lockfile`).
 - No live providers → loopback fake provider (raw-body); `tests/integration/helpers/server-fixture.ts` sets `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` undefined, `GOVAI_LIVE_TESTS:false`, and points `GOVAI_PROVIDER_BASE_URL` at the hermetic fixture.
 - No AWS/KMS → the integration fixture uses `DevKms` (`GOVAI_KMS_PROVIDER:'dev'`), not real AWS KMS.
 
@@ -217,12 +233,12 @@ Each required §8 case maps to a cited assertion:
 - **gzip / `Content-Encoding` policy** — why not blocking: spec §12/§15 marks it a policy gap, out of scope. What would close it: an explicit content-encoding policy + tests. Consider: separate decision; not before B3 on the strength of the spec.
 - **Anthropic multipart route-level test** — why not blocking: spec §9 marks it a follow-up; OpenAI multipart sanity is covered. What would close it: an Anthropic `/v1/files` multipart byte-for-byte test. Consider: before or after B3, at maintainer discretion.
 - **`stream_final_hash` hash-over-bytes correctness** — why not blocking: spec §11 requires the field be present (asserted); correctness-over-bytes is not a spec requirement. What would close it: assert `stream_final_hash` equals a known hash of the streamed bytes. Consider: optional hardening.
-- **`keep-alive` / `transfer-encoding` / `content-length` downstream stripping** — why not blocking: these are runtime-managed/recomputed by Node/Fastify on GovAI's own response, so they cannot be asserted downstream; their membership in the hop-by-hop policy is verifiable by static structure. What would close it: a unit test of the header-filter step before HTTP normalization. Consider: optional hardening.
+- **`keep-alive` / `transfer-encoding` / `content-length` — pre-normalization filter now covered (PR #86):** the required executing coverage exists — RH-OAI/RH-ANT assert the route's hop-by-hop filter removes these three **before** Node/Fastify normalization (RH-OAI:44-46 / RH-ANT:44-46). This is **no longer an open coverage gap**. Residual, non-blocking note: a **downstream** HTTP assertion of these three remains runtime-owned (Node/Fastify recomputes/re-emits them on GovAI's own response) and is intentionally not claimed; that is a property of the runtime, not missing coverage. The pre-normalization unit test does **not** prove the final HTTP response for these three.
 - **Valid-tools pass-through positive byte-for-byte (INV-006 / INV-009 sub-note)** — why not blocking: the spec matrix requires the tool **block** event (covered); the no-mutation/no-narrowing invariants are proven by the general byte-for-byte test. What would close it: a test that sends a body with an allowed tool and asserts byte-for-byte forwarding. Consider: optional hardening.
 
 ## Blocking items
 
-No `uncovered_blocking` or `ambiguous_blocking` items remain for H1 v2 provider-native compatibility coverage, based on the evidence listed above.
+No `uncovered_blocking` or `ambiguous_blocking` items remain for H1 v2 provider-native compatibility coverage, based on the evidence listed above — including the INV-007 pre-normalization hop-by-hop coverage now provided by RH-OAI/RH-ANT (PR #86) and the EXEC-003 pnpm `>=10.33.2` evidence (`package.json` + `.github/workflows/ci.yml`).
 
 The absence of test-coverage blockers does **not** authorize B3. The remaining gate is process: this coverage map (B3-001) must be reviewed and merged, and a separate explicit B3 authorization decision must still be made. Until then, **B3 remains blocked.**
 
