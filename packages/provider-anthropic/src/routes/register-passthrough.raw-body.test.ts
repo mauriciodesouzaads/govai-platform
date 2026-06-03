@@ -264,4 +264,51 @@ describe('Anthropic passthrough raw-body preservation (real socket, app.listen +
     const respBuf = Buffer.from(await res.arrayBuffer());
     expect(respBuf.toString('utf8')).toContain('provider-native 400');
   });
+
+  it('strips hop-by-hop response headers while preserving status, body, and allowed headers (INV-007)', async () => {
+    // INV-007. The forwarder must drop hop-by-hop headers from the provider
+    // response. `proxy-authenticate` / `proxy-authorization` / `te` / `trailer` /
+    // `upgrade` are surfaced by undici on the fetch Response (so the forwarder
+    // actually receives them) and are NOT re-added by Node to GovAI's own
+    // response — so their absence here proves GovAI's HOP_BY_HOP policy, not
+    // incidental runtime stripping. `connection`/`keep-alive` are set on the fake
+    // too but are deliberately NOT asserted: Node manages them on GovAI's own
+    // response (it emits its own values, e.g. a different keep-alive timeout), so
+    // the client always sees a runtime value, not the upstream one.
+    // `transfer-encoding`/`content-length` are runtime-recomputed and excluded.
+    fakeResponse = {
+      status: 202,
+      headers: {
+        'content-type': 'application/json',
+        'x-provider-custom': 'preserved',
+        connection: 'keep-alive',
+        'keep-alive': 'timeout=5',
+        'proxy-authenticate': 'TestScheme realm=harness',
+        'proxy-authorization': 'TestScheme harness-token',
+        te: 'trailers',
+        trailer: 'Expires',
+        upgrade: 'websocket',
+      },
+      body: Buffer.from('{"id":"m2","native":true}', 'utf8'),
+    };
+    const sentRawBody = Buffer.from('{"model":"claude-x","max_tokens":777,"messages":[]}', 'utf8');
+
+    const res = await fetch(`${govUrl}/passthrough/anthropic/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: sentRawBody,
+    });
+
+    // status + allowed header + body are preserved
+    expect(res.status).toBe(202);
+    expect(res.headers.get('x-provider-custom')).toBe('preserved');
+    expect(Buffer.from(await res.arrayBuffer()).toString('utf8')).toBe('{"id":"m2","native":true}');
+
+    // hop-by-hop headers received from the provider must NOT reach the client
+    expect(res.headers.get('proxy-authenticate')).toBeNull();
+    expect(res.headers.get('proxy-authorization')).toBeNull();
+    expect(res.headers.get('te')).toBeNull();
+    expect(res.headers.get('trailer')).toBeNull();
+    expect(res.headers.get('upgrade')).toBeNull();
+  });
 });
