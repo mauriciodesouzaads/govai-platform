@@ -2,7 +2,7 @@
 
 ## Status
 
-- **Document status:** Draft — pending review.
+- **Document status:** Versioned in main — pending separate B3 authorization decision.
 - **Source spec:** `docs/architecture/specs/provider-native-compatibility-harness.md`
 - **Source main commit:** `9d94fedd1ec509f127284b8542f61ea46674d018` (main after the
   PR #86 merge). The raw-body and integration anchors below are unchanged from
@@ -71,10 +71,10 @@
 | INV-003 | `native_request_hash == sha256(original bytes)` | covered_by_raw_body_test | RB-OAI:147-148, RB-ANT:147-148 | no | hash over sent bytes AND captured bytes |
 | INV-004 | `body_forward_mode:"raw"` truthful | covered_by_raw_body_test | RB-OAI:149, RB-ANT:149 | no | asserted with `Buffer.compare===0` in the same test |
 | INV-005 | No `JSON.stringify` / re-serialization | covered_by_raw_body_test | RB-OAI:130,142; RB-ANT:132,143 | no | re-serialization would change the bytes |
-| INV-006 | Read-only inspection only (parse a copy, no mutation) | covered_by_raw_body_test | RB-OAI:142, RB-ANT:143 | no | see note: valid-tools pass-through byte-for-byte not separately asserted |
+| INV-006 | Read-only inspection only (parse a copy, no mutation) | covered_by_raw_body_test | RB-OAI:142,281; RB-ANT:143,238 | no | valid-tools pass-through positive now asserted byte-for-byte (RB-OAI:281 / RB-ANT:238) |
 | INV-007 | Response status/header/body fidelity (minus hop-by-hop) | covered_by_multiple_tests | RB-OAI:195,196,349,350,354-358,363; RB-ANT:194,195,305,306,310-314,319; RH-OAI:40-86; RH-ANT:40-86 | no | downstream raw-body tests cover the HTTP-observable stripping incl. the `connection` sentinel; RH-OAI/RH-ANT add executing **pre-normalization** unit coverage of the full hop-by-hop filter incl. keep-alive/transfer-encoding/content-length — these three are no longer static-structure only |
 | INV-008 | No hidden defaults/caps/remaps in body | covered_by_raw_body_test | RB-OAI:157-159; RB-ANT:154,158 | no | OpenAI: no caps injected; Anthropic: `max_tokens` kept, no `1024` |
-| INV-009 | No schema narrowing / common-denominator | covered_by_raw_body_test | RB-OAI:154; RB-ANT:155 | no | see note: valid-tools pass-through positive not separately asserted |
+| INV-009 | No schema narrowing / common-denominator | covered_by_raw_body_test | RB-OAI:154,281; RB-ANT:155,238 | no | unknown/future fields survive on the allowed-tools path too (RB-OAI:281 / RB-ANT:238) |
 | STREAM-001 | Stream detection reads only top-level `stream===true` | covered_by_multiple_tests | RB-OAI:260 + INT-OAI:138; RB-ANT:218 + INT-ANT:185 | no | nested-negative + top-level-positive together |
 | STREAM-002 | No regex/substring stream detection | covered_by_raw_body_test | RB-OAI:260, RB-ANT:218 | no | nested `"stream":true` substring does not stream |
 | STREAM-003 | Nested `"stream":true` must NOT stream | covered_by_raw_body_test | RB-OAI:260, RB-ANT:218 | no | `is_stream===false` |
@@ -132,7 +132,7 @@
 ### INV-006 — Read-only inspection only (parse a copy, no mutation)
 - **Status:** covered_by_raw_body_test
 - **Evidence:** the byte-for-byte test (RB-OAI:128 / RB-ANT:130) drives a `/v1/chat/completions` (resp. `/v1/messages`) request through the route's inspection peeks (the stream-detection and tool-classifier `JSON.parse(req.body.toString())` of a copy) and still asserts the forwarded body is byte-identical (RB-OAI:142 / RB-ANT:143). A mutation/reassignment of the original Buffer during inspection would break that equality.
-- **Notes / sub-gap:** there is **no** test where a body carrying **valid (allowed)** tools passes classification and is then forwarded byte-for-byte — the tools tests (RB-OAI:263 / RB-ANT:221) block at 403 before forwarding. The core invariant (parse a copy, no mutation) is proven for the inspection-then-forward path on the no-tools body, but the valid-tools pass-through byte-for-byte case is not separately asserted. Listed as a non-blocking follow-up.
+- **Valid-tools pass-through (closed):** the positive case is now asserted — a body carrying a **valid (allowed)** tool passes classification and is forwarded byte-for-byte. RB-OAI it `forwards valid tools byte-for-byte after governance inspection` (L281): a `type:"function"` tool is allowed (no 403; `tool.validation_blocked` absent L299; classifier decision `allowed` L317-319) and the provider receives the exact bytes (`Buffer.compare===0` L303; `native_request_hash` over the original bytes L307-308; `body_forward_mode:"raw"` L309). RB-ANT it `forwards valid tools byte-for-byte after governance inspection` (L238) proves the same for a client-defined Anthropic tool (allowed L274-276; bytes L260; hash L264-265; raw L266). The earlier no-tools inspection-then-forward path (RB-OAI:128 / RB-ANT:130) remains covered, and the tool **block** path (RB-OAI:263 / RB-ANT:221) is unchanged.
 - **B3 impact:** does not block (mandatory invariant proven; the extra valid-tools-forward case is robustness, not a spec-matrix item).
 
 ### INV-007 — Response status/header/body fidelity (minus hop-by-hop)
@@ -160,7 +160,7 @@
 ### INV-009 — No schema narrowing / common-denominator
 - **Status:** covered_by_raw_body_test
 - **Evidence:** RB-OAI:154 asserts `z_unknown_field` survives (and `experimental_array`), alongside byte-for-byte equality (L142). RB-ANT:155.
-- **Notes / sub-gap:** as with INV-006, valid-tools pass-through (vs. block) is not separately asserted. The byte-for-byte equality plus preserved unknown/future fields demonstrates no narrowing of the request body generally.
+- **Notes:** the valid-tools pass-through positive is now asserted (see INV-006). The new tests carry a valid tool **plus** an unknown/future field (`z_unknown_field`) and a nested array (`experimental_array`) and assert both survive byte-for-byte (RB-OAI:281 / RB-ANT:238), so no schema narrowing or common-denominator reduction is applied even on the allowed-tools path. The byte-for-byte equality plus preserved unknown/future fields demonstrates no narrowing of the request body generally.
 - **B3 impact:** does not block.
 
 ## OpenAI matrix (spec §8)
@@ -176,6 +176,7 @@ Each required §8 case maps to a cited assertion:
 - multipart `/v1/files` sanity → RB-OAI:236 (CT-003).
 - nested `"stream":true` false-positive → RB-OAI:260 (STREAM-003).
 - tools from Buffer (block event) → RB-OAI:276 (`tool.validation_blocked` defined; 403 at L275).
+- valid tools pass-through (allowed) → RB-OAI:281 (byte-for-byte forward; classifier decision `allowed`; INV-006/INV-009).
 - malformed JSON forwarded → RB-OAI:304 (JSON-001).
 - `stream:true` positive → INT-OAI:131,138,141 (STREAM-004/005).
 
@@ -189,6 +190,7 @@ Each required §8 case maps to a cited assertion:
 - status/headers/body fidelity → RB-ANT:177 + 268 (INV-007).
 - nested `"stream":true` false-positive → RB-ANT:218 (STREAM-003).
 - tools from Buffer (block event) → RB-ANT:234 (`tool.validation_blocked` defined; 403 at L233).
+- valid tools pass-through (allowed) → RB-ANT:238 (byte-for-byte forward; classifier decision `allowed`; INV-006/INV-009).
 - malformed JSON forwarded → RB-ANT:260 (JSON-001).
 - `stream:true` positive → INT-ANT:175,185,188 (STREAM-004/005).
 - **Anthropic multipart route-level** → out_of_scope_followup (spec §9, §15); no executing test.
@@ -234,7 +236,7 @@ Each required §8 case maps to a cited assertion:
 - **Anthropic multipart route-level test** — why not blocking: spec §9 marks it a follow-up; OpenAI multipart sanity is covered. What would close it: an Anthropic `/v1/files` multipart byte-for-byte test. Consider: before or after B3, at maintainer discretion.
 - **`stream_final_hash` hash-over-bytes correctness** — why not blocking: spec §11 requires the field be present (asserted); correctness-over-bytes is not a spec requirement. What would close it: assert `stream_final_hash` equals a known hash of the streamed bytes. Consider: optional hardening.
 - **`keep-alive` / `transfer-encoding` / `content-length` — pre-normalization filter now covered (PR #86):** the required executing coverage exists — RH-OAI/RH-ANT assert the route's hop-by-hop filter removes these three **before** Node/Fastify normalization (RH-OAI:44-46 / RH-ANT:44-46). This is **no longer an open coverage gap**. Residual, non-blocking note: a **downstream** HTTP assertion of these three remains runtime-owned (Node/Fastify recomputes/re-emits them on GovAI's own response) and is intentionally not claimed; that is a property of the runtime, not missing coverage. The pre-normalization unit test does **not** prove the final HTTP response for these three.
-- **Valid-tools pass-through positive byte-for-byte (INV-006 / INV-009 sub-note)** — why not blocking: the spec matrix requires the tool **block** event (covered); the no-mutation/no-narrowing invariants are proven by the general byte-for-byte test. What would close it: a test that sends a body with an allowed tool and asserts byte-for-byte forwarding. Consider: optional hardening.
+- **Valid-tools pass-through positive byte-for-byte (INV-006 / INV-009) — CLOSED:** a body with an allowed tool is now asserted to forward byte-for-byte with unknown/future fields intact (RB-OAI:281 / RB-ANT:238). This is no longer an open follow-up.
 
 ## Blocking items
 
