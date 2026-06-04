@@ -1,6 +1,8 @@
 # ADR-022: AuditSealer Runtime Role Model
 
-Status: Proposed
+Status: Accepted — design constraint for future B3 implementation (does not authorize implementation)
+
+> **Acceptance note (B3 decision pack, 2026-06-04):** accepted as a **design constraint** for future B3 implementation. **Does not authorize implementation.** The role/session model is final: a dedicated runner identity holding membership in both `govai_audit_sealer` (claim/mark) and `govai_app` (`audit_append_locked`) roles (not collapsed into a broad owner), a separate DB pool from `apps/api` (never the request pool), runner-owned session/transaction/retry/phase orchestration, no `SET ROLE` in the library, explicit phase role switching via `withSealerPhaseRole` (runner/test-harness only), and startup validation before readiness. This resolves the role/session open question left by ADR-020.
 
 ## Context
 

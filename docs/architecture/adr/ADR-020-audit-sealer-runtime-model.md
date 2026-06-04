@@ -1,6 +1,24 @@
 # ADR-020 — AuditSealer Runtime Model
 
-Status: Draft — role model superseded by ADR-022, pending B3 decision-pack acceptance
+Status: Superseded in part by ADR-022–026; B3 implementation not authorized
+
+## Supersession / current status
+
+ADR-020 is no longer the final source for the AuditSealer runtime model. The specific decisions are now owned by the B3 decision pack:
+
+- **ADR-022** resolves the role/session model (Accepted as a design constraint).
+- **ADR-023** owns stale recovery and the **append→mark_sealed partial-failure idempotency** decision (Proposed/BLOCKED — not resolved; see ADR-023 and `specs/audit-sealer-b3-technical-plan.md` §8.3).
+- **ADR-024** owns the claim loop / backpressure (Accepted as a design constraint).
+- **ADR-025** owns health / metrics / observability (Accepted as a design constraint).
+- **ADR-026** owns the dedicated deploy unit lifecycle (Accepted as a design constraint).
+
+B3 implementation remains **blocked** until **all** of the following hold:
+- the decision pack is accepted (ADR-022/024/025/026 accepted; ADR-023 still blocked today);
+- the append→mark_sealed partial-failure idempotency mechanism is selected, documented, and testable (ADR-023 §"Blocking decision");
+- the runtime-to-evidence dispatch decision is resolved (roadmap Phase 2.5);
+- a separate explicit user authorization is given.
+
+Accepting ADR-022/024/025/026 as design constraints **does not authorize implementation**. This ADR's original "Decision/Rationale/Role Model" sections below are retained for history.
 
 ## Context
 

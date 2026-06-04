@@ -1,6 +1,8 @@
 # ADR-025: Health Checks, Metrics, and Observability for AuditSealer
 
-Status: Proposed
+Status: Accepted — design constraint for future B3 implementation (does not authorize implementation)
+
+> **Acceptance note (B3 decision pack, 2026-06-04):** accepted as a design constraint for future B3 implementation. Does not authorize implementation. B3 remains blocked by ADR-023 (append→mark_sealed idempotency) and the Phase 2.5 runtime-to-evidence dispatch decision.
 
 ## Context
 
