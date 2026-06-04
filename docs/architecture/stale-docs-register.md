@@ -1,0 +1,17 @@
+# GovAI Stale Docs Register
+
+Tracks documents whose statements no longer match the implemented state ([current-state.md](./current-state.md), main `8be5cfc`). "Severity" is about onboarding/continuity risk, not security. A row that "Blocks B3" must be cleaned/accepted before the B3 runner is built.
+
+| Document | Stale statement | Current evidence | Severity | Action | Blocks B3? |
+|---|---|---|---|---|---|
+| `README.md` | "Runtime Phase 1 … Passthrough e admin routes ainda em 501" (lines 7-11) | `server.ts:79-94` registers passthrough/governed/provider-credentials/workroom/regulatory routes as real handlers; only `admin-audit-shred` and `admin-dlp` are `sendNotImplemented` stubs (PR3) | HIGH (onboarding) | Update README status to the current surface set + point to current-state.md (done minimally in this PR) | no |
+| `docs/architecture/workroom-governance-room.md` | "proposed (architecture blueprint, no runtime implementation yet)" (line 3) | Workroom Phases 1–4 are implemented at runtime: 21 endpoints across `workrooms.ts` / `workroom-transcript.ts` / `workroom-runs.ts` / `workroom-approvals.ts`; migrations 0012–0015; orchestrator `WorkroomRunContext` integration | HIGH (architecture continuity) | Add an "Implementation status" note: target architecture with partial (Phase 1–4) runtime; Phases 5–7 target-only (done minimally in this PR) | no |
+| `docs/architecture/adr/ADR-020-audit-sealer-runtime-model.md` | Role/session model left as an "Open design question" (lines 50-54); Status: Draft | ADR-022 resolves the role/session model (explicit phase role switching in the dedicated runner; `withSealerPhaseRole`; separate DB pool) | HIGH (B3) | Add a note that the open question is resolved by ADR-022; full update/supersede happens in the B3 decision-pack PR (not this one) | yes — until the B3 decision-pack PR consolidates statuses |
+| `ADR-022`–`ADR-026` | Status: Proposed (B3 runtime role model, stale recovery, backpressure, health/metrics, deploy unit) | The pack defines the B3 runtime model but is not Accepted; the runner is not built | HIGH (B3) | Accept in a dedicated B3 decision-pack PR (Phase 2 of the roadmap). **Not** changed in this PR | yes — acceptance is a B3 precondition |
+| Append/seal idempotency (ADR-023 open clause) | "if exact append idempotency key does not yet exist, B3 must either introduce one explicitly or document why…" | Capture+seal are idempotent (capture_id UNIQUE + chain_state lock; markSealed idempotent for same audit_event_id); the explicit **append-per-capture** idempotency key is undecided | HIGH (B3) | Resolve in the B3 decision pack. **Not** resolved in this PR | yes |
+| Regulatory roadmap (`regulatory/20`, `regulatory/23`, sector mappings) | Not stale, but dense; many `IMPLEMENTED_FOUNDATIONAL_CONTROL` items are not summarized in one place, and they are evidence-only (no runtime enforcement) | PR-R1..R9 live as foundational controls; no single current-state view existed | MEDIUM (navigability) | current-state.md §5 now cross-links and labels them evidence-only | no |
+| `docs/architecture/specs/h1v2-coverage-map.md` + H1 v2 specs | Current and versioned after PR #87 (stable aliases) | Matches code at `8be5cfc` | — (not stale) | none | no |
+
+Notes:
+- This register is the authoritative list of "do not trust this statement as written." If a doc is not listed and not in current-state.md, verify against code before relying on it.
+- ADR-022..026 acceptance and the idempotency decision are explicitly deferred to the **next** PR (the AuditSealer B3 decision pack).

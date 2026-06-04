@@ -1,6 +1,6 @@
 # ADR-020 — AuditSealer Runtime Model
 
-Status: Draft
+Status: Draft — partially superseded by ADR-022 (role/session model; see the Role Model resolution note)
 
 ## Context
 
@@ -52,6 +52,8 @@ Open design question before runner implementation:
 - introduce a dedicated runtime DB role for the sealer;
 - or grant the `auditAppend` path to `govai_audit_sealer`;
 - or retain explicit phase role switching in the dedicated runner.
+
+> **Resolution note (2026-06-04):** this open question is **resolved by ADR-022** (AuditSealer Runtime Role Model), which selects explicit phase role switching in the dedicated runner via `withSealerPhaseRole`, with a separate DB pool and no `SET ROLE` in the library. ADR-020 remains stale here until the B3 decision-pack acceptance PR consolidates statuses. ADR-022–026 are still *Proposed*; **this documentation PR does not accept them** and does not start B3.
 
 No migration is introduced by this ADR.
 

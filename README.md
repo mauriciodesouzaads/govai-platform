@@ -4,11 +4,21 @@ Plataforma de governance de IA, modular, com audit chain append-only,
 RLS multi-tenant, KMS, capability registry, DLP-BR (CPF/CNPJ/email/telefone + RE2 custom),
 e providers Anthropic + OpenAI nativos.
 
-**Status:** Runtime Phase 1 (PR1 / `runtime-patch-1`) — Governed Run pipeline
-hermético `POST /v1/runs` + `GET /v1/audit-events` + `GET /v1/capabilities` por org +
-guard de planned-capability (apenas hermético). Passthrough e admin routes ainda em
-501 com schema estruturado apontando para PR2/PR3 (ver
-`docs/architecture/baseline-decisions.md#runtime-roadmap`).
+**Status:** Active development. Implemented runtime surfaces include provider-native
+**passthrough** and **governed** surfaces (OpenAI + Anthropic), the `/v1/runs` governed
+shortcut, the append-only audit chain + capability registry, Workroom Phases 1–4
+(create/participants, transcript/tasks/evidence, workroom-owned runs, approvals),
+regulatory foundational controls (PR-R1..R9, **evidence-only**, not runtime enforcement),
+and the AuditSealer **B0/B1/B2** foundations (capture outbox + capture adapter + sealer
+**library**). The AuditSealer **B3 runner is not implemented and is not authorized**. Two
+admin routes (`/v1/admin/audit-events/:id/crypto-shred`, `/v1/admin/dlp-detectors`) are
+still PR3 not-implemented stubs.
+
+GovAI does **not** claim regulatory compliance, certification, legal/judicial validity, or
+runtime hard-deny completeness. The authoritative implementation state is
+[`docs/architecture/current-state.md`](docs/architecture/current-state.md); see also the
+[development roadmap](docs/architecture/development-roadmap.md) and
+[resume playbook](docs/architecture/resume-playbook.md).
 
 > Veja `../docs/govai_adp_v3.md` para a especificação canônica externa.
 > Veja `docs/architecture/baseline-decisions.md` para resoluções pinadas.
