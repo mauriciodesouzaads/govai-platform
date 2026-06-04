@@ -1,0 +1,28 @@
+# GovAI Stale Docs Register
+
+Documents whose statements no longer match source ([current-state.md](./current-state.md), main `8be5cfc`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. A row that "Blocks B3" must be cleaned/accepted before the B3 runner is built.
+
+| Document | Stale statement | Current source evidence | Confidence | Severity | Action | Blocks B3? |
+|---|---|---|---|---|---|---|
+| `README.md` | "Runtime Phase 1 … Passthrough e admin routes ainda em 501" | `server.ts:79-94` registers passthrough/governed/credentials/workroom/regulatory as real handlers; only `admin-audit-shred.ts:41` and `admin-dlp.ts:40` are `sendNotImplemented` stubs | HIGH (source-verified) | HIGH (onboarding) | README status updated to current surfaces + runtime-to-evidence caveat (this PR) | no |
+| `docs/architecture/workroom-governance-room.md` | "proposed (architecture blueprint, no runtime implementation yet)" (line 3) | Phases 1–4 routes exist (`workrooms.ts`/`workroom-transcript.ts`/`workroom-runs.ts`/`workroom-approvals.ts`); migrations 0012–0015; orchestrator `WorkroomRunContext`; ~21 workroom tests located | HIGH (source + tests) | HIGH (architecture continuity) | Add "Implementation status" note: partial runtime (Phases 1–4); 5–7 target-only; not complete (this PR) | no |
+| `docs/architecture/adr/ADR-020-audit-sealer-runtime-model.md` | Role/session model "Open design question" (lines 50-54); Status: Draft | ADR-022 resolves it (phase role switching; `withSealerPhaseRole`; separate pool) | HIGH | HIGH (B3) | Add note that the question is resolved by ADR-022; full update/supersede in the B3 decision-pack PR (this PR adds the note only) | yes — until consolidated/accepted |
+| `ADR-022`–`ADR-026` | Status: Proposed | Pack defines the B3 runtime model; not Accepted; runner not built | HIGH | HIGH (B3) | Accept in a dedicated B3 decision-pack PR. Not changed here | yes — acceptance is a B3 precondition |
+| Append/seal idempotency (ADR-023 open clause) | "if exact append idempotency key does not yet exist, B3 must either introduce one explicitly or document why…" | capture+seal idempotent (capture_id UNIQUE + chain_state lock); explicit append-per-capture key undecided | HIGH | HIGH (B3) | Resolve in the B3 decision pack. Not resolved here | yes |
+| **Runtime-to-evidence wiring (correction to any "runtime ⇒ evidence captured" assumption)** | Implicit assumption that governed-native runtime produces captured/sealed evidence | `governed-openai.ts:69-70` / `governed-anthropic.ts:71-72` emit via `app.log.info` only; **zero `captureAuditEvent` call-sites in `apps/`**; `/v1/runs` uses `auditAppend` to the chain, not the outbox | HIGH (source-verified) | HIGH (B3 false-confidence risk) | current-state.md §3 distinguishes runtime route existence from runtime-to-outbox dispatch; roadmap Phase 2.5 plans the wiring | yes — must be decided before/alongside B3 |
+| Regulatory roadmap (`regulatory/20`, `regulatory/23`, sector mappings) | Not stale, but dense; foundational controls not summarized in one place and are evidence-only | PR-R1..R9 live as foundational controls (migrations 0016–0024 + tests) | MEDIUM (navigability) | MEDIUM | current-state.md §5 cross-links + labels evidence-only | no |
+| `docs/architecture/specs/h1v2-coverage-map.md` + H1 v2 specs | Current and versioned after PR #87 (stable aliases) | matches code at `8be5cfc` | HIGH | — (not stale) | none | no |
+
+### Files referenced by prior session memory but **not present in repository manifest**
+
+These were named in an earlier task list but do **not** exist in `docs/architecture/regulatory/` at `8be5cfc`; they are not treated as source and are not referenced elsewhere in this PR:
+
+- `regulatory/26-certification-audit-readiness.md` — not present (the certification doc that exists is `22-certification-and-audit-readiness.md`).
+- `regulatory/27-regulatory-intelligence-operating-model.md` — not present (the one that exists is `21-regulatory-intelligence-operating-model.md`).
+- `regulatory/28-consolidated-regulatory-gap-analysis.md` — not present (no consolidated gap-analysis doc exists).
+- `regulatory/29-future-implementation-decision-record.md` — not present.
+- `regulatory/30-post-pr-c2-roadmap.md` — not present.
+
+Notes:
+- This register is the authoritative "do not trust this statement as written" list. If a doc is not listed and not in current-state.md, verify against code before relying on it.
+- ADR-022..026 acceptance and the idempotency decision are deferred to the **next** PR (the AuditSealer B3 decision pack), which should also decide the Phase 2.5 runtime-to-evidence wiring.
