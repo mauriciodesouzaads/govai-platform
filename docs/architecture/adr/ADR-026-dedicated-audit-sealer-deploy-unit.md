@@ -1,6 +1,8 @@
 # ADR-026: Dedicated AuditSealer Deploy Unit Lifecycle
 
-Status: Proposed
+Status: Accepted — design constraint for future B3 implementation (does not authorize implementation)
+
+> **Acceptance note (B3 decision pack, 2026-06-04):** accepted as a design constraint for future B3 implementation. Does not authorize implementation. `apps/audit-sealer` may be created only after B3 is explicitly authorized AND ADR-023 (append→mark_sealed idempotency) and the Phase 2.5 runtime-to-evidence dispatch decision are resolved.
 
 ## Context
 

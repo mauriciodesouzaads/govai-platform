@@ -91,8 +91,8 @@ Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are
 | B0 — capture outbox foundation | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | migration 0025; `tests/integration/audit-capture-outbox-foundation.test.ts` |
 | B1 — `captureAuditEvent` adapter | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `packages/core-audit/src/capture.ts`; `audit-capture-bridge.test.ts` (titled "B1 integration tests for the captureAuditEvent adapter"), `capture.test.ts` — **tested as a primitive; see §3 wiring** |
 | B2 — sealer **library** | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `packages/core-audit/src/sealer.ts`; `audit-sealer-core.test.ts`, `sealer.test.ts` — one-shot primitives, no loop/process/`SET ROLE` |
-| B3 — sealer **runner** | DOCUMENTED_TARGET_ONLY / BLOCKED_BY_DECISION | no `apps/audit-sealer`; no claim/seal loop; ADR-020 Draft; blocked on the B3 decision pack |
-| Append/seal idempotency | IMPLEMENTED (capture+seal) / BLOCKED_BY_DECISION (explicit append key) | capture_id UNIQUE + chain_state lock; ADR-023 leaves the explicit append idempotency key for B3 |
+| B3 — sealer **runner** | DOCUMENTED_TARGET_ONLY / BLOCKED_BY_DECISION | no `apps/audit-sealer`; no claim/seal loop. Decision pack: ADR-022/024/025/026 Accepted as design constraints (not impl authorization); ADR-020 superseded-in-part; **ADR-023 still BLOCKED** (append→mark_sealed idempotency); see `specs/audit-sealer-b3-technical-plan.md` |
+| Append/seal idempotency | capture: SOLVED; mark_sealed same-event: PARTIAL; **append→mark_sealed partial-failure: BLOCKED_BY_DECISION** | three distinct layers (technical plan §8.3): `capture_id` UNIQUE + chain_state lock; `markAuditCaptureSealed` no-op for same `audit_event_id`; but `auditAppend` has **no per-capture key** (`append.ts:72` random eventId) → level-3 not solved |
 | Stale-sealing recovery | DOCUMENTED_TARGET_ONLY | ADR-023; not implemented |
 | Evidence completeness (counts, provider-without-audit) | PLANNED | B0 stores `attempts`/`last_error`/timestamps; no reporting/metrics layer |
 
