@@ -20,7 +20,7 @@
 > Added 2026-06-04 without rewriting the target architecture below.
 
 - This document **remains the target architecture**; the sections that follow are the blueprint, not a status report.
-- Runtime implementation has **begun** after the original blueprint. **Phases 1–4 are live at runtime** (create/participants; transcript/tasks/evidence; workroom-owned runs; approvals) — routes `apps/api/src/routes/workrooms.ts`, `workroom-transcript.ts`, `workroom-runs.ts`, `workroom-approvals.ts`; migrations 0012–0015; orchestrator `WorkroomRunContext` integration in `pipeline/run-orchestrator.ts`.
+- Runtime implementation has **begun** after the original blueprint. **Phases 1–4 are live at runtime** (create/participants; transcript/tasks/evidence; workroom-owned runs; approvals) — routes `apps/api/src/routes/workrooms.ts`, `workroom-transcript.ts`, `workroom-runs.ts`, `workroom-approvals.ts`; migrations 0012–0015; orchestrator `WorkroomRunContext` integration in `pipeline/run-orchestrator.ts`; integration tests located (`tests/integration/workroom-*.test.ts`, ~21 files).
 - Implemented pieces are tracked authoritatively in [current-state.md](./current-state.md) §1.
 - **Not all** target Workroom capabilities are complete. Phase 5 (tool invocations), Phase 6 (UI), and Phase 7 (external autonomous agents) remain target-only. A mode-downgrade approval flow is designed but its route is not exposed.
 - The hard-deny floor, external tool governance, full evidence bundle/export, and UI/cockpit remain **future or partial** unless a specific item is cited as implemented in current-state.md.

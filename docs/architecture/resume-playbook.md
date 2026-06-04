@@ -12,75 +12,80 @@ git branch --show-current
 git rev-parse HEAD
 git status --short
 gh pr list --state open
-gh pr checks <PR#>            # for any open PR you are about to touch
-node -v                       # expect v24.x (nvm use 24)
-pnpm -v                       # expect 10.33.2
+gh pr checks <PR#>
+pnpm -v       # expect 10.33.2
+node -v       # expect v24.x (nvm use 24)
 ```
 
-Note: in this repo's shell, `grep` is a hanging function — use `command grep`, and prefer `GIT_PAGER=cat` for git output.
+Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GIT_PAGER=cat`.
 
 ---
 
 ## 2. Current known-good main
 
 - main after PR #87: `8be5cfc74f67feb2824d0cb25da0816b7689a163`
-- Toolchain: Node v24.15.0 (NODE_MODULE_VERSION 137), pnpm 10.33.2.
-- Provider-native harness + coverage map are versioned and green in CI on this commit.
+- Toolchain: Node v24.15.0 (modules 137), pnpm 10.33.2.
 
 ---
 
-## 3. Closed gates
+## 3. Closed gates (confirmed)
 
-- H1 v2 provider-native compatibility coverage (all mandatory invariants mapped to executing tests).
-- PR #87: valid-tools pass-through positive byte-for-byte (INV-006/INV-009) — the last documented provider-native follow-up.
-- Coverage map uses stable `RB-OAI[alias]` / `RB-ANT[alias]` anchors (no fragile line-only references).
-- Audit B0 (capture outbox) + B1 (capture adapter) + B2 (sealer library) merged.
+- H1 v2 provider-native compatibility coverage (mandatory invariants mapped to executing tests).
+- PR #87: valid-tools pass-through positive byte-for-byte.
+- Coverage map uses stable `RB-OAI[alias]`/`RB-ANT[alias]` anchors.
+- Audit B0 (capture outbox) + B1 (capture adapter, tested as a primitive) + B2 (sealer library) merged.
 
 ---
 
 ## 4. Open gates
 
-- **B3 decision pack not accepted** — ADR-022..026 are Proposed, not Accepted.
-- **ADR-020 stale** — role-model open question; resolved by ADR-022 but ADR-020 not yet updated/superseded.
-- **Append/seal idempotency decision** — ADR-023 leaves an explicit append idempotency key open for B3.
+- **B3 decision pack not accepted** — ADR-022..026 are Proposed.
+- **ADR-020 stale role-model wording** — resolved by ADR-022 but ADR-020 not yet updated/superseded.
+- **Append/seal idempotency decision** — ADR-023 leaves the explicit append idempotency key open.
 - **B3 Technical Plan** — not written.
-- **Runtime hard-deny** — regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only; no runtime gateway enforcement.
-- **Evidence completeness / cockpit** — captured/sealed/failed counts and "provider-without-audit" detection not implemented.
+- **Runtime-to-evidence wiring for direct governed-native routes is NOT implemented / not source-verified as complete.** `governed-openai.ts:69-70` and `governed-anthropic.ts:71-72` emit audit events via `app.log.info` (logger-only); there are **zero `captureAuditEvent` call-sites in `apps/`**. Future **AuditBridge** work must wire these events to `captureAuditEvent` / the outbox (roadmap Phase 2.5).
+- **`/v1/runs` orchestrator writes run-lifecycle audit to the chain via `auditAppend`** (`run-orchestrator.ts`), **not** to the capture outbox — distinct path.
+- **Runtime hard-deny enforcement** not source/test-verified as complete (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only).
+- **Evidence completeness / cockpit** not complete (no captured/sealed/failed counts, no provider-without-audit detection).
 
 ---
 
 ## 5. Standard restart checklist
 
-For any new session:
-1. Read `current-state.md` (state of every surface).
-2. Read `development-roadmap.md` (what comes next and why).
+1. Read `current-state.md` (state + §3 runtime-to-evidence wiring).
+2. Read `development-roadmap.md`.
 3. Read `stale-docs-register.md` (do not trust a doc it flags).
-4. Read the latest merged PR (and its merge commit) to confirm `main`.
-5. `gh pr list` open PRs; for each, `gh pr checks` and review threads.
-6. **Never start B3** without an explicitly accepted decision pack (Phase 2).
+4. Read the latest merged PR + its merge commit; confirm `main`.
+5. `gh pr list` open PRs; for each, `gh pr checks` + review threads.
+6. **Never start B3** without an explicitly accepted decision pack.
+7. **Never claim evidence completeness** unless runtime-to-evidence wiring is verified.
 
 ---
 
 ## 6. Stop conditions
 
-Stop and report (do not push/merge) if:
-- working tree is dirty when a clean tree was expected;
-- you are on an unexpected branch / unexpected HEAD;
-- CI is failing or pending;
-- there is an unresolved, **non-outdated** Codex review thread;
-- a PR expected to be docs-only contains a production/test/migration/package/lock change;
+Stop and report (no push/merge) if:
+- dirty tree when a clean tree was expected;
+- unexpected branch / HEAD;
+- CI failing or pending;
+- an unresolved, **non-outdated** Codex review thread;
+- a docs-only PR contains a production/test/migration/package/lock change;
 - any text would overclaim B3 ("B3 authorized", "ready for B3") or compliance/certification;
-- a provider-native parity claim is made without tests.
+- a provider-native parity claim without tests;
+- a status marked IMPLEMENTED_RUNTIME without source evidence;
+- an **evidence-plane completeness claim while direct governed-native audit is logger-only**;
+- **runtime route existence used as proof of sealed evidence capture**.
 
 ---
 
 ## 7. Prompt handoff format
 
-End every task with a structured report so the next session can resume:
+End every task with:
 - **Repo** — path.
 - **Branch** — current branch.
 - **Head** — commit SHA.
-- **Files changed** — exact list (and that scope was respected).
+- **Files changed** — exact list (scope respected).
+- **Evidence files** — the source/test files that back the claims.
 - **Tests** — what ran, counts, before/after.
 - **CI** — run id + conclusion + key steps.
 - **Open threads** — review threads (resolved/outdated/open).
@@ -91,12 +96,9 @@ End every task with a structured report so the next session can resume:
 
 ## 8. What not to do
 
-- No `--admin` merge.
-- No force push.
-- No branch deletion.
-- No AWS/KMS use without explicit scope.
-- No reading `.env` or secrets.
-- No live provider tests unless explicitly requested.
+- No `--admin` merge; no force push; no branch deletion.
+- No AWS/KMS use without explicit scope; no reading `.env`/secrets; no live provider tests unless requested.
 - No B3 implementation until the decision pack is accepted.
 - No editing production/tests/migrations in a docs-only task.
 - No marking ADR-022..026 Accepted outside the dedicated B3 decision-pack PR.
+- **No evidence-completeness claim before runtime-to-evidence dispatch is verified.**

@@ -10,9 +10,12 @@ shortcut, the append-only audit chain + capability registry, Workroom Phases 1โ€
 (create/participants, transcript/tasks/evidence, workroom-owned runs, approvals),
 regulatory foundational controls (PR-R1..R9, **evidence-only**, not runtime enforcement),
 and the AuditSealer **B0/B1/B2** foundations (capture outbox + capture adapter + sealer
-**library**). The AuditSealer **B3 runner is not implemented and is not authorized**. Two
-admin routes (`/v1/admin/audit-events/:id/crypto-shred`, `/v1/admin/dlp-detectors`) are
-still PR3 not-implemented stubs.
+**library**). The AuditSealer **B3 runner is not implemented and is not authorized**. Direct
+governed-native and passthrough audit emission is currently **logger-only**
+(`app.log.info`); runtime-to-evidence (capture-outbox) dispatch is **not yet wired or
+source-verified** (see current-state.md ยง3). Two admin routes
+(`/v1/admin/audit-events/:id/crypto-shred`, `/v1/admin/dlp-detectors`) are still PR3
+not-implemented stubs.
 
 GovAI does **not** claim regulatory compliance, certification, legal/judicial validity, or
 runtime hard-deny completeness. The authoritative implementation state is

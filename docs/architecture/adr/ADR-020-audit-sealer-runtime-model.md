@@ -1,6 +1,6 @@
 # ADR-020 — AuditSealer Runtime Model
 
-Status: Draft — partially superseded by ADR-022 (role/session model; see the Role Model resolution note)
+Status: Draft — role model superseded by ADR-022, pending B3 decision-pack acceptance
 
 ## Context
 
