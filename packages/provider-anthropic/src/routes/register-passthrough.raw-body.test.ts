@@ -235,6 +235,61 @@ describe('Anthropic passthrough raw-body preservation (real socket, app.listen +
     expect(captured).toBeNull();
   });
 
+  it('forwards valid tools byte-for-byte after governance inspection', async () => {
+    // INV-006 / INV-009 positive case. A client-defined Anthropic tool (no `type`
+    // field) is ALLOWED by the classifier, so the request must be forwarded to the
+    // provider byte-for-byte — no 403, no mutation, no re-serialization, with
+    // unknown/future fields and `max_tokens` intact. This is the closest case to
+    // the provider-native promise: when governance permits the request, GovAI is
+    // indistinguishable from the native API.
+    const raw =
+      '{\n    "model"  :  "claude-x-fixture",\n  "max_tokens":   777,\n  "z_unknown_field":  {"nested": true},\n  "tools": [ { "name":"get_weather", "description":"Get the weather", "input_schema": { "type":"object", "properties": { "location": { "type":"string" } }, "required":["location"] } } ],\n      "messages": [ { "role":"user", "content":"hi" } ],\n  "experimental_array": [1,  2,   3]\n}';
+    const sentRawBody = Buffer.from(raw, 'utf8');
+
+    const res = await fetch(`${govUrl}/passthrough/anthropic/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: sentRawBody,
+    });
+    // Allowed → forwarded (NOT blocked at 403).
+    expect(res.status).toBe(200);
+    expect(eventOfType('tool.validation_blocked')).toBeUndefined();
+
+    const cap = requireCaptured();
+    // Canonical proof: the provider received the client's exact bytes.
+    expect(Buffer.compare(cap.rawBody, sentRawBody)).toBe(0);
+    expect(cap.url).toBe('/v1/messages');
+
+    const ev = invokedEvent();
+    expect(ev['native_request_hash']).toBe(sha256(sentRawBody));
+    expect(ev['native_request_hash']).toBe(sha256(cap.rawBody));
+    expect(ev['body_forward_mode']).toBe('raw');
+
+    // The classifier ran and ALLOWED the client-defined tool (decision === allowed).
+    const classifications = ev['detected_tool_classifications'] as Array<{
+      classification: string;
+      decision: string;
+    }>;
+    expect(Array.isArray(classifications)).toBe(true);
+    const clientDefined = classifications.find((c) => c.classification === 'client_defined');
+    expect(clientDefined).toBeDefined();
+    expect(clientDefined?.decision).toBe('allowed');
+
+    // After byte equality: the valid tool, unknown/future fields, and max_tokens survive.
+    const parsed = JSON.parse(cap.rawBody.toString('utf8')) as Record<string, unknown>;
+    const tools = parsed['tools'] as Array<Record<string, unknown>>;
+    expect(tools).toHaveLength(1);
+    const firstTool = tools[0] as Record<string, unknown>;
+    expect(firstTool['name']).toBe('get_weather');
+    // A client-defined tool has no `type` field — GovAI must NOT normalize one in.
+    expect('type' in firstTool).toBe(false);
+    expect(parsed['z_unknown_field']).toEqual({ nested: true });
+    expect(parsed['experimental_array']).toEqual([1, 2, 3]);
+    expect(parsed['max_tokens']).toBe(777);
+    // No 1024 cap injected anywhere in the forwarded bytes.
+    expect(cap.rawBody.toString('utf8').includes('1024')).toBe(false);
+  });
+
   it('forwards malformed JSON byte-for-byte instead of rejecting at the edge', async () => {
     // Provider-native passthrough decision: a malformed JSON request is forwarded
     // unchanged; the PROVIDER decides (no GovAI edge-rejection on parse failure).
