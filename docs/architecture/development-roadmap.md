@@ -30,7 +30,7 @@ Dependencies: Phase 0. Risks if skipped: drift, repeated work, action on stale c
 Goal: make B3 a decidable, accepted plan — no implementation.
 Inputs: ADR-020 (Draft), ADR-022..026 (Proposed), B0/B1/B2 code, migration 0025.
 Outputs: ADR-022..026 → Accepted; ADR-020 updated/superseded; explicit append/seal idempotency resolution (key or documented guarantee — ADR-023 open clause); a written B3 Technical Plan.
-Exit criteria: ADR-022..026 Accepted; idempotency decided; B3 plan reviewed. **Status (B3 decision-pack PR, 2026-06-04): PARTIAL — ADR-022/024/025/026 Accepted as design constraints + B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`), but ADR-023 (append→mark_sealed idempotency) remains BLOCKED, so Phase 2 is NOT complete.**
+Exit criteria: ADR-022..026 Accepted; idempotency decided; B3 plan reviewed. **Status: Phase 2 decision pack complete as architecture decision** — ADR-022/024/025/026 Accepted as design constraints, ADR-023 append→mark_sealed idempotency **DECIDED as Option A(b)** (deterministic `audit_event_id`) design constraint, B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`). **B3 implementation remains blocked pending implementation/tests of Option A(b), the Phase 2.5 decision, and explicit authorization.**
 Explicit non-goals: no `apps/audit-sealer`; no loop.
 Dependencies: Phase 1. Risks if skipped: B3 built on unresolved role/idempotency model. Resume anchor: ADRs + stale-docs-register.md.
 
@@ -56,7 +56,7 @@ Inputs: accepted Phase 2 pack; Phase 2.5 dispatch decision.
 Outputs: `apps/audit-sealer`; separate DB pool; explicit phase role switching; bounded claim loop (jitter/backoff); stale recovery; health/metrics; graceful shutdown; no provider traffic; no hot path.
 Exit criteria: seals contiguous captures idempotently; recovers stale `sealing` rows; emits health/metrics.
 Explicit non-goals: no provider traffic; no `apps/api` production loop.
-Dependencies: Phase 2 **complete** (incl. **ADR-023 append→mark_sealed idempotency resolved** — still BLOCKED today), the Phase 2.5 dispatch decision, and a **separate explicit implementation authorization**. Note: **B3 seals captures already in the outbox; it is not the same as runtime-to-outbox dispatch, and its product-completeness depends on the Phase 2.5 wiring decision.**
+Dependencies: (1) **Option A(b) implemented and tested** in a future implementation PR (deterministic append id; no-duplicate retry after append-success/mark_sealed-failure); (2) the **Phase 2.5 runtime-to-evidence dispatch** decision (or an explicit accepted deferral naming the authoritative path); (3) a **separate explicit implementation authorization**. Note: **B3 seals captures already in the outbox; it is not the same as runtime-to-outbox dispatch, and its product-completeness depends on the Phase 2.5 wiring decision.**
 Risks if skipped: captures accumulate unsealed. Resume anchor: ADR-020..026 + current-state.md §3.
 
 ---

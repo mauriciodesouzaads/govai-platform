@@ -11,7 +11,7 @@ Status:
 - `current-state.md` merged (evidence-first source of truth).
 - Provider-native gate closed (H1 v2).
 - ADR-022 role/session model: **Accepted** as a design constraint (does not authorize implementation).
-- ADR-023 append→mark_sealed partial-failure idempotency: **NOT resolved → ADR-023 remains Proposed/BLOCKED** (see §8.3). This is a hard B3 blocker.
+- ADR-023 append→mark_sealed partial-failure idempotency: **DECIDED as Option A(b)** (deterministic `audit_event_id`); ADR-023 Accepted as design constraint — **not implemented, not tested** (see §8.3). B3 still blocked until implemented/tested.
 - ADR-024/025/026: **Accepted** as design constraints (do not authorize implementation).
 - Phase 2.5 runtime-to-evidence dispatch decision: **does not exist yet → explicitly blocking** (see §4).
 - B3 does not start until explicitly authorized by the user after this plan is reviewed.
@@ -84,7 +84,7 @@ The plan distinguishes **three separate idempotency layers**. Conflating them is
 - Source: `markAuditCaptureSealed` (migration 0025): if a capture is already sealed with the **same** `audit_event_id`, it is an idempotent no-op; a **different** `audit_event_id` raises `unique_violation`.
 - This protects **repeated `mark_sealed` calls for the same already-known event id only**. It does **not** prove that an earlier successful `auditAppend` can be rediscovered if `mark_sealed` never recorded the reference.
 
-### 8.3 append→mark_sealed partial-failure idempotency — BLOCKING DECISION (NOT solved)
+### 8.3 append→mark_sealed partial-failure idempotency — DECIDED AS DESIGN CONSTRAINT (Option A(b)); NOT IMPLEMENTED; NOT TESTED
 
 Critical failure case:
 1. B3 claims a capture (`claim_for_seal` flips the row to `sealing`).
@@ -94,27 +94,17 @@ Critical failure case:
 5. Recovery sees the capture again.
 6. B3 must avoid appending a **duplicate** audit event to the chain.
 
-**Source finding (why this is NOT solved):** `auditAppend` (`packages/core-audit/src/append.ts:72`) generates a fresh `const eventId = randomUUID()` on **every** call and has **no per-capture idempotency key** — its `pg_advisory_xact_lock` (`append.ts:58`) only serializes concurrent appends on the same chain; it does not deduplicate a logical capture. So a second append for the same capture would create a **second, distinct** chain event. The only thing that could prevent an orphan append is transaction **atomicity** (claim+append+mark_sealed in a single committed transaction), but the transaction boundary is **caller-owned** (`sealNextAuditCapture` runs all three on one `client` with no internal BEGIN/COMMIT — `sealer.ts:658-722`), and ADR-023's own premise (captures "left in `sealing` if the runner crashes between claim and mark-sealed") implies the `claim`/`sealing` state may be committed separately, which re-opens the orphan-append window. **The transaction model and the append idempotency mechanism are B3 decisions that have not been made.**
+**Source finding (why a deterministic key is required):** `auditAppend` (`packages/core-audit/src/append.ts:72`) generates a fresh `const eventId = randomUUID()` on **every** call and has **no per-capture idempotency key** — its `pg_advisory_xact_lock` (`append.ts:58`) only serializes concurrent appends on the same chain; it does not deduplicate a logical capture. So a second append for the same capture would create a **second, distinct** chain event. The only thing that could prevent an orphan append is transaction **atomicity** (claim+append+mark_sealed in a single committed transaction), but the transaction boundary is **caller-owned** (`sealNextAuditCapture` runs all three on one `client` with no internal BEGIN/COMMIT — `sealer.ts:658-722`), and ADR-023's own premise (captures "left in `sealing` if the runner crashes between claim and mark-sealed") implies the `claim`/`sealing` state may be committed separately, which re-opens the orphan-append window. **The transaction model and the append idempotency mechanism are B3 decisions that have not been made.**
 
-The decision must choose one of:
+**This plan selects Option A(b): a deterministic `audit_event_id` derived from `org_id + capture_id`** (see ADR-023 §"Decision"). This is a **design constraint only — not implemented, not tested, and does not authorize B3.**
 
-**Option A — explicit append idempotency mechanism (selected):**
-- Choose the idempotency key (candidates: a unique constraint on `(capture_id)` in `audit_events`; a dedicated `sealing_attempt`/`audit_event_capture_refs` lookup before append; a **deterministic** `audit_event_id` derived from `capture_id` so a re-append collides on a unique constraint).
-- State where it is stored and how recovery finds the prior append before deciding retry vs failed.
-- State how a duplicate append is prevented.
-- List the future tests (see §11).
-
-**Option B — existing source-verified guarantee (selected):**
-- Cite exact source proving the prior append is detectable and reusable safely (e.g., a single-transaction atomicity guarantee proven not to commit the `claim`/`sealing` state independently, so append+mark_sealed are atomic and an orphan append is impossible).
-- Explain why duplicate append is impossible.
-- List the future tests.
-
-**Option C — not decided (current state):**
-- ADR-023 remains **Proposed/BLOCKED**.
-- B3 implementation remains **blocked**.
-- No B3 runner may be implemented until this decision is made.
-
-**This PR selects Option C.** The source does not provide a level-3 guarantee (`auditAppend` has no per-capture key; the transaction model is undecided), and ADR-023:50 explicitly defers the choice. **Capture idempotency (§8.1) and mark_sealed idempotency (§8.2) are NOT sufficient for the append→mark_sealed partial-failure case.**
+- Formula: `audit_event_id = UUIDv5(namespace = govai.audit_sealer.capture_event.v1, name = "org:{org_id}:capture:{capture_id}")` (the exact namespace UUID is documented as a constant in the implementation PR, not here).
+- Capture idempotency (§8.1) and mark_sealed idempotency (§8.2) remain separate layers and do **not** cover this case.
+- Future B3 must modify/evolve the append path: today `auditAppend` generates `randomUUID()` per call (`append.ts:72`) and passes it to `govai.audit_append_locked(p_event_id, …)` — the SQL already takes a caller-supplied id, but `AuditAppendInput` must be evolved (or a sealer-only append adapter added) to accept the deterministic id.
+- B3 must look up `govai.audit_events.id = deterministic_audit_event_id` **before** append; `audit_events.id` is already a `uuid PRIMARY KEY` (migration 0001:29), so it serves as the deterministic-id collision point.
+- `audit_event_capture_refs` remains the final mapping after `mark_sealed`, but is written only by `mark_sealed`/`mark_failed` (migration 0025) so it **cannot** be the primary orphan-append detector in the failure window. No `capture_id` column exists in `audit_events` today.
+- **No migration is required by this design decision for the minimal duplicate-append guard, because `audit_events.id` is already PRIMARY KEY.** A future implementation may still choose a migration for observability or stronger validation, but it is not part of this decision PR.
+- **Future B3 is still blocked** until this mechanism is implemented and tested, the Phase 2.5 runtime-to-evidence dispatch decision is made, and B3 implementation is explicitly authorized.
 
 ## 9. Health / readiness / metrics (from ADR-025 — Accepted)
 
@@ -131,18 +121,24 @@ The decision must choose one of:
 ## 11. Test plan (future tests only — none added in this PR)
 
 - role startup validation; claim one row; seal success; mark_failed; stale recovery;
-- **idempotent retry after `auditAppend` success + `mark_sealed` failure** (the §8.3 case);
-- **no duplicate `audit_event` appended** for the same capture;
+- **deterministic event id is stable** for the same `org_id + capture_id`;
+- **retry after `auditAppend` success + `mark_sealed` failure does not append a duplicate** (the §8.3 case);
+- **existing `audit_event` lookup succeeds when the ref is absent** (`audit_event_capture_refs` not yet written);
+- **mismatched existing event fails safely** (correspondence validation);
+- **collision-race re-query path** (re-read by deterministic id, validate, continue to `mark_sealed`);
+- `mark_sealed` receives the same deterministic id;
 - capture eventually reaches `sealed` or terminal `failed`;
 - recovery safe under concurrent runner attempts;
 - bounded loop; shutdown drain; health/readiness; metrics;
 - no provider traffic; no `apps/api` loop.
 
-These tests cannot be written until §8.3 selects Option A or Option B.
+These tests are specified by the Option A(b) decision (§8.3) but are **not written in this PR** (no code/tests here).
 
 ## 12. Stop conditions
 
-- append→mark_sealed partial-failure idempotency unresolved (current state → STOP);
+- deterministic append idempotency (Option A(b)) **not implemented/tested** → STOP;
+- explicit B3 implementation authorization absent → STOP;
+- any prompt that treats the Option A(b) **design decision** as B3 implementation authorization → STOP;
 - role/session unresolved (resolved by ADR-022);
 - runtime-to-evidence dispatch decision absent (current state → STOP);
 - B3 tries to handle provider traffic;
