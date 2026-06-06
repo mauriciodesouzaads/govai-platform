@@ -25,4 +25,4 @@ These were named in an earlier task list but do **not** exist in `docs/architect
 
 Notes:
 - This register is the authoritative "do not trust this statement as written" list. If a doc is not listed and not in current-state.md, verify against code before relying on it.
-- ADR-022..026 acceptance and the idempotency decision are deferred to the **next** PR (the AuditSealer B3 decision pack), which should also decide the Phase 2.5 runtime-to-evidence wiring.
+- ADR-022/024/025/026 are accepted as design constraints, and ADR-023 now records the Option A(b) append→mark_sealed idempotency decision as a design constraint. Remaining blockers before B3 are Option A(b) implementation/tests, the Phase 2.5 runtime-to-evidence dispatch decision, and explicit B3 implementation authorization.

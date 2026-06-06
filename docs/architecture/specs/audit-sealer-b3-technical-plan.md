@@ -62,12 +62,12 @@ Status:
 - Graceful shutdown drain (default 30s); no busy loop; no starvation.
 - No provider-path throttling; no silent caps; backlog alerts (oldest pending > 5m or > 1000 pending).
 
-## 7. Stale recovery (from ADR-023 — Proposed/BLOCKED)
+## 7. Stale recovery (from ADR-023 — Accepted as design constraint; not implemented/tested)
 
 - Stale threshold (default 10 min); max retries (default 3); exponential backoff (30s→5m).
 - Terminal failure after max retries or unrecoverable integrity error; recovery batch (default 10).
 - Recovery is transactional; opens a FRESH transaction (never reuses an aborted one); emits metrics.
-- **Must detect "append succeeded but mark_sealed failed" before deciding retry vs failed** — this depends on §8.3, which is unresolved. Stale recovery cannot be made safe until §8.3 is decided.
+- **Must detect "append succeeded but mark_sealed failed" before deciding retry vs failed** — §8.3 now selects Option A(b), a deterministic `audit_event_id` derived from `org_id + capture_id`, as a design constraint. Stale recovery remains unsafe to implement until Option A(b) is implemented/tested and the future B3 runner defines the transaction choreography. Phase 2.5 runtime-to-evidence dispatch remains a separate blocker.
 
 ## 8. Idempotency decision
 
