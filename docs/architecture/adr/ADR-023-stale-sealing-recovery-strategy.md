@@ -75,7 +75,7 @@ The three idempotency layers remain distinct: capture idempotency is solved by `
   - re-read by deterministic `audit_event_id`;
   - validate correspondence;
   - continue to `mark_sealed`.
-- `audit_event_capture_refs` remains the final ref after `mark_sealed`, but **cannot** be the primary orphan-append detector, because it is written only by `mark_sealed` / `mark_failed` (migration 0025:196) and may not exist in the critical window.
+- `audit_event_capture_refs` remains the final ref after `mark_sealed`, but **cannot** be the primary orphan-append detector, because it is written **only by `mark_sealed`** (migration 0025:863) and may be **absent if `mark_sealed` failed before recording the ref**. (`mark_failed` only updates `audit_capture_outbox` to failed; it does not write `audit_event_capture_refs`.)
 
 **Why not Option A(a) — `UNIQUE(capture_id)` on `audit_events`:**
 - `audit_events` has no `capture_id` column today (migration 0001); a `UNIQUE(capture_id)` constraint would require a new column and schema change.
