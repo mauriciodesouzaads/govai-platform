@@ -39,9 +39,9 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ## 4. Open gates
 
-- **B3 decision pack partially accepted** — ADR-022/024/025/026 Accepted as design constraints (NOT implementation authorization); **ADR-023 remains Proposed/BLOCKED** (append→mark_sealed idempotency); B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`). ADR-020 now Superseded-in-part.
-- **Append→mark_sealed partial-failure idempotency** — still open. **Capture idempotency solved does NOT mean append→mark_sealed idempotency solved**; `auditAppend` has no per-capture key (`append.ts:72`). B3 blocked until a level-3 mechanism is selected/testable (technical plan §8.3).
-- **B3 Technical Plan** — written as a draft / decision-pack candidate in `docs/architecture/specs/audit-sealer-b3-technical-plan.md`; it does **not** authorize implementation and still identifies ADR-023 append→mark_sealed idempotency plus the Phase 2.5 runtime-to-evidence dispatch decision as blockers.
+- **B3 decision pack accepted (architecture decisions only)** — ADR-022/024/025/026 Accepted as design constraints; **ADR-023 decision made: Option A(b)** — deterministic `audit_event_id` derived from `org_id + capture_id`; accepted as **design constraint only; not implemented; not tested; does not authorize B3**. B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`). ADR-020 Superseded-in-part.
+- **Append→mark_sealed partial-failure idempotency** — **mechanism DECIDED (Option A(b))** but **not implemented and not tested**. **Capture idempotency solved does NOT equal implementation of append→mark_sealed idempotency.** B3 blocked until Option A(b) is implemented/tested (technical plan §8.3/§11).
+- **B3 Technical Plan** — written as a draft / decision-pack candidate in `docs/architecture/specs/audit-sealer-b3-technical-plan.md`; it does **not** authorize implementation. It now records ADR-023 Option A(b) as the design decision, while B3 remains blocked by **implementation/tests of Option A(b)**, the **Phase 2.5 runtime-to-evidence dispatch** decision, and **explicit authorization**.
 - **Runtime-to-evidence wiring for direct governed-native routes is NOT implemented / not source-verified as complete.** `governed-openai.ts:69-70` and `governed-anthropic.ts:71-72` emit audit events via `app.log.info` (logger-only); there are **zero `captureAuditEvent` call-sites in `apps/`**. Future **AuditBridge** work must wire these events to `captureAuditEvent` / the outbox (roadmap Phase 2.5).
 - **`/v1/runs` orchestrator writes run-lifecycle audit to the chain via `auditAppend`** (`run-orchestrator.ts`), **not** to the capture outbox — distinct path.
 - **Runtime hard-deny enforcement** not source/test-verified as complete (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only).
@@ -70,6 +70,7 @@ Stop and report (no push/merge) if:
 - an unresolved, **non-outdated** Codex review thread;
 - a docs-only PR contains a production/test/migration/package/lock change;
 - any text would overclaim B3 ("B3 authorized", "ready for B3") or compliance/certification;
+- **any prompt that treats the ADR-023 Option A(b) design decision as B3 implementation authorization** (it is a design constraint only — not implemented, not tested);
 - a provider-native parity claim without tests;
 - a status marked IMPLEMENTED_RUNTIME without source evidence;
 - an **evidence-plane completeness claim while direct governed-native audit is logger-only**;
