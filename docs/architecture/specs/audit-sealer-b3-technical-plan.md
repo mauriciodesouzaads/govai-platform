@@ -13,7 +13,7 @@ Status:
 - ADR-022 role/session model: **Accepted** as a design constraint (does not authorize implementation).
 - ADR-023 append→mark_sealed partial-failure idempotency: **DECIDED as Option A(b)** (deterministic `audit_event_id`); ADR-023 Accepted as design constraint — **not implemented, not tested** (see §8.3). B3 still blocked until implemented/tested.
 - ADR-024/025/026: **Accepted** as design constraints (do not authorize implementation).
-- Phase 2.5 runtime-to-evidence dispatch decision: **does not exist yet → explicitly blocking** (see §4).
+- Phase 2.5 runtime-to-evidence dispatch decision: **exists as ADR-027 (AuditBridge), accepted as a design constraint — but NOT implemented/tested** (see §4). B3 must not claim runtime evidence completeness until outbox ingress is implemented/tested, or an accepted deferral names another authoritative evidence path.
 - B3 does not start until explicitly authorized by the user after this plan is reviewed.
 
 ## 2. What B3 does
@@ -41,7 +41,7 @@ Status:
 - Direct governed-native and passthrough routes are currently **logger-only** for audit emission: `apps/api/src/routes/governed-openai.ts:69-70` and `governed-anthropic.ts:71-72` (`emitAuditEvent` → `app.log.info`), same for `passthrough-*.ts`.
 - There are **zero `captureAuditEvent` call-sites in `apps/`** — no runtime route feeds the B0/B1 capture outbox.
 - `/v1/runs` writes run-lifecycle events to the HMAC chain via `auditAppend` (`run-orchestrator.ts`), which is a **distinct path** from the capture outbox.
-- Phase 2.5 (development-roadmap.md) must decide and implement/document the dispatch contract **before or alongside** B3.
+- Phase 2.5 dispatch **decision is now made: ADR-027 (AuditBridge)** — the dispatch contract (validate/narrow `event: unknown` via `PassthroughInvokedSchema` → `captureAuditEvent` → outbox) is **documented but not implemented/tested**. Implementing/testing it (or an accepted deferral naming another authoritative path) remains required **before or alongside** B3.
 - **B3 seals only what is already captured.** If runtime does not feed the outbox, B3 can create **false confidence** (a sealed-but-empty evidence plane for governed-native traffic).
 - This plan therefore treats the Phase 2.5 dispatch decision as a **blocking precondition** for B3 product-completeness.
 
