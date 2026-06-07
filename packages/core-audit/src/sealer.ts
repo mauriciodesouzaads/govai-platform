@@ -42,6 +42,7 @@ import type { PoolClient } from 'pg';
 import type { Kms } from '@govai/core-identity';
 
 import { auditAppend, type AuditAppendInput, type AuditAppendOutput } from './append.js';
+import { deriveAuditSealerCaptureEventId } from './sealer-event-id.js';
 // Reuse the type aliases the B1 capture adapter already exports so the
 // barrel does not double-export the same names.
 import type { ChainCategory, Posture, CaptureIntegrityAlg } from './capture.js';
@@ -688,17 +689,50 @@ export async function sealNextAuditCapture(
     };
   }
 
-  // ----- append -----
+  // ----- append (ADR-023 Option A(b): deterministic event id) -----
   const auditEventInput = buildAuditCaptureSealingEvent(claimed, {
     workerId: input.workerId,
   });
 
+  // Derive the deterministic audit_event_id from org_id + capture_id so a
+  // retried seal of the same capture re-derives the SAME id; auditAppend's
+  // lookup-before-append guard then prevents a duplicate chain event. This is
+  // the ADR-023 Option A(b) append primitive only — NO runner, NO AuditBridge,
+  // NO route wiring, NO transaction control (the caller still owns the
+  // transaction, role, and tenant context per this library's doctrine).
+  const deterministicAuditEventId = deriveAuditSealerCaptureEventId({
+    orgId: claimed.orgId,
+    captureId: claimed.captureId,
+  });
+
+  // Defensive invariant: buildAuditCaptureSealingEvent must have stamped the
+  // same capture_id into redaction_metadata.audit_sealer so auditAppend's
+  // correspondence check can bind any existing event to this exact capture.
+  const stampedCaptureId = (
+    auditEventInput.redactionMetadata.audit_sealer as Record<string, unknown> | undefined
+  )?.capture_id;
+  if (stampedCaptureId !== claimed.captureId) {
+    failInput(
+      prefix,
+      'internal invariant: redaction_metadata.audit_sealer.capture_id must equal claimed.captureId before append',
+    );
+  }
+
   if (input.withSealerPhaseRole) await input.withSealerPhaseRole('append');
-  const appendOut: AuditAppendOutput = await auditAppend(
-    client,
-    input.kms,
-    auditEventInput,
-  );
+  const appendOut: AuditAppendOutput = await auditAppend(client, input.kms, {
+    ...auditEventInput,
+    eventId: deterministicAuditEventId,
+  });
+
+  // The append path must echo back the deterministic id whether it inserted a
+  // new event or reused an existing one; anything else means the id contract
+  // was violated.
+  if (appendOut.eventId !== deterministicAuditEventId) {
+    failInput(
+      prefix,
+      'internal invariant: auditAppend did not return the deterministic eventId',
+    );
+  }
 
   // ----- mark_sealed -----
   if (input.withSealerPhaseRole) await input.withSealerPhaseRole('mark_sealed');
