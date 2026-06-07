@@ -97,11 +97,53 @@ not decide the AuditBridge capture identity.
    - may be absent for provider or transport reasons.
 
 7. `payloadHash` for `captureAuditEvent`:
-   - must be `sha256(canonical_json(validated PassthroughInvoked v3 envelope))`;
+   - must be `sha256(canonical_json(AuditBridgeCapturePayloadV1))`;
    - must use the same canonicalization semantics as `core-audit`;
+   - must **not** be the hash of the entire validated `PassthroughInvoked` envelope;
    - must **not** be `native_request_hash`;
    - must **not** be `native_response_hash`;
    - must **not** be `stream_final_hash`.
+
+   **`AuditBridgeCapturePayloadV1`** is a stable canonical projection of the
+   *semantic evidence* derived from the validated `PassthroughInvoked` envelope.
+   The full envelope is still validated by `PassthroughInvokedSchema` before any
+   mapping; the immutable capture hash is computed over the projection, not over
+   the whole envelope.
+
+   **The validated runtime envelope and the immutable capture payload are not the same object.**
+
+   The projection **excludes** per-attempt fields, explicitly:
+   - `audit_event_id` — a per-attempt field; `randomUUID()` in handlers today;
+   - `latency_ms` — per-attempt telemetry;
+   - `provider_request_id` — optional enrichment, provider/attempt-dependent;
+   - the raw `govai_request_id` when `identity_scope = client_idempotency_key`.
+
+   Those per-attempt fields remain traceable in `redactionMetadata.audit_bridge`
+   (outside the immutable capture hash) — non-normative examples:
+   `govai_request_id`, `identity_scope`, `idempotency_key_hash`,
+   `provider_request_id`, `latency_ms`, `audit_event_id`.
+
+   The projection **includes** the semantic-evidence fields. This ADR does **not**
+   freeze the exact, final included-field list; non-normative examples are
+   `provider`, `capability`, native endpoint/method, risk, enforcement, the native
+   request/response hashes, status, DLP, tools, beta allowlist, purpose
+   deprecation, and `chain_category`. The closed composition of
+   `AuditBridgeCapturePayloadV1` will be defined and tested in the AuditBridge
+   implementation PR.
+
+   **The capture payload hash is stable across retries that carry the same scoped idempotency key and the same semantic evidence, even though the validated envelope may contain a fresh audit_event_id.**
+
+   Conflict rules:
+   - same scoped `X-GovAI-Idempotency-Key` + same stable projection ⇒ same
+     `captureId` and same `payloadHash`, so capture reuse is valid;
+   - same scoped `X-GovAI-Idempotency-Key` + different `native_request_hash` ⇒
+     evidence idempotency conflict (fail safe);
+   - same scoped `X-GovAI-Idempotency-Key` + different semantic
+     response/enforcement/status/native-hash fields ⇒ conflict, unless a future
+     replay/suppression mode changes these semantics;
+   - per-attempt-only differences (`audit_event_id`, `latency_ms`,
+     `provider_request_id`, `govai_request_id`) must **not** by themselves create a
+     divergent immutable payload.
 
 8. `keyId` / `keyVersion`:
    - resolved from app-owned audit key-management/KMS config;
@@ -137,9 +179,12 @@ not decide the AuditBridge capture identity.
 
 **With `X-GovAI-Idempotency-Key`:**
 - repeated attempts with the same scoped key derive the same `captureId`;
-- repeated identical evidence reuses the same outbox capture;
-- repeated same key with divergent `native_request_hash` is an evidence
-  idempotency conflict (fail safe);
+- repeated attempts with the same scoped key and the same stable capture
+  projection reuse the same outbox capture;
+- per-attempt envelope differences alone (e.g. a fresh `audit_event_id`,
+  `latency_ms`, `provider_request_id`) do **not** cause divergence;
+- semantic evidence differences (e.g. a divergent `native_request_hash`,
+  response/enforcement/status) still conflict (fail safe);
 - this provides strong evidence-capture idempotency for clients that opt in.
 
 **Out of scope for v1:**
@@ -196,6 +241,13 @@ not decide the AuditBridge capture identity.
 
 5. **Do nothing / use random capture ids** — Rejected. It would knowingly produce
    duplicate evidence under retry and undermine confidence in compliance reporting.
+
+6. **Hash the entire PassthroughInvoked envelope as payloadHash** — Rejected.
+   The validated envelope currently contains per-attempt fields such as
+   `audit_event_id = randomUUID()`, `latency_ms`, and the optional
+   `provider_request_id`. Hashing the entire envelope would defeat the idempotency
+   key design by making normal retries diverge even when the semantic evidence is
+   the same.
 
 ## Non-goals / out of scope
 
