@@ -23,7 +23,7 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ## 2. Current known-good main
 
-- main after PR #87: `8be5cfc74f67feb2824d0cb25da0816b7689a163`
+- main after PR #90: `da08952935519aec1c94f11e914c86c102f0002f` (PR #88 state docs; #89 B3 decision pack; #90 ADR-023 Option A(b); ADR-027 Phase 2.5 AuditBridge added in this PR). ADR-023 Option A(b) and ADR-027 are both **accepted as design constraints — not implemented, not tested**; B3 still blocked.
 - Toolchain: Node v24.15.0 (modules 137), pnpm 10.33.2.
 
 ---
@@ -42,7 +42,7 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 - **B3 decision pack accepted (architecture decisions only)** — ADR-022/024/025/026 Accepted as design constraints; **ADR-023 decision made: Option A(b)** — deterministic `audit_event_id` derived from `org_id + capture_id`; accepted as **design constraint only; not implemented; not tested; does not authorize B3**. B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`). ADR-020 Superseded-in-part.
 - **Append→mark_sealed partial-failure idempotency** — **mechanism DECIDED (Option A(b))** but **not implemented and not tested**. **Capture idempotency solved does NOT equal implementation of append→mark_sealed idempotency.** B3 blocked until Option A(b) is implemented/tested (technical plan §8.3/§11).
 - **B3 Technical Plan** — written as a draft / decision-pack candidate in `docs/architecture/specs/audit-sealer-b3-technical-plan.md`; it does **not** authorize implementation. It now records ADR-023 Option A(b) as the design decision, while B3 remains blocked by **implementation/tests of Option A(b)**, the **Phase 2.5 runtime-to-evidence dispatch** decision, and **explicit authorization**.
-- **Runtime-to-evidence wiring for direct governed-native routes is NOT implemented / not source-verified as complete.** `governed-openai.ts:69-70` and `governed-anthropic.ts:71-72` emit audit events via `app.log.info` (logger-only); there are **zero `captureAuditEvent` call-sites in `apps/`**. Future **AuditBridge** work must wire these events to `captureAuditEvent` / the outbox (roadmap Phase 2.5).
+- **Runtime-to-evidence wiring (Phase 2.5 / ADR-027): decision ACCEPTED as a design constraint, but NOT implemented / NOT tested.** Direct governed-native + passthrough routes are still logger-only in source (`governed-openai.ts:69-70`, `governed-anthropic.ts:71-72`; `passthrough-*.ts`); **zero `captureAuditEvent` call-sites in `apps/`**. The route hooks receive `event: unknown`, so the future **AuditBridge** must validate/narrow via `PassthroughInvokedSchema` before `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" intent for direct routes; `/v1/runs` stays distinct/chain-authoritative via `auditAppend`. B3 still blocked until AuditBridge is implemented/tested (or an accepted deferral names another path).
 - **`/v1/runs` orchestrator writes run-lifecycle audit to the chain via `auditAppend`** (`run-orchestrator.ts`), **not** to the capture outbox — distinct path.
 - **Runtime hard-deny enforcement** not source/test-verified as complete (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only).
 - **Evidence completeness / cockpit** not complete (no captured/sealed/failed counts, no provider-without-audit detection).

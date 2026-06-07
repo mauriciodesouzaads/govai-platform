@@ -111,9 +111,9 @@ Separately documented (not the same path):
 - **Regulatory** (`regulatory/service.ts:249`) and **admin provider credentials** (`admin-provider-credentials.ts:164,289`) also write via `auditAppend` directly.
 
 **Status lines:**
-- Runtime-to-evidence dispatch for **direct governed-native / passthrough** routes: `BLOCKED_BY_DECISION` / `PLANNED` (logger-only today; no outbox wiring).
+- Runtime-to-evidence dispatch for **direct governed-native / passthrough** routes: **DECISION ACCEPTED (ADR-027 AuditBridge, Option A) but NOT implemented / NOT tested** — logger-only in source today; route hooks receive `event: unknown`, so the future AuditBridge must validate/narrow via `PassthroughInvokedSchema` before mapping to `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" absorption intent for direct routes; `/v1/runs` remains distinct and chain-authoritative via `auditAppend`.
 - Evidence primitives (B0/B1/B2): `IMPLEMENTED_FOUNDATIONAL_CONTROL`.
-- Continuous sealer runner (B3): `DOCUMENTED_TARGET_ONLY` / `BLOCKED_BY_DECISION`.
+- Continuous sealer runner (B3): `DOCUMENTED_TARGET_ONLY` / `BLOCKED_BY_IMPLEMENTATION_AND_AUTHORIZATION` — ADR-023 Option A(b) and ADR-027 are accepted as design constraints, but Option A(b) implementation/tests, Phase 2.5/AuditBridge implementation/tests, and explicit B3 authorization remain missing.
 - `/v1/runs` run-lifecycle → audit chain (`auditAppend`): `IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED` (but to the chain, not the outbox).
 
 ---
