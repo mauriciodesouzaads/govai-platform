@@ -241,3 +241,69 @@ describe('auditAppend explicit eventId — doctrine guards', () => {
     }
   });
 });
+
+describe('auditAppend explicit eventId — payload presence immutability', () => {
+  const PAYLOAD_REF = '88888888-8888-4888-8888-888888888888';
+  const enc = Buffer.from('ciphertext-bytes');
+  const dek = Buffer.from('wrapped-dek-bytes');
+
+  it('rejects reuse when the caller adds a payload to an existing event that has none', async () => {
+    const input = baseInput({ eventId: EVENT_ID, payloadEncrypted: enc, dekWrapped: dek });
+    const existing = existingRowFor(input, { payload_ref: null }); // existing stored no payload
+    const { client, calls } = makeFakeClient({
+      responses: [tenantOk, empty, { rows: [existing] }],
+    });
+    await expect(auditAppend(client, fakeKms(), input)).rejects.toThrow(
+      /mismatch: payload_presence/,
+    );
+    expect(calls.some((c) => c.sql.includes('audit_append_locked'))).toBe(false);
+  });
+
+  it('rejects reuse when the existing event has a payload but the caller supplies none', async () => {
+    const input = baseInput({ eventId: EVENT_ID }); // no payloadEncrypted / dekWrapped
+    const existing = existingRowFor(input, { payload_ref: PAYLOAD_REF });
+    const { client, calls } = makeFakeClient({
+      responses: [tenantOk, empty, { rows: [existing] }],
+    });
+    await expect(auditAppend(client, fakeKms(), input)).rejects.toThrow(
+      /mismatch: payload_presence/,
+    );
+    expect(calls.some((c) => c.sql.includes('audit_append_locked'))).toBe(false);
+  });
+
+  it('rejects reuse when the caller supplies payloadEncrypted without dekWrapped', async () => {
+    const input = baseInput({ eventId: EVENT_ID, payloadEncrypted: enc }); // dek missing
+    const existing = existingRowFor(input, { payload_ref: PAYLOAD_REF });
+    const { client, calls } = makeFakeClient({
+      responses: [tenantOk, empty, { rows: [existing] }],
+    });
+    await expect(auditAppend(client, fakeKms(), input)).rejects.toThrow(
+      /mismatch: payload_storage_presence/,
+    );
+    expect(calls.some((c) => c.sql.includes('audit_append_locked'))).toBe(false);
+  });
+
+  it('rejects reuse when the caller supplies dekWrapped without payloadEncrypted', async () => {
+    const input = baseInput({ eventId: EVENT_ID, dekWrapped: dek }); // payloadEncrypted missing
+    const existing = existingRowFor(input, { payload_ref: PAYLOAD_REF });
+    const { client, calls } = makeFakeClient({
+      responses: [tenantOk, empty, { rows: [existing] }],
+    });
+    await expect(auditAppend(client, fakeKms(), input)).rejects.toThrow(
+      /mismatch: payload_storage_presence/,
+    );
+    expect(calls.some((c) => c.sql.includes('audit_append_locked'))).toBe(false);
+  });
+
+  it('reuses the existing event when payload presence matches on both sides', async () => {
+    const input = baseInput({ eventId: EVENT_ID, payloadEncrypted: enc, dekWrapped: dek });
+    const existing = existingRowFor(input, { payload_ref: PAYLOAD_REF });
+    const { client, calls } = makeFakeClient({
+      responses: [tenantOk, empty, { rows: [existing] }],
+    });
+    const out = await auditAppend(client, fakeKms(), input);
+    expect(out.eventId).toBe(EVENT_ID);
+    expect(out.payloadId).toBe(PAYLOAD_REF);
+    expect(calls.some((c) => c.sql.includes('audit_append_locked'))).toBe(false);
+  });
+});

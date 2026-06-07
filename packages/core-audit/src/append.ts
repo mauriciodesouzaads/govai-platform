@@ -290,6 +290,28 @@ function assertExistingEventMatches(input: AuditAppendInput, row: ExistingEventR
   const inputPayloadHashHex = Buffer.from(input.payloadHash).toString('hex');
   if (existingPayloadHashHex !== inputPayloadHashHex) mismatch('payload_hash');
 
+  // Payload presence is immutable across explicit-eventId reuse. The new-append
+  // path inserts an encrypted payload (and sets payload_ref) only when
+  // payloadEncrypted is supplied; the reuse path returns the existing row's
+  // payload_ref WITHOUT inserting anything. So a reuse whose payload presence
+  // disagrees with the existing row would silently drop (or fabricate) payload
+  // storage and still report success. Reject it. audit_events only exposes
+  // payload_ref, so presence — not bytes — is the contract here; we do not join
+  // audit_event_payloads in this guard.
+  const inputHasPayload = input.payloadEncrypted !== undefined && input.payloadEncrypted !== null;
+  const inputHasDekWrapped = input.dekWrapped !== undefined && input.dekWrapped !== null;
+
+  // 1) The input must be internally consistent first: encrypted payload bytes
+  //    and their wrapped DEK travel together (mirrors the new-append SQL
+  //    contract). Checked BEFORE the existing-vs-input comparison so a
+  //    malformed request is rejected as a storage error, not misattributed to
+  //    a divergence against the existing row.
+  if (inputHasPayload !== inputHasDekWrapped) mismatch('payload_storage_presence');
+
+  // 2) Then the input's payload presence must match the existing event's.
+  const existingHasPayload = row.payload_ref !== null && row.payload_ref !== undefined;
+  if (existingHasPayload !== inputHasPayload) mismatch('payload_presence');
+
   if (row.key_id !== input.keyId) mismatch('key_id');
   if (Number(row.key_version) !== input.keyVersion) mismatch('key_version');
 
