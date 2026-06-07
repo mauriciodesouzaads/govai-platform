@@ -2,15 +2,14 @@
 
 ## Status
 
-Proposed.
+Accepted.
 
-This ADR is a short pre-implementation decision that must be reviewed before the
-AuditBridge (ADR-027) is implemented — analogous to ADR-023 preceding the B3
-runner: decide the identity key first so the right primitive is not built with
-the wrong key. It is **not** Accepted yet because the `X-GovAI-Idempotency-Key`
-API-contract commitment (header name and opt-in semantics) is pending final
-confirmation by Maurício during this ADR's review. Do not mark Accepted before
-the review/merge of this PR. No code is written by this decision.
+This ADR is a short pre-implementation decision, reviewed before the AuditBridge
+(ADR-027) is implemented — analogous to ADR-023 preceding the B3 runner: decide
+the identity key first so the right primitive is not built with the wrong key.
+Maurício confirmed the `X-GovAI-Idempotency-Key` API-contract decision during ADR
+review. This ADR is accepted as the pre-implementation identity decision for
+AuditBridge / ADR-027. No code is written by this decision.
 
 ## Context
 
@@ -62,7 +61,7 @@ not decide the AuditBridge capture identity.
    - header `X-GovAI-Idempotency-Key`;
    - normalized before hashing;
    - used only as a hash-derived identity, never stored as the raw value;
-   - API contract pending final confirmation by Maurício during ADR review.
+   - API contract confirmed by Maurício during ADR review.
 
 4. CaptureId derivation. Define a future fixed namespace constant
    `AUDIT_BRIDGE_CAPTURE_NAMESPACE_UUID`.
