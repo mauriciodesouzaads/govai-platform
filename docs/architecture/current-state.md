@@ -112,6 +112,7 @@ Separately documented (not the same path):
 
 **Status lines:**
 - Runtime-to-evidence dispatch for **direct governed-native / passthrough** routes: **DECISION ACCEPTED (ADR-027 AuditBridge, Option A) but NOT implemented / NOT tested** — logger-only in source today; route hooks receive `event: unknown`, so the future AuditBridge must validate/narrow via `PassthroughInvokedSchema` before mapping to `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" absorption intent for direct routes; `/v1/runs` remains distinct and chain-authoritative via `auditAppend`.
+- Direct-route request identity (**ADR-028, Proposed**): the future AuditBridge `captureId` MUST NOT be `PassthroughInvoked.audit_event_id` (a `randomUUID()` in handlers today); direct routes will mint a `govai_request_id` at ingress plus an optional `X-GovAI-Idempotency-Key`. ADR-028 is a pre-implementation decision to review/merge **before** AuditBridge implementation; AuditBridge is still not implemented/tested and B3 is still not authorized.
 - Evidence primitives (B0/B1/B2): `IMPLEMENTED_FOUNDATIONAL_CONTROL`.
 - Continuous sealer runner (B3): `DOCUMENTED_TARGET_ONLY` / `BLOCKED_BY_IMPLEMENTATION_AND_AUTHORIZATION` — ADR-023 Option A(b) and ADR-027 are accepted as design constraints, but Option A(b) implementation/tests, Phase 2.5/AuditBridge implementation/tests, and explicit B3 authorization remain missing.
 - `/v1/runs` run-lifecycle → audit chain (`auditAppend`): `IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED` (but to the chain, not the outbox).
