@@ -5,4 +5,5 @@ export * from './lock-key.js';
 export * from './append.js';
 export * from './verify.js';
 export * from './capture.js';
+export * from './sealer-event-id.js';
 export * from './sealer.js';
