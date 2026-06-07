@@ -23,7 +23,7 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ## 2. Current known-good main
 
-- main after PR #90: `da08952935519aec1c94f11e914c86c102f0002f` (PR #88 state docs; #89 B3 decision pack; #90 ADR-023 Option A(b); ADR-027 Phase 2.5 AuditBridge added in this PR). ADR-023 Option A(b) and ADR-027 are both **accepted as design constraints — not implemented, not tested**; B3 still blocked.
+- main after PR #92: `e8aa6328735e5319e03050a594f688e1107854fe` (#88–#91 docs-only; **#92 first code merge — ADR-023 Option A(b) implemented/tested** in `packages/core-audit/`). ADR-027 (Phase 2.5 AuditBridge) is **accepted but not implemented/tested**. **ADR-028 (Proposed, docs-only)** decides direct-route request identity (`govai_request_id` at ingress + optional `X-GovAI-Idempotency-Key`; `captureId` MUST NOT be `audit_event_id`) and is pending review/merge. Next step: review ADR-028, then the AuditBridge implementation prompt. B3 still not authorized.
 - Toolchain: Node v24.15.0 (modules 137), pnpm 10.33.2.
 
 ---

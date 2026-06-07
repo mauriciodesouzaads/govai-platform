@@ -4,7 +4,7 @@
 
 - **Evidence-first source of truth** for the current implementation state of GovAI.
 - **Does not authorize B3.** The AuditSealer runner is not started and is not authorized here.
-- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `8be5cfc74f67feb2824d0cb25da0816b7689a163` (2026-06-04), not from memory.
+- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `e8aa6328735e5319e03050a594f688e1107854fe` (2026-06-07), not from memory.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
@@ -24,12 +24,12 @@
 
 Counts from `find` at the source commit (not from docs):
 
-- architecture docs (`docs/architecture/**.md`): **71**
+- architecture docs (`docs/architecture/**.md`): **65**
 - regulatory docs (`docs/architecture/regulatory/*.md`): **20** (18–25 series present; **no** 26–30 files exist)
-- ADR docs (`docs/architecture/adr/*.md`): **25** (ADR-001..026, no ADR-015)
+- ADR docs (`docs/architecture/adr/*.md`): **22** (ADR-001..014 + ADR-020..027; **missing** ADR-015..019; ADR-028 is `Proposed` on PR #93 and not yet in main)
 - API route files (`apps/api/src/routes/*`): **17** (16 routes + `_not-implemented.ts`)
-- DB migrations (`apps/api/src/db/migrations/*`): **24**
-- test files (`*.test.ts` under tests/apps/packages): **137**
+- DB migrations (`apps/api/src/db/migrations/*`): **24** (0001..0025, **missing** 0006; highest `0025_audit_capture_outbox_foundation.sql`)
+- test files (`*.test.ts`/`*.spec.ts`): **140** on disk; **137** run by the default `pnpm test` (3 under `tests/live/` are live-gated)
 
 ---
 
@@ -91,14 +91,14 @@ Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are
 | B0 — capture outbox foundation | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | migration 0025; `tests/integration/audit-capture-outbox-foundation.test.ts` |
 | B1 — `captureAuditEvent` adapter | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `packages/core-audit/src/capture.ts`; `audit-capture-bridge.test.ts` (titled "B1 integration tests for the captureAuditEvent adapter"), `capture.test.ts` — **tested as a primitive; see §3 wiring** |
 | B2 — sealer **library** | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `packages/core-audit/src/sealer.ts`; `audit-sealer-core.test.ts`, `sealer.test.ts` — one-shot primitives, no loop/process/`SET ROLE` |
-| B3 — sealer **runner** | DOCUMENTED_TARGET_ONLY / BLOCKED_BY_IMPLEMENTATION_AND_AUTHORIZATION | no `apps/audit-sealer`; no claim/seal loop. Decision pack: ADR-022/024/025/026 Accepted as design constraints; ADR-020 superseded-in-part; ADR-023 Accepted as design constraint with Option A(b) deterministic `audit_event_id`, but **NOT implemented and NOT tested**. B3 still blocked by Option A(b) implementation/tests, Phase 2.5 runtime-to-evidence dispatch, and explicit authorization; see `specs/audit-sealer-b3-technical-plan.md` |
-| Append/seal idempotency | capture: SOLVED; mark_sealed same-event: PARTIAL; **append→mark_sealed partial-failure: DECIDED (Option A(b)), NOT IMPLEMENTED, NOT TESTED** | ADR-023 chose a deterministic `audit_event_id` = UUIDv5(org_id+capture_id) as a design constraint (technical plan §8.3); `audit_events.id` is already PK so no migration for the minimal guard. B3 still blocked by future impl/tests, Phase 2.5 dispatch, and explicit authorization |
+| B3 — sealer **runner** | DOCUMENTED_TARGET_ONLY / BLOCKED_BY_IMPLEMENTATION_AND_AUTHORIZATION | no `apps/audit-sealer`; no claim/seal loop. Decision pack: ADR-022/024/025/026 Accepted as design constraints; ADR-020 superseded-in-part; ADR-023 Option A(b) implemented/tested in PR #92 (`packages/core-audit/`, merged at main `e8aa632`). Remaining B3 blockers: ADR-028 review/merge, Phase 2.5/AuditBridge implementation/tests, and explicit B3 runner authorization; see `specs/audit-sealer-b3-technical-plan.md` |
+| Append/seal idempotency | capture: SOLVED; mark_sealed same-event: PARTIAL; **append→mark_sealed partial-failure: Option A(b) IMPLEMENTED/TESTED (PR #92)** | ADR-023 Option A(b) implemented/tested in PR #92 — deterministic `audit_event_id` = UUIDv5(org_id+capture_id) in `packages/core-audit/` (`auditAppend(eventId?)` lookup-after-lock + correspondence/payload-presence guards); `audit_events.id` is PK so no migration was needed. Remaining B3 blockers: ADR-028 review/merge, Phase 2.5/AuditBridge implementation/tests, and explicit B3 runner authorization |
 | Stale-sealing recovery | DOCUMENTED_TARGET_ONLY | ADR-023; not implemented |
 | Evidence completeness (counts, provider-without-audit) | PLANNED | B0 stores `attempts`/`last_error`/timestamps; no reporting/metrics layer |
 
 ### Runtime-to-evidence wiring (first-class gap — source-verified)
 
-This is the loose thread between runtime and the evidence plane. **Source-verified at `8be5cfc`:**
+This is the loose thread between runtime and the evidence plane. **Source-verified at `e8aa632`:**
 
 1. **Direct governed-native routes** (`governed-openai.ts`, `governed-anthropic.ts`) are implemented runtime surfaces (§1). Their `emitAuditEvent` closure writes to **`app.log.info` only** — `governed-openai.ts:69-70` and `governed-anthropic.ts:71-72` (`app.log.info({ audit_event: event }, 'governed-native audit event')`). The same is true for **passthrough** routes (`passthrough-openai.ts:79-82`, `passthrough-anthropic.ts:83-86`). The provider governed handlers call `deps.emitAuditEvent(ev)` for `passthrough.invoked` (e.g. `provider-openai/src/governed/handle-chat-completions.ts:188,245,308`), which resolves to that logger closure.
 2. **Logger emission is not the same as dispatching into `captureAuditEvent` / the B1 capture outbox.** There are **zero `captureAuditEvent` call-sites in `apps/`** (grep). B1 is tested only as a primitive (`audit-capture-bridge.test.ts`).
@@ -112,8 +112,9 @@ Separately documented (not the same path):
 
 **Status lines:**
 - Runtime-to-evidence dispatch for **direct governed-native / passthrough** routes: **DECISION ACCEPTED (ADR-027 AuditBridge, Option A) but NOT implemented / NOT tested** — logger-only in source today; route hooks receive `event: unknown`, so the future AuditBridge must validate/narrow via `PassthroughInvokedSchema` before mapping to `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" absorption intent for direct routes; `/v1/runs` remains distinct and chain-authoritative via `auditAppend`.
+- Direct-route request identity (**ADR-028, Proposed**): the future AuditBridge `captureId` MUST NOT be `PassthroughInvoked.audit_event_id` (a `randomUUID()` in handlers today); direct routes will mint a `govai_request_id` at ingress plus an optional `X-GovAI-Idempotency-Key`. ADR-028 is a pre-implementation decision to review/merge **before** AuditBridge implementation; AuditBridge is still not implemented/tested and B3 is still not authorized.
 - Evidence primitives (B0/B1/B2): `IMPLEMENTED_FOUNDATIONAL_CONTROL`.
-- Continuous sealer runner (B3): `DOCUMENTED_TARGET_ONLY` / `BLOCKED_BY_IMPLEMENTATION_AND_AUTHORIZATION` — ADR-023 Option A(b) and ADR-027 are accepted as design constraints, but Option A(b) implementation/tests, Phase 2.5/AuditBridge implementation/tests, and explicit B3 authorization remain missing.
+- Continuous sealer runner (B3): `DOCUMENTED_TARGET_ONLY` / `BLOCKED_BY_IMPLEMENTATION_AND_AUTHORIZATION` — ADR-023 Option A(b) implemented/tested in PR #92; ADR-027 accepted (AuditBridge implementation/tests pending); ADR-028 Proposed. Remaining B3 blockers: ADR-028 review/merge, Phase 2.5/AuditBridge implementation/tests, and explicit B3 runner authorization.
 - `/v1/runs` run-lifecycle → audit chain (`auditAppend`): `IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED` (but to the chain, not the outbox).
 
 ---
