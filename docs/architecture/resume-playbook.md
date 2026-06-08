@@ -23,7 +23,7 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ## 2. Current known-good main
 
-- main after PR #92: `e8aa6328735e5319e03050a594f688e1107854fe` (#88–#91 docs-only; **#92 first code merge — ADR-023 Option A(b) implemented/tested** in `packages/core-audit/`). ADR-027 (Phase 2.5 AuditBridge) is **accepted but not implemented/tested**. **ADR-028 (Proposed, docs-only)** decides direct-route request identity (`govai_request_id` at ingress + optional `X-GovAI-Idempotency-Key`; `captureId` MUST NOT be `audit_event_id`) and is pending review/merge. Next step: review ADR-028, then the AuditBridge implementation prompt. B3 still not authorized.
+- main after PR #93: `d037e3309977dbc721c5404dac63c52375211db3` (#88–#91 docs-only; **#92 first code merge — ADR-023 Option A(b) implemented/tested** in `packages/core-audit/`; **#93 docs-only — ADR-028 Accepted**). ADR-027 (Phase 2.5 AuditBridge) is **accepted but not implemented/tested**. **ADR-028 (Accepted, docs-only, merged)** decides direct-route request identity (`govai_request_id` at ingress + optional `X-GovAI-Idempotency-Key`; `captureId` MUST NOT be `audit_event_id`; `payloadHash` is a stable `AuditBridgeCapturePayloadV1` projection, not the full envelope). Next step: the AuditBridge implementation PR (ADR-027 + ADR-028). B3 still not authorized.
 - Toolchain: Node v24.15.0 (modules 137), pnpm 10.33.2.
 
 ---
