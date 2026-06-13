@@ -2,6 +2,11 @@
 
 Status: Accepted as design constraint — not implemented, not tested, does not authorize B3.
 
+> Superseded-in-part by ADR-028 (Accepted): the "Mapping contract" and
+> "Payload hash semantics" sections below are historical; identity and
+> payload-hash are governed by ADR-028. Ratified by Maurício on 2026-06-12:
+> "ADR-028 supersedes ADR-027 §Mapping contract and §Payload hash semantics."
+
 ## Context
 
 In `main` at `da08952935519aec1c94f11e914c86c102f0002f`:
@@ -82,6 +87,8 @@ This ADR does **not** migrate `/v1/runs` into the outbox and does **not** claim 
 
 ## Mapping contract
 
+**SUPERSEDED by ADR-028 — retained for history. Do not implement.**
+
 Input to the dispatcher is `unknown`. The first step is validation/narrowing as `PassthroughInvoked v3` through `PassthroughInvokedSchema` (or an equivalent wrapper around the canonical schema). Mapping only occurs after validation succeeds. This is a **future contract, not an implementation**:
 
 ```
@@ -123,6 +130,8 @@ These fields do **not** exist in `PassthroughInvoked v3`. Therefore:
 - the exact API to obtain these values is a future implementation detail and must be defined before implementing.
 
 ## Payload hash semantics
+
+**SUPERSEDED by ADR-028 — retained for history. Do not implement.**
 
 - the capture outbox `payloadHash` is `sha256(canonical_json(validated PassthroughInvoked v3 event envelope))`;
 - it is **not** merely `native_request_hash`;

@@ -83,7 +83,7 @@ govai-platform/
     core-events/                # Run, ProviderInvocation, EvidenceRecord types
     core-tenant/                # SET LOCAL app.org_id helpers
     core-audit/                 # canonical-json, hmac, lock-key, append, verify
-    core-identity/              # KMS (DevKms HKDF), JWT (jose), API keys (argon2id), RBAC
+    core-identity/              # KMS (DevKms HKDF — dev; AWS KMS adapter — production), JWT (jose), API keys (argon2id), RBAC
     signing/                    # Signer interface + DevSigner Ed25519
     core-governance/            # Capability registry com facets + override resolver
     dlp-br/                     # CPF/CNPJ/email/phone + RE2 custom

@@ -65,9 +65,14 @@ GovAI's intended posture is ambient governance:
 - **Visible friction appears only when risk justifies it** — blocking,
   approvals, and prompts are proportional to assessed risk.
 - The **hard-deny floor is always active**, in every mode, and cannot be
-  configured away.
+  configured away *(TARGET — runtime hard-deny enforcement is Phase 5 in the
+  development roadmap and is not yet source/test-verified as complete; see
+  [current-state.md §3](../current-state.md#3-audit-and-evidence-plane))*.
 - **Evidence is always captured** according to policy and privacy constraints,
-  using hashes and encrypted payloads rather than plaintext retention.
+  using hashes and encrypted payloads rather than plaintext retention *(TARGET —
+  for direct provider-native surfaces, runtime-to-evidence capture (the
+  AuditBridge) is not yet implemented and audit emission is logger-only; see
+  [current-state.md §3](../current-state.md#3-audit-and-evidence-plane))*.
 
 ## Native GovAI versus connector GovAI
 

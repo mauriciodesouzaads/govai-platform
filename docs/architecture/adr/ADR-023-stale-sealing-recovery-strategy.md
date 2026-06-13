@@ -1,6 +1,6 @@
 # ADR-023: Stale Sealing Recovery Strategy
 
-Status: Accepted as design constraint — not implemented, not tested, does not authorize B3
+Status: Accepted — Option A(b) implemented and tested in PR #92 (`packages/core-audit/src/sealer-event-id.ts`, `append.ts`; `sealer-deterministic-append.test.ts`). Does not authorize B3.
 
 ## Context
 
@@ -56,7 +56,7 @@ Status: Accepted as design constraint — not implemented, not tested, does not 
 - Choose **Option A(b)**: a deterministic `audit_event_id` derived from `org_id + capture_id`.
 - B3 sealing appends must be idempotent per capture by deriving the **same** audit event id on every retry.
 - The deterministic id is the **primary recovery key** for orphan-append detection.
-- This is a **design constraint only: not implemented, not tested, and does not authorize B3.**
+- This was a design constraint; **Option A(b) is now implemented and tested in PR #92** (`sealer-event-id.ts`, `sealer.ts`, `append.ts`; `sealer-deterministic-append.test.ts`). It still **does not authorize the B3 runner.**
 
 The three idempotency layers remain distinct: capture idempotency is solved by `capture_id` UNIQUE + `chain_state` row-level lock (`captureAuditEvent` / migration 0025; insertion only); `mark_sealed` same-event idempotency is partially solved by same-`audit_event_id` no-op semantics in `markAuditCaptureSealed`; **neither** solves the partial-failure case where `auditAppend` succeeds and `mark_sealed` fails before the outbox ref is recorded.
 
@@ -93,10 +93,10 @@ The three idempotency layers remain distinct: capture idempotency is solved by `
 
 **Result:**
 - The decision is **accepted as a design constraint**.
-- The mechanism is **not implemented**.
-- The mechanism is **not tested**.
-- **B3 implementation is still not authorized.**
-- A future implementation PR must: evolve `auditAppend` (or add a sealer-only append adapter) to accept an explicit deterministic event id; add lookup-before-append logic; add validation of existing-event correspondence; and add tests for append-succeeded / `mark_sealed`-failed recovery without duplicate append (see `specs/audit-sealer-b3-technical-plan.md` §11).
+- The mechanism is **implemented in PR #92** (`packages/core-audit/src/sealer-event-id.ts` deterministic id; `sealer.ts` lookup-before-append in `sealNextAuditCapture`; `append.ts` explicit-`eventId` path).
+- The mechanism is **tested in PR #92** (`sealer-deterministic-append.test.ts`: deterministic-id append plus the §8.3 append-succeeded / `mark_sealed`-failed no-duplicate-retry case).
+- **The B3 runner is still not authorized.**
+- PR #92 satisfied what this section required: it evolved `auditAppend` to accept an explicit deterministic event id; added lookup-before-append logic; added validation of existing-event correspondence; and added tests for append-succeeded / `mark_sealed`-failed recovery without duplicate append (see `specs/audit-sealer-b3-technical-plan.md` §11).
 
 ## Provider-native impact
 
