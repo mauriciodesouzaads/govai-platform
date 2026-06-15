@@ -48,6 +48,8 @@ export type BuildPassthroughInvokedInput = {
   stream_final_hash?: string;
   latency_ms: number;
   status_code: number;
+  /** Invocation start instant (the latency_ms anchor); serialized to ISO in the event. */
+  occurred_at: Date;
   credential_source: string;
   allowlist_version: string;
   provider_request_id?: string;
@@ -85,6 +87,7 @@ export function buildPassthroughInvoked(
     stream_final_hash: input.stream_final_hash,
     latency_ms: input.latency_ms,
     status_code: input.status_code,
+    occurred_at: input.occurred_at.toISOString(),
     credential_source: input.credential_source,
     allowlist_version: input.allowlist_version,
     provider_request_id: input.provider_request_id,

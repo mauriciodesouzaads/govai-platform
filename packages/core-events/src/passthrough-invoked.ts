@@ -116,6 +116,13 @@ export const PassthroughInvokedSchema = z
 
     latency_ms: z.number().int().nonnegative(),
     status_code: z.number().int(),
+    /**
+     * ISO-8601 UTC time at which the provider invocation occurred (its start
+     * instant — the `latency_ms` anchor). Stable across idempotent retries by
+     * origin; the AuditBridge uses it as the capture `occurred_at` so retries of
+     * the same idempotency key present identical immutable content (ADR-028).
+     */
+    occurred_at: z.string().datetime(),
     usage_json: UsageJsonSchema.optional(),
     credential_source: z.string().min(1),
 

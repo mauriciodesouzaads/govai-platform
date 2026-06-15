@@ -30,6 +30,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     native_response_hash: HEX64,
     latency_ms: 100,
     status_code: 200,
+    occurred_at: '2026-06-15T00:00:00.000Z',
     credential_source: 'tenant_provider_credential',
     allowlist_version: 'allowlist@2026-05-07',
     body_forward_mode: 'raw',
@@ -50,6 +51,28 @@ describe('PassthroughInvokedSchema v3 — superRefine rules', () => {
   it('rejects schema_version other than 3', () => {
     const r = PassthroughInvokedSchema.safeParse(baseEvent({ schema_version: 2 }));
     expect(r.success).toBe(false);
+  });
+
+  // EP-002 — occurred_at is a REQUIRED ISO-8601 field on v3.
+  it('occurred_at: a v3 event WITHOUT occurred_at → rejects', () => {
+    const ev = baseEvent();
+    delete (ev as Record<string, unknown>)['occurred_at'];
+    const r = PassthroughInvokedSchema.safeParse(ev);
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('occurred_at');
+  });
+
+  it('occurred_at: a non-ISO-8601 value → rejects', () => {
+    const r = PassthroughInvokedSchema.safeParse(baseEvent({ occurred_at: 'not-a-datetime' }));
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('occurred_at');
+  });
+
+  it('occurred_at: a valid ISO-8601 UTC value → accepts', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(baseEvent({ occurred_at: '2026-06-15T12:34:56.000Z' }))
+        .success,
+    ).toBe(true);
   });
 
   it('rule 1a: is_stream=true without stream_final_hash → rejects', () => {
