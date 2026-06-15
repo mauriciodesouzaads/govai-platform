@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { auditAppend, sha256 } from '@govai/core-audit';
+import { AUDIT_CHAIN_KEY } from './audit-keys.js';
 import type { Kms } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
 import { chainIdFor, type PassthroughInvoked } from '@govai/core-events';
@@ -532,8 +533,7 @@ export async function executeGovernedRun(
           subjectId: runId,
           occurredAt: new Date(),
           payloadHash: sha256(Buffer.from(JSON.stringify(decision.reasons))),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             actor_user_id: identity.user_id,
             policy_decision_id: decision.id,
@@ -624,8 +624,7 @@ export async function executeGovernedRun(
           subjectId: runId,
           occurredAt: new Date(),
           payloadHash: sha256(Buffer.from(json, 'utf8')),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             passthrough_invoked_v4: event as unknown as Record<string, unknown>,
           },
@@ -743,8 +742,7 @@ export async function executeGovernedRun(
           subjectId: runId,
           occurredAt: new Date(),
           payloadHash: sha256(Buffer.from(`network_error:${message}`)),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             actor_user_id: identity.user_id,
             policy_decision_id: decision.id,
@@ -807,8 +805,7 @@ export async function executeGovernedRun(
           subjectId: runId,
           occurredAt: new Date(),
           payloadHash: sha256(Buffer.from(`governed_blocked:${result.reason}`)),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             actor_user_id: identity.user_id,
             policy_decision_id: decision.id,
@@ -894,8 +891,7 @@ export async function executeGovernedRun(
           subjectId: runId,
           occurredAt: new Date(),
           payloadHash: sha256(Buffer.from(`${result.status_code}:provider_error`)),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             actor_user_id: identity.user_id,
             policy_decision_id: decision.id,
@@ -983,8 +979,7 @@ export async function executeGovernedRun(
             }),
           ),
         ),
-        keyId: 'audit-1',
-        keyVersion: 1,
+        ...AUDIT_CHAIN_KEY,
         redactionMetadata: {
           actor_user_id: identity.user_id,
           policy_decision_id: decision.id,
@@ -1240,8 +1235,7 @@ export async function executePassthroughRun(
           subjectId: runId,
           occurredAt: new Date(),
           payloadHash: sha256(Buffer.from(`passthrough_network_error:${message}`)),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             actor_user_id: identity.user_id,
             run_mode: 'passthrough',
@@ -1350,8 +1344,7 @@ export async function executePassthroughRun(
             }),
           ),
         ),
-        keyId: 'audit-1',
-        keyVersion: 1,
+        ...AUDIT_CHAIN_KEY,
         redactionMetadata: {
           actor_user_id: identity.user_id,
           run_mode: 'passthrough',

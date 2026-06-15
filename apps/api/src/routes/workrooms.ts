@@ -39,6 +39,7 @@ import {
 } from '@govai/core-events';
 import { hasAnyRole } from '@govai/core-identity';
 import { authenticateApiKey, AuthError, type AuthIdentity } from '../pipeline/auth.js';
+import { AUDIT_CHAIN_KEY } from '../pipeline/audit-keys.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -307,8 +308,7 @@ export async function workroomsRoute(app: FastifyInstance): Promise<void> {
           subjectId: workroomId,
           occurredAt,
           payloadHash: sha256(Buffer.from(JSON.stringify(lifecyclePayload), 'utf8')),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             workroom_lifecycle: { ...lifecyclePayload, audit_event_id: undefined },
           },
@@ -641,8 +641,7 @@ export async function workroomsRoute(app: FastifyInstance): Promise<void> {
           subjectId: participantId,
           occurredAt,
           payloadHash: sha256(Buffer.from(JSON.stringify(participantPayload), 'utf8')),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             workroom_participant: { ...participantPayload, audit_event_id: undefined },
           },
@@ -817,8 +816,7 @@ export async function workroomsRoute(app: FastifyInstance): Promise<void> {
             subjectId: participantId,
             occurredAt,
             payloadHash: sha256(Buffer.from(JSON.stringify(participantPayload), 'utf8')),
-            keyId: 'audit-1',
-            keyVersion: 1,
+            ...AUDIT_CHAIN_KEY,
             redactionMetadata: {
               workroom_participant: { ...participantPayload, audit_event_id: undefined },
             },
