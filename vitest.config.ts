@@ -32,6 +32,10 @@ export default defineConfig({
         // PR3.1a — tenant provider credential bridge code + resolver.
         'apps/api/src/scripts/**/*.ts',
         'apps/api/src/pipeline/provider-credentials.ts',
+        // Phase 2.5 — AuditBridge PR-A (EP-001) new pipeline modules.
+        'apps/api/src/pipeline/audit-bridge.ts',
+        'apps/api/src/pipeline/audit-keys.ts',
+        'apps/api/src/pipeline/request-identity.ts',
       ],
       exclude: ['**/*.test.ts', '**/*.d.ts', 'packages/dlp-br/scripts/**'],
       thresholds: {
