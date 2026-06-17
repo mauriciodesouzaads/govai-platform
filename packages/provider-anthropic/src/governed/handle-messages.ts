@@ -242,6 +242,11 @@ export async function handleAnthropicGovernedMessages(
 
   // Block path: tool classifier or enforcement said no. Emit v3 audit with
   // body_forward_mode='blocked', NO native_response_hash.
+  // occurred_at: the invocation start instant (the latency_ms anchor), captured
+  // once before any provider call so it is identical across all three audit
+  // paths and stable for this event across dispatch retries (ADR-028 / EP-002).
+  const occurredAt = (deps.now ?? (() => new Date()))();
+
   if (toolBlock !== null || governance.enforcement_decision === 'blocked') {
     const reason = toolBlock
       ? `tool_blocked:${toolBlock.classification}:${toolBlock.reason}`
@@ -249,7 +254,7 @@ export async function handleAnthropicGovernedMessages(
     const native_request_hash_hex = sha256Hex(input.rawBody);
     const ev = PassthroughInvokedSchema.parse({
       event_type: 'passthrough.invoked',
-      schema_version: 3,
+      schema_version: 4,
       tenant_context: input.tenant,
       provider: 'anthropic',
       capability_id: capabilityId,
@@ -266,6 +271,7 @@ export async function handleAnthropicGovernedMessages(
       native_request_hash: native_request_hash_hex,
       latency_ms: 0,
       status_code: 403,
+      occurred_at: occurredAt.toISOString(),
       credential_source: 'tenant_provider_credential',
       allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
@@ -313,7 +319,7 @@ export async function handleAnthropicGovernedMessages(
       const final = await stream.finalize();
       const ev = PassthroughInvokedSchema.parse({
         event_type: 'passthrough.invoked',
-        schema_version: 3,
+        schema_version: 4,
         tenant_context: input.tenant,
         provider: 'anthropic',
         capability_id: capabilityId,
@@ -331,6 +337,7 @@ export async function handleAnthropicGovernedMessages(
         stream_final_hash: final.stream_final_hash,
         latency_ms: final.latency_ms,
         status_code: stream.status,
+        occurred_at: occurredAt.toISOString(),
         credential_source: 'tenant_provider_credential',
         allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
         ...(stream.provider_request_id ? { provider_request_id: stream.provider_request_id } : {}),
@@ -377,7 +384,7 @@ export async function handleAnthropicGovernedMessages(
 
   const ev = PassthroughInvokedSchema.parse({
     event_type: 'passthrough.invoked',
-    schema_version: 3,
+    schema_version: 4,
     tenant_context: input.tenant,
     provider: 'anthropic',
     capability_id: capabilityId,
@@ -395,6 +402,7 @@ export async function handleAnthropicGovernedMessages(
     native_response_hash: fwd.native_response_hash,
     latency_ms: fwd.latency_ms,
     status_code: fwd.status,
+    occurred_at: occurredAt.toISOString(),
     credential_source: 'tenant_provider_credential',
     allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
     ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),

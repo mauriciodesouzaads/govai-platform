@@ -7,7 +7,7 @@ const HEX64 = 'a'.repeat(64);
 function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     event_type: 'passthrough.invoked',
-    schema_version: 3,
+    schema_version: 4,
     tenant_context: {
       org_id: randomUUID(),
       tier: 'enterprise',
@@ -30,6 +30,7 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
     native_response_hash: HEX64,
     latency_ms: 100,
     status_code: 200,
+    occurred_at: '2026-06-15T00:00:00.000Z',
     credential_source: 'tenant_provider_credential',
     allowlist_version: 'allowlist@2026-05-07',
     body_forward_mode: 'raw',
@@ -42,14 +43,47 @@ function baseEvent(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-describe('PassthroughInvokedSchema v3 — superRefine rules', () => {
-  it('schema_version=3 + raw + native_response_hash → accepts (canonical case)', () => {
+describe('PassthroughInvokedSchema v4 — superRefine rules', () => {
+  it('schema_version=4 + raw + native_response_hash → accepts (canonical case)', () => {
     expect(PassthroughInvokedSchema.safeParse(baseEvent()).success).toBe(true);
   });
 
-  it('rejects schema_version other than 3', () => {
+  it('rejects schema_version other than 4', () => {
     const r = PassthroughInvokedSchema.safeParse(baseEvent({ schema_version: 2 }));
     expect(r.success).toBe(false);
+  });
+
+  // EP-002 rev2 — the schema is now v4-only. A v3-shaped payload (schema_version: 3,
+  // no occurred_at) is REJECTED, encoding the Codex-bot finding as a guard: the
+  // version literal honestly reflects the shape (v4 carries occurred_at, v3 does not).
+  it('v4-only: a v3-shaped object (schema_version: 3, no occurred_at) → rejects', () => {
+    const ev = baseEvent({ schema_version: 3 });
+    delete (ev as Record<string, unknown>)['occurred_at'];
+    const r = PassthroughInvokedSchema.safeParse(ev);
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('schema_version');
+  });
+
+  // EP-002 — occurred_at is a REQUIRED ISO-8601 field on v4.
+  it('occurred_at: a v4 event WITHOUT occurred_at → rejects', () => {
+    const ev = baseEvent();
+    delete (ev as Record<string, unknown>)['occurred_at'];
+    const r = PassthroughInvokedSchema.safeParse(ev);
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('occurred_at');
+  });
+
+  it('occurred_at: a non-ISO-8601 value → rejects', () => {
+    const r = PassthroughInvokedSchema.safeParse(baseEvent({ occurred_at: 'not-a-datetime' }));
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.error)).toContain('occurred_at');
+  });
+
+  it('occurred_at: a valid ISO-8601 UTC value → accepts', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(baseEvent({ occurred_at: '2026-06-15T12:34:56.000Z' }))
+        .success,
+    ).toBe(true);
   });
 
   it('rule 1a: is_stream=true without stream_final_hash → rejects', () => {

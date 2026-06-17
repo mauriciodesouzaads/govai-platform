@@ -372,6 +372,7 @@ export async function registerOpenAIPassthrough(
       const requestBody = bufferifyBody(req.body);
 
       if (isStream) {
+        const occurredAt = new Date();
         const streamRes = await forwardStream({
           baseUrl: deps.upstreamBaseUrl,
           concretePath,
@@ -436,6 +437,7 @@ export async function registerOpenAIPassthrough(
             native_request_hash: streamRes.native_request_hash,
             stream_final_hash: final.stream_final_hash,
             latency_ms: final.latency_ms,
+            occurred_at: occurredAt,
             status_code: streamRes.status,
             credential_source: 'tenant_provider_credential',
             allowlist_version: OPENAI_BETA_POLICY_VERSION,
@@ -451,6 +453,7 @@ export async function registerOpenAIPassthrough(
       }
 
       // Non-stream raw forward.
+      const occurredAt = new Date();
       const fwd = await forwardRaw({
         baseUrl: deps.upstreamBaseUrl,
         pathTemplate: matched.pathTemplate,
@@ -502,6 +505,7 @@ export async function registerOpenAIPassthrough(
           native_request_hash: fwd.native_request_hash,
           native_response_hash: fwd.native_response_hash,
           latency_ms: fwd.latency_ms,
+          occurred_at: occurredAt,
           status_code: fwd.status,
           credential_source: 'tenant_provider_credential',
           allowlist_version: OPENAI_BETA_POLICY_VERSION,

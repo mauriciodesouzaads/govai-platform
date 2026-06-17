@@ -619,7 +619,7 @@ export async function executeGovernedRun(
           orgId: identity.org_id,
           chainId,
           eventType: 'passthrough.invoked',
-          eventVersion: '3',
+          eventVersion: '4',
           subjectType: 'run',
           subjectId: runId,
           occurredAt: new Date(),
@@ -627,7 +627,7 @@ export async function executeGovernedRun(
           keyId: 'audit-1',
           keyVersion: 1,
           redactionMetadata: {
-            passthrough_invoked_v3: event as unknown as Record<string, unknown>,
+            passthrough_invoked_v4: event as unknown as Record<string, unknown>,
           },
         });
         v3EventId = r.eventId;
