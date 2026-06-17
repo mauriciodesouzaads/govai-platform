@@ -230,7 +230,7 @@ export async function handleOpenAIGovernedResponses(
       : `enforcement_blocked:${governance.effective_risk_class}`;
     const ev = PassthroughInvokedSchema.parse({
       event_type: 'passthrough.invoked',
-      schema_version: 3,
+      schema_version: 4,
       tenant_context: input.tenant,
       provider: 'openai',
       capability_id: capabilityId,
@@ -286,7 +286,7 @@ export async function handleOpenAIGovernedResponses(
       const final = await stream.finalize();
       const ev = PassthroughInvokedSchema.parse({
         event_type: 'passthrough.invoked',
-        schema_version: 3,
+        schema_version: 4,
         tenant_context: input.tenant,
         provider: 'openai',
         capability_id: capabilityId,
@@ -350,7 +350,7 @@ export async function handleOpenAIGovernedResponses(
 
   const ev = PassthroughInvokedSchema.parse({
     event_type: 'passthrough.invoked',
-    schema_version: 3,
+    schema_version: 4,
     tenant_context: input.tenant,
     provider: 'openai',
     capability_id: capabilityId,

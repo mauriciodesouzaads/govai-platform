@@ -260,3 +260,43 @@ not decide the AuditBridge capture identity.
 - no `apps/audit-sealer`;
 - no `/v1/runs` migration;
 - no provider execution idempotency.
+
+---
+
+## PassthroughInvoked v4 — required `occurred_at` (2026-06-15)
+
+Origin: the `chatgpt-codex-connector[bot]` review of PR #97 + `GOVAI-AUDIT-20260615-003`
+(Codex idempotency / SQL audit). EP-002 added a REQUIRED `occurred_at` to the
+`passthrough.invoked` envelope; keeping `schema_version: 3` would have let two
+different shapes share one version number (pre-change payloads carry `3` but no
+`occurred_at`). Resolution: bump the envelope to **`schema_version: 4`** so the
+version honestly reflects the shape — `4` provably carries `occurred_at`, `3`
+provably does not.
+
+(a) **v4 adds required `occurred_at`, and why.** The AuditBridge P1 idempotency fix
+needs an *origin-stable* event time: `occurred_at` is the provider-invocation start
+instant, set once at the producer (not at dispatch wall-clock). It is one of the
+immutable columns the `audit_capture_insert_locked` reuse branch compares (the
+capture row's `occurred_at`, SQL equality column #8), so a faithful retry of the
+same logical operation presents identical immutable content and **reuses** the
+existing capture instead of conflicting.
+
+(b) **v3 historical payloads remain valid under the v3 contract.** Payloads written
+before this change (`schema_version: 3`, no `occurred_at`) are valid historical
+evidence and are NOT re-validated against the v4 schema. The current
+`PassthroughInvokedSchema` is v4-only by design (`z.literal(4)` + required
+`occurred_at`).
+
+(c) **Re-validation rule (normative).** Any future consumer that re-validates stored
+`passthrough.invoked` evidence MUST select the validator by the payload's
+`schema_version` (v3 vs v4); it must **never** validate a v3 payload against the v4
+schema. The producers, the orchestrator persistence write, and the future
+AuditBridge projection (EP-003) all stamp the version consistently
+(`schema_version` / `event_schema_version` / `eventVersion` = `4`).
+
+(d) **Definition of an idempotent retry (capture-identity contract).** A faithful
+replay of the same logical operation re-presents the same `occurred_at`; the
+operation's event-time is part of its capture identity. A genuinely new operation
+(a new time) is a new event and legitimately receives a new capture. This is why
+`occurred_at` must originate where the event occurs and be stable across retries —
+the property EP-002 establishes and EP-003 (the dispatcher) consumes.

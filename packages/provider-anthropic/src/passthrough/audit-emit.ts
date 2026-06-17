@@ -68,7 +68,7 @@ export function buildPassthroughInvoked(
 ): PassthroughInvoked {
   const ev = {
     event_type: 'passthrough.invoked',
-    schema_version: 3,
+    schema_version: 4,
     tenant_context: input.tenant,
     provider: 'anthropic' as const,
     capability_id: input.capability_id,

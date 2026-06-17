@@ -1,4 +1,8 @@
-// PassthroughInvokedSchema v3 — Peça A v2 §13.1 + Matrix v2.0.1 P2.
+// PassthroughInvokedSchema v4 — Peça A v2 §13.1 + Matrix v2.0.1 P2.
+// v4 adds the REQUIRED occurred_at (EP-002). v3 payloads (without occurred_at)
+// remain valid historical evidence under the v3 contract and MUST NOT be
+// re-validated against v4 — a consumer selects the validator by the payload's
+// schema_version. See the ADR-028 "PassthroughInvoked v4" idempotency ledger.
 // Mandatory rules:
 //   1) is_stream=true → stream_final_hash; non-stream raw → native_response_hash
 //      for ANY status code (2xx, 4xx, 5xx)  [P2 v2.0.1]
@@ -62,7 +66,7 @@ export const BetaPolicyAtResolutionEnum = z.enum([
 export const PassthroughInvokedSchema = z
   .object({
     event_type: z.literal('passthrough.invoked'),
-    schema_version: z.literal(3),
+    schema_version: z.literal(4),
 
     tenant_context: TenantContextSchema,
 

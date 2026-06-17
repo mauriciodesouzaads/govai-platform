@@ -254,7 +254,7 @@ export async function handleAnthropicGovernedMessages(
     const native_request_hash_hex = sha256Hex(input.rawBody);
     const ev = PassthroughInvokedSchema.parse({
       event_type: 'passthrough.invoked',
-      schema_version: 3,
+      schema_version: 4,
       tenant_context: input.tenant,
       provider: 'anthropic',
       capability_id: capabilityId,
@@ -319,7 +319,7 @@ export async function handleAnthropicGovernedMessages(
       const final = await stream.finalize();
       const ev = PassthroughInvokedSchema.parse({
         event_type: 'passthrough.invoked',
-        schema_version: 3,
+        schema_version: 4,
         tenant_context: input.tenant,
         provider: 'anthropic',
         capability_id: capabilityId,
@@ -384,7 +384,7 @@ export async function handleAnthropicGovernedMessages(
 
   const ev = PassthroughInvokedSchema.parse({
     event_type: 'passthrough.invoked',
-    schema_version: 3,
+    schema_version: 4,
     tenant_context: input.tenant,
     provider: 'anthropic',
     capability_id: capabilityId,
