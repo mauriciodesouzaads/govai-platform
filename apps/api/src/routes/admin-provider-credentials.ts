@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { auditAppend, sha256 } from '@govai/core-audit';
 import { setLocalAppOrgId } from '@govai/core-tenant';
+import { AUDIT_CHAIN_KEY } from '../pipeline/audit-keys.js';
 import {
   chainIdFor,
   ProviderCredentialSetSchema,
@@ -170,8 +171,7 @@ export async function adminProviderCredentialsRoute(app: FastifyInstance): Promi
           subjectId: result.id,
           occurredAt: new Date(),
           payloadHash: sha256(Buffer.from(auditPayloadJson, 'utf8')),
-          keyId: 'audit-1',
-          keyVersion: 1,
+          ...AUDIT_CHAIN_KEY,
           redactionMetadata: {
             provider_credential_set: { ...auditPayload, audit_event_id: undefined },
             reason,
@@ -295,8 +295,7 @@ export async function adminProviderCredentialsRoute(app: FastifyInstance): Promi
             subjectId: result.credential_id,
             occurredAt: new Date(),
             payloadHash: sha256(Buffer.from(auditPayloadJson, 'utf8')),
-            keyId: 'audit-1',
-            keyVersion: 1,
+            ...AUDIT_CHAIN_KEY,
             redactionMetadata: {
               provider_credential_revoked: { ...auditPayload, audit_event_id: undefined },
             },

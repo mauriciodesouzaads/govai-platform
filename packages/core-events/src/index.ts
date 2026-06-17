@@ -116,3 +116,8 @@ export * from './workroom-evidence.js';
 // PR3.x — Workroom Phase 4 approvals / HITL (issue #57).
 export * from './workroom-approval-request.js';
 export * from './workroom-approval-decision.js';
+
+// Phase 2.5 — AuditBridge PR-A (EP-001): RFC 4122 UUIDv5 + the closed
+// AuditBridgeCapturePayloadV1 projection (ADR-028 §4/§7).
+export * from './uuidv5.js';
+export * from './audit-bridge-capture-payload.js';
