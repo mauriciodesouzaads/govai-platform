@@ -62,7 +62,7 @@ export const AuditBridgeCapturePayloadV1Schema = z.object({
   schema: z.literal('audit_bridge_capture_payload'),
   schema_version: z.literal(1),
   event_type: z.literal('passthrough.invoked'),
-  event_schema_version: z.literal(3),
+  event_schema_version: z.literal(4),
   chain_category: z.literal('run'),
   provider: z.enum(['anthropic', 'openai']),
   capability_id: z.string(),

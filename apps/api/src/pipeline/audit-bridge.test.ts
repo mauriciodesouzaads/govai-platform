@@ -57,7 +57,7 @@ function makeStack(opts?: { insertError?: unknown }) {
 function baseEnvelope(): PassthroughInvoked {
   return {
     event_type: 'passthrough.invoked',
-    schema_version: 3,
+    schema_version: 4,
     tenant_context: {
       org_id: '11111111-1111-4111-8111-111111111111',
       tier: 'business',
@@ -79,6 +79,7 @@ function baseEnvelope(): PassthroughInvoked {
     native_response_hash: 'b'.repeat(64),
     latency_ms: 42,
     status_code: 200,
+    occurred_at: '2026-06-15T00:00:00.000Z',
     credential_source: 'tenant_db',
     allowlist_version: 'v1',
     provider_request_id: 'req_baseline',
@@ -201,20 +202,22 @@ describe('makeAuditBridge dispatch', () => {
 
   it('maps the B1 envelope: captureId/subjectId/occurredAt/posture', async () => {
     const env = baseEnvelope();
+    const captureId = auditBridgeCaptureId(REQ_IDENTITY, {
+      orgId: env.tenant_context.org_id,
+      provider: env.provider,
+      capabilityId: env.capability_id,
+      nativeMethod: env.native_method,
+      nativeEndpoint: env.native_endpoint,
+    });
     const s = await run(env, REQ_IDENTITY);
     const ins = s.insert()!;
-    expect(ins.values[P_CAPTURE_ID]).toBe(
-      auditBridgeCaptureId(REQ_IDENTITY, {
-        orgId: env.tenant_context.org_id,
-        provider: env.provider,
-        capabilityId: env.capability_id,
-        nativeMethod: env.native_method,
-        nativeEndpoint: env.native_endpoint,
-      }),
-    );
-    expect(ins.values[P_SUBJECT_ID]).toBe(env.audit_event_id); // linkage only
-    expect(typeof ins.values[P_OCCURRED_AT]).toBe('string');
-    expect(new Date(ins.values[P_OCCURRED_AT] as string).toString()).not.toBe('Invalid Date');
+    expect(ins.values[P_CAPTURE_ID]).toBe(captureId);
+    // subjectId is now the deterministic captureId (the P1 fix, column #7), NOT
+    // the per-attempt audit_event_id.
+    expect(ins.values[P_SUBJECT_ID]).toBe(captureId);
+    expect(ins.values[P_SUBJECT_ID]).not.toBe(env.audit_event_id);
+    // occurredAt is read from the v4 envelope (column #8) and round-trips ISO-stably.
+    expect(ins.values[P_OCCURRED_AT]).toBe(env.occurred_at);
     expect(ins.values[P_POSTURE]).toBe('best_effort');
   });
 
@@ -308,8 +311,135 @@ describe('makeAuditBridge dispatch', () => {
     for (const banned of ALL_BANNED_REDACTION_KEYS) {
       expect(redactionJson).not.toContain(`"${banned}"`);
     }
-    // and the redaction metadata still carries the traceability fields.
-    expect(redactionJson).toContain('govai_request_id');
+    // the capture row carries identity_scope; the absence of every per-attempt
+    // FIELD is asserted (by parsed-key scan, not substring) in U10 — a substring
+    // check is unsafe here because identity_scope's VALUE is 'govai_request_id'.
     expect(redactionJson).toContain('identity_scope');
+  });
+
+  // ---- U9: the two-direction idempotent-immutability guard (THE regression) ----
+  const KEY_HASH = 'c'.repeat(64);
+  const clientIdentity = (govaiRequestId: string): AuditBridgeRequestIdentity => ({
+    govaiRequestId,
+    identityScope: 'client_idempotency_key',
+    idempotencyKeyHash: KEY_HASH,
+  });
+  // Deep-collect object KEYS (not values): `identity_scope` legitimately holds the
+  // VALUE 'govai_request_id' on the request path, so a substring scan would
+  // false-positive. U10 asserts no per-attempt FIELD is present.
+  const collectKeys = (v: unknown, acc: Set<string>): Set<string> => {
+    if (Array.isArray(v)) {
+      v.forEach((x) => collectKeys(x, acc));
+    } else if (v !== null && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v)) {
+        acc.add(k);
+        collectKeys(val, acc);
+      }
+    }
+    return acc;
+  };
+
+  it('U9a: faithful replay (same key + same occurred_at, varied per-attempt) -> all 18 equality columns byte-identical', async () => {
+    // Two attempts of the SAME logical operation: same idempotency key AND same
+    // occurred_at, differing ONLY in per-attempt fields (a fresh govai_request_id
+    // each, plus different audit_event_id / latency_ms / provider_request_id).
+    const a1 = await run(
+      {
+        ...baseEnvelope(),
+        audit_event_id: '11111111-1111-4111-8111-aaaaaaaaaaaa',
+        latency_ms: 11,
+        provider_request_id: 'req_a1',
+      },
+      clientIdentity('a1111111-1111-4111-8111-111111111111'),
+    );
+    const a2 = await run(
+      {
+        ...baseEnvelope(),
+        audit_event_id: '22222222-2222-4222-8222-bbbbbbbbbbbb',
+        latency_ms: 22,
+        provider_request_id: 'req_a2',
+      },
+      clientIdentity('a2222222-2222-4222-8222-222222222222'),
+    );
+    const v1 = a1.insert()!.values;
+    const v2 = a2.insert()!.values;
+    // The full param array (all 18 SQL-equality columns + the captureId; none is
+    // a wall-clock value) is byte-identical across the replay -> SQL REUSES.
+    expect(v1).toEqual(v2);
+    // ...and explicitly the columns the P1 used to break:
+    expect(v1[P_SUBJECT_ID]).toBe(v2[P_SUBJECT_ID]); // column #7 (now captureId)
+    expect(v1[P_OCCURRED_AT]).toBe(v2[P_OCCURRED_AT]); // column #8
+    expect((v1[P_PAYLOAD_HASH] as Buffer).toString('hex')).toBe(
+      (v2[P_PAYLOAD_HASH] as Buffer).toString('hex'),
+    ); // column #9
+    expect(JSON.stringify(v1[P_REDACTION])).toBe(JSON.stringify(v2[P_REDACTION])); // column #14
+  });
+
+  it('U9b: a genuinely different occurred_at (same key) diverges on column #8 only -> NOT reuse-eligible', async () => {
+    // Same key, same everything EXCEPT occurred_at. By ADR-028 (d) a different
+    // event-time is a DIFFERENT event. This asserts the INPUT divergence; the SQL
+    // outcome (a 23505 conflict, since the captureId is unchanged) is PR-B's
+    // integration test, deliberately NOT asserted here.
+    const b1 = await run(
+      { ...baseEnvelope(), occurred_at: '2026-06-15T00:00:00.000Z' },
+      clientIdentity('b1111111-1111-4111-8111-111111111111'),
+    );
+    const b2 = await run(
+      { ...baseEnvelope(), occurred_at: '2026-06-15T09:09:09.999Z' },
+      clientIdentity('b2222222-2222-4222-8222-222222222222'),
+    );
+    const v1 = b1.insert()!.values;
+    const v2 = b2.insert()!.values;
+    expect(v1).not.toEqual(v2); // not byte-identical -> not reuse-eligible
+    // they diverge ONLY on occurred_at (#8); captureId/subjectId and the payload
+    // hash are identical (occurred_at is in neither the captureId nor the payload).
+    expect(v1[P_OCCURRED_AT]).not.toBe(v2[P_OCCURRED_AT]);
+    expect(v1[P_CAPTURE_ID]).toBe(v2[P_CAPTURE_ID]);
+    expect(v1[P_SUBJECT_ID]).toBe(v2[P_SUBJECT_ID]);
+    expect((v1[P_PAYLOAD_HASH] as Buffer).toString('hex')).toBe(
+      (v2[P_PAYLOAD_HASH] as Buffer).toString('hex'),
+    );
+  });
+
+  it('U10: no per-attempt data on the capture row (both identity scopes)', async () => {
+    const PER_ATTEMPT = ['govai_request_id', 'audit_event_id', 'latency_ms', 'provider_request_id'];
+    const reqJson = (await run(baseEnvelope(), REQ_IDENTITY)).insert()!.values[P_REDACTION] as string;
+    const keyJson = (await run(baseEnvelope(), clientIdentity('a1111111-1111-4111-8111-111111111111')))
+      .insert()!
+      .values[P_REDACTION] as string;
+    for (const json of [reqJson, keyJson]) {
+      const keys = collectKeys(JSON.parse(json), new Set<string>());
+      for (const k of PER_ATTEMPT) expect(keys.has(k)).toBe(false);
+      expect(keys.has('identity_scope')).toBe(true);
+    }
+    // the client scope carries the (stable) idempotency_key_hash; request scope does not.
+    expect(collectKeys(JSON.parse(keyJson), new Set<string>()).has('idempotency_key_hash')).toBe(true);
+    expect(collectKeys(JSON.parse(reqJson), new Set<string>()).has('idempotency_key_hash')).toBe(false);
+  });
+
+  it('U11: occurred_at round-trips ISO-stably (Date -> adapter -> ISO, no TZ/precision drift)', async () => {
+    const ISO = '2026-06-15T12:34:56.789Z';
+    const s = await run({ ...baseEnvelope(), occurred_at: ISO }, REQ_IDENTITY);
+    expect(s.insert()!.values[P_OCCURRED_AT]).toBe(ISO);
+  });
+
+  it('per-attempt traceability is emitted as a structured audit_bridge.capture log', async () => {
+    const env = {
+      ...baseEnvelope(),
+      audit_event_id: '33333333-3333-4333-8333-cccccccccccc',
+      latency_ms: 77,
+      provider_request_id: 'req_log',
+    };
+    const s = await run(env, REQ_IDENTITY);
+    expect(s.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        govai_request_id: REQ_IDENTITY.govaiRequestId,
+        audit_event_id: env.audit_event_id,
+        latency_ms: env.latency_ms,
+        provider_request_id: env.provider_request_id,
+        identity_scope: 'govai_request_id',
+      }),
+      'audit_bridge.capture',
+    );
   });
 });

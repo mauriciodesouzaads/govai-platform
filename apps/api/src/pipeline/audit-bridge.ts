@@ -1,5 +1,5 @@
 // AuditBridge dispatcher (SPEC-01 §6; ADR-027 topology + ADR-028 identity &
-// payload-hash). Maps a validated `PassthroughInvoked v3` runtime event into the
+// payload-hash). Maps a validated `PassthroughInvoked v4` runtime event into the
 // B0/B1 capture outbox via `captureAuditEvent`. PR-A exports the factory and the
 // pure captureId helper; it is NOT wired into any route closure (that is PR-B).
 
@@ -144,18 +144,26 @@ export function makeAuditBridge(
     });
     const { keyId, keyVersion } = AUDIT_CHAIN_KEY;
 
-    // 6. B1 envelope — exactly the capture.ts contract. Per-attempt fields live
-    // in redactionMetadata.audit_bridge (outside the hash), never in the payload.
+    // 6. B1 envelope — exactly the capture.ts contract. The capture row carries
+    // ONLY retry-stable content, so every one of the 18 SQL-equality columns is
+    // byte-identical across a faithful idempotent replay and
+    // `audit_capture_insert_locked` REUSES the existing capture instead of
+    // raising 23505 (ADR-028; EP-003 P1 fix). Per-attempt data is emitted as a
+    // structured log AFTER the commit, never on the row.
     const input: CaptureAuditEventInput = {
       captureId,
       orgId,
       chainId: chainIdFor(orgId, 'run'),
       chainCategory: 'run',
       eventType: 'passthrough.invoked',
-      eventVersion: '3',
+      eventVersion: '4',
       subjectType: 'runtime_event',
-      subjectId: e.audit_event_id, // linkage only, NOT identity (ADR-028 §1)
-      occurredAt: new Date(),
+      // linkage to the deterministic capture identity; stable across idempotent
+      // replays (was per-attempt audit_event_id — the P1, column #7).
+      subjectId: captureId,
+      // origin-stable event-time read from the v4 envelope; identical across a
+      // faithful replay by the producer's injectable clock (column #8, ADR-028).
+      occurredAt: new Date(e.occurred_at),
       payloadHash,
       payloadEncrypted: null,
       dekWrapped: null,
@@ -163,12 +171,10 @@ export function makeAuditBridge(
       keyVersion,
       redactionMetadata: {
         audit_bridge: {
-          govai_request_id: identity.govaiRequestId,
           identity_scope: identity.identityScope,
-          idempotency_key_hash: identity.idempotencyKeyHash,
-          provider_request_id: e.provider_request_id,
-          latency_ms: e.latency_ms,
-          audit_event_id: e.audit_event_id,
+          ...(identity.idempotencyKeyHash
+            ? { idempotency_key_hash: identity.idempotencyKeyHash }
+            : {}),
         },
       },
       captureIntegrityTag: null,
@@ -185,6 +191,20 @@ export function makeAuditBridge(
       await setLocalAppOrgId(client, orgId);
       await captureAuditEvent(client, input);
       await client.query('COMMIT');
+      // 7b. Per-attempt traceability that intentionally left the capture row (to
+      // keep it replay-stable) is preserved here as ONE structured log line. A
+      // durable side table is a future EP, not this revN.
+      deps.log.info(
+        {
+          capture_id: captureId,
+          govai_request_id: identity.govaiRequestId,
+          audit_event_id: e.audit_event_id,
+          latency_ms: e.latency_ms,
+          provider_request_id: e.provider_request_id,
+          identity_scope: identity.identityScope,
+        },
+        'audit_bridge.capture',
+      );
     } catch (err) {
       if (client) {
         await client.query('ROLLBACK').catch(() => undefined);

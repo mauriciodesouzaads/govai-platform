@@ -20,7 +20,7 @@ const BANNED_KEYS = [
 function baseEnvelope(): PassthroughInvoked {
   return {
     event_type: 'passthrough.invoked',
-    schema_version: 3,
+    schema_version: 4,
     tenant_context: {
       org_id: '11111111-1111-4111-8111-111111111111',
       tier: 'business',
@@ -42,6 +42,7 @@ function baseEnvelope(): PassthroughInvoked {
     native_response_hash: 'b'.repeat(64),
     latency_ms: 42,
     status_code: 200,
+    occurred_at: '2026-06-15T00:00:00.000Z',
     credential_source: 'tenant_db',
     allowlist_version: 'v1',
     provider_request_id: 'req_baseline',
@@ -149,7 +150,7 @@ describe('projectCapturePayloadV1', () => {
     expect(p.schema).toBe('audit_bridge_capture_payload');
     expect(p.schema_version).toBe(1);
     expect(p.event_type).toBe('passthrough.invoked');
-    expect(p.event_schema_version).toBe(3);
+    expect(p.event_schema_version).toBe(4);
     expect(p.chain_category).toBe('run');
   });
 
