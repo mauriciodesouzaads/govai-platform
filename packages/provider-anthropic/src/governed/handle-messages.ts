@@ -138,6 +138,8 @@ const STRIP_INBOUND_AUTH = new Set([
   'authorization',
   'x-api-key',
   'x-govai-api-key',
+  // EP-005: the consumed AuditBridge idempotency key is never forwarded upstream.
+  'x-govai-idempotency-key',
 ]);
 
 function buildOutboundHeaders(

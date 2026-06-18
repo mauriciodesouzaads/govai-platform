@@ -41,6 +41,10 @@ export type AnthropicPassthroughDeps = {
   policyTable?: ReadonlyArray<BetaTokenPolicyEntry>;
   /** Audit sink — caller decides where events go (DB chain, queue, in-memory list...). */
   emitAuditEvent: (event: unknown) => Promise<void> | void;
+  /** Injectable producer clock for `occurred_at` (tests inject a stable clock so
+   *  an idempotent replay holds occurred_at equal; production omits it → real
+   *  `new Date()`). Matches the governed handlers' pattern. */
+  now?: () => Date;
 };
 
 const HOP_BY_HOP = new Set([
@@ -60,6 +64,8 @@ const STRIP_INBOUND_AUTH = new Set([
   'authorization',
   'x-api-key',
   'x-govai-api-key',
+  // EP-005: the consumed AuditBridge idempotency key is never forwarded upstream.
+  'x-govai-idempotency-key',
 ]);
 
 function buildOutboundHeaders(
@@ -304,7 +310,7 @@ export async function registerAnthropicPassthrough(
 
       if (isStream) {
         // Stream variant.
-        const occurredAt = new Date();
+        const occurredAt = (deps.now ?? (() => new Date()))();
         const streamRes = await forwardStream({
           baseUrl: deps.upstreamBaseUrl,
           concretePath,
@@ -388,7 +394,7 @@ export async function registerAnthropicPassthrough(
       }
 
       // Non-stream raw forward.
-      const occurredAt = new Date();
+      const occurredAt = (deps.now ?? (() => new Date()))();
       const fwd = await forwardRaw({
         baseUrl: deps.upstreamBaseUrl,
         pathTemplate: matched.pathTemplate,

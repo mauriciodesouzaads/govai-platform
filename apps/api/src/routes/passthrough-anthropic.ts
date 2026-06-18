@@ -11,6 +11,8 @@ import {
 import { authenticateApiKey } from '../pipeline/auth.js';
 import { resolveAnthropicProviderKey } from '../pipeline/provider-credentials.js';
 import type { OperationalMode } from '../pipeline/auth.js';
+import { makeAuditBridge } from '../pipeline/audit-bridge.js';
+import { requestIdentityAls } from '../pipeline/request-identity.js';
 
 export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -80,10 +82,13 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
     return [];
   };
 
+  const auditBridge = makeAuditBridge({ pool: app.govai.pool, log: app.log });
   const emitAuditEvent = async (event: unknown): Promise<void> => {
-    // PR2 baseline: log to server logger. Wiring into audit chain (`run` chain)
-    // happens once Governed Run pipeline absorbs passthrough audit (PR3+).
     app.log.info({ audit_event: event }, 'passthrough audit event');
+    // PR-B: dispatch into the B0/B1 capture outbox (ADR-027/028). best_effort —
+    // never throws on the request path; identity from the ALS store the ingress
+    // hook populated for this request.
+    await auditBridge(event, requestIdentityAls.getStore());
   };
 
   const deps: AnthropicPassthroughDeps = {
@@ -92,6 +97,9 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
     resolveProviderKey,
     activeOverridesLoader,
     emitAuditEvent,
+    // Injectable producer clock (tests inject a stable `now` so an idempotent
+    // replay holds occurred_at equal; production omits it → real clock).
+    now: app.govai.now,
   };
 
   await registerAnthropicPassthrough(app, deps);

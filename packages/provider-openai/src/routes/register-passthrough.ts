@@ -70,6 +70,8 @@ const STRIP_INBOUND_AUTH = new Set([
   'authorization',
   'x-api-key',
   'x-govai-api-key',
+  // EP-005: the consumed AuditBridge idempotency key is never forwarded upstream.
+  'x-govai-idempotency-key',
 ]);
 
 function buildOutboundHeaders(
@@ -372,7 +374,7 @@ export async function registerOpenAIPassthrough(
       const requestBody = bufferifyBody(req.body);
 
       if (isStream) {
-        const occurredAt = new Date();
+        const occurredAt = now();
         const streamRes = await forwardStream({
           baseUrl: deps.upstreamBaseUrl,
           concretePath,
@@ -453,7 +455,7 @@ export async function registerOpenAIPassthrough(
       }
 
       // Non-stream raw forward.
-      const occurredAt = new Date();
+      const occurredAt = now();
       const fwd = await forwardRaw({
         baseUrl: deps.upstreamBaseUrl,
         pathTemplate: matched.pathTemplate,
