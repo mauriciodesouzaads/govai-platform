@@ -16,7 +16,7 @@
 // proofs) live in audit-bridge-idempotency.test.ts — they need an injected clock.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
@@ -319,6 +319,58 @@ describe('EP-004 — I6 best_effort (capture failure does not fail the request)'
       expect(await outboxRows(org.org_id)).toHaveLength(0); // nothing captured
     } finally {
       await stack.db.adminPool.query(`GRANT EXECUTE ON FUNCTION ${sig} TO govai_app`);
+    }
+  });
+});
+
+describe('EP-005 — the consumed X-GovAI-Idempotency-Key is NOT forwarded upstream', () => {
+  it('passthrough-openai: key consumed (not forwarded), identity still client scope', async () => {
+    const org = await seedOrg(stack);
+    stack.provider.clearRecordedRequestHeaders();
+    const KEY = `ep005-${randomUUID()}`;
+    const res = await app.inject({
+      method: OPENAI_EMB.method,
+      url: OPENAI_EMB.path,
+      headers: reqHeaders(org.api_key, { 'x-govai-idempotency-key': KEY }),
+      payload: OPENAI_EMB.body,
+    });
+    expect(res.statusCode).toBe(200);
+    const seen = stack.provider.recordedRequestHeaders;
+    expect(seen.length).toBeGreaterThanOrEqual(1);
+    // the upstream mock NEVER received the consumed idempotency key...
+    for (const h of seen) expect(h['x-govai-idempotency-key']).toBeUndefined();
+    // ...and its raw value leaks into no forwarded header at all.
+    expect(seen.some((h) => JSON.stringify(h).includes(KEY))).toBe(false);
+    // positive control: the provider auth header WAS forwarded (openai → Bearer).
+    expect(
+      seen.some(
+        (h) => typeof h['authorization'] === 'string' && (h['authorization'] as string).startsWith('Bearer '),
+      ),
+    ).toBe(true);
+    // and the key STILL worked end-to-end: the capture row is client_idempotency_key scope.
+    const rows = await outboxRows(org.org_id);
+    expect(rows).toHaveLength(1);
+    const ab = (rows[0]!.redaction_metadata as { audit_bridge?: { identity_scope?: string } }).audit_bridge;
+    expect(ab?.identity_scope).toBe('client_idempotency_key');
+  });
+
+  it('governed-anthropic: key is not forwarded on the governed path', async () => {
+    const org = await seedOrg(stack);
+    stack.provider.clearRecordedRequestHeaders();
+    const KEY = `ep005-${randomUUID()}`;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/governed/anthropic/v1/messages',
+      headers: reqHeaders(org.api_key, { 'x-govai-idempotency-key': KEY }),
+      payload: { model: 'claude-fixture-1', max_tokens: 100, messages: [{ role: 'user', content: 'hello' }] },
+    });
+    expect([200, 403]).toContain(res.statusCode);
+    const seen = stack.provider.recordedRequestHeaders;
+    for (const h of seen) expect(h['x-govai-idempotency-key']).toBeUndefined();
+    expect(seen.some((h) => JSON.stringify(h).includes(KEY))).toBe(false);
+    if (res.statusCode === 200) {
+      // when it forwarded, the provider auth header (anthropic → x-api-key) was present.
+      expect(seen.some((h) => typeof h['x-api-key'] === 'string')).toBe(true);
     }
   });
 });

@@ -20,6 +20,10 @@ export type ProviderProtocolServer = {
   port: number;
   baseUrl: string;
   close: () => Promise<void>;
+  /** Inbound headers of every request the upstream mock received, in order.
+   *  Used by EP-005 to assert the consumed idempotency key is NOT forwarded. */
+  recordedRequestHeaders: Array<Record<string, string | string[] | undefined>>;
+  clearRecordedRequestHeaders: () => void;
 };
 
 type ErrorPayload = {
@@ -79,6 +83,13 @@ function sseChunk(data: unknown): string {
 
 export async function startProviderProtocolServer(opts: { port?: number } = {}): Promise<ProviderProtocolServer> {
   const app = Fastify({ logger: false });
+
+  // EP-005: record the inbound headers of every forwarded request so tests can
+  // assert which headers the GovAI proxy did (not) forward upstream.
+  const recordedRequestHeaders: Array<Record<string, string | string[] | undefined>> = [];
+  app.addHook('onRequest', async (req) => {
+    recordedRequestHeaders.push({ ...req.headers });
+  });
 
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
     try {
@@ -404,6 +415,10 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
     baseUrl,
     close: async () => {
       await app.close();
+    },
+    recordedRequestHeaders,
+    clearRecordedRequestHeaders: () => {
+      recordedRequestHeaders.length = 0;
     },
   };
 }

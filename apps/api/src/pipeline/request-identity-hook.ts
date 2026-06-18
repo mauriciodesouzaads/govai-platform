@@ -47,6 +47,13 @@ export function registerRequestIdentityHook(app: FastifyInstance): void {
       throw err;
     }
 
+    // EP-005: the idempotency key has now been consumed into the AuditBridge
+    // identity — remove it from the request so it is NEVER forwarded to the
+    // upstream provider by an outbound-header builder. Central safety net for the
+    // four direct routes; each builder's STRIP_INBOUND_AUTH is the defense-in-depth
+    // that also covers the /v1/runs entry into the shared governed builder.
+    delete req.headers['x-govai-idempotency-key'];
+
     // AR-2: AsyncLocalStorage is the PRIMARY propagation channel. `enterWith` sets
     // the store for the remainder of THIS request's async context, so the wired
     // dispatcher (invoked inside the handler's `emitAuditEvent`) reads the same
