@@ -22,17 +22,23 @@ import { workroomTranscriptRoute } from './routes/workroom-transcript.js';
 import { workroomRunsRoute } from './routes/workroom-runs.js';
 import { workroomApprovalsRoute } from './routes/workroom-approvals.js';
 import { regulatoryRoute } from './routes/regulatory.js';
+import { registerRequestIdentityHook } from './pipeline/request-identity-hook.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
   kms: Kms;
   pool: Pool;
   policyCommitSha: string;
+  /** Injectable clock for the direct-route producers (tests only; production
+   *  omits it → real `new Date()`). Threaded to the passthrough deps so an
+   *  integration replay can hold `occurred_at` stable across attempts. */
+  now?: () => Date;
 };
 
 export type ServerOverrides = Partial<{
   pool: Pool;
   env: GovAIEnv;
+  now: () => Date;
 }>;
 
 export async function buildServer(overrides: ServerOverrides = {}): Promise<FastifyInstance> {
@@ -74,7 +80,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
 
   const policyCommitSha = process.env['GOVAI_POLICY_COMMIT_SHA'] ?? 'runtime-patch-1';
 
-  app.decorate('govai', { env, kms, pool, policyCommitSha });
+  app.decorate('govai', { env, kms, pool, policyCommitSha, now: overrides.now });
 
   await app.register(healthRoute);
   await app.register(capabilitiesRoute);
@@ -86,6 +92,10 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(passthroughOpenaiRoute);
   await app.register(governedAnthropicRoute);
   await app.register(governedOpenaiRoute);
+  // AuditBridge ingress: one prefix-scoped onRequest hook that builds the
+  // per-request identity for the four direct-provider routes and enters it into
+  // the ALS store the wired dispatcher reads (ADR-028 §2). No-op elsewhere.
+  registerRequestIdentityHook(app);
   await app.register(adminProviderCredentialsRoute);
   await app.register(workroomsRoute);
   await app.register(workroomTranscriptRoute);

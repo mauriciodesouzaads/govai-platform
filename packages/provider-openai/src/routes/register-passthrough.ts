@@ -372,7 +372,7 @@ export async function registerOpenAIPassthrough(
       const requestBody = bufferifyBody(req.body);
 
       if (isStream) {
-        const occurredAt = new Date();
+        const occurredAt = now();
         const streamRes = await forwardStream({
           baseUrl: deps.upstreamBaseUrl,
           concretePath,
@@ -453,7 +453,7 @@ export async function registerOpenAIPassthrough(
       }
 
       // Non-stream raw forward.
-      const occurredAt = new Date();
+      const occurredAt = now();
       const fwd = await forwardRaw({
         baseUrl: deps.upstreamBaseUrl,
         pathTemplate: matched.pathTemplate,

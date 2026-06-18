@@ -15,6 +15,8 @@ import {
 } from '@govai/provider-openai';
 import { authenticateApiKey } from '../pipeline/auth.js';
 import { resolveOpenAIProviderKey } from '../pipeline/provider-credentials.js';
+import { makeAuditBridge } from '../pipeline/audit-bridge.js';
+import { requestIdentityAls } from '../pipeline/request-identity.js';
 
 export async function governedOpenaiRoute(app: FastifyInstance): Promise<void> {
   const env = app.govai.env;
@@ -66,8 +68,13 @@ export async function governedOpenaiRoute(app: FastifyInstance): Promise<void> {
     };
   };
 
+  const auditBridge = makeAuditBridge({ pool: app.govai.pool, log: app.log });
   const emitAuditEvent = async (event: unknown): Promise<void> => {
     app.log.info({ audit_event: event }, 'governed-native audit event');
+    // Dispatch into the B0/B1 capture outbox (ADR-027/028). best_effort: the
+    // bridge never throws on the request path; identity comes from the ALS store
+    // the ingress hook populated for this request.
+    await auditBridge(event, requestIdentityAls.getStore());
   };
 
   const deps: OpenAIGovernedDeps = {
