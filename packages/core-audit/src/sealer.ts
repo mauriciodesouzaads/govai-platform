@@ -497,6 +497,31 @@ export async function loadSealingCaptureForRecovery(
   validateOrgId(prefix, input.orgId);
   validateCaptureId(prefix, input.captureId);
 
+  // TENANT GUARD (rev2): audit_capture_outbox is under FORCE ROW LEVEL SECURITY
+  // whose SELECT policy filters on `current_setting('app.org_id', true)`. A
+  // missing/stale app.org_id would make the main SELECT return ZERO rows and
+  // hide an existing `sealing` row → the runner would treat a recoverable row as
+  // absent and leave the chain stuck SILENTLY. Mirror the SECURITY DEFINER SQL
+  // functions: read the session org FROM THE DB (same client, so it observes the
+  // caller's `SET LOCAL app.org_id` in this transaction) and throw on
+  // missing/empty/mismatch BEFORE treating no-rows as absence. A Node-side
+  // env/process read would NOT see the transaction's SET LOCAL and is wrong.
+  const g = await client.query<{ org: string | null }>(
+    "SELECT current_setting('app.org_id', true) AS org",
+  );
+  const sessionOrg = g.rows[0]?.org;
+  if (
+    sessionOrg === null ||
+    sessionOrg === undefined ||
+    sessionOrg === '' ||
+    sessionOrg !== input.orgId
+  ) {
+    failInput(
+      prefix,
+      `tenant context missing or mismatched (session=${JSON.stringify(sessionOrg ?? null)} input=${input.orgId})`,
+    );
+  }
+
   const r = await client.query<AuditCaptureOutboxRow>(
     `SELECT capture_id::text, org_id::text, chain_id, chain_category, capture_seq::text,
             event_type, event_version, subject_type, subject_id::text, occurred_at,

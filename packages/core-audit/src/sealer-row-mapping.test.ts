@@ -24,6 +24,20 @@ function fakeClient(rows: unknown[]): PoolClient {
   return { query: vi.fn(async () => ({ rows, rowCount: rows.length })) } as unknown as PoolClient;
 }
 
+// Query-aware fake for loadSealingCaptureForRecovery, which (rev2) runs TWO queries
+// in order: the tenant-guard `SELECT current_setting('app.org_id', true)` FIRST, then
+// the main outbox SELECT. Answer the guard with `sessionOrg`, the main SELECT with `rows`.
+function recoveryClient(opts: { sessionOrg: string | null; rows: unknown[] }): PoolClient {
+  return {
+    query: vi.fn(async (sql: string) => {
+      if (sql.includes('current_setting')) {
+        return { rows: [{ org: opts.sessionOrg }], rowCount: 1 };
+      }
+      return { rows: opts.rows, rowCount: opts.rows.length };
+    }),
+  } as unknown as PoolClient;
+}
+
 function sampleRow(overrides: Partial<AuditCaptureOutboxRow> = {}): AuditCaptureOutboxRow {
   return {
     capture_id: CAPTURE,
@@ -61,15 +75,15 @@ describe('EP-005.5 — single-source outbox-row mapping (anti-drift)', () => {
     expect(viaClaim).toEqual(viaMapper);
   });
 
-  it('recovery loader maps via the SAME single source as the claim path', async () => {
+  it('recovery loader (tenant guard passes) maps via the SAME single source as the claim path', async () => {
     const row = sampleRow();
     const viaMapper = mapOutboxRowToClaimedAuditCapture(row);
-    const viaRecovery = await loadSealingCaptureForRecovery(fakeClient([row]), {
-      orgId: ORG,
-      captureId: CAPTURE,
-    });
+    const viaRecovery = await loadSealingCaptureForRecovery(
+      recoveryClient({ sessionOrg: ORG, rows: [row] }),
+      { orgId: ORG, captureId: CAPTURE },
+    );
     expect(viaRecovery).toEqual(viaMapper);
-    // and both equal what the claim path would produce for the identical row.
+    // and equals what the claim path would produce for the identical row.
     const viaClaim = await claimAuditCaptureForSeal(fakeClient([row]), {
       orgId: ORG,
       chainId: 'org:x:run:y',
@@ -77,9 +91,42 @@ describe('EP-005.5 — single-source outbox-row mapping (anti-drift)', () => {
     expect(viaRecovery).toEqual(viaClaim);
   });
 
-  it('recovery loader returns null when no sealing row exists', async () => {
-    const out = await loadSealingCaptureForRecovery(fakeClient([]), { orgId: ORG, captureId: CAPTURE });
+  it('recovery loader returns null on GENUINE absence (guard passes, no sealing row)', async () => {
+    const out = await loadSealingCaptureForRecovery(
+      recoveryClient({ sessionOrg: ORG, rows: [] }),
+      { orgId: ORG, captureId: CAPTURE },
+    );
     expect(out).toBeNull();
+  });
+
+  // Tenant guard (rev2): a missing/empty/mismatched app.org_id must THROW, never be
+  // mistaken for "no sealing row" (FORCE-RLS would otherwise hide the row → silent stall).
+  it('tenant guard: a MISSING app.org_id THROWS (not null) even though a matching row exists', async () => {
+    await expect(
+      loadSealingCaptureForRecovery(recoveryClient({ sessionOrg: null, rows: [sampleRow()] }), {
+        orgId: ORG,
+        captureId: CAPTURE,
+      }),
+    ).rejects.toThrow(/tenant context missing or mismatched/);
+  });
+
+  it('tenant guard: an EMPTY app.org_id THROWS (not null)', async () => {
+    await expect(
+      loadSealingCaptureForRecovery(recoveryClient({ sessionOrg: '', rows: [sampleRow()] }), {
+        orgId: ORG,
+        captureId: CAPTURE,
+      }),
+    ).rejects.toThrow(/tenant context missing or mismatched/);
+  });
+
+  it('tenant guard: a DIFFERENT session org THROWS (not null) even though a matching row exists', async () => {
+    const otherOrg = '99999999-9999-4999-8999-999999999999';
+    await expect(
+      loadSealingCaptureForRecovery(recoveryClient({ sessionOrg: otherOrg, rows: [sampleRow()] }), {
+        orgId: ORG,
+        captureId: CAPTURE,
+      }),
+    ).rejects.toThrow(/tenant context missing or mismatched/);
   });
 
   it('payload_hash maps to the same hex whether a Buffer or a \\x-prefixed string', () => {
