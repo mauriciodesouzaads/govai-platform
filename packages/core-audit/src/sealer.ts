@@ -358,6 +358,77 @@ function safeWorkerId(workerId: string | undefined): string | undefined {
 }
 
 // -----------------------------------------------------------------------------
+// Outbox row → ClaimedAuditCapture mapping (SINGLE source)
+// -----------------------------------------------------------------------------
+
+/**
+ * The exact outbox-row shape produced by `audit_capture_claim_for_seal`'s
+ * RETURNING set AND by the B3 stale-recovery SELECT in
+ * `loadSealingCaptureForRecovery`. Both select the SAME columns with the SAME
+ * `::text` casts so the mapping input is identical.
+ */
+export interface AuditCaptureOutboxRow {
+  capture_id: string;
+  org_id: string;
+  chain_id: string;
+  chain_category: string;
+  capture_seq: string;
+  event_type: string;
+  event_version: string;
+  subject_type: string;
+  subject_id: string;
+  occurred_at: string | Date;
+  payload_hash: unknown;
+  payload_encrypted: unknown | null;
+  dek_wrapped: unknown | null;
+  key_id: string;
+  key_version: number;
+  redaction_metadata: Record<string, unknown>;
+  evidence_strength: string;
+  capture_integrity_tag: unknown | null;
+  capture_integrity_alg: string | null;
+  posture: string;
+}
+
+/**
+ * Map a raw outbox row (from `audit_capture_claim_for_seal`'s RETURNING OR a
+ * direct SELECT of a `sealing` row for recovery) to a `ClaimedAuditCapture`,
+ * applying the canonical bytea→hex / timestamp→ISO / presence-flag conversions.
+ * This is the SINGLE source of that mapping: both the claim path
+ * (`claimAuditCaptureForSeal`) and the B3 recovery path
+ * (`loadSealingCaptureForRecovery`) call it so they cannot drift — a hex/ISO/
+ * presence-flag divergence would otherwise let the runner mark a RECOVERABLE
+ * row `failed`. Pure: no I/O, no client, no tenant/role mutation.
+ */
+export function mapOutboxRowToClaimedAuditCapture(
+  row: AuditCaptureOutboxRow,
+): ClaimedAuditCapture {
+  return {
+    captureId: row.capture_id,
+    orgId: row.org_id,
+    chainId: row.chain_id,
+    chainCategory: asChainCategory(row.chain_category),
+    captureSeq: row.capture_seq,
+    eventType: row.event_type,
+    eventVersion: row.event_version,
+    subjectType: row.subject_type,
+    subjectId: row.subject_id,
+    occurredAt: asIsoString(row.occurred_at),
+    payloadHashHex: asHex(row.payload_hash),
+    hasPayloadEncrypted: row.payload_encrypted !== null && row.payload_encrypted !== undefined,
+    hasDekWrapped: row.dek_wrapped !== null && row.dek_wrapped !== undefined,
+    keyId: row.key_id,
+    keyVersion: row.key_version,
+    redactionMetadata: isPlainObject(row.redaction_metadata) ? row.redaction_metadata : {},
+    evidenceStrength: row.evidence_strength,
+    captureIntegrityAlg: asCaptureIntegrityAlg(row.capture_integrity_alg),
+    hasCaptureIntegrityTag:
+      row.capture_integrity_tag !== null && row.capture_integrity_tag !== undefined,
+    posture: asPosture(row.posture),
+  };
+}
+
+// -----------------------------------------------------------------------------
 // Primitive 1: claim
 // -----------------------------------------------------------------------------
 
@@ -381,28 +452,7 @@ export async function claimAuditCaptureForSeal(
 
   const advisory = lockKey.chainLockKey(input.chainId);
 
-  const r = await client.query<{
-    capture_id: string;
-    org_id: string;
-    chain_id: string;
-    chain_category: string;
-    capture_seq: string;
-    event_type: string;
-    event_version: string;
-    subject_type: string;
-    subject_id: string;
-    occurred_at: string | Date;
-    payload_hash: unknown;
-    payload_encrypted: unknown | null;
-    dek_wrapped: unknown | null;
-    key_id: string;
-    key_version: number;
-    redaction_metadata: Record<string, unknown>;
-    evidence_strength: string;
-    capture_integrity_tag: unknown | null;
-    capture_integrity_alg: string | null;
-    posture: string;
-  }>(
+  const r = await client.query<AuditCaptureOutboxRow>(
     `SELECT capture_id::text, org_id::text, chain_id, chain_category, capture_seq::text,
             event_type, event_version, subject_type, subject_id::text, occurred_at,
             payload_hash, payload_encrypted, dek_wrapped, key_id, key_version,
@@ -415,30 +465,78 @@ export async function claimAuditCaptureForSeal(
   const row = r.rows[0];
   if (!row) return null;
 
-  const claimed: ClaimedAuditCapture = {
-    captureId: row.capture_id,
-    orgId: row.org_id,
-    chainId: row.chain_id,
-    chainCategory: asChainCategory(row.chain_category),
-    captureSeq: row.capture_seq,
-    eventType: row.event_type,
-    eventVersion: row.event_version,
-    subjectType: row.subject_type,
-    subjectId: row.subject_id,
-    occurredAt: asIsoString(row.occurred_at),
-    payloadHashHex: asHex(row.payload_hash),
-    hasPayloadEncrypted: row.payload_encrypted !== null && row.payload_encrypted !== undefined,
-    hasDekWrapped: row.dek_wrapped !== null && row.dek_wrapped !== undefined,
-    keyId: row.key_id,
-    keyVersion: row.key_version,
-    redactionMetadata: isPlainObject(row.redaction_metadata) ? row.redaction_metadata : {},
-    evidenceStrength: row.evidence_strength,
-    captureIntegrityAlg: asCaptureIntegrityAlg(row.capture_integrity_alg),
-    hasCaptureIntegrityTag:
-      row.capture_integrity_tag !== null && row.capture_integrity_tag !== undefined,
-    posture: asPosture(row.posture),
-  };
-  return claimed;
+  return mapOutboxRowToClaimedAuditCapture(row);
+}
+
+// -----------------------------------------------------------------------------
+// Primitive 1b: recovery loader (B3 stale-recovery read; library-owned)
+// -----------------------------------------------------------------------------
+
+export interface LoadSealingCaptureForRecoveryInput {
+  orgId: string;
+  captureId: string;
+}
+
+/**
+ * SELECT a single outbox row in status='sealing' by (org, capture) for the B3
+ * stale-recovery path, returning it mapped via `mapOutboxRowToClaimedAuditCapture`
+ * (so recovery never re-derives the column list or the conversions). RLS-scoped:
+ * the caller must have set app.org_id and an appropriate role; this function runs
+ * ONLY the SELECT — it does NOT claim, does NOT mutate state, does NOT touch
+ * chain_state. Returns null if no such sealing row exists.
+ *
+ * The SELECT's column list + casts MUST match `claimAuditCaptureForSeal`'s
+ * RETURNING exactly, so the mapping input is byte-for-byte identical and the two
+ * paths cannot diverge.
+ */
+export async function loadSealingCaptureForRecovery(
+  client: PoolClient,
+  input: LoadSealingCaptureForRecoveryInput,
+): Promise<ClaimedAuditCapture | null> {
+  const prefix = 'loadSealingCaptureForRecovery';
+  validateOrgId(prefix, input.orgId);
+  validateCaptureId(prefix, input.captureId);
+
+  // TENANT GUARD (rev2): audit_capture_outbox is under FORCE ROW LEVEL SECURITY
+  // whose SELECT policy filters on `current_setting('app.org_id', true)`. A
+  // missing/stale app.org_id would make the main SELECT return ZERO rows and
+  // hide an existing `sealing` row → the runner would treat a recoverable row as
+  // absent and leave the chain stuck SILENTLY. Mirror the SECURITY DEFINER SQL
+  // functions: read the session org FROM THE DB (same client, so it observes the
+  // caller's `SET LOCAL app.org_id` in this transaction) and throw on
+  // missing/empty/mismatch BEFORE treating no-rows as absence. A Node-side
+  // env/process read would NOT see the transaction's SET LOCAL and is wrong.
+  const g = await client.query<{ org: string | null }>(
+    "SELECT current_setting('app.org_id', true) AS org",
+  );
+  const sessionOrg = g.rows[0]?.org;
+  if (
+    sessionOrg === null ||
+    sessionOrg === undefined ||
+    sessionOrg === '' ||
+    sessionOrg !== input.orgId
+  ) {
+    failInput(
+      prefix,
+      `tenant context missing or mismatched (session=${JSON.stringify(sessionOrg ?? null)} input=${input.orgId})`,
+    );
+  }
+
+  const r = await client.query<AuditCaptureOutboxRow>(
+    `SELECT capture_id::text, org_id::text, chain_id, chain_category, capture_seq::text,
+            event_type, event_version, subject_type, subject_id::text, occurred_at,
+            payload_hash, payload_encrypted, dek_wrapped, key_id, key_version,
+            redaction_metadata, evidence_strength,
+            capture_integrity_tag, capture_integrity_alg, posture
+       FROM govai.audit_capture_outbox
+      WHERE org_id = $1::uuid AND capture_id = $2::uuid AND status = 'sealing'`,
+    [input.orgId, input.captureId],
+  );
+
+  const row = r.rows[0];
+  if (!row) return null;
+
+  return mapOutboxRowToClaimedAuditCapture(row);
 }
 
 // -----------------------------------------------------------------------------
@@ -653,7 +751,14 @@ export async function markAuditCaptureFailed(
  *   The future dedicated AuditSealer runner (see ADR-020) MUST:
  *     - detect status='sealing' captures older than a configured timeout;
  *     - roll back / open a FRESH transaction (never reuse an aborted one);
- *     - call markAuditCaptureFailed to release the sequence for retry;
+ *     - for a RECOVERABLE stale row, load it via loadSealingCaptureForRecovery,
+ *       re-derive the deterministic audit_event_id, and re-run auditAppend
+ *       (idempotent) + mark_sealed to ADVANCE it — a `failed` row does NOT
+ *       release the sequence (migration 0025 has no failed→captured/sealing
+ *       transition, and mark_sealed requires capture_seq = last_sealed + 1);
+ *     - reserve markAuditCaptureFailed for TRULY-UNRECOVERABLE errors, which
+ *       then become a terminal chain-stall surfaced via metrics/alerts
+ *       (ADR-023 + the B3 design);
  *     - emit a metric / alert for stuck captures.
  */
 export async function sealNextAuditCapture(
