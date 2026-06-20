@@ -1,22 +1,22 @@
 # ADR-020 — AuditSealer Runtime Model
 
-Status: Superseded in part by ADR-022–026; B3 implementation not authorized
+Status: Superseded in part by ADR-022–026; B3 **IMPLEMENTED in EP-006** (`apps/audit-sealer`)
 
 ## Supersession / current status
 
-ADR-020 is no longer the final source for the AuditSealer runtime model. The specific decisions are now owned by the B3 decision pack:
+ADR-020 is no longer the final source for the AuditSealer runtime model. The specific decisions are now owned by the B3 decision pack (all **Accepted**), and B3 is now **implemented**:
 
-- **ADR-022** resolves the role/session model (Accepted as a design constraint).
-- **ADR-023** owns stale recovery and the **append→mark_sealed partial-failure idempotency** decision — now **Accepted as a design constraint: Option A(b)** (deterministic `audit_event_id`), **not implemented, not tested** (see ADR-023 and `specs/audit-sealer-b3-technical-plan.md` §8.3).
-- **ADR-024** owns the claim loop / backpressure (Accepted as a design constraint).
-- **ADR-025** owns health / metrics / observability (Accepted as a design constraint).
-- **ADR-026** owns the dedicated deploy unit lifecycle (Accepted as a design constraint).
+- **ADR-022** resolves the role/session model (Accepted) — implemented as the runner's `withSealerPhaseRole` phase switching + dedicated pool.
+- **ADR-023** owns stale recovery and the **append→mark_sealed partial-failure idempotency** decision (Accepted: Option A(b), deterministic `audit_event_id`) — **implemented & tested in PR #92** and consumed by the EP-006 runner's SEPARATE stale-recovery path.
+- **ADR-024** owns the claim loop / backpressure (Accepted) — implemented as the runner's bounded claim loop.
+- **ADR-025** owns health / metrics / observability (Accepted) — implemented as the runner's startup probe + OTel metrics.
+- **ADR-026** owns the dedicated deploy unit lifecycle (Accepted) — implemented as `apps/audit-sealer`.
 
-B3 implementation remains **blocked** until **all** of the following hold:
-- the decision pack is accepted (ADR-022/023/024/025/026 accepted as design constraints);
-- the append→mark_sealed partial-failure idempotency mechanism (ADR-023 §"Decision" = Option A(b)) is **implemented and tested** — it is decided but **not yet implemented**;
-- the runtime-to-evidence dispatch decision is resolved (roadmap Phase 2.5);
-- a separate explicit user authorization is given.
+All four ADR-020 unblock conditions now HOLD (B3 implemented in EP-006):
+- the decision pack is accepted (ADR-022/023/024/025/026);
+- the append→mark_sealed idempotency mechanism (Option A(b)) is **implemented and tested** (PR #92);
+- the runtime-to-evidence dispatch (Phase 2.5 / AuditBridge) is **implemented and tested** (PR-B #98);
+- explicit B3 authorization was given (EP-006). The transaction choreography is decided as **Shape S** (SPEC-B3 §1).
 
 Accepting ADR-022/024/025/026 as design constraints **does not authorize implementation**. This ADR's original "Decision/Rationale/Role Model" sections below are retained for history.
 
@@ -71,7 +71,7 @@ Open design question before runner implementation:
 - or grant the `auditAppend` path to `govai_audit_sealer`;
 - or retain explicit phase role switching in the dedicated runner.
 
-> **Resolution note (2026-06-04):** this open question is **resolved by ADR-022** (AuditSealer Runtime Role Model), which selects explicit phase role switching in the dedicated runner via `withSealerPhaseRole`, with a separate DB pool and no `SET ROLE` in the library. ADR-020 remains stale here until the B3 decision-pack acceptance PR consolidates statuses. ADR-022–026 are still *Proposed*; **this documentation PR does not accept them** and does not start B3.
+> **Resolution note (2026-06-04):** this open question is **resolved by ADR-022** (AuditSealer Runtime Role Model), which selects explicit phase role switching in the dedicated runner via `withSealerPhaseRole`, with a separate DB pool and no `SET ROLE` in the library. ADR-022–026 are **Accepted**, and the dedicated runner that performs this phase switching is **implemented in EP-006** (`apps/audit-sealer/src/phase-role.ts` + `seal-once.ts`).
 
 No migration is introduced by this ADR.
 

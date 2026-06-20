@@ -1,20 +1,19 @@
 # AuditSealer B3 Technical Plan
 
 Status:
-- Draft / Decision-pack candidate.
-- **Does not authorize implementation.**
-- No code/migrations in this PR.
-- Source commit reviewed: main `11b227b` (decision-pack branch).
+- **IMPLEMENTED by EP-006** (`apps/audit-sealer`). The architecture below (§5–§11) is current and binding; the implementation chose **Shape S** for the transaction choreography (one committed tx per seal; SPEC-B3 §1).
+- The preconditions in §1/§4/§8.3 below are now SATISFIED (see the inline notes).
+- Source commit reviewed: main `11b227b` (decision-pack branch); implemented on main `3af8840`.
 
-## 1. Preconditions
+## 1. Preconditions — **all SATISFIED (EP-006)**
 
 - `current-state.md` merged (evidence-first source of truth).
 - Provider-native gate closed (H1 v2).
-- ADR-022 role/session model: **Accepted** as a design constraint (does not authorize implementation).
-- ADR-023 append→mark_sealed partial-failure idempotency: **DECIDED as Option A(b)** (deterministic `audit_event_id`); ADR-023 Accepted as design constraint — **not implemented, not tested** (see §8.3). B3 still blocked until implemented/tested.
-- ADR-024/025/026: **Accepted** as design constraints (do not authorize implementation).
-- Phase 2.5 runtime-to-evidence dispatch decision: **exists as ADR-027 (AuditBridge), accepted as a design constraint — but NOT implemented/tested** (see §4). B3 must not claim runtime evidence completeness until outbox ingress is implemented/tested, or an accepted deferral names another authoritative evidence path.
-- B3 does not start until explicitly authorized by the user after this plan is reviewed.
+- ADR-022 role/session model: **Accepted** — implemented (runner `withSealerPhaseRole` + dedicated pool).
+- ADR-023 append→mark_sealed partial-failure idempotency: Option A(b) (deterministic `audit_event_id`) — **implemented & tested in PR #92** (see §8.3), consumed by the EP-006 runner.
+- ADR-024/025/026: **Accepted** — implemented (claim loop / OTel metrics / `apps/audit-sealer` deploy unit).
+- Phase 2.5 runtime-to-evidence dispatch: ADR-027 (AuditBridge) — **implemented & tested in PR-B #98** (the four direct routes feed the outbox).
+- B3 implementation was explicitly authorized (EP-006).
 
 ## 2. What B3 does
 
@@ -36,7 +35,7 @@ Status:
 - Does not certify compliance.
 - Does not read secrets or call providers.
 
-## 4. Runtime-to-evidence relationship (Phase 2.5 — blocking precondition)
+## 4. Runtime-to-evidence relationship (Phase 2.5 — **SATISFIED, PR-B #98**)
 
 - Direct governed-native and passthrough routes are currently **logger-only** for audit emission: `apps/api/src/routes/governed-openai.ts:69-70` and `governed-anthropic.ts:71-72` (`emitAuditEvent` → `app.log.info`), same for `passthrough-*.ts`.
 - There are **zero `captureAuditEvent` call-sites in `apps/`** — no runtime route feeds the B0/B1 capture outbox.
@@ -62,7 +61,7 @@ Status:
 - Graceful shutdown drain (default 30s); no busy loop; no starvation.
 - No provider-path throttling; no silent caps; backlog alerts (oldest pending > 5m or > 1000 pending).
 
-## 7. Stale recovery (from ADR-023 — Accepted as design constraint; not implemented/tested)
+## 7. Stale recovery (from ADR-023 — **IMPLEMENTED, EP-006 SEPARATE path**: `apps/audit-sealer/src/stale-recovery.ts`)
 
 - Stale threshold (default 10 min); max retries (default 3); exponential backoff (30s→5m).
 - Terminal failure after max retries or unrecoverable integrity error; recovery batch (default 10).
