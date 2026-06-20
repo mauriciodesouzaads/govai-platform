@@ -36,6 +36,17 @@ export default defineConfig({
         'apps/api/src/pipeline/audit-bridge.ts',
         'apps/api/src/pipeline/audit-keys.ts',
         'apps/api/src/pipeline/request-identity.ts',
+        // Phase 3 — B3 AuditSealer runner (EP-006): the well-tested modules
+        // (entrypoint/wiring/signal-handlers excluded, mirroring apps/api).
+        'apps/audit-sealer/src/config.ts',
+        'apps/audit-sealer/src/backoff.ts',
+        'apps/audit-sealer/src/phase-role.ts',
+        'apps/audit-sealer/src/metrics.ts',
+        'apps/audit-sealer/src/startup-validation.ts',
+        'apps/audit-sealer/src/seal-once.ts',
+        'apps/audit-sealer/src/stale-recovery.ts',
+        'apps/audit-sealer/src/claim-loop.ts',
+        'apps/audit-sealer/src/health.ts',
       ],
       exclude: ['**/*.test.ts', '**/*.d.ts', 'packages/dlp-br/scripts/**'],
       thresholds: {

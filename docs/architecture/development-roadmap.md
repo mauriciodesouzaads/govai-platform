@@ -30,7 +30,7 @@ Dependencies: Phase 0. Risks if skipped: drift, repeated work, action on stale c
 Goal: make B3 a decidable, accepted plan — no implementation.
 Inputs: ADR-020 (Draft), ADR-022..026 (Proposed), B0/B1/B2 code, migration 0025.
 Outputs: ADR-022..026 → Accepted; ADR-020 updated/superseded; explicit append/seal idempotency resolution (key or documented guarantee — ADR-023 open clause); a written B3 Technical Plan.
-Exit criteria: ADR-022..026 Accepted; idempotency decided; B3 plan reviewed. **Status: Phase 2 decision pack complete as architecture decision** — ADR-022/024/025/026 Accepted as design constraints, ADR-023 append→mark_sealed idempotency **DECIDED as Option A(b)** (deterministic `audit_event_id`) and **implemented/tested in PR #92** (`sealer-event-id.ts`, `sealer.ts`, `append.ts`; `sealer-deterministic-append.test.ts`), B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`). **B3 implementation remains blocked pending the Phase 2.5 AuditBridge implementation/tests and explicit authorization** (Option A(b) is no longer a blocker — it is implemented/tested).
+Exit criteria: ADR-022..026 Accepted; idempotency decided; B3 plan reviewed. **Status: Phase 2 decision pack complete as architecture decision** — ADR-022/024/025/026 Accepted as design constraints, ADR-023 append→mark_sealed idempotency **DECIDED as Option A(b)** (deterministic `audit_event_id`) and **implemented/tested in PR #92** (`sealer-event-id.ts`, `sealer.ts`, `append.ts`; `sealer-deterministic-append.test.ts`), B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`). **B3 is now IMPLEMENTED (EP-006, `apps/audit-sealer`)** — all preconditions satisfied (Option A(b) PR #92; Phase 2.5 PR-B #98; explicit authorization given).
 Explicit non-goals: no `apps/audit-sealer`; no loop.
 Dependencies: Phase 1. Risks if skipped: B3 built on unresolved role/idempotency model. Resume anchor: ADRs + stale-docs-register.md.
 
@@ -49,15 +49,14 @@ Risks if skipped: **B3 can seal an outbox that direct governed-native runtime do
 
 ---
 
-## Phase 3 — B3 AuditSealer Runner
+## Phase 3 — B3 AuditSealer Runner — **IMPLEMENTED (EP-006)**
 
-Goal: a dedicated process that continuously seals captured events.
+Goal: a dedicated process that continuously seals captured events. **Status: DONE (EP-006).**
 Inputs: accepted Phase 2 pack; Phase 2.5 dispatch decision.
-Outputs: `apps/audit-sealer`; separate DB pool; explicit phase role switching; bounded claim loop (jitter/backoff); stale recovery; health/metrics; graceful shutdown; no provider traffic; no hot path.
-Exit criteria: seals contiguous captures idempotently; recovers stale `sealing` rows; emits health/metrics.
-Explicit non-goals: no provider traffic; no `apps/api` production loop.
-Dependencies: (1) **Option A(b) — SATISFIED: implemented and tested in PR #92** (deterministic append id; no-duplicate retry after append-success/mark_sealed-failure — `sealer-event-id.ts`, `sealer.ts`, `append.ts`; `sealer-deterministic-append.test.ts`); (2) the **Phase 2.5 AuditBridge (ADR-027) implemented and tested** (route hooks validate/narrow `event: unknown` via `PassthroughInvokedSchema` and feed the outbox) — or an explicit accepted deferral naming another authoritative evidence path; (3) a **separate explicit implementation authorization**. Note: **B3 seals captures already in the outbox; it is not the same as runtime-to-outbox dispatch, and its product-completeness depends on the Phase 2.5 wiring decision.**
-Risks if skipped: captures accumulate unsealed. Resume anchor: ADR-020..026 + current-state.md §3.
+Outputs: `apps/audit-sealer` (shipped) — separate DB pool; explicit phase role switching (`withSealerPhaseRole`); Shape-S per-seal tx; bounded claim loop (jitter/backoff); SEPARATE stale recovery; startup readiness probe; OTel health/metrics; graceful shutdown; no provider traffic; no hot path.
+Exit criteria (**SATISFIED**): seals contiguous captures idempotently; recovers stale `sealing` rows (advanced, not failed; terminal stall surfaced); emits health/metrics — proven S0–S11 in `tests/integration/audit-sealer-runner.test.ts`.
+Explicit non-goals (honored): no provider traffic; no `apps/api` production loop; no schema migration (the `failed→sealing` unstick is a separate future decision).
+Dependencies (**all satisfied**): (1) Option A(b) implemented/tested PR #92; (2) Phase 2.5 AuditBridge wired PR-B #98; (3) explicit B3 authorization given. The precursor EP-005.5 (shared outbox-row mapping + recovery loader) merged; the runner consumes it verbatim.
 
 ---
 

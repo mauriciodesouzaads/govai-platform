@@ -127,6 +127,49 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
+  apps/audit-sealer:
+    dependencies:
+      '@govai/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@govai/core-audit':
+        specifier: workspace:*
+        version: link:../../packages/core-audit
+      '@govai/core-identity':
+        specifier: workspace:*
+        version: link:../../packages/core-identity
+      '@opentelemetry/api':
+        specifier: 1.9.1
+        version: 1.9.1
+      '@opentelemetry/sdk-node':
+        specifier: 0.216.0
+        version: 0.216.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/semantic-conventions':
+        specifier: 1.40.0
+        version: 1.40.0
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
+      pino:
+        specifier: 10.3.1
+        version: 10.3.1
+      zod:
+        specifier: 4.4.2
+        version: 4.4.2
+    devDependencies:
+      '@types/node':
+        specifier: 24.10.0
+        version: 24.10.0
+      '@types/pg':
+        specifier: 8.15.6
+        version: 8.15.6
+      tsx:
+        specifier: 4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
   packages/config:
     dependencies:
       zod:

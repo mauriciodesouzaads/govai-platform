@@ -13,6 +13,7 @@
     { "path": "./packages/dlp-br" },
     { "path": "./packages/provider-anthropic" },
     { "path": "./packages/provider-openai" },
-    { "path": "./apps/api" }
+    { "path": "./apps/api" },
+    { "path": "./apps/audit-sealer" }
   ]
 }
