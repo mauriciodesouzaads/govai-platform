@@ -300,3 +300,48 @@ operation's event-time is part of its capture identity. A genuinely new operatio
 (a new time) is a new event and legitimately receives a new capture. This is why
 `occurred_at` must originate where the event occurs and be stable across retries —
 the property EP-002 establishes and EP-003 (the dispatcher) consumes.
+
+## Amendment (2026-06-20) — idempotency content anchor (EP-008-PRE-EQ)
+
+Origin: the `chatgpt-codex-connector[bot]` review of PR #102 (head `d93ccb43`, P1) — a
+**cross-deploy replay gap**. The EP-008-PRE enrichment widens
+`redaction_metadata.audit_bridge` from `{identity_scope}` to
+`{identity_scope, provider, capability_id}`. A capture written by the PRE-enrichment
+code (old shape) and replayed by the POST-enrichment code (new shape) shares the SAME
+`capture_id`, `payload_hash`, `occurred_at`, and every other immutable column, yet
+diverges ONLY on `redaction_metadata`. Under the original
+`audit_capture_insert_locked` divergence check (which compared `redaction_metadata`)
+that replay raised SQLSTATE 23505 → a false `evidence_idempotency_conflict` instead of
+an idempotent reuse, during any window where the two deploys coexist.
+
+Resolution: a forward migration (`0026_audit_capture_idempotency_content_anchor.sql`)
+`CREATE OR REPLACE`s `audit_capture_insert_locked`, removing EXACTLY the one clause
+`OR v_existing.redaction_metadata IS DISTINCT FROM p_redaction_metadata` from the
+Step-3 divergence OR-chain. The other 17 divergence columns and the entire rest of the
+function are byte-identical to the 0025 definition.
+
+(a) **`payload_hash` is THE idempotent-capture content anchor; `redaction_metadata` is
+not.** `redaction_metadata` is **observational** and a deterministic function of the
+captureId inputs (`identity_scope`/`idempotency_key_hash`, and — post-EP-008 —
+`provider`/`capability_id`, all origin-stable). It carries no content the
+`payload_hash` (and the 16 other immutable columns) do not already anchor. Excluding
+it from the divergence check therefore weakens no real tamper-evidence: a genuine
+content divergence still diverges on `payload_hash` (or `key_id`, `subject_id`,
+`occurred_at`, …) and still raises 23505.
+
+(b) **First-writer-wins on reuse.** The idempotent-reuse branch returns the EXISTING
+`(capture_id, capture_seq)` with NO `UPDATE`, so the originally-stored
+`redaction_metadata` is preserved verbatim; a later replay with a different shape does
+not overwrite it.
+
+(c) **Row-immutability is unchanged — only insert-idempotency is relaxed.** The
+`BEFORE UPDATE OR DELETE` immutability trigger `govai.audit_capture_outbox_guard` is a
+SEPARATE mechanism and is untouched: a stored capture row (including its
+`redaction_metadata`) remains immutable after write, and the HMAC chain is unaffected.
+This amendment changes only how a *re-presented insert* for an existing `capture_id` is
+judged equal, never the immutability of an already-written row. No historical rows are
+backfilled.
+
+(d) **Scope.** EP-008-PRE-EQ ships only the migration, this amendment, and the
+real-Postgres cross-deploy-reuse / genuine-divergence tests; it lands BEFORE the
+EP-008-PRE enrichment (#102), so the integrity signal is corrected first.

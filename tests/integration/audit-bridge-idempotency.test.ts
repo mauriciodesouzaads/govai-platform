@@ -163,3 +163,114 @@ describe('EP-004 — I4: divergent occurred_at under the same key → CONFLICT',
     expect(conflicts).toHaveLength(1);
   });
 });
+
+// EP-008-PRE-EQ — the forward migration (0026) removes the `redaction_metadata`
+// clause from audit_capture_insert_locked's Step-3 divergence check. These tests
+// exercise the function DIRECTLY (the route always emits one shape, so it cannot
+// reproduce the cross-deploy scenario): a row written by the pre-enrichment code
+// (old-shape redaction_metadata) re-presented by the post-enrichment code (new
+// shape), same capture_id/payload_hash/occurred_at/every-other column.
+const EQ_OLD_SHAPE = { audit_bridge: { identity_scope: 'govai_request_id' } };
+const EQ_NEW_SHAPE = {
+  audit_bridge: {
+    identity_scope: 'govai_request_id',
+    provider: 'anthropic',
+    capability_id: 'anthropic.messages.create',
+  },
+};
+
+type EqInsertArgs = {
+  captureId: string;
+  orgId: string;
+  chainId: string;
+  subjectId: string;
+  occurredAt: string;
+  payloadHash: Buffer;
+  keyId: string;
+  redactionMetadata: Record<string, unknown>;
+};
+
+function eqDefaults(orgId: string): EqInsertArgs {
+  return {
+    captureId: randomUUID(),
+    orgId,
+    chainId: `cdr-${randomUUID()}`,
+    subjectId: randomUUID(),
+    occurredAt: '2026-06-15T00:00:00.000Z',
+    payloadHash: Buffer.alloc(32, 0xab),
+    keyId: 'audit-1',
+    redactionMetadata: EQ_OLD_SHAPE,
+  };
+}
+
+// Direct call of the SECURITY DEFINER function, as the bridge does: govai_app
+// connection, app.org_id set (withAppTx), all 20 positional params.
+async function eqCallInsertLocked(a: EqInsertArgs): Promise<{ capture_id: string; capture_seq: string }> {
+  return withAppTx(a.orgId, async (c) => {
+    const r = await c.query<{ capture_id: string; capture_seq: string }>(
+      `SELECT capture_id::text, capture_seq::text
+         FROM govai.audit_capture_insert_locked(
+           $1::uuid, $2::uuid, $3::text, $4::text, $5::bigint, $6::text, $7::text, $8::text,
+           $9::uuid, $10::timestamptz, $11::bytea, $12::bytea, $13::bytea, $14::text, $15::integer,
+           $16::jsonb, $17::text, $18::bytea, $19::text, $20::text)`,
+      [
+        a.captureId, a.orgId, a.chainId, 'run', 1234567,
+        'passthrough.invoked', '4', 'runtime_event',
+        a.subjectId, a.occurredAt, a.payloadHash, null, null, a.keyId, 1,
+        JSON.stringify(a.redactionMetadata), 'hmac_internal', null, null, 'best_effort',
+      ],
+    );
+    return r.rows[0]!;
+  });
+}
+
+async function eqReadRedaction(orgId: string, captureId: string): Promise<unknown> {
+  return withAppTx(orgId, async (c) => {
+    const r = await c.query<{ redaction_metadata: unknown }>(
+      `SELECT redaction_metadata FROM govai.audit_capture_outbox WHERE capture_id = $1::uuid`,
+      [captureId],
+    );
+    return r.rows[0]?.redaction_metadata;
+  });
+}
+
+describe('EP-008-PRE-EQ — idempotency content anchor (redaction_metadata excluded from divergence)', () => {
+  it('cross-deploy REUSE: only redaction_metadata differs (old→new shape) → reuse, no 23505, stored row unchanged (first-writer-wins)', async () => {
+    const org = await seedOrg(stack);
+    const base = eqDefaults(org.org_id);
+
+    // Deploy A (pre-enrichment): write with OLD-shape redaction_metadata.
+    const first = await eqCallInsertLocked({ ...base, redactionMetadata: EQ_OLD_SHAPE });
+    expect(first.capture_id).toBe(base.captureId);
+
+    // Deploy B (post-enrichment): SAME capture_id/payload_hash/occurred_at/every other
+    // column; ONLY redaction_metadata differs (NEW enriched shape) → must REUSE.
+    const second = await eqCallInsertLocked({ ...base, redactionMetadata: EQ_NEW_SHAPE });
+    expect(second.capture_id).toBe(first.capture_id);
+    expect(second.capture_seq).toBe(first.capture_seq); // REUSE — same capture_seq, no 23505
+
+    // Exactly one row; its redaction_metadata is the ORIGINAL (old) shape (first-writer-wins).
+    expect(await captureRows(org.org_id)).toHaveLength(1);
+    expect(await eqReadRedaction(org.org_id, base.captureId)).toEqual(EQ_OLD_SHAPE);
+  });
+
+  it('divergence teeth: same capture_id but DIFFERENT payload_hash still raises 23505 (payload_hash is the content anchor)', async () => {
+    const org = await seedOrg(stack);
+    const base = eqDefaults(org.org_id);
+    await eqCallInsertLocked(base);
+    await expect(
+      eqCallInsertLocked({ ...base, payloadHash: Buffer.alloc(32, 0xcd) }),
+    ).rejects.toMatchObject({ code: '23505' });
+    expect(await captureRows(org.org_id)).toHaveLength(1); // no second row
+  });
+
+  it('divergence teeth: same capture_id but DIFFERENT key_id still raises 23505', async () => {
+    const org = await seedOrg(stack);
+    const base = eqDefaults(org.org_id);
+    await eqCallInsertLocked(base);
+    await expect(
+      eqCallInsertLocked({ ...base, keyId: 'audit-2' }),
+    ).rejects.toMatchObject({ code: '23505' });
+    expect(await captureRows(org.org_id)).toHaveLength(1);
+  });
+});
