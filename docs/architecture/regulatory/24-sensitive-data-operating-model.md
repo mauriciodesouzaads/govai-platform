@@ -11,7 +11,9 @@ categories GovAI must handle.
 
 The current GovAI DLP baseline detects only four categories: cpf, cnpj,
 email, and phone_br. This is sufficient for a foundational primitive but
-is not a complete sensitive-data operating model.
+is not a complete sensitive-data operating model. (The `cnpj` detector
+covers both the legacy numeric and the IN RFB 2.229/2024 alphanumeric
+format; see the State section below.)
 
 ## Target principle
 
@@ -223,7 +225,11 @@ substitutes a native detector.
 ## State of the Sensitive Data OS
 
 - The baseline of cpf, cnpj, email, and phone_br is
-  `IMPLEMENTED_FOUNDATIONAL_CONTROL`.
+  `IMPLEMENTED_FOUNDATIONAL_CONTROL`. The `cnpj` detector recognizes both the
+  legacy numeric CNPJ and the IN RFB 2.229/2024 **alphanumeric** CNPJ (12 base
+  positions `[0-9A-Z]`, 2 numeric check digits, DV = mod-11 over `ASCII − 48`),
+  checksum-verified against the official Serpro/RFB validator. Detection is
+  uppercase-only by design; numeric CNPJs remain a strict subset (zero regression).
 - PR-SD1 adds the typed Sensitive Data OS finding/taxonomy/provenance
   foundation as `IMPLEMENTED_FOUNDATIONAL_CONTROL`, plus deterministic
   detector families for credentials/secrets
