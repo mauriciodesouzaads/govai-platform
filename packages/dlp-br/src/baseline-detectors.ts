@@ -12,7 +12,13 @@ export type DetectorFinding = {
 };
 
 const CPF_RE = new RE2(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g);
-const CNPJ_RE = new RE2(/\b\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}\b/g);
+// CNPJ — both the legacy numeric and the IN RFB 2.229/2024 alphanumeric format:
+// the 12 base positions accept [0-9A-Z] (uppercase-only, D1) and the 2 DV positions
+// stay numeric. Numeric CNPJs are a strict subset, so this is a superset of the
+// old pattern (no regression). RE2-only matching invariant preserved.
+const CNPJ_RE = new RE2(
+  /\b[0-9A-Z]{2}\.?[0-9A-Z]{3}\.?[0-9A-Z]{3}\/?[0-9A-Z]{4}-?\d{2}\b/g,
+);
 const EMAIL_RE = new RE2(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g);
 // BR: opcional +55, opcional DDI, DDD 2 dígitos, 8 ou 9 dígitos, separadores comuns.
 const PHONE_BR_RE = new RE2(
@@ -40,23 +46,33 @@ export function isValidCpf(raw: string): boolean {
   return dv2 === ds[10];
 }
 
+// CNPJ validity for both formats (IN RFB 2.229/2024). The DV is mod-11 over the
+// per-character value `ASCII − 48` ('0'..'9'→0..9, 'A'→17 … 'Z'→42), exactly the
+// official Serpro/RFB reference algorithm — verified checksum-identical to it on
+// every official reference case and all single-char mutations (EP-007 precond #2).
+// A LOCAL letter-preserving sanitizer is used here (NOT the shared `digits()`, which
+// is left intact for CPF/phone); the two DV positions remain numeric. Numeric CNPJs
+// are a strict subset (ASCII−48 of a digit is the digit) → zero regression. The
+// `toUpperCase()` is a validator-unit normalization (D1): the detector regex is
+// uppercase-only, so detection never surfaces a lowercase CNPJ.
 export function isValidCnpj(raw: string): boolean {
-  const d = digits(raw);
-  if (d.length !== 14) return false;
-  if (/^(\d)\1+$/.test(d)) return false;
-  const ds = d.split('').map((c) => Number.parseInt(c, 10));
+  const s = raw.replace(/[^0-9A-Za-z]+/g, '').toUpperCase();
+  if (s.length !== 14) return false;
+  if (!/^[0-9A-Z]{12}\d{2}$/.test(s)) return false;
+  if (/^([0-9A-Z])\1{13}$/.test(s)) return false;
+  const vals = [...s].map((c) => c.charCodeAt(0) - 48);
   const w1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
   const w2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
   let sum = 0;
-  for (let i = 0; i < 12; i++) sum += (ds[i] ?? 0) * (w1[i] ?? 0);
+  for (let i = 0; i < 12; i++) sum += (vals[i] ?? 0) * (w1[i] ?? 0);
   let dv1 = sum % 11;
   dv1 = dv1 < 2 ? 0 : 11 - dv1;
-  if (dv1 !== ds[12]) return false;
+  if (dv1 !== vals[12]) return false;
   sum = 0;
-  for (let i = 0; i < 13; i++) sum += (ds[i] ?? 0) * (w2[i] ?? 0);
+  for (let i = 0; i < 13; i++) sum += (vals[i] ?? 0) * (w2[i] ?? 0);
   let dv2 = sum % 11;
   dv2 = dv2 < 2 ? 0 : 11 - dv2;
-  return dv2 === ds[13];
+  return dv2 === vals[13];
 }
 
 function findAll(re: RE2, text: string): Array<{ match: string; index: number }> {

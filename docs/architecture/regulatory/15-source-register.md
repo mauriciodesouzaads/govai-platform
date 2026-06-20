@@ -99,6 +99,27 @@ Notes:
   paywalled. Limitations: clause text must not be fabricated. Next action: map
   at control-family level only, citing the official ABNT catalogue.
 
+### Brazil — taxpayer registry (CNPJ)
+
+| ID | Source | Authority | Status | Official URL |
+|---|---|---|---|---|
+| BR-RFB-01 | IN RFB nº 2.229/2024 — alphanumeric CNPJ | Receita Federal do Brasil | CONFIRMED_PRIMARY_SOURCE | https://www.gov.br/receitafederal/pt-br/centrais-de-conteudo/publicacoes/documentos-tecnicos/cnpj |
+
+Notes:
+
+- **BR-RFB-01** — CONFIRMED_PRIMARY_SOURCE. Instrução Normativa RFB nº 2.229,
+  de 15 de outubro de 2024, introduces the **alphanumeric CNPJ**: the 12 base
+  positions become `[0-9A-Z]` while the 2 check digits stay numeric, with the DV
+  computed by mod-11 over each character's value `ASCII − 48`. The algorithm was
+  confirmed against the official Serpro/RFB technical material — the CNPJ
+  documents page above plus the official reference-implementation bundle
+  (`codigos-cnpj.zip`, `src/typescript/cnpj.ts` + `src/typescript/test.ts`).
+  `packages/dlp-br/src/baseline-detectors.ts` (`isValidCnpj`) was verified
+  **checksum-identical** to that official validator across every official
+  reference case and all single-character mutations (EP-007 precondition #2).
+  Relevance: the `cnpj` baseline DLP detector (files 07 and 24). Detection is
+  uppercase-only by design (D1); legacy numeric CNPJs remain a strict subset.
+
 ### CNJ / judiciary
 
 | ID | Source | Authority | Status | Official URL |

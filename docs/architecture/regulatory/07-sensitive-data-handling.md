@@ -83,6 +83,12 @@ Each primitive cited is implemented in the repository:
   (`detectAllBaseline`: `cpf`, `cnpj`, `email`, `phone_br`); custom detectors
   via `packages/dlp-br/src/custom-detectors.ts`. The baseline detector set is
   intentionally narrow and is **not** a full sensitive-category classifier.
+  The `cnpj` detector recognizes BOTH the legacy numeric CNPJ and the IN RFB
+  2.229/2024 **alphanumeric** CNPJ (12 base positions `[0-9A-Z]`, 2 numeric check
+  digits; DV = mod-11 over `ASCII − 48`). The checksum is verified identical to the
+  official Serpro/RFB validator; detection is uppercase-only by design (a lowercase
+  alphanumeric candidate is not surfaced). Numeric CNPJs remain a strict subset
+  (zero regression), and the detector still maps to the `pii_strong` signal class.
 - **Sensitive Data OS foundation (PR-SD1)** — `packages/dlp-br/src/sensitive-taxonomy.ts`
   (typed categories, advisory action vocabulary, review-flag taxonomy),
   `packages/dlp-br/src/sensitive-provenance.ts` (origin / source-surface /
