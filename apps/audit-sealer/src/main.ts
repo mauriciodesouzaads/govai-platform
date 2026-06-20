@@ -23,7 +23,16 @@ async function main(): Promise<void> {
     logger,
   });
 
-  await runner.start();
+  const result = await runner.start();
+  if (!result.ready) {
+    // NOT a silent idle and NOT a crash: the runner is alive but NOT ready, and
+    // its health surface (the health file) reports not-ready with the reason. The
+    // health-file refresh interval keeps the process alive so an orchestrator
+    // readiness probe observes not-ready and acts (restart / alert).
+    logger.error(
+      'audit_sealer: NOT ready after startup — health surface reports not-ready; awaiting orchestrator action',
+    );
+  }
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {

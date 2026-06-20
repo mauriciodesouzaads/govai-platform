@@ -9,6 +9,7 @@ import { createSealerPool } from './pool.js';
 import { validateStartup } from './startup-validation.js';
 import { startClaimLoop, type ClaimLoopHandle } from './claim-loop.js';
 import { HealthState } from './health.js';
+import { createHealthFilePublisher, type HealthFilePublisher } from './health-file.js';
 import { createOtelSealerMetrics, type SealerMetrics } from './metrics.js';
 import { createLogger, type SealerLogger } from './logging.js';
 
@@ -22,9 +23,14 @@ export interface RunnerDeps {
   logger?: SealerLogger;
 }
 
+export interface StartResult {
+  started: boolean;
+  ready: boolean;
+}
+
 export interface Runner {
   health: HealthState;
-  start(): Promise<void>;
+  start(): Promise<StartResult>;
   stop(): Promise<void>;
 }
 
@@ -34,19 +40,32 @@ export function createRunner(deps: RunnerDeps): Runner {
   const pool = deps.pool ?? createSealerPool(deps.config);
   const ownsPool = deps.pool === undefined;
   const health = new HealthState();
+  const healthFile: HealthFilePublisher = createHealthFilePublisher(health, {
+    path: deps.config.healthFilePath,
+    intervalMs: deps.config.healthIntervalMs,
+    onError: (err) => logger.error({ err: String(err) }, 'audit_sealer: health-file write failed'),
+  });
   let loop: ClaimLoopHandle | null = null;
 
   return {
     health,
-    async start() {
+    async start(): Promise<StartResult> {
+      // Begin publishing immediately — the surface starts as not-ready and is
+      // refreshed below, so there is no window where the sealer is up without an
+      // observable readiness signal (EP-006 rev2 / Codex-bot P1).
+      healthFile.start();
       const startup = await validateStartup(pool);
       health.setStartup(startup);
+      healthFile.publish();
       if (!startup.ready) {
+        // NOT a silent return: the health surface reports not-ready (with the
+        // reason); the caller/orchestrator decides (restart / alert). The runner
+        // stays alive and observable; the pool remains open under it.
         logger.error(
           { checks: startup.checks },
-          'audit_sealer: startup validation failed — staying NOT ready (liveness intact)',
+          'audit_sealer: startup validation failed — health surface reports NOT ready (liveness intact)',
         );
-        return;
+        return { started: false, ready: false };
       }
       logger.info(
         { worker_id: deps.config.workerId },
@@ -59,11 +78,17 @@ export function createRunner(deps: RunnerDeps): Runner {
         metrics,
         logger,
         listOrgs: deps.listOrgs,
-        onBacklogAlert: (healthy) => health.setBacklogHealthy(healthy),
+        onBacklogAlert: (healthy) => {
+          health.setBacklogHealthy(healthy);
+          healthFile.publish();
+        },
       });
+      return { started: true, ready: true };
     },
     async stop() {
       health.setLive(false);
+      healthFile.publish();
+      healthFile.stop();
       if (loop) await loop.stop();
       if (ownsPool) await pool.end().catch(() => undefined);
     },

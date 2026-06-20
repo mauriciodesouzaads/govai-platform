@@ -163,13 +163,10 @@ export async function runScanTick(deps: ClaimLoopDeps): Promise<ScanTickSummary>
       backlog.oldestPendingAgeSec > deps.config.backlog.oldestPendingSec;
     if (alert) {
       summary.backlogAlert = true;
-      deps.onBacklogAlert?.(false);
       deps.logger.warn(
         { org_hash: orgHash(orgId), pending: backlog.pending, oldest_age_sec: backlog.oldestPendingAgeSec },
         'audit_sealer: backlog alert',
       );
-    } else {
-      deps.onBacklogAlert?.(true);
     }
 
     // Normal captured→sealed: discover chains (≤ claimBatch), drain each, bounded
@@ -202,6 +199,12 @@ export async function runScanTick(deps: ClaimLoopDeps): Promise<ScanTickSummary>
     summary.staleRecovered += sweep.recovered;
     summary.staleFailed += sweep.failed;
   }
+
+  // Backlog HEALTH is the TICK AGGREGATE — fired ONCE after ALL orgs are scanned,
+  // with `!summary.backlogAlert` (true-if-ANY-org-tripped). A later healthy org
+  // can no longer overwrite an earlier critical org's not-healthy signal
+  // (EP-006 rev2 / Codex-bot P2). The per-org metric + warn log above stay per-org.
+  deps.onBacklogAlert?.(!summary.backlogAlert);
 
   return summary;
 }

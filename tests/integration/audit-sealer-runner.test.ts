@@ -8,7 +8,9 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool, type PoolClient } from 'pg';
 import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
@@ -28,6 +30,7 @@ import { validateStartup } from '../../apps/audit-sealer/src/startup-validation.
 import { sealOnce } from '../../apps/audit-sealer/src/seal-once.js';
 import { sweepStaleRecoveries, recoverStaleRow } from '../../apps/audit-sealer/src/stale-recovery.js';
 import { runScanTick, startClaimLoop } from '../../apps/audit-sealer/src/claim-loop.js';
+import { createRunner } from '../../apps/audit-sealer/src/runner.js';
 import { HealthState } from '../../apps/audit-sealer/src/health.js';
 import {
   createRecordingSealerMetrics,
@@ -548,5 +551,87 @@ describe('S11 — NO provider traffic / NO apps/api loop (static source assertio
     };
     grepNo('apps/api/src/server.ts');
     grepNo('apps/api/src/pipeline/audit-bridge.ts');
+  });
+});
+
+describe('EP-006 rev2 FIX 2 — backlog health is the TICK AGGREGATE (P2)', () => {
+  it('A-critical + B-healthy in one tick → onBacklogAlert fired ONCE with healthy=false', async () => {
+    const orgA = await seedOrg(stack);
+    const orgB = await seedOrg(stack);
+    const chainA = newChain(orgA.org_id);
+    for (let i = 0; i < 3; i += 1) await seedCapture(orgA.org_id, chainA); // A: 3 pending
+    // B: no captures → healthy.
+    const calls: boolean[] = [];
+    const config = baseConfig({ AUDIT_SEALER_BACKLOG_PENDING_COUNT: '1' }); // A (3) > 1 → critical
+    await runScanTick({
+      pool: runnerPool,
+      kms,
+      config,
+      metrics: createRecordingSealerMetrics(),
+      logger,
+      listOrgs: async () => [orgA.org_id, orgB.org_id], // A critical first, B healthy AFTER
+      sleep: async () => undefined,
+      rand: () => 0,
+      onBacklogAlert: (h) => calls.push(h),
+    });
+    // ONCE, healthy=false — B (healthy, scanned later) did NOT overwrite A's critical.
+    expect(calls).toEqual([false]);
+  });
+
+  it('all-healthy tick → onBacklogAlert fired ONCE with healthy=true', async () => {
+    const orgA = await seedOrg(stack);
+    const calls: boolean[] = [];
+    await runScanTick({
+      pool: runnerPool,
+      kms,
+      config: baseConfig(),
+      metrics: createRecordingSealerMetrics(),
+      logger,
+      listOrgs: async () => [orgA.org_id],
+      sleep: async () => undefined,
+      rand: () => 0,
+      onBacklogAlert: (h) => calls.push(h),
+    });
+    expect(calls).toEqual([true]);
+  });
+});
+
+describe('EP-006 rev2 FIX 1 — a failed startup probe is OBSERVABLE not-ready (P1)', () => {
+  it('runner.start() returns not-ready AND the health file reads ready:false (not a silent idle)', async () => {
+    const healthPath = join(tmpdir(), `sealer-health-${randomUUID()}.json`);
+    const sig = 'govai.audit_capture_claim_for_seal(uuid, text, bigint)';
+    await withAdmin(null, async (c) => {
+      await c.query(`REVOKE EXECUTE ON FUNCTION ${sig} FROM govai_audit_sealer`);
+    });
+    const runner = createRunner({
+      config: baseConfig({ AUDIT_SEALER_HEALTH_FILE: healthPath }),
+      kms,
+      pool: runnerPool,
+      logger,
+      metrics: createRecordingSealerMetrics(),
+      listOrgs: async () => [],
+    });
+    try {
+      const result = await runner.start();
+      expect(result.started).toBe(false);
+      expect(result.ready).toBe(false);
+      // the EXPOSED surface (the health file), not just the in-memory readiness().
+      const surface = JSON.parse(readFileSync(healthPath, 'utf8')) as {
+        readiness: { ready: boolean; reason?: string; provider_native_unaffected: boolean };
+      };
+      expect(surface.readiness.ready).toBe(false);
+      expect(surface.readiness.reason).toBe('startup_probe_failed');
+      expect(surface.readiness.provider_native_unaffected).toBe(true); // not a provider-down signal
+    } finally {
+      await runner.stop();
+      await withAdmin(null, async (c) => {
+        await c.query(`GRANT EXECUTE ON FUNCTION ${sig} TO govai_audit_sealer`);
+      });
+      try {
+        rmSync(healthPath);
+      } catch {
+        /* ignore */
+      }
+    }
   });
 });

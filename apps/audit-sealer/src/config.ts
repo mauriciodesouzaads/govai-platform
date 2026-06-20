@@ -12,6 +12,8 @@ const ConfigSchema = z.object({
   databaseUrl: z.string().min(1, 'AUDIT_SEALER_DATABASE_URL is required'),
   poolMax: z.number().int().positive(),
   workerId: z.string().min(1),
+  healthFilePath: z.string().min(1),
+  healthIntervalMs: z.number().int().positive(),
   loop: z.object({
     claimBatch: z.number().int().positive(),
     maxInFlight: z.number().int().positive(),
@@ -70,6 +72,8 @@ export function loadSealerConfig(source: NodeJS.ProcessEnv = process.env): Seale
     databaseUrl: str(source, 'AUDIT_SEALER_DATABASE_URL', ''),
     poolMax: num(source, 'AUDIT_SEALER_POOL_MAX', 2),
     workerId: str(source, 'AUDIT_SEALER_WORKER_ID', 'audit-sealer-1'),
+    healthFilePath: str(source, 'AUDIT_SEALER_HEALTH_FILE', '/tmp/audit-sealer-health.json'),
+    healthIntervalMs: num(source, 'AUDIT_SEALER_HEALTH_INTERVAL_MS', 5000),
     loop: {
       claimBatch: num(source, 'AUDIT_SEALER_CLAIM_BATCH', 10),
       maxInFlight: num(source, 'AUDIT_SEALER_MAX_IN_FLIGHT', 2),
