@@ -3,8 +3,8 @@
 ## Status
 
 - **Evidence-first source of truth** for the current implementation state of GovAI.
-- **Does not authorize B3.** The AuditSealer runner is not started and is not authorized here.
-- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `d037e3309977dbc721c5404dac63c52375211db3` (2026-06-08), not from memory.
+- **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner; it consumes no provider traffic and runs outside the request hot path (see §3 and §7).
+- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `1b655deb88c29c4890c3dda0e77d98580f52bde0` (2026-06-21), not from memory.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
@@ -28,8 +28,8 @@ Counts from `find` at the source commit (not from docs):
 - regulatory docs (`docs/architecture/regulatory/*.md`): **20** (18–25 series present; **no** 26–30 files exist)
 - ADR docs (`docs/architecture/adr/*.md`): **23** (ADR-001..014 + ADR-020..028; **missing** ADR-015..019; ADR-028 is the most recent — `Accepted` and in main)
 - API route files (`apps/api/src/routes/*`): **17** (16 routes + `_not-implemented.ts`)
-- DB migrations (`apps/api/src/db/migrations/*`): **24** (0001..0025, **missing** 0006; highest `0025_audit_capture_outbox_foundation.sql`)
-- test files (`*.test.ts`/`*.spec.ts`): **140** on disk; **137** run by the default `pnpm test` (3 under `tests/live/` are live-gated)
+- DB migrations (`apps/api/src/db/migrations/*`): **25** (0001..0026, **missing** 0006; highest `0026_audit_capture_idempotency_content_anchor.sql`)
+- test files (`*.test.ts`/`*.spec.ts`): **155** on disk; **152** run by the default `pnpm test` (3 under `tests/live/` are live-gated)
 
 ---
 
@@ -92,7 +92,7 @@ Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are
 | B1 — `captureAuditEvent` adapter | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `packages/core-audit/src/capture.ts`; `audit-capture-bridge.test.ts` (titled "B1 integration tests for the captureAuditEvent adapter"), `capture.test.ts` — **tested as a primitive; see §3 wiring** |
 | B2 — sealer **library** | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `packages/core-audit/src/sealer.ts`; `audit-sealer-core.test.ts`, `sealer.test.ts` — one-shot primitives, no loop/process/`SET ROLE` |
 | B3 — sealer **runner** | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-006) | `apps/audit-sealer` — a dedicated deploy unit consuming `@govai/core-audit` verbatim: Shape-S per-seal tx (claim→append→mark_sealed via `withSealerPhaseRole`), the SEPARATE stale-recovery path (`loadSealingCaptureForRecovery` → idempotent re-append + mark_sealed; recoverable rows ADVANCED never failed; terminal stall surfaced via `terminal_failure` metric, not silently retried), startup readiness probe, bounded claim loop, OTel metrics. Integration-tested S0–S11 (`tests/integration/audit-sealer-runner.test.ts`) incl. the §8.3 no-duplicate byte-identical recovery proof. ADR-022–026 Accepted; ADR-023 Option A(b) impl/tested PR #92; Phase 2.5 wired PR-B #98. B3 authorized + implemented (EP-006); see `specs/audit-sealer-b3-technical-plan.md` |
-| Append/seal idempotency | capture: SOLVED; mark_sealed same-event: PARTIAL; **append→mark_sealed partial-failure: Option A(b) IMPLEMENTED/TESTED (PR #92)** | ADR-023 Option A(b) implemented/tested in PR #92 — deterministic `audit_event_id` = UUIDv5(org_id+capture_id) in `packages/core-audit/` (`auditAppend(eventId?)` lookup-after-lock + correspondence/payload-presence guards); `audit_events.id` is PK so no migration was needed. Remaining B3 blockers: Phase 2.5/AuditBridge implementation/tests and explicit B3 runner authorization (ADR-028 accepted/merged) |
+| Append/seal idempotency | capture: SOLVED; mark_sealed same-event: PARTIAL; **append→mark_sealed partial-failure: Option A(b) IMPLEMENTED/TESTED (PR #92)** | ADR-023 Option A(b) implemented/tested in PR #92 — deterministic `audit_event_id` = UUIDv5(org_id+capture_id) in `packages/core-audit/` (`auditAppend(eventId?)` lookup-after-lock + correspondence/payload-presence guards); `audit_events.id` is PK so no migration was needed. These former B3 preconditions are now satisfied — Phase 2.5/AuditBridge wiring (PR-B / EP-004) and the B3 runner (EP-006) are implemented and tested; ADR-028 accepted/merged |
 | Stale-sealing recovery | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-006) | ADR-023; implemented as the SEPARATE stale-recovery path in `apps/audit-sealer/src/stale-recovery.ts` (reconstructs via the EP-005.5 `loadSealingCaptureForRecovery`, idempotent re-append + mark_sealed; recoverable rows advanced, unrecoverable/divergent rows terminal-failed + alerted). Tested S3/S5/S6 |
 | Evidence completeness (counts, provider-without-audit) | PLANNED | B0 stores `attempts`/`last_error`/timestamps; no reporting/metrics layer |
 
@@ -161,14 +161,13 @@ The README and regulatory docs explicitly disclaim LGPD/judicial/legal/medical/f
 
 ## 6. Known stale docs
 
-Summarized in [stale-docs-register.md](./stale-docs-register.md): README status block, `workroom-governance-room.md` status, and ADR-020 role-model wording. Addressed minimally in this PR; ADR-022..026 acceptance + idempotency are a separate B3 decision-pack PR.
+Summarized in [stale-docs-register.md](./stale-docs-register.md): README status block, `workroom-governance-room.md` status, and ADR-020 role-model wording. ADR-022..026 are Accepted and B3 (EP-006) is implemented; see the PR-B / EP-004 and EP-006 reconciliation sections in stale-docs-register.md.
 
 ---
 
 ## 7. Current non-negotiables
 
 - **Provider-native semantics are sacred** (no re-serialization / hidden defaults / schema narrowing on the native surface).
-- **B3 is not authorized.**
 - **No provider traffic in the AuditSealer.**
 - **Evidence failure is evidence-plane health, not provider UX failure** for low-risk traffic.
 - **No runtime hard-deny claim** unless implemented and tested.
