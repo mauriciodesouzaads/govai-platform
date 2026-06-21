@@ -175,6 +175,8 @@ export function makeAuditBridge(
           ...(identity.idempotencyKeyHash
             ? { idempotency_key_hash: identity.idempotencyKeyHash }
             : {}),
+          provider: e.provider,
+          capability_id: e.capability_id,
         },
       },
       captureIntegrityTag: null,

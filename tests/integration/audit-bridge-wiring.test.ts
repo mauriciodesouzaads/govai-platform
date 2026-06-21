@@ -122,9 +122,14 @@ describe('EP-004 — AuditBridge wiring (I1/I2 happy path → exactly one captur
     expect(rows[0]!.chain_id).toBeTruthy();
     expect(rows[0]!.payload_hash_hex).toMatch(/^[0-9a-f]{64}$/);
     expect(rows[0]!.event_version).toBe('4');
-    // rev4 shape: identity_scope only (no idempotency key sent), NO per-attempt fields.
+    // rev4 shape: identity_scope + the two origin-stable enrichment fields
+    // (provider, capability_id, EP-008); still NO per-attempt fields (EP-003 P1 holds).
     expect(rows[0]!.redaction_metadata).toEqual({
-      audit_bridge: { identity_scope: 'govai_request_id' },
+      audit_bridge: {
+        identity_scope: 'govai_request_id',
+        provider: 'anthropic',
+        capability_id: 'anthropic.messages.create',
+      },
     });
   });
 
@@ -139,8 +144,14 @@ describe('EP-004 — AuditBridge wiring (I1/I2 happy path → exactly one captur
     expect(res.statusCode).toBe(200);
     const rows = await outboxRows(org.org_id);
     expect(rows).toHaveLength(1);
+    // rev4 shape: identity_scope + the two origin-stable enrichment fields
+    // (provider, capability_id, EP-008); still NO per-attempt fields (EP-003 P1 holds).
     expect(rows[0]!.redaction_metadata).toEqual({
-      audit_bridge: { identity_scope: 'govai_request_id' },
+      audit_bridge: {
+        identity_scope: 'govai_request_id',
+        provider: 'openai',
+        capability_id: 'openai.embeddings',
+      },
     });
   });
 

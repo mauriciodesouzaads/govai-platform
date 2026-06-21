@@ -443,3 +443,228 @@ describe('makeAuditBridge dispatch', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// EP-008-PRE — the AuditBridge enriches redaction_metadata.audit_bridge with the
+// two origin-stable fields `provider` + `capability_id` (so the EC-3 gap-list can
+// attribute each native-capture gap). The enrichment must NOT perturb (a) the
+// EP-003 P1 replay-stability invariant, nor (b) the captureId / payload_hash —
+// both of which are independent of redaction_metadata.
+// ---------------------------------------------------------------------------
+
+// Pre-enrichment golden fixture: captureId + payload_hash for baseEnvelope() under
+// REQ_IDENTITY. captureId is derived from coordinates+identity; payload_hash from
+// the projected payload — NEITHER reads redaction_metadata, so these literals are
+// unchanged by the enrichment. Pinned (not recomputed) to prove byte-invariance.
+const GOLDEN_CAPTURE_ID = '8855c5de-d646-5bf5-9cc6-86114f297281';
+const GOLDEN_PAYLOAD_HASH_HEX =
+  'a9d55b006d8084554b7f1228e7095ce744904452e8ea12f4c94ee51e17a519b0';
+
+// Faithful in-memory model of govai.audit_capture_insert_locked, keyed by
+// capture_id: a second insert with byte-identical equality columns REUSES the
+// stored row (same capture_seq); a divergent insert raises SQLSTATE 23505 exactly
+// as the SQL function does (RAISE ... USING ERRCODE='unique_violation', migration
+// 0025:657-658). redaction_metadata (param 15) is compared by jsonb VALUE-equality
+// via canonicalize() — order-independent, mirroring the function's
+// `v_existing.redaction_metadata IS DISTINCT FROM p_redaction_metadata`.
+function paramsEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i];
+    const y = b[i];
+    if (Buffer.isBuffer(x) || Buffer.isBuffer(y)) {
+      if (!Buffer.isBuffer(x) || !Buffer.isBuffer(y) || !x.equals(y)) return false;
+    } else if (i === P_REDACTION && typeof x === 'string' && typeof y === 'string') {
+      if (canonicalize(JSON.parse(x)) !== canonicalize(JSON.parse(y))) return false;
+    } else if (!Object.is(x, y)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function makeReplayStack() {
+  const calls: RecordedCall[] = [];
+  const store = new Map<unknown, { seq: string; params: unknown[] }>();
+  const seqs: string[] = [];
+  let counter = 0;
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
+    const v = values ?? [];
+    calls.push({ sql, values: v });
+    if (sql.includes('audit_capture_insert_locked')) {
+      const captureId = v[P_CAPTURE_ID];
+      const existing = store.get(captureId);
+      if (existing) {
+        if (!paramsEqual(existing.params, v)) {
+          throw Object.assign(
+            new Error(
+              'audit_capture_insert_locked: capture_id already exists with divergent immutable content',
+            ),
+            { code: '23505' },
+          );
+        }
+        seqs.push(existing.seq); // REUSE: same capture_seq, stored row left unchanged
+        return { rows: [{ capture_id: captureId, capture_seq: existing.seq }], rowCount: 1 };
+      }
+      counter += 1;
+      const seq = String(counter);
+      store.set(captureId, { seq, params: v });
+      seqs.push(seq);
+      return { rows: [{ capture_id: captureId, capture_seq: seq }], rowCount: 1 };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  const release = vi.fn();
+  const client = { query, release } as unknown as PoolClient;
+  const connect = vi.fn(async () => client);
+  const pool = { connect } as unknown as Pool;
+  const log = {
+    error: vi.fn(),
+    warn: vi.fn(),
+    info: vi.fn(),
+    debug: vi.fn(),
+    fatal: vi.fn(),
+    trace: vi.fn(),
+  } as unknown as FastifyBaseLogger;
+  const inserts = () => calls.filter((c) => c.sql.includes('audit_capture_insert_locked'));
+  return { pool, log, store, seqs, inserts, connect, release };
+}
+
+describe('audit-bridge: EP-008 provider+capability_id enrichment', () => {
+  const clientIdentity = (govaiRequestId: string): AuditBridgeRequestIdentity => ({
+    govaiRequestId,
+    identityScope: 'client_idempotency_key',
+    idempotencyKeyHash: 'c'.repeat(64),
+  });
+
+  // ---- HARD GATE 1: replay-stability (protects the EP-003 P1 fix) ----
+  // In best_effort a 23505 is SWALLOWED + logged as evidence_idempotency_conflict,
+  // so a divergent replay does NOT throw. Stability is therefore asserted by
+  // LOG-ABSENCE (no evidence_idempotency_conflict) + capture REUSE (same
+  // capture_seq, one row), NOT by the absence of a thrown exception.
+  it('HARD GATE replay-stability: same event replayed REUSES the capture, no evidence_idempotency_conflict (govai_request_id scope)', async () => {
+    const s = makeReplayStack();
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log });
+    // two attempts of the same logical request (the same govai_request_id replayed),
+    // differing ONLY in per-attempt fields that never reach the capture row.
+    await bridge(
+      { ...baseEnvelope(), audit_event_id: '11111111-1111-4111-8111-aaaaaaaaaaaa', latency_ms: 11, provider_request_id: 'req_r1' },
+      REQ_IDENTITY,
+    );
+    await bridge(
+      { ...baseEnvelope(), audit_event_id: '22222222-2222-4222-8222-bbbbbbbbbbbb', latency_ms: 22, provider_request_id: 'req_r2' },
+      REQ_IDENTITY,
+    );
+
+    expect(s.inserts()).toHaveLength(2); // both dispatches attempted the insert
+    expect(s.store.size).toBe(1); // ...but exactly ONE capture row exists (reuse)
+    expect(s.seqs[0]).toBe(s.seqs[1]); // same capture_seq -> REUSED, row unchanged
+    expect(s.log.error).not.toHaveBeenCalled(); // log-absence: no 23505 surfaced
+    expect(s.log.info).toHaveBeenCalledTimes(2); // both reached post-commit success
+    const r0 = JSON.parse(s.inserts()[0]!.values[P_REDACTION] as string);
+    const r1 = JSON.parse(s.inserts()[1]!.values[P_REDACTION] as string);
+    expect(r0).toEqual(r1); // enriched redaction_metadata byte-identical across replay
+    expect(r0.audit_bridge.provider).toBe('anthropic');
+    expect(r0.audit_bridge.capability_id).toBe('anthropic.messages.create');
+  });
+
+  it('HARD GATE replay-stability: same event replayed REUSES the capture, no evidence_idempotency_conflict (client_idempotency_key scope)', async () => {
+    const s = makeReplayStack();
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log });
+    // same idempotency key; a fresh govai_request_id per attempt (the key scope's
+    // captureId keys on the idempotency hash, not the request id) — U9a's shape.
+    await bridge(
+      { ...baseEnvelope(), audit_event_id: '11111111-1111-4111-8111-aaaaaaaaaaaa', latency_ms: 11, provider_request_id: 'req_k1' },
+      clientIdentity('a1111111-1111-4111-8111-111111111111'),
+    );
+    await bridge(
+      { ...baseEnvelope(), audit_event_id: '22222222-2222-4222-8222-bbbbbbbbbbbb', latency_ms: 22, provider_request_id: 'req_k2' },
+      clientIdentity('a2222222-2222-4222-8222-222222222222'),
+    );
+
+    expect(s.inserts()).toHaveLength(2);
+    expect(s.store.size).toBe(1);
+    expect(s.seqs[0]).toBe(s.seqs[1]);
+    expect(s.log.error).not.toHaveBeenCalled();
+    expect(s.log.info).toHaveBeenCalledTimes(2);
+    const r0 = JSON.parse(s.inserts()[0]!.values[P_REDACTION] as string);
+    const r1 = JSON.parse(s.inserts()[1]!.values[P_REDACTION] as string);
+    expect(r0).toEqual(r1);
+    expect(r0.audit_bridge.provider).toBe('anthropic');
+    expect(r0.audit_bridge.capability_id).toBe('anthropic.messages.create');
+    expect(r0.audit_bridge.idempotency_key_hash).toBe('c'.repeat(64));
+  });
+
+  it('replay-stability sentinel: divergent immutable content (same captureId, different occurred_at) DOES raise 23505 -> evidence_idempotency_conflict (the gate has teeth)', async () => {
+    // Same key + same coordinates => same captureId, but a different occurred_at
+    // (#8) is divergent immutable content (ADR-028 d). The model raises 23505 and
+    // the bridge logs evidence_idempotency_conflict — proving the green replay
+    // gates above are not vacuous (the enrichment, being origin-stable, never
+    // triggers this; a per-attempt field in the row WOULD).
+    const s = makeReplayStack();
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log });
+    const id = clientIdentity('a1111111-1111-4111-8111-111111111111');
+    await bridge({ ...baseEnvelope(), occurred_at: '2026-06-15T00:00:00.000Z' }, id);
+    await bridge({ ...baseEnvelope(), occurred_at: '2026-06-15T09:09:09.999Z' }, id);
+    expect(s.store.size).toBe(1); // the divergent second insert created no new row
+    expect(s.log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'evidence_idempotency_conflict' }),
+      expect.any(String),
+    );
+  });
+
+  // ---- HARD GATE 2: captureId + payload_hash invariance ----
+  it('HARD GATE invariance: captureId + payload_hash are byte-identical to the pre-enrichment golden fixture', async () => {
+    const s = await run(baseEnvelope(), REQ_IDENTITY);
+    const ins = s.insert()!;
+    expect(ins.values[P_CAPTURE_ID]).toBe(GOLDEN_CAPTURE_ID);
+    expect((ins.values[P_PAYLOAD_HASH] as Buffer).toString('hex')).toBe(GOLDEN_PAYLOAD_HASH_HEX);
+  });
+
+  // ---- Content: the enrichment reads the event's own fields (no remap/hardcode) ----
+  it('redaction_metadata.audit_bridge carries provider + capability_id from the event', async () => {
+    const sA = await run(baseEnvelope(), REQ_IDENTITY);
+    const abA = JSON.parse(sA.insert()!.values[P_REDACTION] as string).audit_bridge;
+    expect(abA).toMatchObject({
+      identity_scope: 'govai_request_id',
+      provider: 'anthropic',
+      capability_id: 'anthropic.messages.create',
+    });
+    expect('idempotency_key_hash' in abA).toBe(false);
+
+    // openai event -> the persisted values track e.provider / e.capability_id.
+    const openai = {
+      ...baseEnvelope(),
+      provider: 'openai',
+      capability_id: 'openai.responses.create',
+      native_endpoint: '/passthrough/openai/v1/responses',
+    } as PassthroughInvoked;
+    const abO = JSON.parse((await run(openai, REQ_IDENTITY)).insert()!.values[P_REDACTION] as string)
+      .audit_bridge;
+    expect(abO.provider).toBe('openai');
+    expect(abO.capability_id).toBe('openai.responses.create');
+
+    // client_idempotency_key scope keeps the stable idempotency_key_hash alongside it.
+    const abK = JSON.parse(
+      (await run(baseEnvelope(), clientIdentity('e1111111-1111-4111-8111-111111111111')))
+        .insert()!
+        .values[P_REDACTION] as string,
+    ).audit_bridge;
+    expect(abK).toMatchObject({
+      identity_scope: 'client_idempotency_key',
+      idempotency_key_hash: 'c'.repeat(64),
+      provider: 'anthropic',
+      capability_id: 'anthropic.messages.create',
+    });
+  });
+
+  // ---- CHECK-safety: the 0025 top-level redaction_metadata guard ----
+  it('enriched redaction_metadata is CHECK-safe: only top-level key is audit_bridge; no raw payload key', async () => {
+    const s = await run(baseEnvelope(), REQ_IDENTITY);
+    const rm = JSON.parse(s.insert()!.values[P_REDACTION] as string);
+    expect(Object.keys(rm)).toEqual(['audit_bridge']); // provider/capability_id nested, not top-level
+    for (const banned of ['prompt', 'response', 'raw_input', 'raw_output']) {
+      expect(Object.prototype.hasOwnProperty.call(rm, banned)).toBe(false);
+    }
+  });
+});
