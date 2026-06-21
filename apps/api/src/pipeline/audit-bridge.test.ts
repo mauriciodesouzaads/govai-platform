@@ -339,7 +339,7 @@ describe('makeAuditBridge dispatch', () => {
     return acc;
   };
 
-  it('U9a: faithful replay (same key + same occurred_at, varied per-attempt) -> all 18 equality columns byte-identical', async () => {
+  it('U9a: faithful replay (same key + same occurred_at, varied per-attempt) -> all 17 equality columns byte-identical', async () => {
     // Two attempts of the SAME logical operation: same idempotency key AND same
     // occurred_at, differing ONLY in per-attempt fields (a fresh govai_request_id
     // each, plus different audit_event_id / latency_ms / provider_request_id).
@@ -363,7 +363,7 @@ describe('makeAuditBridge dispatch', () => {
     );
     const v1 = a1.insert()!.values;
     const v2 = a2.insert()!.values;
-    // The full param array (all 18 SQL-equality columns + the captureId; none is
+    // The full param array (all 17 SQL-equality columns + the captureId; none is
     // a wall-clock value) is byte-identical across the replay -> SQL REUSES.
     expect(v1).toEqual(v2);
     // ...and explicitly the columns the P1 used to break:
@@ -372,7 +372,7 @@ describe('makeAuditBridge dispatch', () => {
     expect((v1[P_PAYLOAD_HASH] as Buffer).toString('hex')).toBe(
       (v2[P_PAYLOAD_HASH] as Buffer).toString('hex'),
     ); // column #9
-    expect(JSON.stringify(v1[P_REDACTION])).toBe(JSON.stringify(v2[P_REDACTION])); // column #14
+    expect(JSON.stringify(v1[P_REDACTION])).toBe(JSON.stringify(v2[P_REDACTION])); // redaction_metadata: validated+stored but no longer a divergence column (migration 0026)
   });
 
   it('U9b: a genuinely different occurred_at (same key) diverges on column #8 only -> NOT reuse-eligible', async () => {
@@ -460,13 +460,17 @@ const GOLDEN_CAPTURE_ID = '8855c5de-d646-5bf5-9cc6-86114f297281';
 const GOLDEN_PAYLOAD_HASH_HEX =
   'a9d55b006d8084554b7f1228e7095ce744904452e8ea12f4c94ee51e17a519b0';
 
-// Faithful in-memory model of govai.audit_capture_insert_locked, keyed by
+// Simplified in-memory model of govai.audit_capture_insert_locked, keyed by
 // capture_id: a second insert with byte-identical equality columns REUSES the
 // stored row (same capture_seq); a divergent insert raises SQLSTATE 23505 exactly
-// as the SQL function does (RAISE ... USING ERRCODE='unique_violation', migration
-// 0025:657-658). redaction_metadata (param 15) is compared by jsonb VALUE-equality
-// via canonicalize() — order-independent, mirroring the function's
-// `v_existing.redaction_metadata IS DISTINCT FROM p_redaction_metadata`.
+// as the SQL function does (RAISE ... USING ERRCODE='unique_violation'). NOTE: the
+// LANDED production function (migration 0026, EP-008-PRE-EQ) has a 17-condition
+// divergence chain that EXCLUDES redaction_metadata. This model still compares
+// redaction_metadata (param 15) by jsonb VALUE-equality via canonicalize(), which
+// is INERT for the same-version replays exercised below (redaction_metadata is
+// byte-identical across them); the authoritative cross-deploy behavior (old vs new
+// redaction_metadata shape -> REUSE, no 23505) is covered by the EQ's real-Postgres
+// test in tests/integration/audit-bridge-idempotency.test.ts.
 function paramsEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {

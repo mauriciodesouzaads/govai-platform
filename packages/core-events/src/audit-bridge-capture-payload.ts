@@ -131,8 +131,11 @@ function projectUsage(
  * Pure projection of a validated `PassthroughInvoked v3` envelope into the
  * immutable `AuditBridgeCapturePayloadV1`. Built field-by-field (no spread).
  * Per-attempt fields (`audit_event_id`, `latency_ms`, `provider_request_id`,
- * raw `govai_request_id`) are excluded here and travel in
- * `redactionMetadata.audit_bridge` (built by the dispatcher), never in the hash.
+ * raw `govai_request_id`) are excluded here; they are emitted only in the
+ * post-commit `audit_bridge.capture` log, never in `redactionMetadata.audit_bridge`
+ * and never in the hash. (`redactionMetadata.audit_bridge` carries only the
+ * captureId-deterministic `identity_scope` + optional `idempotency_key_hash` +
+ * `provider` + `capability_id`.)
  */
 export function projectCapturePayloadV1(e: PassthroughInvoked): AuditBridgeCapturePayloadV1 {
   return {
