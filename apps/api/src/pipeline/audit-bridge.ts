@@ -1,7 +1,8 @@
 // AuditBridge dispatcher (SPEC-01 §6; ADR-027 topology + ADR-028 identity &
 // payload-hash). Maps a validated `PassthroughInvoked v4` runtime event into the
-// B0/B1 capture outbox via `captureAuditEvent`. PR-A exports the factory and the
-// pure captureId helper; it is NOT wired into any route closure (that is PR-B).
+// B0/B1 capture outbox via `captureAuditEvent`. The factory and the pure
+// captureId helper are exported here and wired into all four direct-provider
+// route closures (PR-B / EP-004), each awaiting the dispatcher per request.
 
 import type { Pool, PoolClient } from 'pg';
 import type { FastifyBaseLogger } from 'fastify';

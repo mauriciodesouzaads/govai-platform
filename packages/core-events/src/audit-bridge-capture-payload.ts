@@ -1,5 +1,5 @@
 // AuditBridgeCapturePayloadV1 — the closed, immutable semantic-evidence
-// projection of a validated `PassthroughInvoked v3` envelope (ADR-028 §7,
+// projection of a validated `PassthroughInvoked v4` envelope (ADR-028 §7,
 // SPEC-01 §4). The capture `payloadHash` is `sha256(canonicalize(projection))`
 // — NOT the hash of the whole envelope, and NOT any single native_*_hash.
 //
@@ -7,7 +7,7 @@
 // FIELD-BY-FIELD. Object spread from the envelope or any sub-object is
 // FORBIDDEN, so unknown/future/banned keys can never flow into the hash. Every
 // nested object below is re-projected explicitly. `usage_json` is
-// `.passthrough()` in the v3 schema, so only its five documented numeric fields
+// `.passthrough()` in the v4 schema, so only its five documented numeric fields
 // are read here (its arbitrary extra keys are intentionally dropped). The
 // banned payload keys (prompt/response/raw_input/raw_output/messages/
 // completion/requestBody/responseBody) can therefore never appear at any depth
@@ -128,7 +128,7 @@ function projectUsage(
 }
 
 /**
- * Pure projection of a validated `PassthroughInvoked v3` envelope into the
+ * Pure projection of a validated `PassthroughInvoked v4` envelope into the
  * immutable `AuditBridgeCapturePayloadV1`. Built field-by-field (no spread).
  * Per-attempt fields (`audit_event_id`, `latency_ms`, `provider_request_id`,
  * raw `govai_request_id`) are excluded here; they are emitted only in the
