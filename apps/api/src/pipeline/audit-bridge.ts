@@ -145,10 +145,13 @@ export function makeAuditBridge(
     const { keyId, keyVersion } = AUDIT_CHAIN_KEY;
 
     // 6. B1 envelope — exactly the capture.ts contract. The capture row carries
-    // ONLY retry-stable content, so every one of the 18 SQL-equality columns is
+    // ONLY retry-stable content, so every one of the 17 SQL-equality columns is
     // byte-identical across a faithful idempotent replay and
     // `audit_capture_insert_locked` REUSES the existing capture instead of
-    // raising 23505 (ADR-028; EP-003 P1 fix). Per-attempt data is emitted as a
+    // raising 23505 (ADR-028; EP-003 P1 fix). redaction_metadata is validated and
+    // stored but EXCLUDED from the idempotency divergence check since the
+    // EP-008-PRE-EQ content-anchor amendment (migration 0026), so a cross-deploy
+    // change to its shape no longer raises 23505. Per-attempt data is emitted as a
     // structured log AFTER the commit, never on the row.
     const input: CaptureAuditEventInput = {
       captureId,
