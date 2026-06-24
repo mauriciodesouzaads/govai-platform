@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, it, expect, vi } from 'vitest';
 import type { Pool, PoolClient } from 'pg';
 import type { FastifyBaseLogger } from 'fastify';
@@ -12,7 +14,29 @@ import {
   AUDIT_BRIDGE_CAPTURE_NAMESPACE_UUID,
 } from './audit-bridge.js';
 import { AUDIT_CHAIN_KEY } from './audit-keys.js';
+import {
+  createRecordingAuditBridgeMetrics,
+  areLabelsSafe,
+} from './audit-bridge-metrics.js';
+import type { AuditBridgeMetrics } from './audit-bridge-metrics.js';
 import type { AuditBridgeRequestIdentity } from './request-identity.js';
+
+// EP-008B: a delegating stub of projectCapturePayloadV1 so a single test can
+// drive the S3 (canonicalization_failed) drop path. OFF by default — every other
+// test (incl. the golden payload-hash fixtures) uses the real projection.
+const coreEventsCtl = vi.hoisted(() => ({ projectThrows: false }));
+vi.mock('@govai/core-events', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('@govai/core-events');
+  return {
+    ...actual,
+    projectCapturePayloadV1: (event: Parameters<typeof actual.projectCapturePayloadV1>[0]) => {
+      if (coreEventsCtl.projectThrows) {
+        throw new Error('projection failed (test-injected)');
+      }
+      return actual.projectCapturePayloadV1(event);
+    },
+  };
+});
 
 // ---- capture.ts param indices (SELECT ... audit_capture_insert_locked($1..$20)) ----
 const P_CAPTURE_ID = 0;
@@ -670,5 +694,223 @@ describe('audit-bridge: EP-008 provider+capability_id enrichment', () => {
     for (const banned of ['prompt', 'response', 'raw_input', 'raw_output']) {
       expect(Object.prototype.hasOwnProperty.call(rm, banned)).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EP-008B (EC-3b): best-effort drop/capture counters. Inject the recording
+// double and drive each of the 5 active drop scenarios + the success point.
+// For EACH: assert (a) the counter recorded EXACTLY once with the right reason +
+// cardinality-safe labels, AND (b) the dispatcher still resolves to void without
+// throwing (observe-only). The capability dimension is the bounded
+// `capability_level` enum, NEVER the free-form `capability_id` (the C1 guard);
+// `key_resolution_failed` (latent, no active site) is never emitted.
+// ---------------------------------------------------------------------------
+describe('audit-bridge: EP-008B drop/capture counters (EC-3b)', () => {
+  const ORG = '11111111-1111-4111-8111-111111111111'; // = baseEnvelope().tenant_context.org_id
+  const ORG_HASH = createHash('sha256').update(ORG).digest('hex').slice(0, 16);
+  const DROPS = 'govai_audit_bridge_drops_total';
+  const CAPTURES = 'govai_audit_bridge_captures_total';
+  // A metrics impl whose methods THROW — the Codex bot P2: such an injected impl
+  // must NOT perturb the request/capture path (the safeMetric structural wrap).
+  const throwingMetrics: AuditBridgeMetrics = {
+    dropTotal: () => {
+      throw new Error('metrics impl boom');
+    },
+    captureTotal: () => {
+      throw new Error('metrics impl boom');
+    },
+  };
+
+  function setup(opts?: { insertError?: unknown }) {
+    const s = makeStack(opts);
+    const metrics = createRecordingAuditBridgeMetrics();
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log, metrics });
+    return { s, metrics, bridge };
+  }
+
+  it('S1 missing_request_identity -> drops_total{reason} x1 (reason-only), resolves void', async () => {
+    const { metrics, bridge } = setup();
+    await expect(bridge(baseEnvelope(), undefined)).resolves.toBeUndefined();
+    expect(metrics.records).toEqual([
+      { name: DROPS, value: 1, labels: { reason: 'missing_request_identity' } },
+    ]);
+  });
+
+  it('S2 invalid_runtime_event -> drops_total{reason} x1 (reason-only, no govai_request_id), resolves void', async () => {
+    const { metrics, bridge } = setup();
+    await expect(bridge({ not: 'a passthrough event' }, REQ_IDENTITY)).resolves.toBeUndefined();
+    expect(metrics.records).toEqual([
+      { name: DROPS, value: 1, labels: { reason: 'invalid_runtime_event' } },
+    ]);
+  });
+
+  it('S3 canonicalization_failed -> drops_total{reason,provider,capability_level,org_hash} x1, resolves void', async () => {
+    const { metrics, bridge } = setup();
+    coreEventsCtl.projectThrows = true;
+    try {
+      await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    } finally {
+      coreEventsCtl.projectThrows = false;
+    }
+    expect(metrics.records).toEqual([
+      {
+        name: DROPS,
+        value: 1,
+        labels: {
+          reason: 'canonicalization_failed',
+          provider: 'anthropic',
+          capability_level: 'passthrough_audited',
+          org_hash: ORG_HASH,
+        },
+      },
+    ]);
+  });
+
+  it('S4 evidence_idempotency_conflict (23505) -> drops_total{full labels} x1, resolves void', async () => {
+    const conflict = Object.assign(new Error('divergent immutable content'), { code: '23505' });
+    const { metrics, bridge } = setup({ insertError: conflict });
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    expect(metrics.records).toEqual([
+      {
+        name: DROPS,
+        value: 1,
+        labels: {
+          reason: 'evidence_idempotency_conflict',
+          provider: 'anthropic',
+          capability_level: 'passthrough_audited',
+          org_hash: ORG_HASH,
+        },
+      },
+    ]);
+  });
+
+  it('S5 capture_failed (generic) -> drops_total{full labels} x1, resolves void', async () => {
+    const { metrics, bridge } = setup({ insertError: new Error('db down') });
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    expect(metrics.records).toEqual([
+      {
+        name: DROPS,
+        value: 1,
+        labels: {
+          reason: 'capture_failed',
+          provider: 'anthropic',
+          capability_level: 'passthrough_audited',
+          org_hash: ORG_HASH,
+        },
+      },
+    ]);
+  });
+
+  it('SUCCESS -> captures_total{provider,capability_level,org_hash} x1, zero drops, resolves void', async () => {
+    const { metrics, bridge } = setup();
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    expect(metrics.records).toEqual([
+      {
+        name: CAPTURES,
+        value: 1,
+        labels: {
+          provider: 'anthropic',
+          capability_level: 'passthrough_audited',
+          org_hash: ORG_HASH,
+        },
+      },
+    ]);
+    expect(metrics.records.filter((r) => r.name === DROPS)).toHaveLength(0);
+  });
+
+  it('cardinality-safety + C1 (capability_level not capability_id) + latent guards across every scenario', async () => {
+    const all: { name: string; value: number; labels: Record<string, string> }[] = [];
+    const drive = async (
+      event: unknown,
+      identity: AuditBridgeRequestIdentity | undefined,
+      opts?: { insertError?: unknown; projectThrows?: boolean },
+    ) => {
+      const { metrics, bridge } = setup(
+        opts?.insertError !== undefined ? { insertError: opts.insertError } : undefined,
+      );
+      if (opts?.projectThrows) coreEventsCtl.projectThrows = true;
+      try {
+        await bridge(event, identity);
+      } finally {
+        coreEventsCtl.projectThrows = false;
+      }
+      all.push(...metrics.records);
+    };
+    await drive(baseEnvelope(), undefined); // S1
+    await drive({ not: 'valid' }, REQ_IDENTITY); // S2
+    await drive(baseEnvelope(), REQ_IDENTITY, { projectThrows: true }); // S3
+    await drive(baseEnvelope(), REQ_IDENTITY, {
+      insertError: Object.assign(new Error('x'), { code: '23505' }),
+    }); // S4
+    await drive(baseEnvelope(), REQ_IDENTITY, { insertError: new Error('db down') }); // S5
+    await drive(baseEnvelope(), REQ_IDENTITY); // SUCCESS
+
+    expect(all).toHaveLength(6); // 5 drops + 1 capture
+
+    const ALLOWED = ['reason', 'provider', 'capability_level', 'org_hash'];
+    for (const rec of all) {
+      // (a) every key is in the cardinality-safe allow-list
+      expect(areLabelsSafe(rec.labels)).toBe(true);
+      for (const k of Object.keys(rec.labels)) expect(ALLOWED).toContain(k);
+      // (b) the C1 guard: capability dimension is the bounded capability_level,
+      // NEVER the free-form capability_id; and no raw id / payload value leaks.
+      expect('capability_id' in rec.labels).toBe(false);
+      const json = JSON.stringify(rec.labels);
+      expect(json).not.toContain(ORG); // raw org_id (only org_hash is emitted)
+      expect(json).not.toContain(REQ_IDENTITY.govaiRequestId); // govai_request_id
+      expect(json).not.toContain('anthropic.messages.create'); // the capability_id VALUE
+      if (rec.labels['capability_level'] !== undefined) {
+        expect(['passthrough_audited', 'policy_governed', 'evidence_grade']).toContain(
+          rec.labels['capability_level'],
+        );
+      }
+    }
+    // latent guard: key_resolution_failed has no active site -> never emitted.
+    expect(all.some((r) => r.labels['reason'] === 'key_resolution_failed')).toBe(false);
+    // exactly the 5 active drop reasons, once each.
+    const dropReasons = all
+      .filter((r) => r.name === DROPS)
+      .map((r) => r.labels['reason'])
+      .sort();
+    expect(dropReasons).toEqual(
+      [
+        'canonicalization_failed',
+        'capture_failed',
+        'evidence_idempotency_conflict',
+        'invalid_runtime_event',
+        'missing_request_identity',
+      ].sort(),
+    );
+  });
+
+  // --- Codex bot P2 fix-up (EP-008B rev3): observe-only is STRUCTURAL ---
+  it('structural observe-only: a THROWING metrics impl neither fails a successful request nor misclassifies the committed capture', async () => {
+    const s = makeStack();
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log, metrics: throwingMetrics });
+    // (a) the throwing captureTotal at Step 7b is swallowed by safeMetric -> resolves.
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    // capture committed: insert ran, COMMIT ran, the success log fired.
+    expect(s.insert()).toBeDefined();
+    expect(s.sql('COMMIT')).toHaveLength(1);
+    expect(s.log.info).toHaveBeenCalledWith(expect.anything(), 'audit_bridge.capture');
+    // (b) NOT misclassified: the Step-7 catch never ran -> no capture_failed /
+    // evidence_idempotency_conflict log, and no post-success ROLLBACK.
+    expect(s.log.error).not.toHaveBeenCalled();
+    expect(s.log.warn).not.toHaveBeenCalled();
+    expect(s.sql('ROLLBACK')).toHaveLength(0);
+  });
+
+  it('structural observe-only: a THROWING metrics impl in a drop path (S5) does not escape the dispatcher', async () => {
+    const s = makeStack({ insertError: new Error('db down') });
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log, metrics: throwingMetrics });
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    // the real drop still logged (capture_failed) + rolled back; the throwing
+    // dropTotal in the catch was swallowed by safeMetric (did not escape).
+    expect(s.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'capture_failed' }),
+      expect.any(String),
+    );
+    expect(s.sql('ROLLBACK')).toHaveLength(1);
   });
 });

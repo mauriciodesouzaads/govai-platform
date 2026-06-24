@@ -14,6 +14,8 @@ import type { PassthroughInvoked } from '@govai/core-events';
 import { setLocalAppOrgId } from '@govai/core-tenant';
 
 import { AUDIT_CHAIN_KEY } from './audit-keys.js';
+import { createOtelAuditBridgeMetrics } from './audit-bridge-metrics.js';
+import type { AuditBridgeMetrics } from './audit-bridge-metrics.js';
 import { requestIdentityAls } from './request-identity.js';
 import type { AuditBridgeRequestIdentity } from './request-identity.js';
 
@@ -36,6 +38,13 @@ export interface AuditBridgeDeps {
   log: FastifyBaseLogger;
   /** `strict` is plumbed but NEVER enabled in v1 (ADR-028 §9). */
   posture?: 'best_effort' | 'strict';
+  /**
+   * Cardinality-safe OTel drop/capture counters (EP-008B / EC-3b). Optional;
+   * defaults to the OTel-backed impl. Observe-only: the calls are non-throwing
+   * (swallowed) and never affect the request path. Tests inject the recording
+   * double. No-op until the API MeterProvider is wired (EP-008B-FOLLOWUP).
+   */
+  metrics?: AuditBridgeMetrics;
 }
 
 /** Fields read from the validated envelope to scope the captureId (ADR-028 §4). */
@@ -100,12 +109,28 @@ export function makeAuditBridge(
   deps: AuditBridgeDeps,
 ): (event: unknown, identity?: AuditBridgeRequestIdentity) => Promise<void> {
   const posture: 'best_effort' | 'strict' = deps.posture ?? 'best_effort';
+  // EP-008B: cardinality-safe drop/capture counters. Resolved once per factory
+  // call; observe-only and non-throwing (see audit-bridge-metrics.ts).
+  const metrics = deps.metrics ?? createOtelAuditBridgeMetrics();
+  // Observe-only must be STRUCTURAL: no injected metrics impl may throw into the
+  // request/capture path. (A throw from captureTotal at Step 7b would otherwise be
+  // caught by the Step-7 catch and misclassify a committed capture as capture_failed,
+  // or rethrow under strict.) The impl's internal .add() swallow remains defense-in-depth.
+  const safeMetric = (f: () => void): void => {
+    try {
+      f();
+    } catch {
+      /* observe-only: metrics never perturb the request/capture path */
+    }
+  };
 
   return async (event: unknown, identityArg?: AuditBridgeRequestIdentity): Promise<void> => {
     // 1. Resolve request identity (arg overrides ALS store).
     const identity = identityArg ?? requestIdentityAls.getStore();
     if (!identity) {
       deps.log.error({ reason: 'missing_request_identity' }, 'audit-bridge: no request identity');
+      // S1: no identity/event parsed yet → reason-only (cardinality-safe).
+      safeMetric(() => metrics.dropTotal({ reason: 'missing_request_identity' }));
       return;
     }
 
@@ -116,6 +141,9 @@ export function makeAuditBridge(
         { reason: 'invalid_runtime_event', govai_request_id: identity.govaiRequestId },
         'audit-bridge: invalid runtime event',
       );
+      // S2: event failed to parse → reason-only (govai_request_id is high-
+      // cardinality; it stays in the log, never as a label).
+      safeMetric(() => metrics.dropTotal({ reason: 'invalid_runtime_event' }));
       return;
     }
     const e: PassthroughInvoked = parsed.data;
@@ -129,6 +157,16 @@ export function makeAuditBridge(
       deps.log.error(
         { reason: 'canonicalization_failed', govai_request_id: identity.govaiRequestId, err: errMessage(err) },
         'audit-bridge: canonicalization failed',
+      );
+      // S3: `e` is in scope (assigned at the end of Step 2); the local `orgId` is
+      // NOT yet declared here, so read the org via `e.tenant_context.org_id`.
+      safeMetric(() =>
+        metrics.dropTotal({
+          reason: 'canonicalization_failed',
+          provider: e.provider,
+          capability_level: e.capability_level,
+          org_id: e.tenant_context.org_id,
+        }),
       );
       return;
     }
@@ -211,6 +249,14 @@ export function makeAuditBridge(
         },
         'audit_bridge.capture',
       );
+      // Step 7b SUCCESS denominator (strictly post-COMMIT): the drop-rate base.
+      safeMetric(() =>
+        metrics.captureTotal({
+          provider: e.provider,
+          capability_level: e.capability_level,
+          org_id: e.tenant_context.org_id,
+        }),
+      );
     } catch (err) {
       if (client) {
         await client.query('ROLLBACK').catch(() => undefined);
@@ -221,10 +267,28 @@ export function makeAuditBridge(
           { reason, govai_request_id: identity.govaiRequestId, capture_id: captureId },
           'audit-bridge: evidence idempotency conflict',
         );
+        // S4: 23505 conflict. `e` (and `orgId`) are in scope; read via `e`.
+        safeMetric(() =>
+          metrics.dropTotal({
+            reason,
+            provider: e.provider,
+            capability_level: e.capability_level,
+            org_id: e.tenant_context.org_id,
+          }),
+        );
       } else {
         deps.log.warn(
           { reason, govai_request_id: identity.govaiRequestId, err: errMessage(err) },
           'audit-bridge: capture failed',
+        );
+        // S5: generic capture failure (incl. connect/set_config/captureAuditEvent).
+        safeMetric(() =>
+          metrics.dropTotal({
+            reason,
+            provider: e.provider,
+            capability_level: e.capability_level,
+            org_id: e.tenant_context.org_id,
+          }),
         );
       }
       // 8. best_effort: the request path never fails in v1. `strict` request-
