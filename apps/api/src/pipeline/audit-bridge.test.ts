@@ -18,6 +18,7 @@ import {
   createRecordingAuditBridgeMetrics,
   areLabelsSafe,
 } from './audit-bridge-metrics.js';
+import type { AuditBridgeMetrics } from './audit-bridge-metrics.js';
 import type { AuditBridgeRequestIdentity } from './request-identity.js';
 
 // EP-008B: a delegating stub of projectCapturePayloadV1 so a single test can
@@ -710,6 +711,16 @@ describe('audit-bridge: EP-008B drop/capture counters (EC-3b)', () => {
   const ORG_HASH = createHash('sha256').update(ORG).digest('hex').slice(0, 16);
   const DROPS = 'govai_audit_bridge_drops_total';
   const CAPTURES = 'govai_audit_bridge_captures_total';
+  // A metrics impl whose methods THROW — the Codex bot P2: such an injected impl
+  // must NOT perturb the request/capture path (the safeMetric structural wrap).
+  const throwingMetrics: AuditBridgeMetrics = {
+    dropTotal: () => {
+      throw new Error('metrics impl boom');
+    },
+    captureTotal: () => {
+      throw new Error('metrics impl boom');
+    },
+  };
 
   function setup(opts?: { insertError?: unknown }) {
     const s = makeStack(opts);
@@ -871,5 +882,35 @@ describe('audit-bridge: EP-008B drop/capture counters (EC-3b)', () => {
         'missing_request_identity',
       ].sort(),
     );
+  });
+
+  // --- Codex bot P2 fix-up (EP-008B rev3): observe-only is STRUCTURAL ---
+  it('structural observe-only: a THROWING metrics impl neither fails a successful request nor misclassifies the committed capture', async () => {
+    const s = makeStack();
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log, metrics: throwingMetrics });
+    // (a) the throwing captureTotal at Step 7b is swallowed by safeMetric -> resolves.
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    // capture committed: insert ran, COMMIT ran, the success log fired.
+    expect(s.insert()).toBeDefined();
+    expect(s.sql('COMMIT')).toHaveLength(1);
+    expect(s.log.info).toHaveBeenCalledWith(expect.anything(), 'audit_bridge.capture');
+    // (b) NOT misclassified: the Step-7 catch never ran -> no capture_failed /
+    // evidence_idempotency_conflict log, and no post-success ROLLBACK.
+    expect(s.log.error).not.toHaveBeenCalled();
+    expect(s.log.warn).not.toHaveBeenCalled();
+    expect(s.sql('ROLLBACK')).toHaveLength(0);
+  });
+
+  it('structural observe-only: a THROWING metrics impl in a drop path (S5) does not escape the dispatcher', async () => {
+    const s = makeStack({ insertError: new Error('db down') });
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log, metrics: throwingMetrics });
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+    // the real drop still logged (capture_failed) + rolled back; the throwing
+    // dropTotal in the catch was swallowed by safeMetric (did not escape).
+    expect(s.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'capture_failed' }),
+      expect.any(String),
+    );
+    expect(s.sql('ROLLBACK')).toHaveLength(1);
   });
 });

@@ -112,6 +112,17 @@ export function makeAuditBridge(
   // EP-008B: cardinality-safe drop/capture counters. Resolved once per factory
   // call; observe-only and non-throwing (see audit-bridge-metrics.ts).
   const metrics = deps.metrics ?? createOtelAuditBridgeMetrics();
+  // Observe-only must be STRUCTURAL: no injected metrics impl may throw into the
+  // request/capture path. (A throw from captureTotal at Step 7b would otherwise be
+  // caught by the Step-7 catch and misclassify a committed capture as capture_failed,
+  // or rethrow under strict.) The impl's internal .add() swallow remains defense-in-depth.
+  const safeMetric = (f: () => void): void => {
+    try {
+      f();
+    } catch {
+      /* observe-only: metrics never perturb the request/capture path */
+    }
+  };
 
   return async (event: unknown, identityArg?: AuditBridgeRequestIdentity): Promise<void> => {
     // 1. Resolve request identity (arg overrides ALS store).
@@ -119,7 +130,7 @@ export function makeAuditBridge(
     if (!identity) {
       deps.log.error({ reason: 'missing_request_identity' }, 'audit-bridge: no request identity');
       // S1: no identity/event parsed yet → reason-only (cardinality-safe).
-      metrics.dropTotal({ reason: 'missing_request_identity' });
+      safeMetric(() => metrics.dropTotal({ reason: 'missing_request_identity' }));
       return;
     }
 
@@ -132,7 +143,7 @@ export function makeAuditBridge(
       );
       // S2: event failed to parse → reason-only (govai_request_id is high-
       // cardinality; it stays in the log, never as a label).
-      metrics.dropTotal({ reason: 'invalid_runtime_event' });
+      safeMetric(() => metrics.dropTotal({ reason: 'invalid_runtime_event' }));
       return;
     }
     const e: PassthroughInvoked = parsed.data;
@@ -149,12 +160,14 @@ export function makeAuditBridge(
       );
       // S3: `e` is in scope (assigned at the end of Step 2); the local `orgId` is
       // NOT yet declared here, so read the org via `e.tenant_context.org_id`.
-      metrics.dropTotal({
-        reason: 'canonicalization_failed',
-        provider: e.provider,
-        capability_level: e.capability_level,
-        org_id: e.tenant_context.org_id,
-      });
+      safeMetric(() =>
+        metrics.dropTotal({
+          reason: 'canonicalization_failed',
+          provider: e.provider,
+          capability_level: e.capability_level,
+          org_id: e.tenant_context.org_id,
+        }),
+      );
       return;
     }
 
@@ -237,11 +250,13 @@ export function makeAuditBridge(
         'audit_bridge.capture',
       );
       // Step 7b SUCCESS denominator (strictly post-COMMIT): the drop-rate base.
-      metrics.captureTotal({
-        provider: e.provider,
-        capability_level: e.capability_level,
-        org_id: e.tenant_context.org_id,
-      });
+      safeMetric(() =>
+        metrics.captureTotal({
+          provider: e.provider,
+          capability_level: e.capability_level,
+          org_id: e.tenant_context.org_id,
+        }),
+      );
     } catch (err) {
       if (client) {
         await client.query('ROLLBACK').catch(() => undefined);
@@ -253,24 +268,28 @@ export function makeAuditBridge(
           'audit-bridge: evidence idempotency conflict',
         );
         // S4: 23505 conflict. `e` (and `orgId`) are in scope; read via `e`.
-        metrics.dropTotal({
-          reason,
-          provider: e.provider,
-          capability_level: e.capability_level,
-          org_id: e.tenant_context.org_id,
-        });
+        safeMetric(() =>
+          metrics.dropTotal({
+            reason,
+            provider: e.provider,
+            capability_level: e.capability_level,
+            org_id: e.tenant_context.org_id,
+          }),
+        );
       } else {
         deps.log.warn(
           { reason, govai_request_id: identity.govaiRequestId, err: errMessage(err) },
           'audit-bridge: capture failed',
         );
         // S5: generic capture failure (incl. connect/set_config/captureAuditEvent).
-        metrics.dropTotal({
-          reason,
-          provider: e.provider,
-          capability_level: e.capability_level,
-          org_id: e.tenant_context.org_id,
-        });
+        safeMetric(() =>
+          metrics.dropTotal({
+            reason,
+            provider: e.provider,
+            capability_level: e.capability_level,
+            org_id: e.tenant_context.org_id,
+          }),
+        );
       }
       // 8. best_effort: the request path never fails in v1. `strict` request-
       // failing enforcement is intentionally deferred to a future PR.
