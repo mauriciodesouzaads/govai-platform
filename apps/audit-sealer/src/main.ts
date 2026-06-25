@@ -9,12 +9,20 @@ import { loadSealerConfig } from './config.js';
 import { listOrgsFromEnv } from './org-discovery.js';
 import { createRunner } from './runner.js';
 import { createLogger } from './logging.js';
+import { startTelemetry } from './telemetry.js';
 
 async function main(): Promise<void> {
   const logger = createLogger();
   const config = loadSealerConfig(process.env);
   const env = loadEnv(process.env);
   const kms = createKmsFromEnv(env);
+
+  // EP-008B-FOLLOWUP-SEALER: register the global OTel MeterProvider BEFORE
+  // createRunner (which builds the default createOtelSealerMetrics() and caches its
+  // instruments at getMeter()-time). Gated on OTEL_EXPORTER_OTLP_ENDPOINT: a no-op
+  // with the endpoint unset. No KMS boot-probe here, so the placement is free
+  // between loadEnv and createRunner. Observe-only.
+  const telemetry = startTelemetry(env, logger);
 
   const runner = createRunner({
     config,
@@ -40,6 +48,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'audit_sealer: shutting down — draining');
     await runner.stop();
+    await telemetry.shutdown().catch(() => undefined);
     logger.info('audit_sealer: drained; exiting');
     process.exit(0);
   };
