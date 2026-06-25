@@ -35,7 +35,10 @@ const EnvSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
 
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
-  OTEL_SERVICE_NAME: z.string().default('govai-api'),
+  // Optional (no shared default): each app supplies its own service.name fallback
+  // via @govai/observability resolveServiceName(); an explicit value still overrides.
+  // (A shared 'govai-api' default made the sealer's fallback dead code — EP-OBS-REFACTOR.)
+  OTEL_SERVICE_NAME: z.string().optional(),
   OTEL_TRACES_SAMPLER_ARG: z.coerce.number().min(0).max(1).default(1.0),
 
   GOVAI_LIVE_TESTS: z

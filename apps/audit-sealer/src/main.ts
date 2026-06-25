@@ -5,11 +5,11 @@
 
 import { loadEnv } from '@govai/config';
 import { createKmsFromEnv } from '@govai/core-identity';
+import { startTelemetry } from '@govai/observability';
 import { loadSealerConfig } from './config.js';
 import { listOrgsFromEnv } from './org-discovery.js';
 import { createRunner } from './runner.js';
 import { createLogger } from './logging.js';
-import { startTelemetry } from './telemetry.js';
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   // instruments at getMeter()-time). Gated on OTEL_EXPORTER_OTLP_ENDPOINT: a no-op
   // with the endpoint unset. No KMS boot-probe here, so the placement is free
   // between loadEnv and createRunner. Observe-only.
-  const telemetry = startTelemetry(env, logger);
+  const telemetry = startTelemetry(env, { serviceName: 'govai-audit-sealer', logger });
 
   const runner = createRunner({
     config,

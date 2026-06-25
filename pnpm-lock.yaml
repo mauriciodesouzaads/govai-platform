@@ -71,6 +71,9 @@ importers:
       '@govai/dlp-br':
         specifier: workspace:*
         version: link:../../packages/dlp-br
+      '@govai/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@govai/provider-anthropic':
         specifier: workspace:*
         version: link:../../packages/provider-anthropic
@@ -83,21 +86,9 @@ importers:
       '@opentelemetry/api':
         specifier: 1.9.1
         version: 1.9.1
-      '@opentelemetry/exporter-metrics-otlp-http':
-        specifier: 0.216.0
-        version: 0.216.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/resources':
-        specifier: 2.7.1
-        version: 2.7.1(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-metrics':
-        specifier: 2.7.1
-        version: 2.7.1(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-node':
         specifier: 0.216.0
         version: 0.216.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/semantic-conventions':
-        specifier: 1.40.0
-        version: 1.40.0
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(pg@8.20.0)
@@ -120,6 +111,9 @@ importers:
         specifier: 4.4.2
         version: 4.4.2
     devDependencies:
+      '@opentelemetry/sdk-metrics':
+        specifier: 2.7.1
+        version: 2.7.1(@opentelemetry/api@1.9.1)
       '@types/node':
         specifier: 24.10.0
         version: 24.10.0
@@ -147,24 +141,15 @@ importers:
       '@govai/core-identity':
         specifier: workspace:*
         version: link:../../packages/core-identity
+      '@govai/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
       '@opentelemetry/api':
         specifier: 1.9.1
         version: 1.9.1
-      '@opentelemetry/exporter-metrics-otlp-http':
-        specifier: 0.216.0
-        version: 0.216.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/resources':
-        specifier: 2.7.1
-        version: 2.7.1(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-metrics':
-        specifier: 2.7.1
-        version: 2.7.1(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-node':
         specifier: 0.216.0
         version: 0.216.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/semantic-conventions':
-        specifier: 1.40.0
-        version: 1.40.0
       pg:
         specifier: 8.20.0
         version: 8.20.0
@@ -175,6 +160,9 @@ importers:
         specifier: 4.4.2
         version: 4.4.2
     devDependencies:
+      '@opentelemetry/sdk-metrics':
+        specifier: 2.7.1
+        version: 2.7.1(@opentelemetry/api@1.9.1)
       '@types/node':
         specifier: 24.10.0
         version: 24.10.0
@@ -302,6 +290,28 @@ importers:
       tsx:
         specifier: 4.21.0
         version: 4.21.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/observability:
+    dependencies:
+      '@opentelemetry/api':
+        specifier: 1.9.1
+        version: 1.9.1
+      '@opentelemetry/exporter-metrics-otlp-http':
+        specifier: 0.216.0
+        version: 0.216.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/resources':
+        specifier: 2.7.1
+        version: 2.7.1(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-metrics':
+        specifier: 2.7.1
+        version: 2.7.1(@opentelemetry/api@1.9.1)
+      '@opentelemetry/semantic-conventions':
+        specifier: 1.40.0
+        version: 1.40.0
+    devDependencies:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
