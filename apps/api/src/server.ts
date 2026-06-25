@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit';
 import type { Pool } from 'pg';
 import { loadEnv, originsFromCsv, assertCorsSafeForProd, BootError, type GovAIEnv } from '@govai/config';
 import { createKmsFromEnv, type Kms } from '@govai/core-identity';
+import { startTelemetry } from '@govai/observability';
 import { createPool } from './db/client.js';
 import { healthRoute } from './routes/health.js';
 import { capabilitiesRoute } from './routes/capabilities.js';
@@ -23,7 +24,6 @@ import { workroomRunsRoute } from './routes/workroom-runs.js';
 import { workroomApprovalsRoute } from './routes/workroom-approvals.js';
 import { regulatoryRoute } from './routes/regulatory.js';
 import { registerRequestIdentityHook } from './pipeline/request-identity-hook.js';
-import { startTelemetry } from './telemetry.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -88,7 +88,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   // caches its Counter at getMeter()-time). Placed after the KMS boot-probe so a
   // prod BootError->exit(1) never orphans a periodic reader. Gated on
   // OTEL_EXPORTER_OTLP_ENDPOINT: a no-op with the endpoint unset. Observe-only.
-  const telemetry = startTelemetry(env, app.log);
+  const telemetry = startTelemetry(env, { serviceName: 'govai-api', logger: app.log });
 
   await app.register(healthRoute);
   await app.register(capabilitiesRoute);

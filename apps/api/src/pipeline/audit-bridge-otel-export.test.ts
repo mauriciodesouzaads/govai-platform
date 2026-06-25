@@ -1,3 +1,10 @@
+// EP-OBS-REFACTOR: the AuditBridge OTel-export end-to-end (migrated from the #109
+// apps/api telemetry.test.ts test C when that local module was replaced by
+// @govai/observability). Registers an in-memory MeterProvider directly and drives
+// the DEFAULT createOtelAuditBridgeMetrics impl through the bridge, proving the real
+// OTel path exports govai_audit_bridge_{drops,captures}_total with the EC-3b
+// cardinality-safe labels (no raw id / no capability_id).
+
 import { createHash } from 'node:crypto';
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -13,10 +20,8 @@ import type { Pool, PoolClient } from 'pg';
 import type { FastifyBaseLogger } from 'fastify';
 import type { PassthroughInvoked } from '@govai/core-events';
 
-import { startTelemetry } from './telemetry.js';
-import { makeAuditBridge } from './pipeline/audit-bridge.js';
-import { createOtelAuditBridgeMetrics } from './pipeline/audit-bridge-metrics.js';
-import type { AuditBridgeRequestIdentity } from './pipeline/request-identity.js';
+import { makeAuditBridge } from './audit-bridge.js';
+import type { AuditBridgeRequestIdentity } from './request-identity.js';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
 const ORG_HASH = createHash('sha256').update(ORG).digest('hex').slice(0, 16);
@@ -84,44 +89,17 @@ function makeStack(opts?: { insertError?: unknown }) {
   return { pool, log };
 }
 
-// OTel's global MeterProvider is process-global; reset it between tests so they
-// don't contaminate each other (STOP-cond 6 of the dispatch — verified resettable).
 afterEach(() => {
-  metrics.disable();
+  metrics.disable(); // reset the process-global MeterProvider between tests
 });
 
-describe('startTelemetry (EP-008B-FOLLOWUP OTel MeterProvider bootstrap)', () => {
-  it('A — disabled (no endpoint): registers NO global provider; shutdown resolves', async () => {
-    const before = metrics.getMeterProvider();
-    const handle = startTelemetry({ OTEL_SERVICE_NAME: 'govai-api', OTEL_EXPORTER_OTLP_ENDPOINT: undefined });
-    expect(handle.enabled).toBe(false);
-    // the global provider is unchanged (still the noop) — today's behavior preserved.
-    expect(metrics.getMeterProvider()).toBe(before);
-    expect(metrics.getMeterProvider().constructor.name).not.toBe('MeterProvider');
-    await expect(handle.shutdown()).resolves.toBeUndefined();
-  });
-
-  it('B — enabled (endpoint set): registers a global MeterProvider; a fresh OTel bridge-metrics resolves a real meter; shutdown resolves', async () => {
-    const handle = startTelemetry({
-      OTEL_SERVICE_NAME: 'govai-api',
-      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
-    });
-    expect(handle.enabled).toBe(true);
-    expect(metrics.getMeterProvider().constructor.name).toBe('MeterProvider'); // not NoopMeterProvider
-    // §2 guard: a freshly created default OTel impl resolves against the real provider.
-    expect(() => createOtelAuditBridgeMetrics()).not.toThrow();
-    await expect(handle.shutdown()).resolves.toBeUndefined();
-  });
-
-  it('C — in-memory end-to-end: the DEFAULT OTel impl exports drops_total + captures_total with exactly the cardinality-safe labels', async () => {
+describe('audit-bridge OTel export (in-memory end-to-end, default OTel impl)', () => {
+  it('exports drops_total + captures_total with exactly the cardinality-safe labels', async () => {
     const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
-    // a far-future interval so no periodic export races the forceFlush; shutdown clears it.
     const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 2 ** 31 - 1 });
     const provider = new MeterProvider({ readers: [reader] });
-    // register BEFORE building any bridge (the ordering invariant the spec §2 protects).
-    metrics.setGlobalMeterProvider(provider);
+    metrics.setGlobalMeterProvider(provider); // BEFORE building any bridge (ordering invariant)
 
-    // one S5 drop (generic insert error) + one post-COMMIT success, via the DEFAULT OTel impl.
     const dropStack = makeStack({ insertError: new Error('db down') });
     await makeAuditBridge({ pool: dropStack.pool, log: dropStack.log })(baseEnvelope(), REQ_IDENTITY);
     const okStack = makeStack();
@@ -165,7 +143,6 @@ describe('startTelemetry (EP-008B-FOLLOWUP OTel MeterProvider bootstrap)', () =>
       org_hash: ORG_HASH,
     });
 
-    // cardinality-safe: no key outside the allow-list; no raw id / no capability_id value.
     for (const p of [...drops!, ...captures!]) {
       for (const k of Object.keys(p.attributes)) expect(ALLOWED).toContain(k);
       const json = JSON.stringify(p.attributes);
@@ -175,14 +152,5 @@ describe('startTelemetry (EP-008B-FOLLOWUP OTel MeterProvider bootstrap)', () =>
     }
 
     await provider.shutdown();
-  });
-
-  it('D — an enabled handle shutdown() flushes/stops without throwing (and is safe to await)', async () => {
-    const handle = startTelemetry({
-      OTEL_SERVICE_NAME: 'svc',
-      OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
-    });
-    expect(handle.enabled).toBe(true);
-    await expect(handle.shutdown()).resolves.toBeUndefined();
   });
 });
