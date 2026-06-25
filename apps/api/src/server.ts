@@ -23,6 +23,7 @@ import { workroomRunsRoute } from './routes/workroom-runs.js';
 import { workroomApprovalsRoute } from './routes/workroom-approvals.js';
 import { regulatoryRoute } from './routes/regulatory.js';
 import { registerRequestIdentityHook } from './pipeline/request-identity-hook.js';
+import { startTelemetry } from './telemetry.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -82,6 +83,13 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
 
   app.decorate('govai', { env, kms, pool, policyCommitSha, now: overrides.now });
 
+  // EP-008B-FOLLOWUP: register the global OTel MeterProvider BEFORE the route
+  // registers (the EP-008B metrics factory runs at route-registration time and
+  // caches its Counter at getMeter()-time). Placed after the KMS boot-probe so a
+  // prod BootError->exit(1) never orphans a periodic reader. Gated on
+  // OTEL_EXPORTER_OTLP_ENDPOINT: a no-op with the endpoint unset. Observe-only.
+  const telemetry = startTelemetry(env, app.log);
+
   await app.register(healthRoute);
   await app.register(capabilitiesRoute);
   await app.register(runsRoute);
@@ -104,6 +112,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(regulatoryRoute);
 
   app.addHook('onClose', async () => {
+    await telemetry.shutdown().catch(() => undefined);
     if (!overrides.pool) {
       await pool.end().catch(() => undefined);
     }
