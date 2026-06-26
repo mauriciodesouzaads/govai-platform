@@ -8,7 +8,7 @@ import {
   type GovernedTenant,
 } from './handle-responses.js';
 import { handleOpenAIGovernedChatCompletions } from './handle-chat-completions.js';
-import { pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
+import { armAbortOnClose, pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 
 export type OpenAIGovernedDeps = GovernedHandleDeps & {
   resolveTenant: (req: FastifyRequest) => Promise<GovernedTenant>;
@@ -139,10 +139,29 @@ export async function registerOpenAIGoverned(
     const isStream = isStreamRequest(req.body, inboundHeaders);
     // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
     const ac = new AbortController();
-    const result = await handleOpenAIGovernedResponses(
-      { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
-      deps,
-    );
+    // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
+    // (which opens forwardStream internally), so a disconnect during it cancels the orphaned
+    // upstream. Detached before pumpResult hands off to the pump's own drain-phase listener.
+    const detachEarly = armAbortOnClose(reply, ac);
+    let result: Awaited<ReturnType<typeof handleOpenAIGovernedResponses>>;
+    try {
+      result = await handleOpenAIGovernedResponses(
+        { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
+        deps,
+      );
+    } catch (err) {
+      detachEarly();
+      // EP-008C §(3) Option C: a PRE-HEADER termination — no result/finalize, zero bytes,
+      // no terminal. The early hook already aborted the orphaned upstream on disconnect.
+      if (ac.signal.aborted) {
+        // Client gone pre-header — take over the (dead) reply so Fastify does not attempt a
+        // response on the closed socket; nothing to send, no terminal (§(3) C).
+        reply.hijack();
+        return;
+      }
+      throw err;
+    }
+    detachEarly();
     return pumpResult(req, reply, result, ac);
   });
 
@@ -159,10 +178,29 @@ export async function registerOpenAIGoverned(
     const isStream = isStreamRequest(req.body, inboundHeaders);
     // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
     const ac = new AbortController();
-    const result = await handleOpenAIGovernedChatCompletions(
-      { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
-      deps,
-    );
+    // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
+    // (which opens forwardStream internally), so a disconnect during it cancels the orphaned
+    // upstream. Detached before pumpResult hands off to the pump's own drain-phase listener.
+    const detachEarly = armAbortOnClose(reply, ac);
+    let result: Awaited<ReturnType<typeof handleOpenAIGovernedChatCompletions>>;
+    try {
+      result = await handleOpenAIGovernedChatCompletions(
+        { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
+        deps,
+      );
+    } catch (err) {
+      detachEarly();
+      // EP-008C §(3) Option C: a PRE-HEADER termination — no result/finalize, zero bytes,
+      // no terminal. The early hook already aborted the orphaned upstream on disconnect.
+      if (ac.signal.aborted) {
+        // Client gone pre-header — take over the (dead) reply so Fastify does not attempt a
+        // response on the closed socket; nothing to send, no terminal (§(3) C).
+        reply.hijack();
+        return;
+      }
+      throw err;
+    }
+    detachEarly();
     return pumpResult(req, reply, result, ac);
   });
 }

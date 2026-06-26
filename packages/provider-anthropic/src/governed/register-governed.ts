@@ -8,7 +8,7 @@ import {
   type GovernedHandleDeps,
   type GovernedTenant,
 } from './handle-messages.js';
-import { pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
+import { armAbortOnClose, pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 
 export type AnthropicGovernedDeps = GovernedHandleDeps & {
   /** Resolve the tenant + tier + operational_mode from the request (DB-backed). */
@@ -82,10 +82,32 @@ export async function registerAnthropicGoverned(
     // EP-008C: an AbortController whose signal threads to the upstream stream fetch
     // (client-disconnect propagation) and drives the terminal-emit-on-every-path.
     const ac = new AbortController();
-    const result = await handleAnthropicGovernedMessages(
-      { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
-      deps,
-    );
+    // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
+    // (which opens forwardStream internally), so a disconnect during that await cancels the
+    // orphaned upstream fetch. Detached before the stream pump installs its own listener.
+    const detachEarly = armAbortOnClose(reply, ac);
+    let result: Awaited<ReturnType<typeof handleAnthropicGovernedMessages>>;
+    try {
+      result = await handleAnthropicGovernedMessages(
+        { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
+        deps,
+      );
+    } catch (err) {
+      detachEarly();
+      // EP-008C §(3) Option C: a PRE-HEADER termination — the governed stream never returned
+      // upstream headers (its internal forwardStream rejected on abort), so no result/finalize
+      // exists and there is NO partial content to attest. Emit NO terminal. If the client
+      // disconnected, the early hook already aborted the orphaned upstream; complete quietly.
+      // Otherwise preserve the prior behavior (the reject propagates to Fastify's error handler).
+      if (ac.signal.aborted) {
+        // Client gone pre-header — take over the (dead) reply so Fastify does not attempt a
+        // response on the closed socket; nothing to send, no terminal (§(3) C).
+        reply.hijack();
+        return;
+      }
+      throw err;
+    }
+    detachEarly();
 
     if (result.kind === 'blocked') {
       reply.code(403);

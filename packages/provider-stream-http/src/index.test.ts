@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { FastifyReply } from 'fastify';
 
 import {
+  armAbortOnClose,
   classifyStreamError,
   pumpStreamWithTerminalEmit,
   type StreamOutcome,
@@ -71,6 +72,31 @@ describe('classifyStreamError', () => {
     const s = new AbortController().signal;
     expect(classifyStreamError(new Error('upstream 500'), s)).toBe('upstream_error');
     expect(classifyStreamError('weird', s)).toBe('upstream_error');
+  });
+});
+
+describe('armAbortOnClose', () => {
+  it('installs a close listener that aborts the controller; detach removes it', () => {
+    const f = fakeReply();
+    const ctrl = new AbortController();
+    const detach = armAbortOnClose(f.reply, ctrl);
+    expect(f.closeCbs).toHaveLength(1);
+    expect(ctrl.signal.aborted).toBe(false);
+    // a client close fires the listener → abort only (no emit hook here)
+    for (const cb of [...f.closeCbs]) cb();
+    expect(ctrl.signal.aborted).toBe(true);
+    detach();
+    expect(f.closeCbs).toHaveLength(0);
+  });
+
+  it('detach before any close → controller is never aborted (no leaked listener)', () => {
+    const f = fakeReply();
+    const ctrl = new AbortController();
+    const detach = armAbortOnClose(f.reply, ctrl);
+    detach();
+    expect(f.closeCbs).toHaveLength(0);
+    for (const cb of [...f.closeCbs]) cb();
+    expect(ctrl.signal.aborted).toBe(false);
   });
 });
 

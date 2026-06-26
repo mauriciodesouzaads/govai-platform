@@ -18,7 +18,7 @@ import { handleAnthropicBetaHeader } from '../passthrough/beta-header-handler.js
 import { classifyTools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
 import { forwardStream } from '../passthrough/stream-forward.js';
-import { pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
+import { armAbortOnClose, pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 import {
   buildPassthroughInvoked,
   buildPassthroughBetaDenied,
@@ -314,14 +314,36 @@ export async function registerAnthropicPassthrough(
         const occurredAt = (deps.now ?? (() => new Date()))();
         // EP-008C: pass an AbortController so a client disconnect aborts upstream.
         const ac = new AbortController();
-        const streamRes = await forwardStream({
-          baseUrl: deps.upstreamBaseUrl,
-          concretePath,
-          method: 'POST',
-          headers,
-          body: requestBody,
-          signal: ac.signal,
-        });
+        // EP-008C P2: arm the client-disconnect → abort hook BEFORE the upstream-headers
+        // await, so a disconnect DURING forwardStream cancels the orphaned upstream fetch.
+        // Detached below before the pump installs its own drain-phase listener.
+        const detachEarly = armAbortOnClose(reply, ac);
+        let streamRes: Awaited<ReturnType<typeof forwardStream>>;
+        try {
+          streamRes = await forwardStream({
+            baseUrl: deps.upstreamBaseUrl,
+            concretePath,
+            method: 'POST',
+            headers,
+            body: requestBody,
+            signal: ac.signal,
+          });
+        } catch (err) {
+          detachEarly();
+          // EP-008C §(3) Option C: a PRE-HEADER termination — the stream never returned
+          // upstream headers, so zero bytes were delivered and there is NO partial content
+          // to attest. Emit NO terminal. If the client disconnected, the early hook already
+          // aborted the orphaned upstream; complete quietly (reply not yet hijacked).
+          // Otherwise (upstream failed before headers) preserve the prior behavior.
+          if (ac.signal.aborted) {
+            // Client gone pre-header — take over the (dead) reply so Fastify does not attempt
+            // a response on the closed socket; nothing to send, no terminal (§(3) C).
+            reply.hijack();
+            return;
+          }
+          throw err;
+        }
+        detachEarly();
         // Hijack first, then flush upstream status + headers via writeHead
         // before any raw.write — otherwise the implicit writeHead on first
         // chunk drops everything set via reply.header() (e.g. Content-Type:

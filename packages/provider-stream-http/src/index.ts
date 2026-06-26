@@ -43,6 +43,20 @@ export function classifyStreamError(err: unknown, signal: AbortSignal): StreamOu
   return 'upstream_error';
 }
 
+/**
+ * Install a client-disconnect → abort hook on `reply.raw` and return a detach handle.
+ * Use this to arm the abort BEFORE the upstream-headers await (so a disconnect during
+ * that await cancels the orphaned upstream fetch), then detach before handing off to
+ * `pumpStreamWithTerminalEmit` (which installs its own drain-phase listener). ★ The
+ * terminal emit MUST NOT happen here (the ALS rule — this callback is off the als.run
+ * chain): `on('close')` does ONLY `controller.abort()`.
+ */
+export function armAbortOnClose(reply: FastifyReply, controller: AbortController): () => void {
+  const onClose = (): void => controller.abort(); // abort ONLY — never emit (ALS rule)
+  reply.raw.on('close', onClose);
+  return () => reply.raw.removeListener('close', onClose);
+}
+
 export interface PumpStreamArgs {
   /** Reader over the upstream byte stream (e.g. `forwardStream(...).body.getReader()`). */
   reader: ReadableStreamDefaultReader<Uint8Array>;

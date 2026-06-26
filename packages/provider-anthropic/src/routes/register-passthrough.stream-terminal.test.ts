@@ -14,7 +14,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 // Controllable upstream forwarder (mocked). The real handler + the real
 // @govai/provider-stream-http helper run; only the upstream stream is controlled.
 const ctl = vi.hoisted(() => ({
-  mode: 'clean' as 'clean' | 'upstream_error' | 'disconnect',
+  mode: 'clean' as 'clean' | 'upstream_error' | 'disconnect' | 'pre_disconnect',
   chunks: [] as Uint8Array[],
   finalHash: 'f'.repeat(64),
   capturedSignal: undefined as AbortSignal | undefined,
@@ -24,6 +24,15 @@ vi.mock('../passthrough/stream-forward.js', () => ({
   forwardStream: async (input: { signal?: AbortSignal }) => {
     ctl.capturedSignal = input.signal;
     const { mode, chunks } = ctl;
+    if (mode === 'pre_disconnect') {
+      // Simulate the upstream-headers await: hang until the client aborts (pre-header),
+      // then reject — forwardStream never returns a finalize-able handle (§(3) Option C).
+      await new Promise<void>((_resolve, reject) => {
+        const onAbort = () => reject(new DOMException('aborted', 'AbortError'));
+        if (input.signal?.aborted) onAbort();
+        else input.signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         for (const c of chunks) controller.enqueue(c);
@@ -106,7 +115,9 @@ beforeAll(async () => {
       auditEvents.push(ev as Record<string, unknown>);
     },
   };
-  app = Fastify({ logger: false });
+  // forceCloseConnections: a pre-header client disconnect leaves an idle keep-alive socket
+  // that app.close() would otherwise wait on (Node keep-alive timeout) — force it at teardown.
+  app = Fastify({ logger: false, forceCloseConnections: true });
   await app.register(async (instance) => registerAnthropicPassthrough(instance, deps));
   await app.listen({ port: 0, host: '127.0.0.1' });
   govUrl = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -187,5 +198,21 @@ describe('EP-008C Anthropic passthrough stream terminal-completeness', () => {
     // the client still receives a clean (chunked) response despite the emit throwing.
     await expect(res.text()).resolves.toContain('data: 1');
     expect(res.status).toBe(200);
+  });
+
+  it('(5) early disconnect PRE-HEADER → upstream aborted (no orphan), NO terminal emitted', async () => {
+    ctl.mode = 'pre_disconnect';
+    const clientAc = new AbortController();
+    const p = postStream(clientAc.signal);
+    // let the handler reach the forwardStream await (the mock hangs there), then disconnect
+    await new Promise((r) => setTimeout(r, 50));
+    clientAc.abort();
+    await p.catch(() => undefined);
+    // allow the server-side close → ac.abort() → handler completion to settle
+    await new Promise((r) => setTimeout(r, 150));
+    // the upstream fetch received the abort (no orphan) AND no terminal was emitted (§(3) C)
+    expect(ctl.capturedSignal).toBeDefined();
+    expect(ctl.capturedSignal!.aborted).toBe(true);
+    expect(auditEvents).toHaveLength(0);
   });
 });
