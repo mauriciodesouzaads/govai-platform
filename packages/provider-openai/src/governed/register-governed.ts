@@ -8,6 +8,7 @@ import {
   type GovernedTenant,
 } from './handle-responses.js';
 import { handleOpenAIGovernedChatCompletions } from './handle-chat-completions.js';
+import { pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 
 export type OpenAIGovernedDeps = GovernedHandleDeps & {
   resolveTenant: (req: FastifyRequest) => Promise<GovernedTenant>;
@@ -60,6 +61,7 @@ async function pumpResult(
   result:
     | Awaited<ReturnType<typeof handleOpenAIGovernedResponses>>
     | Awaited<ReturnType<typeof handleOpenAIGovernedChatCompletions>>,
+  controller: AbortController,
 ): Promise<unknown | undefined> {
   if (result.kind === 'blocked') {
     reply.code(403);
@@ -83,22 +85,23 @@ async function pumpResult(
     respHeaders['x-govai-effective-risk-class'] = result.governance.effective_risk_class;
     respHeaders['x-govai-enforcement-decision'] = result.governance.enforcement_decision;
     reply.raw.writeHead(result.status_code, respHeaders);
-    const reader = result.body.getReader();
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        /* c8 ignore next -- WHATWG Streams: reader.read() with done:false always yields a value chunk; defensive guard */
-        if (value) reply.raw.write(Buffer.from(value));
-      }
-    } finally {
-      reply.raw.end();
-    }
-    try {
-      await result.finalize();
-    } catch (err) {
-      req.log.error({ err }, 'governed-openai stream finalize failed');
-    }
+    // EP-008C: drain + emit the terminal event on EVERY termination path via the shared
+    // helper (covers both /v1/responses and /v1/chat/completions). finalize (build+emit)
+    // runs in the helper's drain `finally` — the handler's async chain → request-identity
+    // ALS in scope (§1.3); on('close') only aborts. The pre-existing finalize try/catch+log
+    // is preserved inside finalizeAndEmit and now also fires on the drain-throw path.
+    await pumpStreamWithTerminalEmit({
+      reader: result.body.getReader(),
+      reply,
+      controller,
+      finalizeAndEmit: async (outcome) => {
+        try {
+          await result.finalize(outcome);
+        } catch (err) {
+          req.log.error({ err }, 'governed-openai stream finalize failed');
+        }
+      },
+    });
     return undefined;
   }
   for (const [k, v] of Object.entries(result.response_headers)) {
@@ -134,11 +137,13 @@ export async function registerOpenAIGoverned(
     const inboundHeaders = inboundHeadersFromReq(req);
     const rawBody = bufferifyBody(req.body);
     const isStream = isStreamRequest(req.body, inboundHeaders);
+    // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
+    const ac = new AbortController();
     const result = await handleOpenAIGovernedResponses(
-      { tenant, rawBody, inboundHeaders, isStream },
+      { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
       deps,
     );
-    return pumpResult(req, reply, result);
+    return pumpResult(req, reply, result, ac);
   });
 
   app.post('/governed/openai/v1/chat/completions', async (req, reply) => {
@@ -152,10 +157,12 @@ export async function registerOpenAIGoverned(
     const inboundHeaders = inboundHeadersFromReq(req);
     const rawBody = bufferifyBody(req.body);
     const isStream = isStreamRequest(req.body, inboundHeaders);
+    // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
+    const ac = new AbortController();
     const result = await handleOpenAIGovernedChatCompletions(
-      { tenant, rawBody, inboundHeaders, isStream },
+      { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
       deps,
     );
-    return pumpResult(req, reply, result);
+    return pumpResult(req, reply, result, ac);
   });
 }

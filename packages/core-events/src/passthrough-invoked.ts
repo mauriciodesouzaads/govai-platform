@@ -117,6 +117,16 @@ export const PassthroughInvokedSchema = z
       .string()
       .regex(/^[0-9a-f]{64}$/)
       .optional(),
+    /**
+     * EP-008C: terminal outcome of a streaming invocation — `complete` on clean
+     * drain, `upstream_error` when the upstream reader rejected, `client_disconnect`
+     * when the client aborted/the socket write threw. Additive-optional within v4:
+     * absent on non-stream events and on historical stream events (absence =
+     * legacy / outcome-unknown). A broken terminal STILL carries the partial-byte
+     * `stream_final_hash`, so Rule 1 is unaffected; Rule 8 guards that a broken
+     * outcome only applies to a stream.
+     */
+    stream_outcome: z.enum(['complete', 'upstream_error', 'client_disconnect']).optional(),
 
     latency_ms: z.number().int().nonnegative(),
     status_code: z.number().int(),
@@ -317,6 +327,20 @@ export const PassthroughInvokedSchema = z
             'purpose_deprecation_migration_target requires purpose_deprecated=true (HAE-003)',
         });
       }
+    }
+
+    // Rule 8 (EP-008C): a broken-stream outcome only makes sense for a stream.
+    if (
+      (data.stream_outcome === 'upstream_error' ||
+        data.stream_outcome === 'client_disconnect') &&
+      data.is_stream !== true
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['stream_outcome'],
+        message:
+          'stream_outcome upstream_error/client_disconnect requires is_stream=true (EP-008C)',
+      });
     }
   });
 

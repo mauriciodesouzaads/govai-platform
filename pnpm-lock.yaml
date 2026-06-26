@@ -333,6 +333,9 @@ importers:
       '@govai/core-types':
         specifier: workspace:*
         version: link:../core-types
+      '@govai/provider-stream-http':
+        specifier: workspace:*
+        version: link:../provider-stream-http
       fastify:
         specifier: 5.8.5
         version: 5.8.5
@@ -355,12 +358,25 @@ importers:
       '@govai/core-types':
         specifier: workspace:*
         version: link:../core-types
+      '@govai/provider-stream-http':
+        specifier: workspace:*
+        version: link:../provider-stream-http
       fastify:
         specifier: 5.8.5
         version: 5.8.5
       openai:
         specifier: 6.35.0
         version: 6.35.0(zod@4.4.2)
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/provider-stream-http:
+    dependencies:
+      fastify:
+        specifier: 5.8.5
+        version: 5.8.5
     devDependencies:
       typescript:
         specifier: 5.9.3

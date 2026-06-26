@@ -386,3 +386,47 @@ describe('PassthroughInvokedSchema v4 — superRefine rules', () => {
     ).toBe(true);
   });
 });
+
+describe('PassthroughInvokedSchema v4 — EP-008C stream_outcome (additive-optional + Rule 8)', () => {
+  it('backward-compatible: a stream event WITHOUT stream_outcome still accepts (legacy / outcome-unknown)', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(baseEvent({ is_stream: true, stream_final_hash: HEX64 }))
+        .success,
+    ).toBe(true);
+  });
+
+  it('accepts stream_outcome=complete on a stream event', () => {
+    expect(
+      PassthroughInvokedSchema.safeParse(
+        baseEvent({ is_stream: true, stream_final_hash: HEX64, stream_outcome: 'complete' }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it('accepts stream_outcome=upstream_error / client_disconnect on a stream event (broken terminal still carries the partial hash)', () => {
+    for (const outcome of ['upstream_error', 'client_disconnect'] as const) {
+      expect(
+        PassthroughInvokedSchema.safeParse(
+          baseEvent({ is_stream: true, stream_final_hash: HEX64, stream_outcome: outcome }),
+        ).success,
+      ).toBe(true);
+    }
+  });
+
+  it('Rule 8: a broken stream_outcome (upstream_error/client_disconnect) on a NON-stream event → rejects', () => {
+    for (const outcome of ['upstream_error', 'client_disconnect'] as const) {
+      const r = PassthroughInvokedSchema.safeParse(
+        baseEvent({ is_stream: false, stream_outcome: outcome }),
+      );
+      expect(r.success).toBe(false);
+      expect(JSON.stringify(r.error)).toContain('stream_outcome');
+    }
+  });
+
+  it('rejects an out-of-enum stream_outcome value', () => {
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({ is_stream: true, stream_final_hash: HEX64, stream_outcome: 'truncated' }),
+    );
+    expect(r.success).toBe(false);
+  });
+});

@@ -18,6 +18,7 @@ import { handleAnthropicBetaHeader } from '../passthrough/beta-header-handler.js
 import { classifyTools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
 import { forwardStream } from '../passthrough/stream-forward.js';
+import { pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 import {
   buildPassthroughInvoked,
   buildPassthroughBetaDenied,
@@ -311,12 +312,15 @@ export async function registerAnthropicPassthrough(
       if (isStream) {
         // Stream variant.
         const occurredAt = (deps.now ?? (() => new Date()))();
+        // EP-008C: pass an AbortController so a client disconnect aborts upstream.
+        const ac = new AbortController();
         const streamRes = await forwardStream({
           baseUrl: deps.upstreamBaseUrl,
           concretePath,
           method: 'POST',
           headers,
           body: requestBody,
+          signal: ac.signal,
         });
         // Hijack first, then flush upstream status + headers via writeHead
         // before any raw.write — otherwise the implicit writeHead on first
@@ -328,20 +332,6 @@ export async function registerAnthropicPassthrough(
           Object.entries(streamRes.responseHeaders),
         );
         reply.raw.writeHead(streamRes.status, respHeaders);
-        const reader = streamRes.body.getReader();
-        const nodeStream = (async function* () {
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            if (value) yield Buffer.from(value);
-          }
-        })();
-        for await (const chunk of nodeStream) {
-          reply.raw.write(chunk);
-        }
-        reply.raw.end();
-
-        const final = await streamRes.finalize();
         // Passthrough is the explicit AUDIT-ONLY surface: the route forwards
         // byte-perfect and never enforces, so `enforcement_decision='observe'`
         // is the truthful semantic of this code path — NOT a fallback default.
@@ -360,36 +350,49 @@ export async function registerAnthropicPassthrough(
           })),
           dlp_findings: [],
         });
-        await deps.emitAuditEvent(
-          buildPassthroughInvoked({
-            tenant,
-            capability_id: resolved.capability_id,
-            capability_level: 'passthrough_audited',
-            capability_canonical_level: resolved.canonical_level,
-            native_endpoint: matched.pathTemplate,
-            native_method: 'POST',
-            is_stream: true,
-            is_multipart: false,
-            base_risk_class: govStream.base_risk_class,
-            effective_risk_class: govStream.effective_risk_class,
-            risk_escalation_reasons: govStream.risk_escalation_reasons,
-            // Audit-only surface: enforcement is intentionally `observe`.
-            enforcement_decision: 'observe',
-            native_request_hash: streamRes.native_request_hash,
-            stream_final_hash: final.stream_final_hash,
-            latency_ms: final.latency_ms,
-            occurred_at: occurredAt,
-            status_code: streamRes.status,
-            credential_source: 'tenant_provider_credential',
-            allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
-            ...(streamRes.provider_request_id
-              ? { provider_request_id: streamRes.provider_request_id }
-              : {}),
-            body_forward_mode: 'raw',
-            beta_allowlist_sources: betaResult.sources,
-            detected_tool_classifications: toolClassifications,
-          }),
-        );
+        // EP-008C: drain + emit the terminal PassthroughInvoked on EVERY termination
+        // path (clean / upstream_error / client_disconnect) via the shared helper. The
+        // emit runs in the helper's drain `finally` — the handler's async chain — so
+        // request-identity ALS is in scope (§1.3); on('close') only aborts. Observe-only.
+        await pumpStreamWithTerminalEmit({
+          reader: streamRes.body.getReader(),
+          reply,
+          controller: ac,
+          finalizeAndEmit: async (outcome) => {
+            const final = await streamRes.finalize();
+            await deps.emitAuditEvent(
+              buildPassthroughInvoked({
+                tenant,
+                capability_id: resolved.capability_id,
+                capability_level: 'passthrough_audited',
+                capability_canonical_level: resolved.canonical_level,
+                native_endpoint: matched.pathTemplate,
+                native_method: 'POST',
+                is_stream: true,
+                is_multipart: false,
+                base_risk_class: govStream.base_risk_class,
+                effective_risk_class: govStream.effective_risk_class,
+                risk_escalation_reasons: govStream.risk_escalation_reasons,
+                // Audit-only surface: enforcement is intentionally `observe`.
+                enforcement_decision: 'observe',
+                native_request_hash: streamRes.native_request_hash,
+                stream_final_hash: final.stream_final_hash,
+                latency_ms: final.latency_ms,
+                occurred_at: occurredAt,
+                status_code: streamRes.status,
+                credential_source: 'tenant_provider_credential',
+                allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
+                ...(streamRes.provider_request_id
+                  ? { provider_request_id: streamRes.provider_request_id }
+                  : {}),
+                body_forward_mode: 'raw',
+                beta_allowlist_sources: betaResult.sources,
+                detected_tool_classifications: toolClassifications,
+                stream_outcome: outcome,
+              }),
+            );
+          },
+        });
         return;
       }
 

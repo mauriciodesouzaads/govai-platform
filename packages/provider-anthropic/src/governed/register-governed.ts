@@ -8,6 +8,7 @@ import {
   type GovernedHandleDeps,
   type GovernedTenant,
 } from './handle-messages.js';
+import { pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 
 export type AnthropicGovernedDeps = GovernedHandleDeps & {
   /** Resolve the tenant + tier + operational_mode from the request (DB-backed). */
@@ -78,8 +79,11 @@ export async function registerAnthropicGoverned(
     const rawBody = bufferifyBody(req.body);
     const isStream = isStreamRequest(req.body, inboundHeaders);
 
+    // EP-008C: an AbortController whose signal threads to the upstream stream fetch
+    // (client-disconnect propagation) and drives the terminal-emit-on-every-path.
+    const ac = new AbortController();
     const result = await handleAnthropicGovernedMessages(
-      { tenant, rawBody, inboundHeaders, isStream },
+      { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
       deps,
     );
 
@@ -106,22 +110,23 @@ export async function registerAnthropicGoverned(
       respHeaders['x-govai-effective-risk-class'] = result.governance.effective_risk_class;
       respHeaders['x-govai-enforcement-decision'] = result.governance.enforcement_decision;
       reply.raw.writeHead(result.status_code, respHeaders);
-      const reader = result.body.getReader();
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          /* c8 ignore next -- WHATWG Streams: reader.read() with done:false always yields a value chunk; defensive guard */
-          if (value) reply.raw.write(Buffer.from(value));
-        }
-      } finally {
-        reply.raw.end();
-      }
-      try {
-        await result.finalize();
-      } catch (err) {
-        req.log.error({ err }, 'governed-anthropic stream finalize failed');
-      }
+      // EP-008C: drain + emit the terminal event on EVERY termination path via the
+      // shared helper. result.finalize(outcome) (build+emit) runs in the helper's drain
+      // `finally` — the handler's async chain → request-identity ALS in scope (§1.3);
+      // on('close') only aborts. The pre-existing finalize try/catch+log is preserved
+      // inside finalizeAndEmit and now also fires on the drain-throw path.
+      await pumpStreamWithTerminalEmit({
+        reader: result.body.getReader(),
+        reply,
+        controller: ac,
+        finalizeAndEmit: async (outcome) => {
+          try {
+            await result.finalize(outcome);
+          } catch (err) {
+            req.log.error({ err }, 'governed-anthropic stream finalize failed');
+          }
+        },
+      });
       return;
     }
 
