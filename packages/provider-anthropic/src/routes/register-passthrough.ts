@@ -343,7 +343,9 @@ export async function registerAnthropicPassthrough(
           }
           throw err;
         }
-        detachEarly();
+        // EP-008C P2#2: keep the early close→abort hook LIVE across the handoff to the pump
+        // (close is one-shot; detaching before the pump arms its own listener would drop a
+        // disconnect that fires in the gap). Detach only AFTER the pump returns (finally below).
         // Hijack first, then flush upstream status + headers via writeHead
         // before any raw.write — otherwise the implicit writeHead on first
         // chunk drops everything set via reply.header() (e.g. Content-Type:
@@ -376,7 +378,7 @@ export async function registerAnthropicPassthrough(
         // path (clean / upstream_error / client_disconnect) via the shared helper. The
         // emit runs in the helper's drain `finally` — the handler's async chain — so
         // request-identity ALS is in scope (§1.3); on('close') only aborts. Observe-only.
-        await pumpStreamWithTerminalEmit({
+        const pumpPromise = pumpStreamWithTerminalEmit({
           reader: streamRes.body.getReader(),
           reply,
           controller: ac,
@@ -415,6 +417,11 @@ export async function registerAnthropicPassthrough(
             );
           },
         });
+        try {
+          await pumpPromise;
+        } finally {
+          detachEarly();
+        }
         return;
       }
 

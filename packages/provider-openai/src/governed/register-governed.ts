@@ -141,7 +141,8 @@ export async function registerOpenAIGoverned(
     const ac = new AbortController();
     // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
     // (which opens forwardStream internally), so a disconnect during it cancels the orphaned
-    // upstream. Detached before pumpResult hands off to the pump's own drain-phase listener.
+    // upstream. EP-008C P2#2: kept LIVE across the pumpResult handoff (close is one-shot);
+    // detached only AFTER pumpResult returns (finally below).
     const detachEarly = armAbortOnClose(reply, ac);
     let result: Awaited<ReturnType<typeof handleOpenAIGovernedResponses>>;
     try {
@@ -161,8 +162,13 @@ export async function registerOpenAIGoverned(
       }
       throw err;
     }
-    detachEarly();
-    return pumpResult(req, reply, result, ac);
+    // EP-008C P2#2: keep the early hook live across the pumpResult handoff; detach only
+    // after pumpResult (and its internal pump) returns — `return await` so the finally runs last.
+    try {
+      return await pumpResult(req, reply, result, ac);
+    } finally {
+      detachEarly();
+    }
   });
 
   app.post('/governed/openai/v1/chat/completions', async (req, reply) => {
@@ -180,7 +186,8 @@ export async function registerOpenAIGoverned(
     const ac = new AbortController();
     // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
     // (which opens forwardStream internally), so a disconnect during it cancels the orphaned
-    // upstream. Detached before pumpResult hands off to the pump's own drain-phase listener.
+    // upstream. EP-008C P2#2: kept LIVE across the pumpResult handoff (close is one-shot);
+    // detached only AFTER pumpResult returns (finally below).
     const detachEarly = armAbortOnClose(reply, ac);
     let result: Awaited<ReturnType<typeof handleOpenAIGovernedChatCompletions>>;
     try {
@@ -200,7 +207,12 @@ export async function registerOpenAIGoverned(
       }
       throw err;
     }
-    detachEarly();
-    return pumpResult(req, reply, result, ac);
+    // EP-008C P2#2: keep the early hook live across the pumpResult handoff; detach only
+    // after pumpResult (and its internal pump) returns — `return await` so the finally runs last.
+    try {
+      return await pumpResult(req, reply, result, ac);
+    } finally {
+      detachEarly();
+    }
   });
 }

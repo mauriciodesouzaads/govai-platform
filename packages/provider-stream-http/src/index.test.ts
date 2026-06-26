@@ -27,11 +27,14 @@ function readerOf(
   } as unknown as ReadableStreamDefaultReader<Uint8Array>;
 }
 
-function fakeReply() {
+function fakeReply(opts?: { destroyed?: boolean }) {
   const closeCbs: Array<() => void> = [];
   const writes: Uint8Array[] = [];
   let ended = 0;
   const raw = {
+    destroyed: opts?.destroyed ?? false,
+    writableEnded: false,
+    closed: opts?.destroyed ?? false,
     on: (ev: string, cb: () => void) => {
       if (ev === 'close') closeCbs.push(cb);
     },
@@ -166,5 +169,27 @@ describe('pumpStreamWithTerminalEmit', () => {
       }),
     ).resolves.toBeUndefined();
     expect(f.ended()).toBe(1);
+  });
+
+  it('CHANGE A (P2#2): an already-closed reply at pump entry → abort + SKIP the drain (no read) + client_disconnect', async () => {
+    // The handoff race: if the socket already closed when the pump arms its (one-shot) close
+    // listener, that listener never fires. The pump must self-detect the closed socket, abort
+    // the upstream, and NOT read/hash bytes for a client that is gone.
+    const f = fakeReply({ destroyed: true });
+    const ctrl = new AbortController();
+    let reads = 0;
+    const reader = readerOf([Uint8Array.of(1), Uint8Array.of(2)], { onRead: () => { reads += 1; } });
+    const outcomes: StreamOutcome[] = [];
+    await pumpStreamWithTerminalEmit({
+      reader,
+      reply: f.reply,
+      controller: ctrl,
+      finalizeAndEmit: async (o) => { outcomes.push(o); },
+    });
+    expect(ctrl.signal.aborted).toBe(true); // upstream aborted → no orphan
+    expect(reads).toBe(0); // never read/hashed a byte for the gone client
+    expect(f.writes).toHaveLength(0);
+    expect(outcomes).toEqual(['client_disconnect']); // NOT 'complete'
+    expect(f.ended()).toBe(1); // still finalized once
   });
 });

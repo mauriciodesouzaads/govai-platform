@@ -94,14 +94,24 @@ export async function pumpStreamWithTerminalEmit(args: PumpStreamArgs): Promise<
   };
   reply.raw.on('close', onClose);
 
-  let outcome: StreamOutcome = 'complete';
+  // EP-008C P2#2: `close` is one-shot and is NOT replayed — if the socket is ALREADY closed
+  // when we arm the listener above (e.g. a client disconnect during the caller's detach→pump
+  // handoff), that listener would never fire. Detect an already-closed response now, abort the
+  // upstream, and SKIP the drain so we never read/hash upstream bytes for a client that is gone.
+  const alreadyClosed =
+    reply.raw.destroyed || reply.raw.writableEnded || reply.raw.closed;
+  if (alreadyClosed && !drained) controller.abort();
+
+  let outcome: StreamOutcome = alreadyClosed ? 'client_disconnect' : 'complete';
   try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value) reply.raw.write(Buffer.from(value));
+    if (!alreadyClosed) {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) reply.raw.write(Buffer.from(value));
+      }
+      drained = true;
     }
-    drained = true;
   } catch (err) {
     outcome = classifyStreamError(err, controller.signal);
   } finally {

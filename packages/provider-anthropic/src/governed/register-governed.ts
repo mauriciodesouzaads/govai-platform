@@ -107,9 +107,12 @@ export async function registerAnthropicGoverned(
       }
       throw err;
     }
-    detachEarly();
 
+    // EP-008C P2#2: keep the early close→abort hook live until the streaming handoff is done;
+    // detach per result kind below (the stream branch detaches AFTER the pump, so the
+    // close→abort path stays continuously live across the detach→pump-listener boundary).
     if (result.kind === 'blocked') {
+      detachEarly();
       reply.code(403);
       return {
         error: 'governed_blocked',
@@ -137,7 +140,7 @@ export async function registerAnthropicGoverned(
       // `finally` — the handler's async chain → request-identity ALS in scope (§1.3);
       // on('close') only aborts. The pre-existing finalize try/catch+log is preserved
       // inside finalizeAndEmit and now also fires on the drain-throw path.
-      await pumpStreamWithTerminalEmit({
+      const pumpPromise = pumpStreamWithTerminalEmit({
         reader: result.body.getReader(),
         reply,
         controller: ac,
@@ -149,10 +152,16 @@ export async function registerAnthropicGoverned(
           }
         },
       });
+      try {
+        await pumpPromise;
+      } finally {
+        detachEarly();
+      }
       return;
     }
 
     // non_stream
+    detachEarly();
     for (const [k, v] of Object.entries(result.response_headers)) {
       if (HOP_BY_HOP.has(k.toLowerCase())) continue;
       reply.header(k, v);

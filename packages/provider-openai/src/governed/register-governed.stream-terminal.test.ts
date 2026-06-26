@@ -11,7 +11,12 @@ import { createHash } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 const ctl = vi.hoisted(() => ({
-  mode: 'clean' as 'clean' | 'upstream_error' | 'disconnect' | 'pre_disconnect',
+  mode: 'clean' as
+    | 'clean'
+    | 'upstream_error'
+    | 'disconnect'
+    | 'pre_disconnect'
+    | 'handoff_disconnect',
   chunks: [] as Uint8Array[],
   finalHash: 'f'.repeat(64),
   capturedSignal: undefined as AbortSignal | undefined,
@@ -30,10 +35,20 @@ vi.mock('../passthrough/stream-forward.js', () => ({
         else input.signal?.addEventListener('abort', onAbort, { once: true });
       });
     }
+    if (mode === 'handoff_disconnect') {
+      // Wait for the client to disconnect, THEN resolve with headers + a body that IGNORES the
+      // abort. This makes reply.raw already-closed when the pump arms its (one-shot) close
+      // listener — the P2#2 handoff condition. Unfixed code drains to 'complete'; the CHANGE A
+      // self-check detects the closed socket, aborts, and emits 'client_disconnect'.
+      await new Promise<void>((resolve) => {
+        if (input.signal?.aborted) resolve();
+        else input.signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+    }
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         for (const c of chunks) controller.enqueue(c);
-        if (mode === 'clean') {
+        if (mode === 'clean' || mode === 'handoff_disconnect') {
           controller.close();
         } else if (mode === 'upstream_error') {
           controller.error(new Error('upstream boom'));
@@ -212,5 +227,19 @@ describe('EP-008C OpenAI governed stream terminal-completeness', () => {
     expect(ctl.capturedSignal).toBeDefined();
     expect(ctl.capturedSignal!.aborted).toBe(true);
     expect(auditEvents).toHaveLength(0);
+  });
+
+  it('(7) handoff-window disconnect (socket closed before the pump arms) → client_disconnect, NOT complete; upstream aborted', async () => {
+    ctl.mode = 'handoff_disconnect';
+    const clientAc = new AbortController();
+    const p = postResponses(clientAc.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    clientAc.abort();
+    await p.catch(() => undefined);
+    await waitForEmit(() => auditEvents.length >= 1);
+    expect(auditEvents).toHaveLength(1);
+    expect(invoked()['stream_outcome']).toBe('client_disconnect');
+    expect(ctl.capturedSignal).toBeDefined();
+    expect(ctl.capturedSignal!.aborted).toBe(true);
   });
 });
