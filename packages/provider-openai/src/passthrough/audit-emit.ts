@@ -45,6 +45,8 @@ export type BuildPassthroughInvokedInput = {
   native_request_hash: string;
   native_response_hash?: string;
   stream_final_hash?: string;
+  /** EP-008C: terminal outcome of a streaming invocation (absent on non-stream). */
+  stream_outcome?: 'complete' | 'upstream_error' | 'client_disconnect';
   latency_ms: number;
   status_code: number;
   /** Invocation start instant (the latency_ms anchor); serialized to ISO in the event. */
@@ -88,6 +90,7 @@ export function buildPassthroughInvoked(
     native_request_hash: input.native_request_hash,
     native_response_hash: input.native_response_hash,
     stream_final_hash: input.stream_final_hash,
+    stream_outcome: input.stream_outcome,
     latency_ms: input.latency_ms,
     status_code: input.status_code,
     occurred_at: input.occurred_at.toISOString(),

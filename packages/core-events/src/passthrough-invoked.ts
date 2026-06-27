@@ -117,6 +117,16 @@ export const PassthroughInvokedSchema = z
       .string()
       .regex(/^[0-9a-f]{64}$/)
       .optional(),
+    /**
+     * EP-008C: terminal outcome of a streaming invocation — `complete` on clean
+     * drain, `upstream_error` when the upstream reader rejected, `client_disconnect`
+     * when the client aborted/the socket write threw. Additive-optional within v4:
+     * absent on non-stream events and on historical stream events (absence =
+     * legacy / outcome-unknown). A broken terminal STILL carries the partial-byte
+     * `stream_final_hash`, so Rule 1 is unaffected; Rule 8 guards that a broken
+     * outcome only applies to a stream.
+     */
+    stream_outcome: z.enum(['complete', 'upstream_error', 'client_disconnect']).optional(),
 
     latency_ms: z.number().int().nonnegative(),
     status_code: z.number().int(),
@@ -317,6 +327,19 @@ export const PassthroughInvokedSchema = z
             'purpose_deprecation_migration_target requires purpose_deprecated=true (HAE-003)',
         });
       }
+    }
+
+    // Rule 8 (EP-008C): stream_outcome is streaming-only — ANY defined outcome (including
+    // 'complete') requires is_stream=true. Since the outcome is now carried into the immutable
+    // capture projection (AuditBridgeCapturePayloadV1), an off-stream outcome must be rejected at
+    // the boundary, not allowed to produce a divergent capture hash. (The two broken outcomes
+    // remain rejected off-stream — they are a subset of "any defined outcome".)
+    if (data.stream_outcome !== undefined && data.is_stream !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['stream_outcome'],
+        message: 'stream_outcome requires is_stream=true (EP-008C)',
+      });
     }
   });
 

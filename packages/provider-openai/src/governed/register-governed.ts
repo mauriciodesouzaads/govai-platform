@@ -8,6 +8,7 @@ import {
   type GovernedTenant,
 } from './handle-responses.js';
 import { handleOpenAIGovernedChatCompletions } from './handle-chat-completions.js';
+import { armAbortOnClose, pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 
 export type OpenAIGovernedDeps = GovernedHandleDeps & {
   resolveTenant: (req: FastifyRequest) => Promise<GovernedTenant>;
@@ -60,6 +61,7 @@ async function pumpResult(
   result:
     | Awaited<ReturnType<typeof handleOpenAIGovernedResponses>>
     | Awaited<ReturnType<typeof handleOpenAIGovernedChatCompletions>>,
+  controller: AbortController,
 ): Promise<unknown | undefined> {
   if (result.kind === 'blocked') {
     reply.code(403);
@@ -83,22 +85,23 @@ async function pumpResult(
     respHeaders['x-govai-effective-risk-class'] = result.governance.effective_risk_class;
     respHeaders['x-govai-enforcement-decision'] = result.governance.enforcement_decision;
     reply.raw.writeHead(result.status_code, respHeaders);
-    const reader = result.body.getReader();
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        /* c8 ignore next -- WHATWG Streams: reader.read() with done:false always yields a value chunk; defensive guard */
-        if (value) reply.raw.write(Buffer.from(value));
-      }
-    } finally {
-      reply.raw.end();
-    }
-    try {
-      await result.finalize();
-    } catch (err) {
-      req.log.error({ err }, 'governed-openai stream finalize failed');
-    }
+    // EP-008C: drain + emit the terminal event on EVERY termination path via the shared
+    // helper (covers both /v1/responses and /v1/chat/completions). finalize (build+emit)
+    // runs in the helper's drain `finally` — the handler's async chain → request-identity
+    // ALS in scope (§1.3); on('close') only aborts. The pre-existing finalize try/catch+log
+    // is preserved inside finalizeAndEmit and now also fires on the drain-throw path.
+    await pumpStreamWithTerminalEmit({
+      reader: result.body.getReader(),
+      reply,
+      controller,
+      finalizeAndEmit: async (outcome) => {
+        try {
+          await result.finalize(outcome);
+        } catch (err) {
+          req.log.error({ err }, 'governed-openai stream finalize failed');
+        }
+      },
+    });
     return undefined;
   }
   for (const [k, v] of Object.entries(result.response_headers)) {
@@ -134,11 +137,38 @@ export async function registerOpenAIGoverned(
     const inboundHeaders = inboundHeadersFromReq(req);
     const rawBody = bufferifyBody(req.body);
     const isStream = isStreamRequest(req.body, inboundHeaders);
-    const result = await handleOpenAIGovernedResponses(
-      { tenant, rawBody, inboundHeaders, isStream },
-      deps,
-    );
-    return pumpResult(req, reply, result);
+    // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
+    const ac = new AbortController();
+    // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
+    // (which opens forwardStream internally), so a disconnect during it cancels the orphaned
+    // upstream. EP-008C P2#2: kept LIVE across the pumpResult handoff (close is one-shot);
+    // detached only AFTER pumpResult returns (finally below).
+    const detachEarly = armAbortOnClose(reply, ac);
+    let result: Awaited<ReturnType<typeof handleOpenAIGovernedResponses>>;
+    try {
+      result = await handleOpenAIGovernedResponses(
+        { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
+        deps,
+      );
+    } catch (err) {
+      detachEarly();
+      // EP-008C §(3) Option C: a PRE-HEADER termination — no result/finalize, zero bytes,
+      // no terminal. The early hook already aborted the orphaned upstream on disconnect.
+      if (ac.signal.aborted) {
+        // Client gone pre-header — take over the (dead) reply so Fastify does not attempt a
+        // response on the closed socket; nothing to send, no terminal (§(3) C).
+        reply.hijack();
+        return;
+      }
+      throw err;
+    }
+    // EP-008C P2#2: keep the early hook live across the pumpResult handoff; detach only
+    // after pumpResult (and its internal pump) returns — `return await` so the finally runs last.
+    try {
+      return await pumpResult(req, reply, result, ac);
+    } finally {
+      detachEarly();
+    }
   });
 
   app.post('/governed/openai/v1/chat/completions', async (req, reply) => {
@@ -152,10 +182,37 @@ export async function registerOpenAIGoverned(
     const inboundHeaders = inboundHeadersFromReq(req);
     const rawBody = bufferifyBody(req.body);
     const isStream = isStreamRequest(req.body, inboundHeaders);
-    const result = await handleOpenAIGovernedChatCompletions(
-      { tenant, rawBody, inboundHeaders, isStream },
-      deps,
-    );
-    return pumpResult(req, reply, result);
+    // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
+    const ac = new AbortController();
+    // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
+    // (which opens forwardStream internally), so a disconnect during it cancels the orphaned
+    // upstream. EP-008C P2#2: kept LIVE across the pumpResult handoff (close is one-shot);
+    // detached only AFTER pumpResult returns (finally below).
+    const detachEarly = armAbortOnClose(reply, ac);
+    let result: Awaited<ReturnType<typeof handleOpenAIGovernedChatCompletions>>;
+    try {
+      result = await handleOpenAIGovernedChatCompletions(
+        { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
+        deps,
+      );
+    } catch (err) {
+      detachEarly();
+      // EP-008C §(3) Option C: a PRE-HEADER termination — no result/finalize, zero bytes,
+      // no terminal. The early hook already aborted the orphaned upstream on disconnect.
+      if (ac.signal.aborted) {
+        // Client gone pre-header — take over the (dead) reply so Fastify does not attempt a
+        // response on the closed socket; nothing to send, no terminal (§(3) C).
+        reply.hijack();
+        return;
+      }
+      throw err;
+    }
+    // EP-008C P2#2: keep the early hook live across the pumpResult handoff; detach only
+    // after pumpResult (and its internal pump) returns — `return await` so the finally runs last.
+    try {
+      return await pumpResult(req, reply, result, ac);
+    } finally {
+      detachEarly();
+    }
   });
 }

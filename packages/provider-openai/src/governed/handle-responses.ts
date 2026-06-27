@@ -20,6 +20,7 @@ import { OPENAI_BETA_POLICY_VERSION } from '../beta-policy.js';
 import { classifyOpenAITools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
 import { forwardStream } from '../passthrough/stream-forward.js';
+import type { StreamOutcome } from '@govai/provider-stream-http';
 import { KNOWN_OPENAI_TAXONOMY_VERSION } from '../tool-taxonomy-version.js';
 import { extractOpenAIResponsesText } from './extract-text.js';
 
@@ -74,7 +75,7 @@ export type GovernedStreamResult = {
   body: ReadableStream<Uint8Array>;
   native_request_hash_hex: string;
   provider_request_id: string | null;
-  finalize: () => Promise<{
+  finalize: (outcome: StreamOutcome) => Promise<{
     stream_final_hash_hex: string;
     bytes_streamed: number;
     latency_ms: number;
@@ -107,6 +108,8 @@ export type GovernedHandleInput = {
   inboundHeaders: Record<string, string>;
   isStream: boolean;
   isMultipart?: boolean;
+  /** EP-008C: abort signal threaded to the upstream stream fetch (client-disconnect propagation). */
+  signal?: AbortSignal;
 };
 
 const HOP_BY_HOP = new Set([
@@ -282,9 +285,10 @@ export async function handleOpenAIGovernedResponses(
       method: 'POST',
       headers: outHeaders,
       body: input.rawBody,
+      signal: input.signal,
     });
 
-    const finalize = async () => {
+    const finalize = async (outcome: StreamOutcome) => {
       const final = await stream.finalize();
       const ev = PassthroughInvokedSchema.parse({
         event_type: 'passthrough.invoked',
@@ -304,6 +308,7 @@ export async function handleOpenAIGovernedResponses(
         enforcement_decision: governance.enforcement_decision,
         native_request_hash: stream.native_request_hash,
         stream_final_hash: final.stream_final_hash,
+        stream_outcome: outcome,
         latency_ms: final.latency_ms,
         status_code: stream.status,
         occurred_at: occurredAt.toISOString(),

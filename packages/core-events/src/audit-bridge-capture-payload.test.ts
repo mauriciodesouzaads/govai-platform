@@ -172,6 +172,27 @@ describe('projectCapturePayloadV1', () => {
     expect(projectCapturePayloadV1(a)).not.toEqual(projectCapturePayloadV1(b));
   });
 
+  // EP-008C — the terminal stream outcome reaches the IMMUTABLE projection, so a clean vs broken
+  // stream terminal with the SAME request+stream hashes produce DIFFERENT payloads (→ hashes).
+  it('EP-008C: stream_outcome is projected — complete vs client_disconnect differ; absent is omitted', () => {
+    const streamBase: PassthroughInvoked = {
+      ...baseEnvelope(),
+      is_stream: true,
+      stream_final_hash: 'c'.repeat(64),
+    };
+    const complete = projectCapturePayloadV1({ ...streamBase, stream_outcome: 'complete' });
+    const disconnect = projectCapturePayloadV1({ ...streamBase, stream_outcome: 'client_disconnect' });
+    expect(complete.stream_outcome).toBe('complete');
+    expect(disconnect.stream_outcome).toBe('client_disconnect');
+    // identical request + stream hashes, differ ONLY in stream_outcome → DIFFERENT projection
+    // (and therefore a different canonical payload hash — the whole point of EP-008C).
+    expect(complete).not.toEqual(disconnect);
+    expect(AuditBridgeCapturePayloadV1Schema.safeParse(complete).success).toBe(true);
+    expect(AuditBridgeCapturePayloadV1Schema.safeParse(disconnect).success).toBe(true);
+    // additive-optional: absent stream_outcome is omitted (legacy/non-stream captures hash unchanged).
+    expect(projectCapturePayloadV1(streamBase).stream_outcome).toBeUndefined();
+  });
+
   // R1 — the projector reads the REAL field `usage_json` and writes payload key `usage`.
   it('R1: usage_json present populates payload.usage; a change to usage_json changes the projection', () => {
     const withUsage: PassthroughInvoked = {

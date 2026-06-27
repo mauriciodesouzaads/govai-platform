@@ -25,6 +25,7 @@ import { ANTHROPIC_BETA_POLICY_VERSION } from '../beta-policy.js';
 import { classifyTools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
 import { forwardStream } from '../passthrough/stream-forward.js';
+import type { StreamOutcome } from '@govai/provider-stream-http';
 import { KNOWN_ANTHROPIC_TAXONOMY_VERSION } from '../tool-taxonomy-version.js';
 import { extractAnthropicText } from './extract-text.js';
 
@@ -81,8 +82,11 @@ export type GovernedStreamResult = {
   body: ReadableStream<Uint8Array>;
   native_request_hash_hex: string;
   provider_request_id: string | null;
-  /** Caller MUST await AFTER draining `body` to obtain the final hash + audit event. */
-  finalize: () => Promise<{
+  /**
+   * Caller MUST await AFTER draining `body` to obtain the final hash + audit event.
+   * EP-008C: `outcome` is the stream termination outcome, threaded into the event.
+   */
+  finalize: (outcome: StreamOutcome) => Promise<{
     stream_final_hash_hex: string;
     bytes_streamed: number;
     latency_ms: number;
@@ -119,6 +123,8 @@ export type GovernedHandleInput = {
   isStream: boolean;
   /** Multipart hint (false for messages, true for files endpoints when added). */
   isMultipart?: boolean;
+  /** EP-008C: abort signal threaded to the upstream stream fetch (client-disconnect propagation). */
+  signal?: AbortSignal;
 };
 
 const HOP_BY_HOP = new Set([
@@ -310,9 +316,10 @@ export async function handleAnthropicGovernedMessages(
       method: 'POST',
       headers: outHeaders,
       body: input.rawBody,
+      signal: input.signal,
     });
 
-    const finalize = async (): Promise<{
+    const finalize = async (outcome: StreamOutcome): Promise<{
       stream_final_hash_hex: string;
       bytes_streamed: number;
       latency_ms: number;
@@ -337,6 +344,7 @@ export async function handleAnthropicGovernedMessages(
         enforcement_decision: governance.enforcement_decision,
         native_request_hash: stream.native_request_hash,
         stream_final_hash: final.stream_final_hash,
+        stream_outcome: outcome,
         latency_ms: final.latency_ms,
         status_code: stream.status,
         occurred_at: occurredAt.toISOString(),

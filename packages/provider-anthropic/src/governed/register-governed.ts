@@ -8,6 +8,7 @@ import {
   type GovernedHandleDeps,
   type GovernedTenant,
 } from './handle-messages.js';
+import { armAbortOnClose, pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 
 export type AnthropicGovernedDeps = GovernedHandleDeps & {
   /** Resolve the tenant + tier + operational_mode from the request (DB-backed). */
@@ -78,12 +79,40 @@ export async function registerAnthropicGoverned(
     const rawBody = bufferifyBody(req.body);
     const isStream = isStreamRequest(req.body, inboundHeaders);
 
-    const result = await handleAnthropicGovernedMessages(
-      { tenant, rawBody, inboundHeaders, isStream },
-      deps,
-    );
+    // EP-008C: an AbortController whose signal threads to the upstream stream fetch
+    // (client-disconnect propagation) and drives the terminal-emit-on-every-path.
+    const ac = new AbortController();
+    // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
+    // (which opens forwardStream internally), so a disconnect during that await cancels the
+    // orphaned upstream fetch. Detached before the stream pump installs its own listener.
+    const detachEarly = armAbortOnClose(reply, ac);
+    let result: Awaited<ReturnType<typeof handleAnthropicGovernedMessages>>;
+    try {
+      result = await handleAnthropicGovernedMessages(
+        { tenant, rawBody, inboundHeaders, isStream, signal: ac.signal },
+        deps,
+      );
+    } catch (err) {
+      detachEarly();
+      // EP-008C §(3) Option C: a PRE-HEADER termination — the governed stream never returned
+      // upstream headers (its internal forwardStream rejected on abort), so no result/finalize
+      // exists and there is NO partial content to attest. Emit NO terminal. If the client
+      // disconnected, the early hook already aborted the orphaned upstream; complete quietly.
+      // Otherwise preserve the prior behavior (the reject propagates to Fastify's error handler).
+      if (ac.signal.aborted) {
+        // Client gone pre-header — take over the (dead) reply so Fastify does not attempt a
+        // response on the closed socket; nothing to send, no terminal (§(3) C).
+        reply.hijack();
+        return;
+      }
+      throw err;
+    }
 
+    // EP-008C P2#2: keep the early close→abort hook live until the streaming handoff is done;
+    // detach per result kind below (the stream branch detaches AFTER the pump, so the
+    // close→abort path stays continuously live across the detach→pump-listener boundary).
     if (result.kind === 'blocked') {
+      detachEarly();
       reply.code(403);
       return {
         error: 'governed_blocked',
@@ -106,26 +135,33 @@ export async function registerAnthropicGoverned(
       respHeaders['x-govai-effective-risk-class'] = result.governance.effective_risk_class;
       respHeaders['x-govai-enforcement-decision'] = result.governance.enforcement_decision;
       reply.raw.writeHead(result.status_code, respHeaders);
-      const reader = result.body.getReader();
+      // EP-008C: drain + emit the terminal event on EVERY termination path via the
+      // shared helper. result.finalize(outcome) (build+emit) runs in the helper's drain
+      // `finally` — the handler's async chain → request-identity ALS in scope (§1.3);
+      // on('close') only aborts. The pre-existing finalize try/catch+log is preserved
+      // inside finalizeAndEmit and now also fires on the drain-throw path.
+      const pumpPromise = pumpStreamWithTerminalEmit({
+        reader: result.body.getReader(),
+        reply,
+        controller: ac,
+        finalizeAndEmit: async (outcome) => {
+          try {
+            await result.finalize(outcome);
+          } catch (err) {
+            req.log.error({ err }, 'governed-anthropic stream finalize failed');
+          }
+        },
+      });
       try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          /* c8 ignore next -- WHATWG Streams: reader.read() with done:false always yields a value chunk; defensive guard */
-          if (value) reply.raw.write(Buffer.from(value));
-        }
+        await pumpPromise;
       } finally {
-        reply.raw.end();
-      }
-      try {
-        await result.finalize();
-      } catch (err) {
-        req.log.error({ err }, 'governed-anthropic stream finalize failed');
+        detachEarly();
       }
       return;
     }
 
     // non_stream
+    detachEarly();
     for (const [k, v] of Object.entries(result.response_headers)) {
       if (HOP_BY_HOP.has(k.toLowerCase())) continue;
       reply.header(k, v);
