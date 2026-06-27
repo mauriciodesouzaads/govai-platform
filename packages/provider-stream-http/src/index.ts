@@ -114,6 +114,13 @@ export async function pumpStreamWithTerminalEmit(args: PumpStreamArgs): Promise<
     }
   } catch (err) {
     outcome = classifyStreamError(err, controller.signal);
+    // EP-008C P1: a write-side-first disconnect — reply.raw.write() throwing EPIPE/ERR_STREAM_*
+    // BEFORE the close listener fired — classifies as client_disconnect but leaves the upstream
+    // un-aborted; finalizeAndEmit → streamRes.finalize() would then keep draining upstream for a
+    // gone client (orphaned upstream / delayed-or-lost terminal). Abort now (idempotent). ALS
+    // rule intact: this is the drain finally's sibling catch (the handler's async chain), NOT an
+    // on('close') callback — abort ONLY, never emit (the emit stays in the finally below).
+    if (outcome === 'client_disconnect') controller.abort();
   } finally {
     reply.raw.removeListener('close', onClose);
     try {

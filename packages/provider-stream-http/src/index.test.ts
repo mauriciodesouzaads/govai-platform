@@ -27,7 +27,7 @@ function readerOf(
   } as unknown as ReadableStreamDefaultReader<Uint8Array>;
 }
 
-function fakeReply(opts?: { destroyed?: boolean }) {
+function fakeReply(opts?: { destroyed?: boolean; writeThrows?: Error }) {
   const closeCbs: Array<() => void> = [];
   const writes: Uint8Array[] = [];
   let ended = 0;
@@ -45,6 +45,7 @@ function fakeReply(opts?: { destroyed?: boolean }) {
       }
     },
     write: (b: Uint8Array) => {
+      if (opts?.writeThrows) throw opts.writeThrows;
       writes.push(b);
       return true;
     },
@@ -191,5 +192,22 @@ describe('pumpStreamWithTerminalEmit', () => {
     expect(f.writes).toHaveLength(0);
     expect(outcomes).toEqual(['client_disconnect']); // NOT 'complete'
     expect(f.ended()).toBe(1); // still finalized once
+  });
+
+  it('P1 (P1#3): a write-side-first disconnect (write throws EPIPE before close fires) → aborts upstream + client_disconnect', async () => {
+    // The close listener never fires; the reply.raw.write() throw is the FIRST signal of the
+    // disconnect. The catch must abort the controller so finalize() does not keep draining the
+    // upstream for a gone client.
+    const f = fakeReply({ writeThrows: withCode('write EPIPE', 'EPIPE') });
+    const ctrl = new AbortController();
+    const outcomes: StreamOutcome[] = [];
+    await pumpStreamWithTerminalEmit({
+      reader: readerOf([Uint8Array.of(1)]),
+      reply: f.reply,
+      controller: ctrl,
+      finalizeAndEmit: async (o) => { outcomes.push(o); },
+    });
+    expect(ctrl.signal.aborted).toBe(true); // ← P1: upstream aborted on the write-side-first path
+    expect(outcomes).toEqual(['client_disconnect']);
   });
 });

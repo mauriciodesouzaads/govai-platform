@@ -86,6 +86,11 @@ export const AuditBridgeCapturePayloadV1Schema = z.object({
   native_request_hash: z.string(),
   native_response_hash: z.string().optional(),
   stream_final_hash: z.string().optional(),
+  // EP-008C: the terminal stream outcome travels into the immutable capture projection so the
+  // payload hash distinguishes a clean `complete` terminal from a broken
+  // `client_disconnect`/`upstream_error` terminal that shares the same request+stream hashes.
+  // Additive-optional (absent on non-stream + legacy captures → omitted by canonicalize → hash unchanged).
+  stream_outcome: z.enum(['complete', 'upstream_error', 'client_disconnect']).optional(),
   status_code: z.number().int(),
   usage: UsageProjectionSchema.optional(),
   credential_source: z.string(),
@@ -159,6 +164,7 @@ export function projectCapturePayloadV1(e: PassthroughInvoked): AuditBridgeCaptu
     native_request_hash: e.native_request_hash,
     native_response_hash: e.native_response_hash,
     stream_final_hash: e.stream_final_hash,
+    stream_outcome: e.stream_outcome, // EP-008C: carry the terminal outcome into the hashed projection
     status_code: e.status_code,
     usage: projectUsage(e.usage_json),
     credential_source: e.credential_source,
