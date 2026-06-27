@@ -329,17 +329,16 @@ export const PassthroughInvokedSchema = z
       }
     }
 
-    // Rule 8 (EP-008C): a broken-stream outcome only makes sense for a stream.
-    if (
-      (data.stream_outcome === 'upstream_error' ||
-        data.stream_outcome === 'client_disconnect') &&
-      data.is_stream !== true
-    ) {
+    // Rule 8 (EP-008C): stream_outcome is streaming-only — ANY defined outcome (including
+    // 'complete') requires is_stream=true. Since the outcome is now carried into the immutable
+    // capture projection (AuditBridgeCapturePayloadV1), an off-stream outcome must be rejected at
+    // the boundary, not allowed to produce a divergent capture hash. (The two broken outcomes
+    // remain rejected off-stream — they are a subset of "any defined outcome".)
+    if (data.stream_outcome !== undefined && data.is_stream !== true) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['stream_outcome'],
-        message:
-          'stream_outcome upstream_error/client_disconnect requires is_stream=true (EP-008C)',
+        message: 'stream_outcome requires is_stream=true (EP-008C)',
       });
     }
   });

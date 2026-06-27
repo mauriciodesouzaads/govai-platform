@@ -423,6 +423,20 @@ describe('PassthroughInvokedSchema v4 — EP-008C stream_outcome (additive-optio
     }
   });
 
+  it('Rule 8 (broadened, EP-008C P2): stream_outcome=complete on a NON-stream event → rejects (streaming-only)', () => {
+    // Once stream_outcome is carried into the immutable capture projection, a streaming-only field
+    // set off-stream must be rejected at the boundary (not allowed to produce a divergent hash).
+    const r = PassthroughInvokedSchema.safeParse(
+      baseEvent({ is_stream: false, stream_outcome: 'complete' }),
+    );
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.path.join('.') === 'stream_outcome')).toBe(true);
+    }
+    // regression guard: a NON-stream event with NO stream_outcome stays valid (absence is legacy).
+    expect(PassthroughInvokedSchema.safeParse(baseEvent({ is_stream: false })).success).toBe(true);
+  });
+
   it('rejects an out-of-enum stream_outcome value', () => {
     const r = PassthroughInvokedSchema.safeParse(
       baseEvent({ is_stream: true, stream_final_hash: HEX64, stream_outcome: 'truncated' }),
