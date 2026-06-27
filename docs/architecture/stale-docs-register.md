@@ -1,6 +1,6 @@
 # GovAI Stale Docs Register
 
-Documents whose statements no longer match source ([current-state.md](./current-state.md), main `1b655deb`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
+Documents whose statements no longer match source ([current-state.md](./current-state.md), main `c3cd39f3`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
 
 | Document | Stale statement | Current source evidence | Confidence | Severity | Action | Blocks B3? |
 |---|---|---|---|---|---|---|
@@ -82,3 +82,15 @@ The `cnpj` baseline DLP detector is no longer numeric-only. EP-007 (base main `e
 | `regulatory/15-source-register.md` | no RFB CNPJ source registered | **BR-RFB-01** added: IN RFB nº 2.229/2024 as `CONFIRMED_PRIMARY_SOURCE` |
 
 Scope guard (NOT stale claims): EP-007 edits only `baseline-detectors.ts` + its tests + docs. D1 = uppercase-only regex (a lowercase alphanumeric candidate is not surfaced). D2 = a `cnpj@2` versioned-detector split is deferred (no detector-id/version change in EP-007). The shared `digits()` helper and the CPF/email/phone detectors are untouched.
+
+## EP-008 arc reconciliation (2026-06-27) — evidence completeness reporting/metrics IMPLEMENTED
+
+The "Evidence completeness … no reporting/metrics layer" reading of current-state.md §3 is no longer true. The EP-008 arc (PRs #107–#111, all squash-merged, main now `c3cd39f3`) shipped the completeness reporting + metrics layer:
+
+| Document | Was (stale) | Now (corrected, EP-008A/B/C) |
+|---|---|---|
+| `current-state.md` §3 "Evidence completeness" row | "PLANNED … no reporting/metrics layer" | **IMPLEMENTED (EP-008A/B/C):** EP-008A migration `0027` — three read-only `security_invoker` evidence views (`govai.evidence_capture_completeness` EC-1.a, `govai.evidence_chain_backlog` EC-1.b, `govai.evidence_provider_without_audit` EC-3a); EP-008B — best-effort EC-3b drop/capture OTel counters (`govai_audit_bridge_drops_total` / `govai_audit_bridge_captures_total`, observe-only, cardinality-safe); EP-008C — stream terminal-event completeness (terminal `PassthroughInvoked` on every stream termination via the new `@govai/provider-stream-http`, `stream_outcome` in the envelope + the immutable capture projection); EP-OBS-REFACTOR — the shared `@govai/observability` MeterProvider exporting the counters |
+| `current-state.md` Source manifests | migrations "25 (0001..0026, highest 0026_…)" | **26 (0001..0027, missing 0006; highest `0027_evidence_completeness_views.sql`)** — EP-008A added 0027 |
+| `development-roadmap.md` Phase 4 | outputs described as future | **PARTIALLY DONE:** the reporting/metrics layer (EC-1/EC-2/EC-3.seal/EC-3.drop/EC-5-marker) shipped (EP-008A/B/C); EC-4 + EC-5 reports + the cockpit read surface remain (EP-008D) |
+
+Scope guard (NOT stale claims): EP-008A/B/C are observe-only / read-only over the existing schema except the EP-008A views (additive, `security_invoker`) and EP-008C's additive-optional `stream_outcome` field (no migration — hashed into the existing `audit_capture_outbox` blob); no provider-native regression (ADR-021 byte fidelity intact). The operator/auditor cockpit (EP-008D) needs an operator/cross-tenant scoped role (cannot use `security_invoker`) and is not yet built. `/v1/runs` stays chain-authoritative via `auditAppend`.
