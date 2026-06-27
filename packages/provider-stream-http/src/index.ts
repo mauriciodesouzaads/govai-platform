@@ -123,11 +123,8 @@ export async function pumpStreamWithTerminalEmit(args: PumpStreamArgs): Promise<
     if (outcome === 'client_disconnect') controller.abort();
   } finally {
     reply.raw.removeListener('close', onClose);
-    try {
-      reply.raw.end();
-    } catch {
-      /* socket already closed — nothing to flush */
-    }
+    // EP-008C: emit the terminal FIRST (the evidence) — independent of how we then close the
+    // socket, so destroying it on truncation can never pre-empt the audit terminal.
     if (!emitted) {
       emitted = true;
       try {
@@ -135,6 +132,19 @@ export async function pumpStreamWithTerminalEmit(args: PumpStreamArgs): Promise<
       } catch {
         /* observe-only: a finalize/build/emit failure must never crash the hijacked reply */
       }
+    }
+    // EP-008C (proxy-response fidelity): a clean drain or a client disconnect ends gracefully; an
+    // upstream_error TRUNCATION destroys the socket so a downstream client observes a FAILED stream
+    // (not a clean EOF that would look like a complete response and defeat retry/discard logic).
+    // After the terminal emit, wrapped — the socket may already be closed (client_disconnect).
+    try {
+      if (outcome === 'upstream_error') {
+        reply.raw.destroy();
+      } else {
+        reply.raw.end();
+      }
+    } catch {
+      /* socket already closed/destroyed — nothing to flush */
     }
   }
 }

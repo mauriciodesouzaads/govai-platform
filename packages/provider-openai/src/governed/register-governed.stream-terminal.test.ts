@@ -165,8 +165,10 @@ describe('EP-008C OpenAI governed stream terminal-completeness', () => {
 
   it('(2) mid-stream upstream error → terminal once with partial hash + stream_outcome=upstream_error + identity', async () => {
     ctl.mode = 'upstream_error';
-    const res = await postResponses();
-    await res.text().catch(() => undefined);
+    // upstream_error now DESTROYS the socket (truncation) → the client fetch may itself reject with a
+    // connection reset; the terminal is still emitted server-side BEFORE the close.
+    const res = await postResponses().catch(() => null);
+    if (res) await res.text().catch(() => undefined);
     await waitForEmit(() => auditEvents.length >= 1);
     expect(auditEvents).toHaveLength(1);
     const ev = invoked();

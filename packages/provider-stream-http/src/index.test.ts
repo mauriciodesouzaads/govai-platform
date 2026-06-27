@@ -31,6 +31,7 @@ function fakeReply(opts?: { destroyed?: boolean; writeThrows?: Error }) {
   const closeCbs: Array<() => void> = [];
   const writes: Uint8Array[] = [];
   let ended = 0;
+  let destroyCalls = 0;
   const raw = {
     destroyed: opts?.destroyed ?? false,
     writableEnded: false,
@@ -52,8 +53,17 @@ function fakeReply(opts?: { destroyed?: boolean; writeThrows?: Error }) {
     end: () => {
       ended += 1;
     },
+    destroy: () => {
+      destroyCalls += 1;
+    },
   };
-  return { reply: { raw } as unknown as FastifyReply, writes, closeCbs, ended: () => ended };
+  return {
+    reply: { raw } as unknown as FastifyReply,
+    writes,
+    closeCbs,
+    ended: () => ended,
+    destroyCalls: () => destroyCalls,
+  };
 }
 
 describe('classifyStreamError', () => {
@@ -120,9 +130,10 @@ describe('pumpStreamWithTerminalEmit', () => {
     expect(outcomes).toEqual(['complete']);
     expect(f.writes).toHaveLength(2);
     expect(f.ended()).toBe(1);
+    expect(f.destroyCalls()).toBe(0); // clean completion → graceful EOF, never destroy
   });
 
-  it('a drain throw (not aborted) → outcome=upstream_error', async () => {
+  it('a drain throw (not aborted) → outcome=upstream_error → DESTROYS the socket (truncation), not graceful end', async () => {
     const f = fakeReply();
     const ctrl = new AbortController();
     const outcomes: StreamOutcome[] = [];
@@ -134,8 +145,10 @@ describe('pumpStreamWithTerminalEmit', () => {
         outcomes.push(o);
       },
     });
-    expect(outcomes).toEqual(['upstream_error']);
-    expect(f.ended()).toBe(1);
+    expect(outcomes).toEqual(['upstream_error']); // terminal emitted once — evidence unchanged
+    // EP-008C P2 (proxy fidelity): a truncated upstream DESTROYS the socket (not a graceful EOF).
+    expect(f.destroyCalls()).toBe(1);
+    expect(f.ended()).toBe(0);
   });
 
   it('client close mid-drain → aborts the controller, outcome=client_disconnect', async () => {
