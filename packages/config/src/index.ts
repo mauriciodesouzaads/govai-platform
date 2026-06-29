@@ -41,6 +41,13 @@ const EnvSchema = z.object({
   OTEL_SERVICE_NAME: z.string().optional(),
   OTEL_TRACES_SAMPLER_ARG: z.coerce.number().min(0).max(1).default(1.0),
 
+  // Evidence-completeness reports (EP-008D). T_seal is the B3 backlog seal SLO:
+  // a capture still unsealed older than this counts as past-SLO (EC-1 / EC-3.seal).
+  // The default window bounds the report scans when the read-API omits ?window=.
+  // Both are read-only knobs; no boot-fail coupling (evidence is off the hot path).
+  EVIDENCE_T_SEAL_SECONDS: z.coerce.number().int().nonnegative().default(300),
+  EVIDENCE_DEFAULT_WINDOW_SECONDS: z.coerce.number().int().positive().default(86_400),
+
   GOVAI_LIVE_TESTS: z
     .union([z.literal('0'), z.literal('1')])
     .default('0')
