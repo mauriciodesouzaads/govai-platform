@@ -16,7 +16,7 @@ import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fix
 import { createSeedHelpers, H32, type SeedHelpers } from './helpers/evidence-seed.js';
 import {
   evidenceCounts,
-  ec1FailedList,
+  ec1GapList,
   ec2Gaps,
   ec3SealList,
   ec4List,
@@ -64,7 +64,7 @@ afterAll(async () => {
 // =============================================================================
 
 describe('EC-1 — capture terminal-state', () => {
-  it('fires on stuck (captured/sealing) and failed captures + a sanitized failed list', async () => {
+  it('fires on stuck (captured/sealing) and failed captures + lists BOTH as gaps', async () => {
     const org = await seedOrg(stack);
     await seed.seedCaptureInStatus(org.org_id, 'captured');
     await seed.seedCaptureInStatus(org.org_id, 'sealing');
@@ -75,11 +75,29 @@ describe('EC-1 — capture terminal-state', () => {
     expect(counts.ec1.failed).toBe(1);
     expect(counts.ec1.stalled_past_slo).toBe(2); // captured + sealing, past T_seal=0
 
-    const failed = await seed.asRole('govai_app', org.org_id, (c) => ec1FailedList(c, SCOPE));
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.last_error).toBeTruthy();
-    expect(failed[0]!.attempts).toBeGreaterThanOrEqual(1);
-    expectNoPayload(failed);
+    // ★ summary↔list parity (FIX-C): the EC-1 list enumerates the SAME gaps the
+    // summary counts — the 1 failed + the 2 stalled (captured/sealing) rows.
+    const ec1gaps = await seed.asRole('govai_app', org.org_id, (c) => ec1GapList(c, SCOPE));
+    expect(ec1gaps).toHaveLength(3);
+    const failedRow = ec1gaps.find((r) => r.status === 'failed');
+    expect(failedRow?.last_error).toBeTruthy();
+    expect(failedRow!.attempts).toBeGreaterThanOrEqual(1);
+    expect(ec1gaps.filter((r) => r.status === 'captured' || r.status === 'sealing')).toHaveLength(2);
+    expectNoPayload(ec1gaps);
+  });
+
+  it('lists a stalled-but-not-failed capture (summary gap → NON-empty list)', async () => {
+    const org = await seedOrg(stack);
+    await seed.seedCaptureInStatus(org.org_id, 'captured'); // stalled, no failures
+
+    const counts = await seed.asRole('govai_app', org.org_id, (c) => evidenceCounts(c, SCOPE));
+    expect(counts.ec1.failed).toBe(0);
+    expect(counts.ec1.stalled_past_slo).toBe(1);
+
+    const ec1gaps = await seed.asRole('govai_app', org.org_id, (c) => ec1GapList(c, SCOPE));
+    expect(ec1gaps).toHaveLength(1); // ★ the stalled row IS enumerable (not an empty list)
+    expect(['captured', 'sealing']).toContain(ec1gaps[0]!.status);
+    expect(ec1gaps[0]!.last_error).toBeNull();
   });
 });
 
@@ -98,6 +116,46 @@ describe('EC-2 — chain contiguity', () => {
 
     const counts = await seed.asRole('govai_app', org.org_id, (c) => evidenceCounts(c, SCOPE));
     expect(counts.ec2.chains_with_gap).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('FIX-B — EC-2 contiguity judged within the in-window slice', () => {
+  it('a tail-in-window slice of a long contiguous chain is NOT gapped; count agrees with ec2Gaps', async () => {
+    const org = await seedOrg(stack);
+    const shortWindow: ReportScope = { windowSeconds: 300, tSealSeconds: 0 };
+
+    // Chain A — contiguous seqs 1..4 where 1..3 are OLD (outside the 300s window)
+    // and only seq 4 is recent → the in-window slice is {4}, trivially contiguous.
+    const contiguousChain = `org:${org.org_id}:run:${randomUUID()}`;
+    for (const seq of [1, 2, 3]) {
+      await seed.asRole('govai_audit_writer', org.org_id, (c) =>
+        c.query(
+          `INSERT INTO govai.audit_capture_outbox
+             (capture_id, org_id, chain_id, chain_category, capture_seq, event_type, event_version,
+              subject_type, subject_id, occurred_at, payload_hash, key_id, key_version, status, captured_at)
+           VALUES ($1::uuid, $2::uuid, $3::text, 'run', $4::bigint, 'passthrough.invoked', '4',
+              'runtime_event', $5::uuid, now(), $6::bytea, 'audit-1', 1, 'captured', now() - make_interval(secs => 3600))`,
+          [randomUUID(), org.org_id, contiguousChain, seq, randomUUID(), H32('00')],
+        ),
+      );
+    }
+    await seed.insertRawCapture(org.org_id, contiguousChain, 4); // recent (in-window)
+
+    // Chain B — a REAL in-window gap: seqs 5 and 7 recent, 6 missing.
+    const gappyChain = `org:${org.org_id}:run:${randomUUID()}`;
+    await seed.insertRawCapture(org.org_id, gappyChain, 5);
+    await seed.insertRawCapture(org.org_id, gappyChain, 7);
+
+    const counts = await seed.asRole('govai_app', org.org_id, (c) => evidenceCounts(c, shortWindow));
+    const gaps = await seed.asRole('govai_app', org.org_id, (c) => ec2Gaps(c, shortWindow));
+
+    // The tail-in-window contiguous chain is NOT falsely gapped.
+    expect(gaps.some((g) => g.chain_id === contiguousChain)).toBe(false);
+    // The gappy chain IS, at seq 6.
+    expect(gaps.find((g) => g.chain_id === gappyChain)?.first_gap_seq).toBe(6);
+    // ★ /summary EC-2 count AGREES with the ec2Gaps list (INVARIANT 2).
+    expect(counts.ec2.chains_with_gap).toBe(new Set(gaps.map((g) => g.chain_id)).size);
+    expect(counts.ec2.chains_with_gap).toBe(1);
   });
 });
 

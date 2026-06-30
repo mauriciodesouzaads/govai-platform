@@ -75,11 +75,11 @@ export async function evidenceCounts(client: PoolClient, scope: ReportScope): Pr
   const tSeal = scope.tSealSeconds;
   const w = scope.windowSeconds;
 
-  // EC-1 — capture terminal-state. total/sealed/failed are whole-population
-  // counts; stalled_past_slo is counted PER ROW from the base outbox (a capture
-  // still captured/sealing whose OWN captured_at exceeds T_seal) — NOT gated by
-  // the view's aggregate oldest_* MIN, which would over-count the whole category
-  // (1 old + N fresh unsealed must report 1, not 1+N).
+  // EC-1 — capture terminal-state, per-row from the base outbox and WINDOWED on
+  // captured_at (>= now() - W) so every /summary term shares the report window
+  // (INVARIANT 1). stalled_past_slo additionally requires the row's OWN
+  // captured_at to exceed T_seal (still captured/sealing) — counted per row, not
+  // gated by the view's aggregate oldest_* MIN (1 old + N fresh → 1, not 1+N).
   const ec1 = await client.query<{
     total: string;
     sealed: string;
@@ -92,31 +92,37 @@ export async function evidenceCounts(client: PoolClient, scope: ReportScope): Pr
         count(*) FILTER (WHERE status = 'failed')::bigint   AS failed,
         count(*) FILTER (
           WHERE status IN ('captured','sealing')
-            AND captured_at <= now() - make_interval(secs => $1)
+            AND captured_at <= now() - make_interval(secs => $2)
         )::bigint                                           AS stalled_past_slo
-       FROM govai.audit_capture_outbox`,
-    [tSeal],
+       FROM govai.audit_capture_outbox
+      WHERE captured_at >= now() - make_interval(secs => $1)`,
+    [w, tSeal],
   );
 
-  // EC-2 — per-chain capture_seq contiguity. capture_seq is assigned 1..N
-  // contiguously by audit_capture_insert_locked; a chain whose row count differs
-  // from its max(capture_seq) has a gap (a should-never-happen integrity hole).
+  // EC-2 — capture_seq contiguity judged WITHIN the in-window slice: a chain is
+  // gapped iff its in-window row count <> (maxseq - minseq + 1). Shares the
+  // window (INVARIANT 1) and AGREES with ec2Gaps() (INVARIANT 2): a long
+  // contiguous chain with only its tail in-window is NOT gapped (minseq..maxseq
+  // over in-window rows, not an absolute 1-origin).
   const ec2 = await client.query<{ chains: string; chains_with_gap: string }>(
-    `WITH chain_max AS (
-        SELECT chain_id, max(capture_seq) AS maxseq, count(*) AS cnt
+    `WITH chain_stats AS (
+        SELECT chain_id,
+               count(*)         AS cnt,
+               min(capture_seq) AS minseq,
+               max(capture_seq) AS maxseq
           FROM govai.audit_capture_outbox
          WHERE captured_at >= now() - make_interval(secs => $1)
          GROUP BY chain_id
       )
-      SELECT count(*)::bigint                                  AS chains,
-             count(*) FILTER (WHERE cnt <> maxseq)::bigint     AS chains_with_gap
-        FROM chain_max`,
+      SELECT count(*)::bigint                                              AS chains,
+             count(*) FILTER (WHERE cnt <> (maxseq - minseq + 1))::bigint  AS chains_with_gap
+        FROM chain_stats`,
     [w],
   );
 
-  // EC-3.seal — native (path-B, chain_category='run') captures not yet sealed.
-  // Counted PER ROW from the base outbox (own captured_at past T_seal), not via
-  // the view's aggregate oldest_* (which would over-count the native category).
+  // EC-3.seal — native (path-B, chain_category='run') captures not yet sealed,
+  // per-row from the base outbox and WINDOWED on captured_at (INVARIANT 1); the
+  // unsealed-past-SLO sub-count adds the per-row captured_at <= now() - T_seal.
   const ec3seal = await client.query<{
     native_total: string;
     native_sealed: string;
@@ -127,11 +133,12 @@ export async function evidenceCounts(client: PoolClient, scope: ReportScope): Pr
         count(*) FILTER (WHERE status = 'sealed')::bigint   AS native_sealed,
         count(*) FILTER (
           WHERE status IN ('captured','sealing')
-            AND captured_at <= now() - make_interval(secs => $1)
+            AND captured_at <= now() - make_interval(secs => $2)
         )::bigint                                           AS native_unsealed_past_slo
        FROM govai.audit_capture_outbox
-      WHERE chain_category = ANY($2::text[])`,
-    [tSeal, [...NATIVE_CHAIN_CATEGORIES]],
+      WHERE captured_at >= now() - make_interval(secs => $1)
+        AND chain_category = ANY($3::text[])`,
+    [w, tSeal, [...NATIVE_CHAIN_CATEGORIES]],
   );
 
   // EC-4 — path-A provider invocations without a terminal run.* audit event.
@@ -187,37 +194,52 @@ export async function evidenceCounts(client: PoolClient, scope: ReportScope): Pr
 // Bounded gap lists — the /v1/evidence/gaps payloads. Safe fields only.
 // ===========================================================================
 
-export interface Ec1FailedRow {
+export interface Ec1GapRow {
   capture_id: string;
   chain_id: string;
   chain_category: string;
-  last_error: string | null;
+  status: string;
+  captured_at: string;
   attempts: number;
+  last_error: string | null;
 }
 
-/** EC-1 failed-capture list (sanitized last_error only — never a payload). */
-export async function ec1FailedList(client: PoolClient, scope: ReportScope): Promise<Ec1FailedRow[]> {
+/**
+ * EC-1 gap list — the SAME population /summary EC-1 counts as gaps: failed
+ * captures AND captured/sealing rows past T_seal (stalled). Windowed on
+ * captured_at to match the summary (INVARIANT 2 — summary↔list parity). Safe
+ * fields only: `status` discriminates failed vs stalled; `last_error` is the
+ * sanitized ≤200-char text (null for stalled) — never a payload.
+ */
+export async function ec1GapList(client: PoolClient, scope: ReportScope): Promise<Ec1GapRow[]> {
   const r = await client.query<{
     capture_id: string;
     chain_id: string;
     chain_category: string;
-    last_error: string | null;
+    status: string;
+    captured_at: Date;
     attempts: number;
+    last_error: string | null;
   }>(
-    `SELECT capture_id::text, chain_id, chain_category, last_error, attempts
+    `SELECT capture_id::text, chain_id, chain_category, status, captured_at, attempts, last_error
        FROM govai.audit_capture_outbox
-      WHERE status = 'failed'
-        AND failed_at >= now() - make_interval(secs => $1)
-      ORDER BY failed_at DESC
-      LIMIT $2 OFFSET $3`,
-    [scope.windowSeconds, sampleLimitOf(scope), scope.offset ?? 0],
+      WHERE captured_at >= now() - make_interval(secs => $1)
+        AND (
+          status = 'failed'
+          OR (status IN ('captured','sealing') AND captured_at <= now() - make_interval(secs => $2))
+        )
+      ORDER BY captured_at DESC
+      LIMIT $3 OFFSET $4`,
+    [scope.windowSeconds, scope.tSealSeconds, sampleLimitOf(scope), scope.offset ?? 0],
   );
   return r.rows.map((row) => ({
     capture_id: row.capture_id,
     chain_id: row.chain_id,
     chain_category: row.chain_category,
-    last_error: row.last_error,
+    status: row.status,
+    captured_at: row.captured_at.toISOString(),
     attempts: row.attempts,
+    last_error: row.last_error,
   }));
 }
 
@@ -227,25 +249,34 @@ export interface Ec2GapRow {
   gap_count: number;
 }
 
-/** EC-2 per-chain capture_seq contiguity gaps (chain_id, first_gap_seq, gap_count). */
+/**
+ * EC-2 per-chain capture_seq contiguity gaps (chain_id, first_gap_seq,
+ * gap_count), judged WITHIN the in-window slice (generate_series over the
+ * in-window minseq..maxseq; "present" = an in-window row at that seq), so it
+ * AGREES with the EC-2 summary count's minseq..maxseq basis (INVARIANT 2) and
+ * shares the window (INVARIANT 1) — a tail-in-window slice of a long contiguous
+ * chain is not falsely gapped.
+ */
 export async function ec2Gaps(client: PoolClient, scope: ReportScope): Promise<Ec2GapRow[]> {
   const r = await client.query<{ chain_id: string; first_gap_seq: string; gap_count: string }>(
-    `WITH chain_max AS (
-        SELECT chain_id, max(capture_seq) AS maxseq
+    `WITH chain_bounds AS (
+        SELECT chain_id, min(capture_seq) AS minseq, max(capture_seq) AS maxseq
           FROM govai.audit_capture_outbox
          WHERE captured_at >= now() - make_interval(secs => $1)
          GROUP BY chain_id
       ),
       expected AS (
-        SELECT cm.chain_id, gs AS seq
-          FROM chain_max cm
-          CROSS JOIN LATERAL generate_series(1, cm.maxseq) AS gs
+        SELECT cb.chain_id, gs AS seq
+          FROM chain_bounds cb
+          CROSS JOIN LATERAL generate_series(cb.minseq, cb.maxseq) AS gs
       ),
       missing AS (
         SELECT e.chain_id, e.seq
           FROM expected e
           LEFT JOIN govai.audit_capture_outbox o
-            ON o.chain_id = e.chain_id AND o.capture_seq = e.seq
+            ON o.chain_id = e.chain_id
+           AND o.capture_seq = e.seq
+           AND o.captured_at >= now() - make_interval(secs => $1)
          WHERE o.capture_seq IS NULL
       )
       SELECT chain_id,
@@ -274,9 +305,9 @@ export interface Ec3SealRow {
 
 /**
  * EC-3.seal — the native captures ACTUALLY past T_seal, PER ROW from the base
- * outbox (own captured_at past T_seal, still captured/sealing). NOT gated by the
- * view's aggregate oldest_*, which cannot isolate which rows are past-SLO. Safe
- * fields only (no payload).
+ * outbox: WINDOWED on captured_at (matching the EC-3.seal count — INVARIANT 1/2)
+ * and own captured_at past T_seal, still captured/sealing. NOT gated by the
+ * view's aggregate oldest_*. Safe fields only (no payload).
  */
 export async function ec3SealList(client: PoolClient, scope: ReportScope): Promise<Ec3SealRow[]> {
   const r = await client.query<{
@@ -289,11 +320,18 @@ export async function ec3SealList(client: PoolClient, scope: ReportScope): Promi
     `SELECT capture_id::text, chain_id, chain_category, status, captured_at
        FROM govai.audit_capture_outbox
       WHERE chain_category = ANY($1::text[])
+        AND captured_at >= now() - make_interval(secs => $2)
         AND status IN ('captured','sealing')
-        AND captured_at <= now() - make_interval(secs => $2)
+        AND captured_at <= now() - make_interval(secs => $3)
       ORDER BY captured_at ASC
-      LIMIT $3 OFFSET $4`,
-    [[...NATIVE_CHAIN_CATEGORIES], scope.tSealSeconds, sampleLimitOf(scope), scope.offset ?? 0],
+      LIMIT $4 OFFSET $5`,
+    [
+      [...NATIVE_CHAIN_CATEGORIES],
+      scope.windowSeconds,
+      scope.tSealSeconds,
+      sampleLimitOf(scope),
+      scope.offset ?? 0,
+    ],
   );
   return r.rows.map((row) => ({
     capture_id: row.capture_id,

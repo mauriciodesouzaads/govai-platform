@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { setLocalAppOrgId } from '@govai/core-tenant';
 import { authenticateApiKey, AuthError } from '../pipeline/auth.js';
 import {
-  ec1FailedList,
+  ec1GapList,
   ec2Gaps,
   ec3SealList,
   ec4List,
@@ -128,7 +128,7 @@ export async function evidenceRoute(app: FastifyInstance): Promise<void> {
         let items: unknown[];
         switch (invariant) {
           case 'ec1':
-            items = await ec1FailedList(client, scope);
+            items = await ec1GapList(client, scope);
             break;
           case 'ec2':
             items = await ec2Gaps(client, scope);
