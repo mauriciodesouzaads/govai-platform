@@ -251,38 +251,37 @@ export interface Ec2GapRow {
 
 /**
  * EC-2 per-chain capture_seq contiguity gaps (chain_id, first_gap_seq,
- * gap_count), judged WITHIN the in-window slice (generate_series over the
- * in-window minseq..maxseq; "present" = an in-window row at that seq), so it
- * AGREES with the EC-2 summary count's minseq..maxseq basis (INVARIANT 2) and
- * shares the window (INVARIANT 1) — a tail-in-window slice of a long contiguous
- * chain is not falsely gapped.
+ * gap_count). Derived from ADJACENT in-window rows via
+ * lead(capture_seq) OVER (PARTITION BY chain_id ORDER BY capture_seq): a gap is
+ * any place the next in-window seq jumps by > 1. Cost is O(in-window rows), NOT
+ * O(span) — it never materializes the minseq..maxseq range, so a chain with a
+ * huge gap (e.g. seq 1 then seq 1_000_000_000) is summarized in two-row time,
+ * not billion-row time (the resource-exhaustion the prior generate_series had).
+ * Same in-window basis as the EC-2 summary count, so it AGREES with it
+ * (INVARIANT 2 — a chain is gapped here iff cnt <> maxseq-minseq+1 there) and
+ * shares the window (INVARIANT 1); a tail-in-window slice of a long contiguous
+ * chain is not falsely gapped. gap_count = total missing seqs (sum of each
+ * jump's next_seq - capture_seq - 1), matching the prior count(*) semantics.
  */
 export async function ec2Gaps(client: PoolClient, scope: ReportScope): Promise<Ec2GapRow[]> {
   const r = await client.query<{ chain_id: string; first_gap_seq: string; gap_count: string }>(
-    `WITH chain_bounds AS (
-        SELECT chain_id, min(capture_seq) AS minseq, max(capture_seq) AS maxseq
+    `WITH adjacent AS (
+        SELECT chain_id,
+               capture_seq,
+               lead(capture_seq) OVER (PARTITION BY chain_id ORDER BY capture_seq) AS next_seq
           FROM govai.audit_capture_outbox
          WHERE captured_at >= now() - make_interval(secs => $1)
-         GROUP BY chain_id
       ),
-      expected AS (
-        SELECT cb.chain_id, gs AS seq
-          FROM chain_bounds cb
-          CROSS JOIN LATERAL generate_series(cb.minseq, cb.maxseq) AS gs
-      ),
-      missing AS (
-        SELECT e.chain_id, e.seq
-          FROM expected e
-          LEFT JOIN govai.audit_capture_outbox o
-            ON o.chain_id = e.chain_id
-           AND o.capture_seq = e.seq
-           AND o.captured_at >= now() - make_interval(secs => $1)
-         WHERE o.capture_seq IS NULL
+      jumps AS (
+        SELECT chain_id, capture_seq, next_seq
+          FROM adjacent
+         WHERE next_seq IS NOT NULL
+           AND next_seq - capture_seq > 1
       )
       SELECT chain_id,
-             min(seq)::bigint   AS first_gap_seq,
-             count(*)::bigint   AS gap_count
-        FROM missing
+             (min(capture_seq) + 1)::bigint           AS first_gap_seq,
+             sum(next_seq - capture_seq - 1)::bigint   AS gap_count
+        FROM jumps
        GROUP BY chain_id
        ORDER BY chain_id
        LIMIT $2 OFFSET $3`,

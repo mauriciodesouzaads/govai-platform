@@ -159,6 +159,31 @@ describe('FIX-B — EC-2 contiguity judged within the in-window slice', () => {
   });
 });
 
+describe('FIX#3 — EC-2 gap detection is resource-safe (O(rows), not O(span))', () => {
+  it('summarizes a chain with a HUGE gap (seq 1 + seq 1e9) promptly, no span materialization', async () => {
+    const org = await seedOrg(stack);
+    const shortWindow: ReportScope = { windowSeconds: 300, tSealSeconds: 0 };
+    const sparseChain = `org:${org.org_id}:run:${randomUUID()}`;
+    // A single huge gap: seq 1 and seq 1_000_000_000, both in-window. The prior
+    // generate_series(minseq,maxseq) would materialize ~1e9 rows (OOM/timeout);
+    // the lead()-based detector reads only the two real rows. The test completing
+    // at all is the resource-safety guard.
+    await seed.insertRawCapture(org.org_id, sparseChain, 1);
+    await seed.insertRawCapture(org.org_id, sparseChain, 1_000_000_000);
+
+    const gaps = await seed.asRole('govai_app', org.org_id, (c) => ec2Gaps(c, shortWindow));
+    const g = gaps.find((x) => x.chain_id === sparseChain);
+    expect(g).toBeDefined();
+    expect(g!.first_gap_seq).toBe(2);
+    expect(g!.gap_count).toBe(1_000_000_000 - 2); // 999_999_998 missing seqs
+
+    // ★ Agreement preserved (INVARIANT 2 / FIX-B): the summary still counts it gapped.
+    const counts = await seed.asRole('govai_app', org.org_id, (c) => evidenceCounts(c, shortWindow));
+    expect(counts.ec2.chains_with_gap).toBe(new Set(gaps.map((x) => x.chain_id)).size);
+    expect(counts.ec2.chains_with_gap).toBe(1);
+  });
+});
+
 describe('EC-3.seal — native captures unsealed', () => {
   it('fires on a native (chain_category=run) capture left unsealed past T_seal', async () => {
     const org = await seedOrg(stack);
