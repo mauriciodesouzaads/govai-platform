@@ -308,6 +308,52 @@ describe('FIX-1 — past-SLO counts only rows ACTUALLY past T_seal', () => {
   });
 });
 
+describe('FIX#4 — coverage_ratio counts healthy in-flight as covered (coverage↔gap parity)', () => {
+  const scope3600: ReportScope = { windowSeconds: 86_400, tSealSeconds: 3600 };
+
+  it('an org with ONLY healthy in-flight (within T_seal) → coverage_ratio 1.0 AND empty /gaps?invariant=ec1', async () => {
+    const org = await seedOrg(stack);
+    await seed.seedCaptureInStatus(org.org_id, 'captured'); // fresh → within T_seal=1h → healthy
+    await seed.seedCaptureInStatus(org.org_id, 'sealing'); // fresh sealing → healthy in-flight
+
+    const summary = await seed.asRole('govai_app', org.org_id, (c) =>
+      evidenceSummary(c, scope3600, ZERO_DROP_SNAPSHOT),
+    );
+    expect(summary.counts.ec1.failed).toBe(0);
+    expect(summary.counts.ec1.stalled_past_slo).toBe(0); // nothing past-SLO → no gaps
+    expect(summary.coverage_ratio.ratio).toBe(1.0); // ★ healthy in-flight is COVERED
+
+    const ec1gaps = await seed.asRole('govai_app', org.org_id, (c) => ec1GapList(c, scope3600));
+    expect(ec1gaps).toHaveLength(0); // ★ coverage_ratio AGREES with the (empty) gap list
+  });
+
+  it('a past-SLO stalled capture lowers coverage_ratio AND appears in /gaps?invariant=ec1', async () => {
+    const org = await seedOrg(stack);
+    await seed.seedCaptureInStatus(org.org_id, 'captured'); // healthy in-flight
+    // 1 stalled past-SLO: captured 2h ago (beyond T_seal=1h), still unsealed.
+    const stalledChain = `org:${org.org_id}:run:${randomUUID()}`;
+    await seed.asRole('govai_audit_writer', org.org_id, (c) =>
+      c.query(
+        `INSERT INTO govai.audit_capture_outbox
+           (capture_id, org_id, chain_id, chain_category, capture_seq, event_type, event_version,
+            subject_type, subject_id, occurred_at, payload_hash, key_id, key_version, status, captured_at)
+         VALUES ($1::uuid, $2::uuid, $3::text, 'run', 1, 'passthrough.invoked', '4',
+            'runtime_event', $4::uuid, now(), $5::bytea, 'audit-1', 1, 'captured', now() - make_interval(secs => 7200))`,
+        [randomUUID(), org.org_id, stalledChain, randomUUID(), H32('00')],
+      ),
+    );
+
+    const summary = await seed.asRole('govai_app', org.org_id, (c) =>
+      evidenceSummary(c, scope3600, ZERO_DROP_SNAPSHOT),
+    );
+    expect(summary.counts.ec1.stalled_past_slo).toBe(1);
+    expect(summary.coverage_ratio.ratio).toBeLessThan(1.0); // ★ the gap lowers it
+
+    const ec1gaps = await seed.asRole('govai_app', org.org_id, (c) => ec1GapList(c, scope3600));
+    expect(ec1gaps.some((r) => r.chain_id === stalledChain)).toBe(true); // ★ and it appears in the list
+  });
+});
+
 describe('read API — /v1/evidence/*', () => {
   it('summary is RLS-scoped to the caller, carries coverage_ratio, leaks no payload bytes', async () => {
     const orgA = await seedOrg(stack);

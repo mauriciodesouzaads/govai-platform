@@ -89,6 +89,26 @@ describe('coverageRatio — the headline conjunction', () => {
     expect(cov.total).toBe(25 + 10); // captures + drops
   });
 
+  it('counts healthy in-flight (unsealed but within T_seal) as COVERED — not "unsealed"', () => {
+    // 10 captures: 5 sealed, 1 failed, 1 stalled-past-SLO, 3 healthy in-flight.
+    // The EC-1 gap population is failed + stalled = 2, so covered = 10 − 2 = 8
+    // (the 3 healthy in-flight count as covered) — NOT sealed = 5.
+    const counts: EvidenceCounts = {
+      ec1: { total: 10, sealed: 5, failed: 1, stalled_past_slo: 1 },
+      ec2: { chains: 0, chains_with_gap: 0 },
+      ec3seal: { native_total: 4, native_sealed: 1, native_unsealed_past_slo: 1 },
+      ec4: { provider_invocations: 0, without_terminal: 0 },
+      ec6: { chains: 0, verified_ok: 0, pending: 0 },
+    };
+    const cov = coverageRatio(counts, nativeDropEstimate(ZERO_DROP_SNAPSHOT));
+    const ec1 = cov.terms.find((t) => t.invariant === 'ec1')!;
+    expect(ec1.covered).toBe(8); // 10 − (1 failed + 1 stalled), NOT 5 sealed
+    expect(ec1.total).toBe(10);
+    const ec3 = cov.terms.find((t) => t.invariant === 'ec3seal')!;
+    expect(ec3.covered).toBe(3); // 4 native − 1 native past-SLO, NOT 1 sealed
+    expect(ec3.total).toBe(4);
+  });
+
   it('is 1.0 when there are no units in scope', () => {
     const empty: EvidenceCounts = {
       ec1: { total: 0, sealed: 0, failed: 0, stalled_past_slo: 0 },

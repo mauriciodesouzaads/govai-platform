@@ -512,20 +512,40 @@ export interface CoverageRatio {
 }
 
 /**
- * coverage_ratio = Σcovered / Σtotal over the OBSERVABLE invariants. EC-6 is
- * excluded (no persisted verification → pending, not "uncovered"); EC-3.drop is
- * included only when observed (else excluded — never counted as full coverage,
- * which would over-claim — keeping the proxy conservative per the reconcile).
+ * coverage_ratio = Σcovered / Σtotal over the OBSERVABLE invariants, where each
+ * term's UNCOVERED is exactly that invariant's GAP population (coverage↔gap
+ * parity) — so an org with an empty /gaps?invariant=X cannot show term X below
+ * full coverage:
+ *   EC-1      uncovered = failed + stalled_past_slo (= ec1GapList). Healthy
+ *             in-flight (unsealed but within T_seal) is COVERED, not a gap —
+ *             NOT "unsealed", which would drag a no-gap org below 1.0.
+ *   EC-2      uncovered = chains_with_gap (= ec2Gaps).
+ *   EC-3.seal uncovered = native_unsealed_past_slo (= ec3SealList). A native
+ *             FAILED capture is an EC-1 gap (counted once, under EC-1) — it is
+ *             not an ec3SealList row, so counting it here too would break
+ *             EC-3.seal↔/gaps parity and double-count it.
+ *   EC-4      uncovered = without_terminal (= ec4List).
+ * EC-6 is excluded (no persisted verification → pending, not "uncovered");
+ * EC-3.drop is included only when observed (else excluded — never counted as
+ * full coverage, which would over-claim — keeping the proxy conservative).
  */
 export function coverageRatio(counts: EvidenceCounts, drop: DropEstimate): CoverageRatio {
   const terms: CoverageTerm[] = [
-    { invariant: 'ec1', covered: counts.ec1.sealed, total: counts.ec1.total },
+    {
+      invariant: 'ec1',
+      covered: counts.ec1.total - (counts.ec1.failed + counts.ec1.stalled_past_slo),
+      total: counts.ec1.total,
+    },
     {
       invariant: 'ec2',
       covered: counts.ec2.chains - counts.ec2.chains_with_gap,
       total: counts.ec2.chains,
     },
-    { invariant: 'ec3seal', covered: counts.ec3seal.native_sealed, total: counts.ec3seal.native_total },
+    {
+      invariant: 'ec3seal',
+      covered: counts.ec3seal.native_total - counts.ec3seal.native_unsealed_past_slo,
+      total: counts.ec3seal.native_total,
+    },
     {
       invariant: 'ec4',
       covered: counts.ec4.provider_invocations - counts.ec4.without_terminal,
