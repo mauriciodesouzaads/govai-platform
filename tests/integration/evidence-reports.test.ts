@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
-import { createSeedHelpers, type SeedHelpers } from './helpers/evidence-seed.js';
+import { createSeedHelpers, H32, type SeedHelpers } from './helpers/evidence-seed.js';
 import {
   evidenceCounts,
   ec1FailedList,
@@ -192,6 +192,39 @@ describe('coverage_ratio — reflects the seeded holes', () => {
 // Read API — /v1/evidence/summary + /v1/evidence/gaps (RLS, pagination, safe)
 // =============================================================================
 
+describe('FIX-1 — past-SLO counts only rows ACTUALLY past T_seal', () => {
+  it('1 old + N fresh unsealed in one (org, chain_category) → exactly 1 past-SLO', async () => {
+    const org = await seedOrg(stack);
+    const scope3600: ReportScope = { windowSeconds: 86_400, tSealSeconds: 3600 };
+    // 1 OLD unsealed native capture (captured 2h ago → past T_seal=1h), inserted
+    // directly with a backdated captured_at (the SECURITY DEFINER path stamps now()).
+    const oldChain = `org:${org.org_id}:run:${randomUUID()}`;
+    const oldCapture = randomUUID();
+    await seed.asRole('govai_audit_writer', org.org_id, (c) =>
+      c.query(
+        `INSERT INTO govai.audit_capture_outbox
+           (capture_id, org_id, chain_id, chain_category, capture_seq, event_type, event_version,
+            subject_type, subject_id, occurred_at, payload_hash, key_id, key_version, status, captured_at)
+         VALUES ($1::uuid, $2::uuid, $3::text, 'run', 1, 'passthrough.invoked', '4',
+            'runtime_event', $4::uuid, now(), $5::bytea, 'audit-1', 1, 'captured', now() - make_interval(secs => 7200))`,
+        [oldCapture, org.org_id, oldChain, randomUUID(), H32('00')],
+      ),
+    );
+    // 3 FRESH unsealed native captures (captured now → NOT past T_seal).
+    for (let i = 0; i < 3; i++) await seed.seedCaptureInStatus(org.org_id, 'captured');
+
+    const counts = await seed.asRole('govai_app', org.org_id, (c) => evidenceCounts(c, scope3600));
+    expect(counts.ec1.total).toBe(4); // 1 old + 3 fresh
+    expect(counts.ec1.stalled_past_slo).toBe(1); // ★ exactly the 1 old — not 1+3
+    expect(counts.ec3seal.native_total).toBe(4);
+    expect(counts.ec3seal.native_unsealed_past_slo).toBe(1); // ★ exactly 1
+
+    const list = await seed.asRole('govai_app', org.org_id, (c) => ec3SealList(c, scope3600));
+    expect(list).toHaveLength(1); // ★ only the old row, not the fresh ones
+    expect(list[0]!.capture_id).toBe(oldCapture);
+  });
+});
+
 describe('read API — /v1/evidence/*', () => {
   it('summary is RLS-scoped to the caller, carries coverage_ratio, leaks no payload bytes', async () => {
     const orgA = await seedOrg(stack);
@@ -247,6 +280,29 @@ describe('read API — /v1/evidence/*', () => {
     expect(page2.statusCode).toBe(200);
     expect(page2.json().items).toHaveLength(1);
     for (const k of PAYLOAD_KEYS) expect(page2.payload).not.toContain(k);
+  });
+
+  it('treats ec3drop as a singleton — no spurious next_cursor, no pagination loop', async () => {
+    const org = await seedOrg(stack);
+    const p1 = await stack.app.inject({
+      method: 'GET',
+      url: '/v1/evidence/gaps?invariant=ec3drop&limit=1',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(p1.statusCode).toBe(200);
+    const b1 = p1.json();
+    expect(b1.invariant).toBe('ec3drop');
+    expect(b1.items).toHaveLength(1); // the single aggregate estimate
+    expect(b1.next_cursor).toBeNull(); // ★ no spurious cursor (FIX-2)
+    // A follow-up with any cursor must NOT re-loop: empty page, null cursor.
+    const p2 = await stack.app.inject({
+      method: 'GET',
+      url: '/v1/evidence/gaps?invariant=ec3drop&limit=1&cursor=1',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(p2.statusCode).toBe(200);
+    expect(p2.json().items).toHaveLength(0);
+    expect(p2.json().next_cursor).toBeNull();
   });
 
   it('rejects the deferred ec5 and the summary-only ec6 from the /gaps enum', async () => {

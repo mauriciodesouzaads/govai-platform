@@ -75,9 +75,11 @@ export async function evidenceCounts(client: PoolClient, scope: ReportScope): Pr
   const tSeal = scope.tSealSeconds;
   const w = scope.windowSeconds;
 
-  // EC-1 — capture terminal-state, whole-population aggregate (the view groups
-  // the outbox by org/chain_category). "stalled_past_slo" is the count of
-  // captured+sealing rows in categories whose oldest such row exceeds T_seal.
+  // EC-1 — capture terminal-state. total/sealed/failed are whole-population
+  // counts; stalled_past_slo is counted PER ROW from the base outbox (a capture
+  // still captured/sealing whose OWN captured_at exceeds T_seal) — NOT gated by
+  // the view's aggregate oldest_* MIN, which would over-count the whole category
+  // (1 old + N fresh unsealed must report 1, not 1+N).
   const ec1 = await client.query<{
     total: string;
     sealed: string;
@@ -85,15 +87,14 @@ export async function evidenceCounts(client: PoolClient, scope: ReportScope): Pr
     stalled_past_slo: string;
   }>(
     `SELECT
-        COALESCE(sum(total),  0)::bigint   AS total,
-        COALESCE(sum(sealed), 0)::bigint   AS sealed,
-        COALESCE(sum(failed), 0)::bigint   AS failed,
-        COALESCE(sum(
-          CASE WHEN (oldest_unsealed_at IS NOT NULL AND oldest_unsealed_at <= now() - make_interval(secs => $1))
-                 OR (oldest_sealing_at  IS NOT NULL AND oldest_sealing_at  <= now() - make_interval(secs => $1))
-               THEN (captured + sealing) ELSE 0 END
-        ), 0)::bigint AS stalled_past_slo
-       FROM govai.evidence_capture_completeness`,
+        count(*)::bigint                                    AS total,
+        count(*) FILTER (WHERE status = 'sealed')::bigint   AS sealed,
+        count(*) FILTER (WHERE status = 'failed')::bigint   AS failed,
+        count(*) FILTER (
+          WHERE status IN ('captured','sealing')
+            AND captured_at <= now() - make_interval(secs => $1)
+        )::bigint                                           AS stalled_past_slo
+       FROM govai.audit_capture_outbox`,
     [tSeal],
   );
 
@@ -114,20 +115,21 @@ export async function evidenceCounts(client: PoolClient, scope: ReportScope): Pr
   );
 
   // EC-3.seal — native (path-B, chain_category='run') captures not yet sealed.
+  // Counted PER ROW from the base outbox (own captured_at past T_seal), not via
+  // the view's aggregate oldest_* (which would over-count the native category).
   const ec3seal = await client.query<{
     native_total: string;
     native_sealed: string;
     native_unsealed_past_slo: string;
   }>(
     `SELECT
-        COALESCE(sum(total),  0)::bigint AS native_total,
-        COALESCE(sum(sealed), 0)::bigint AS native_sealed,
-        COALESCE(sum(
-          CASE WHEN (oldest_unsealed_at IS NOT NULL AND oldest_unsealed_at <= now() - make_interval(secs => $1))
-                 OR (oldest_sealing_at  IS NOT NULL AND oldest_sealing_at  <= now() - make_interval(secs => $1))
-               THEN (captured + sealing) ELSE 0 END
-        ), 0)::bigint AS native_unsealed_past_slo
-       FROM govai.evidence_capture_completeness
+        count(*)::bigint                                    AS native_total,
+        count(*) FILTER (WHERE status = 'sealed')::bigint   AS native_sealed,
+        count(*) FILTER (
+          WHERE status IN ('captured','sealing')
+            AND captured_at <= now() - make_interval(secs => $1)
+        )::bigint                                           AS native_unsealed_past_slo
+       FROM govai.audit_capture_outbox
       WHERE chain_category = ANY($2::text[])`,
     [tSeal, [...NATIVE_CHAIN_CATEGORIES]],
   );
@@ -263,38 +265,42 @@ export async function ec2Gaps(client: PoolClient, scope: ReportScope): Promise<E
 }
 
 export interface Ec3SealRow {
+  capture_id: string;
+  chain_id: string;
   chain_category: string;
-  captured: number;
-  sealing: number;
-  oldest_unsealed_at: string | null;
-  oldest_sealing_at: string | null;
+  status: string;
+  captured_at: string;
 }
 
-/** EC-3.seal native-unsealed breakdown per native chain_category, past T_seal. */
+/**
+ * EC-3.seal — the native captures ACTUALLY past T_seal, PER ROW from the base
+ * outbox (own captured_at past T_seal, still captured/sealing). NOT gated by the
+ * view's aggregate oldest_*, which cannot isolate which rows are past-SLO. Safe
+ * fields only (no payload).
+ */
 export async function ec3SealList(client: PoolClient, scope: ReportScope): Promise<Ec3SealRow[]> {
   const r = await client.query<{
+    capture_id: string;
+    chain_id: string;
     chain_category: string;
-    captured: string;
-    sealing: string;
-    oldest_unsealed_at: Date | null;
-    oldest_sealing_at: Date | null;
+    status: string;
+    captured_at: Date;
   }>(
-    `SELECT chain_category, captured, sealing, oldest_unsealed_at, oldest_sealing_at
-       FROM govai.evidence_capture_completeness
+    `SELECT capture_id::text, chain_id, chain_category, status, captured_at
+       FROM govai.audit_capture_outbox
       WHERE chain_category = ANY($1::text[])
-        AND (captured > 0 OR sealing > 0)
-        AND ((oldest_unsealed_at IS NOT NULL AND oldest_unsealed_at <= now() - make_interval(secs => $2))
-          OR (oldest_sealing_at  IS NOT NULL AND oldest_sealing_at  <= now() - make_interval(secs => $2)))
-      ORDER BY chain_category
+        AND status IN ('captured','sealing')
+        AND captured_at <= now() - make_interval(secs => $2)
+      ORDER BY captured_at ASC
       LIMIT $3 OFFSET $4`,
     [[...NATIVE_CHAIN_CATEGORIES], scope.tSealSeconds, sampleLimitOf(scope), scope.offset ?? 0],
   );
   return r.rows.map((row) => ({
+    capture_id: row.capture_id,
+    chain_id: row.chain_id,
     chain_category: row.chain_category,
-    captured: Number(row.captured),
-    sealing: Number(row.sealing),
-    oldest_unsealed_at: row.oldest_unsealed_at ? row.oldest_unsealed_at.toISOString() : null,
-    oldest_sealing_at: row.oldest_sealing_at ? row.oldest_sealing_at.toISOString() : null,
+    status: row.status,
+    captured_at: row.captured_at.toISOString(),
   }));
 }
 

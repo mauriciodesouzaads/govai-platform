@@ -137,10 +137,10 @@ export async function evidenceRoute(app: FastifyInstance): Promise<void> {
             items = await ec3SealList(client, scope);
             break;
           case 'ec3drop':
-            // No per-row drop list (drops are a counter, not rows); surface the
-            // aggregate estimate as the single item. ZERO in-process (collector
-            // is authoritative).
-            items = [nativeDropEstimate(ZERO_DROP_SNAPSHOT)];
+            // EC-3.drop is a SINGLETON aggregate (a rate/count, not a paginable
+            // list); ZERO in-process (the OTLP collector is authoritative). Emit
+            // it on page 0 only — a follow-up cursor returns an empty page.
+            items = cursor === 0 ? [nativeDropEstimate(ZERO_DROP_SNAPSHOT)] : [];
             break;
           case 'ec4':
             items = await ec4List(client, scope);
@@ -148,7 +148,9 @@ export async function evidenceRoute(app: FastifyInstance): Promise<void> {
         }
         await client.query('COMMIT');
         // next_cursor: present only when a full page came back (more may exist).
-        const nextCursor = items.length === limit ? cursor + limit : null;
+        // The ec3drop singleton is never paginable → always null (no infinite loop).
+        const nextCursor =
+          invariant === 'ec3drop' ? null : items.length === limit ? cursor + limit : null;
         return {
           org_id: identity.org_id,
           invariant,
