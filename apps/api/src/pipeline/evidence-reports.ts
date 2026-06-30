@@ -245,8 +245,12 @@ export async function ec1GapList(client: PoolClient, scope: ReportScope): Promis
 
 export interface Ec2GapRow {
   chain_id: string;
-  first_gap_seq: number;
-  gap_count: number;
+  // Lossless decimal strings: both are capture_seq-derived bigint values that
+  // can exceed Number.MAX_SAFE_INTEGER (2^53−1) on a high-throughput chain or
+  // under a huge gap — coercing with Number() would round and point an auditor
+  // at the WRONG seq. The pg driver returns int8 as a string; we keep it.
+  first_gap_seq: string;
+  gap_count: string;
 }
 
 /**
@@ -289,8 +293,9 @@ export async function ec2Gaps(client: PoolClient, scope: ReportScope): Promise<E
   );
   return r.rows.map((row) => ({
     chain_id: row.chain_id,
-    first_gap_seq: Number(row.first_gap_seq),
-    gap_count: Number(row.gap_count),
+    // Lossless: keep the driver's decimal strings (bigint), do NOT Number()-coerce.
+    first_gap_seq: row.first_gap_seq,
+    gap_count: row.gap_count,
   }));
 }
 

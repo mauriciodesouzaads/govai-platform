@@ -111,8 +111,8 @@ describe('EC-2 — chain contiguity', () => {
     const gaps = await seed.asRole('govai_app', org.org_id, (c) => ec2Gaps(c, SCOPE));
     const g = gaps.find((x) => x.chain_id === chain);
     expect(g).toBeDefined();
-    expect(g!.first_gap_seq).toBe(2);
-    expect(g!.gap_count).toBe(1);
+    expect(g!.first_gap_seq).toBe('2'); // lossless decimal string (bigint)
+    expect(g!.gap_count).toBe('1');
 
     const counts = await seed.asRole('govai_app', org.org_id, (c) => evidenceCounts(c, SCOPE));
     expect(counts.ec2.chains_with_gap).toBeGreaterThanOrEqual(1);
@@ -152,7 +152,7 @@ describe('FIX-B — EC-2 contiguity judged within the in-window slice', () => {
     // The tail-in-window contiguous chain is NOT falsely gapped.
     expect(gaps.some((g) => g.chain_id === contiguousChain)).toBe(false);
     // The gappy chain IS, at seq 6.
-    expect(gaps.find((g) => g.chain_id === gappyChain)?.first_gap_seq).toBe(6);
+    expect(gaps.find((g) => g.chain_id === gappyChain)?.first_gap_seq).toBe('6');
     // ★ /summary EC-2 count AGREES with the ec2Gaps list (INVARIANT 2).
     expect(counts.ec2.chains_with_gap).toBe(new Set(gaps.map((g) => g.chain_id)).size);
     expect(counts.ec2.chains_with_gap).toBe(1);
@@ -174,13 +174,61 @@ describe('FIX#3 — EC-2 gap detection is resource-safe (O(rows), not O(span))',
     const gaps = await seed.asRole('govai_app', org.org_id, (c) => ec2Gaps(c, shortWindow));
     const g = gaps.find((x) => x.chain_id === sparseChain);
     expect(g).toBeDefined();
-    expect(g!.first_gap_seq).toBe(2);
-    expect(g!.gap_count).toBe(1_000_000_000 - 2); // 999_999_998 missing seqs
+    expect(g!.first_gap_seq).toBe('2'); // lossless decimal string (bigint)
+    expect(g!.gap_count).toBe('999999998'); // 1e9 − 2 missing seqs, exact
 
     // ★ Agreement preserved (INVARIANT 2 / FIX-B): the summary still counts it gapped.
     const counts = await seed.asRole('govai_app', org.org_id, (c) => evidenceCounts(c, shortWindow));
     expect(counts.ec2.chains_with_gap).toBe(new Set(gaps.map((x) => x.chain_id)).size);
     expect(counts.ec2.chains_with_gap).toBe(1);
+  });
+});
+
+describe('FIX#5 — EC-2 gap seq/count are lossless bigint strings (no Number() rounding)', () => {
+  it('a chain with capture_seq beyond 2^53 returns EXACT decimal strings (function + wire)', async () => {
+    const org = await seedOrg(stack);
+    const window: ReportScope = { windowSeconds: 86_400, tSealSeconds: 0 };
+    const chain = `org:${org.org_id}:run:${randomUUID()}`;
+    // Two rows whose capture_seq exceed 2^53 (Number.MAX_SAFE_INTEGER), passed as
+    // STRINGS to ::bigint so JS never rounds them at seed time. first_gap_seq =
+    // 9007199254740992 + 1 = 9007199254740993 (2^53+1, NOT representable as a JS
+    // number); gap_count = 18014398509481988 − 9007199254740992 − 1 =
+    // 9007199254740995 (2^53+3, also not representable). Number() would round both
+    // — so exact-string assertions prove losslessness.
+    for (const seq of ['9007199254740992', '18014398509481988']) {
+      await seed.asRole('govai_audit_writer', org.org_id, (c) =>
+        c.query(
+          `INSERT INTO govai.audit_capture_outbox
+             (capture_id, org_id, chain_id, chain_category, capture_seq, event_type, event_version,
+              subject_type, subject_id, occurred_at, payload_hash, key_id, key_version, status, captured_at)
+           VALUES ($1::uuid, $2::uuid, $3::text, 'run', $4::bigint, 'passthrough.invoked', '4',
+              'runtime_event', $5::uuid, now(), $6::bytea, 'audit-1', 1, 'captured', now())`,
+          [randomUUID(), org.org_id, chain, seq, randomUUID(), H32('00')],
+        ),
+      );
+    }
+
+    // Function level.
+    const gaps = await seed.asRole('govai_app', org.org_id, (c) => ec2Gaps(c, window));
+    const g = gaps.find((x) => x.chain_id === chain);
+    expect(g).toBeDefined();
+    expect(typeof g!.first_gap_seq).toBe('string');
+    expect(typeof g!.gap_count).toBe('string');
+    expect(g!.first_gap_seq).toBe('9007199254740993'); // exact — Number() would give ...992
+    expect(g!.gap_count).toBe('9007199254740995'); // exact — Number() would round
+
+    // Wire level (the route passes the strings straight to JSON — no re-coerce).
+    const res = await stack.app.inject({
+      method: 'GET',
+      url: '/v1/evidence/gaps?invariant=ec2',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(res.statusCode).toBe(200);
+    const item = (res.json().items as Array<{ chain_id: string; first_gap_seq: unknown; gap_count: unknown }>).find(
+      (x) => x.chain_id === chain,
+    );
+    expect(item?.first_gap_seq).toBe('9007199254740993');
+    expect(item?.gap_count).toBe('9007199254740995');
   });
 });
 
