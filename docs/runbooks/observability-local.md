@@ -67,3 +67,24 @@ value for a `govai_evidence_*` gauge and `govai_audit_bridge_{drops,captures}_to
 > the real capture path feeds the same telemetry is gated behind
 > `GOVAI_LIVE_PROVIDER_BUDGET_OK=1` + real provider keys — see
 > [user-e2e-local.md](./user-e2e-local.md).
+
+## 5. Apple Silicon / non-Linux Docker hosts
+
+If **Docker Desktop on Apple Silicon** fails to run the distroless collector image
+(e.g. `exec /otelcol-contrib: no such file or directory`, even after a fresh
+re-pull — a Docker Desktop image-extraction quirk with distroless/`FROM scratch`
+images), run the live test against a **real Linux Docker host** instead. A clean
+[colima](https://github.com/abiosoft/colima) VM (or Lima, or any Linux host) works:
+
+```bash
+brew install colima && colima start            # a lightweight Linux Docker VM
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+export TESTCONTAINERS_RYUK_DISABLED=true        # colima's virtiofs can't bind-mount the
+                                                # docker socket into Ryuk; the test stops
+                                                # its own containers, so this is safe
+pnpm test:obs
+```
+
+> Also confirm the pinned collector tag is a **working build**: `0.116.0`'s arm64
+> image is broken (the binary fails to exec on *any* host — reproduced on a clean
+> colima Linux VM); the stack pins `0.119.0`, which runs.

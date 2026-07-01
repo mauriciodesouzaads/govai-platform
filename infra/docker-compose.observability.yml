@@ -11,7 +11,9 @@
 # :latest) — confirm current-stable at dispatch.
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.116.0
+    # 0.116.0's arm64 image is a broken build (binary fails to exec — missing ELF
+    # interpreter — reproduced on Docker Desktop AND a clean colima Linux VM); 0.119.0 runs.
+    image: otel/opentelemetry-collector-contrib:0.119.0
     command: ["--config=/etc/otel/collector-config.yaml"]
     volumes:
       - ./otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro

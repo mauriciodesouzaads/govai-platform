@@ -28,7 +28,9 @@ import {
 } from '../../apps/api/src/pipeline/evidence-metrics.js';
 import { createOtelAuditBridgeMetrics } from '../../apps/api/src/pipeline/audit-bridge-metrics.js';
 
-const COLLECTOR_IMAGE = 'otel/opentelemetry-collector-contrib:0.116.0';
+// NOTE: 0.116.0's arm64 image is a broken build (the binary fails to exec — missing ELF
+// interpreter — reproduced on Docker Desktop AND a clean colima Linux VM); 0.119.0 runs.
+const COLLECTOR_IMAGE = 'otel/opentelemetry-collector-contrib:0.119.0';
 const PROMETHEUS_IMAGE = 'prom/prometheus:v3.1.0';
 const SCOPE: ReportScope = { windowSeconds: 86_400, tSealSeconds: 0 };
 
