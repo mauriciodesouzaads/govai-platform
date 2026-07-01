@@ -14,8 +14,12 @@ only need to populate `OTEL_EXPORTER_OTLP_ENDPOINT`. No provider spend is involv
 ```bash
 # GRAFANA_ADMIN_PASSWORD is refuse-if-missing (see .env.example). Set it first:
 #   openssl rand -hex 24 | xargs printf 'GRAFANA_ADMIN_PASSWORD=%s\n' >> .env
-docker compose -f infra/docker-compose.yml up -d otel-collector prometheus grafana
+docker compose -f infra/docker-compose.observability.yml up -d
 ```
+
+The observability stack is a **separate** compose file, so the everyday
+`docker compose -f infra/docker-compose.yml up -d postgres` (below) never evaluates the
+Grafana refuse-if-missing secret; only bringing up this file requires `GRAFANA_ADMIN_PASSWORD`.
 
 - `otel-collector` (`otel/opentelemetry-collector-contrib`): OTLP/HTTP `:4318`,
   OTLP/gRPC `:4317`, Prometheus scrape endpoint `:8889`, health `:13133`
