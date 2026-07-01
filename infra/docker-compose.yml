@@ -30,5 +30,55 @@ services:
       timeout: 3s
       retries: 20
 
+  # --- Observability stack (EP-OBS-COLLECTOR; ADDITIVE — postgres/redis above are
+  #     untouched). Bring up on demand, then export to the local collector:
+  #       docker compose -f infra/docker-compose.yml up otel-collector prometheus grafana
+  #       OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # for the API
+  #     See docs/runbooks/observability-local.md. Image tags are PINNED (no :latest) —
+  #     confirm current-stable at dispatch.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.0
+    command: ["--config=/etc/otel/collector-config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
+    ports:
+      - "4318:4318"    # OTLP/HTTP — the API's OTEL_EXPORTER_OTLP_ENDPOINT base
+      - "4317:4317"    # OTLP/gRPC
+      - "8889:8889"    # Prometheus scrape endpoint (Prometheus reads this)
+      - "13133:13133"  # health_check extension (poll externally; image is distroless)
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - govai_prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      # Refuse-if-missing, same pattern as POSTGRES_PASSWORD. Never hardcoded.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set; see .env.example}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - govai_grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   govai_pg_data:
+  govai_prometheus_data:
+  govai_grafana_data:

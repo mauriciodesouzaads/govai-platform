@@ -1,0 +1,55 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "schemaVersion": 39,
+  "title": "GovAI — Evidence & Audit-Bridge Telemetry",
+  "tags": ["govai", "evidence", "audit-bridge"],
+  "timezone": "",
+  "time": { "from": "now-30m", "to": "now" },
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Evidence coverage_ratio (govai_evidence_coverage_ratio)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "govai_evidence_coverage_ratio", "legendFormat": "{{org_hash}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Evidence gauges (govai_evidence_*)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "govai_evidence_captures_past_slo", "legendFormat": "captures_past_slo {{org_hash}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "govai_evidence_native_captures_unsealed", "legendFormat": "native_captures_unsealed {{org_hash}}" },
+        { "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "govai_evidence_runs_without_terminal_event", "legendFormat": "runs_without_terminal_event {{org_hash}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "AuditBridge drops / captures (govai_audit_bridge_*_total)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "govai_audit_bridge_drops_total", "legendFormat": "drops {{reason}}" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "govai_audit_bridge_captures_total", "legendFormat": "captures" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "AuditSealer instruments (govai_audit_sealer_*)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "{__name__=~\"govai_audit_sealer_.*\"}", "legendFormat": "{{__name__}}" }
+      ]
+    }
+  ]
+}
