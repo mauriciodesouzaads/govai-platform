@@ -14,7 +14,8 @@
     "typecheck": "pnpm -r --parallel typecheck",
     "test": "vitest run --reporter=default",
     "test:integration": "GOVAI_INTEGRATION=1 vitest run --reporter=default",
-    "test:live": "GOVAI_LIVE_TESTS=1 vitest run --reporter=default tests/live"
+    "test:live": "GOVAI_LIVE_TESTS=1 vitest run --config vitest.live.config.ts",
+    "test:obs": "vitest run --config vitest.live.config.ts tests/live/observability-collector.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.0",
