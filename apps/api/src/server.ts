@@ -11,6 +11,7 @@ import { healthRoute } from './routes/health.js';
 import { capabilitiesRoute } from './routes/capabilities.js';
 import { runsRoute } from './routes/runs.js';
 import { auditEventsRoute } from './routes/audit-events.js';
+import { evidenceRoute } from './routes/evidence.js';
 import { adminAuditShredRoute } from './routes/admin-audit-shred.js';
 import { adminDlpRoute } from './routes/admin-dlp.js';
 import { passthroughAnthropicRoute } from './routes/passthrough-anthropic.js';
@@ -94,6 +95,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(capabilitiesRoute);
   await app.register(runsRoute);
   await app.register(auditEventsRoute);
+  await app.register(evidenceRoute);
   await app.register(adminAuditShredRoute);
   await app.register(adminDlpRoute);
   await app.register(passthroughAnthropicRoute);

@@ -73,6 +73,10 @@ export async function startStack(envOverrides: Partial<GovAIEnv> = {}): Promise<
     OTEL_EXPORTER_OTLP_ENDPOINT: undefined,
     OTEL_SERVICE_NAME: 'govai-api-test',
     OTEL_TRACES_SAMPLER_ARG: 1.0,
+    // EP-008D: T_seal=0 so a freshly-seeded unsealed capture counts as past-SLO
+    // deterministically in the evidence tests; window covers any recent seed.
+    EVIDENCE_T_SEAL_SECONDS: 0,
+    EVIDENCE_DEFAULT_WINDOW_SECONDS: 86_400,
     GOVAI_LIVE_TESTS: false,
     GOVAI_PROVIDER_BASE_URL: provider.baseUrl,
     GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION: false,
