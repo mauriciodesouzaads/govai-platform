@@ -211,7 +211,7 @@ describe.skipIf(!PART_B_ENABLED)('EP-E2E-USER Part B — real native passthrough
         url: '/passthrough/anthropic/v1/messages',
         headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
         payload: JSON.stringify({
-          model: 'claude-3-5-haiku-latest',
+          model: 'claude-haiku-4-5-20251001',
           max_tokens: 1,
           messages: [{ role: 'user', content: 'hi' }],
         }),

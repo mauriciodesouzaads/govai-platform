@@ -1,13 +1,22 @@
 # Observability (local) — OTLP collector + Prometheus + Grafana
 
 Stand up the receiving end of the telemetry `apps/api` and `apps/audit-sealer`
-already emit (via `@govai/observability` `startTelemetry`, gated on
-`OTEL_EXPORTER_OTLP_ENDPOINT`), so the `govai_evidence_*` gauges (EP-008D), the
-`govai_audit_bridge_{drops,captures}_total` counters (EP-008B), and the sealer's
-ADR-025 instruments become **observable** in Prometheus/Grafana.
+emit (via `@govai/observability` `startTelemetry`, gated on
+`OTEL_EXPORTER_OTLP_ENDPOINT`), so the `govai_audit_bridge_{drops,captures}_total`
+counters (EP-008B) and the sealer's ADR-025 instruments become **observable** in
+Prometheus/Grafana.
 
-Everything here is **additive and local** — the export code is already live; you
-only need to populate `OTEL_EXPORTER_OTLP_ENDPOINT`. No provider spend is involved.
+> ⚠️ **Not emitted by app boot yet: the `govai_evidence_*` gauges (EP-008D).** Their
+> registration plumbing (`registerEvidenceGauges` / `createEvidenceGaugeSource`) and
+> per-org source ship, but **no `apps/api` boot path registers them** — the cross-org
+> emission needs an operator-privileged pool that sees all orgs, and `apps/api`
+> constructs only the `govai_app` pool (RLS-scoped to one org). Wiring them into boot
+> is a **follow-up EP**. Until then, setting `OTEL_EXPORTER_OTLP_ENDPOINT` yields the
+> audit-bridge counters + sealer instruments, **not** `govai_evidence_*` series. (The
+> `pnpm test:obs` live test exercises the gauge transport by registering the source
+> itself — see §4.)
+
+Everything here is **additive and local**. No provider spend is involved.
 
 ## 1. Bring up the collector stack
 
@@ -46,8 +55,10 @@ export is a no-op (the CI/default state).
 
 - Grafana: <http://localhost:3000> (admin / `$GRAFANA_ADMIN_PASSWORD`) →
   dashboard **"GovAI — Evidence & Audit-Bridge Telemetry"**.
-- Prometheus directly: <http://localhost:9090> →
-  `govai_evidence_coverage_ratio`, `govai_audit_bridge_drops_total`, etc.
+- Prometheus directly: <http://localhost:9090> → `govai_audit_bridge_drops_total`,
+  `govai_audit_bridge_captures_total`, etc. (the `govai_evidence_*` gauges are **not**
+  emitted by app boot yet — see the note above; a follow-up EP wires them, and the
+  dashboard's evidence panels stay empty until then.)
 
 ## 4. Prove it end-to-end (ZERO provider spend)
 
@@ -62,6 +73,13 @@ pnpm test:obs      # tests/live/observability-collector.test.ts (out of CI)
 It seeds a known outbox shape + a known drop snapshot, `forceFlush`es the exporter,
 then asserts the value queried back out of the Prometheus HTTP API equals the seeded
 value for a `govai_evidence_*` gauge and `govai_audit_bridge_{drops,captures}_total`.
+
+> What Part 2 proves — and what it does not: the `govai_audit_bridge_*` **counters**
+> go through the real shipped app path (`createOtelAuditBridgeMetrics`). The
+> `govai_evidence_*` **gauges** are registered by the **test itself**
+> (`registerEvidenceGauges` with a per-org source), because no app boot path registers
+> them yet — so Part 2 validates the gauge **transport + shape** end-to-end, not that
+> the running app emits them. App-boot wiring is the follow-up EP noted at the top.
 
 > The OPTIONAL, budget-capped (<< $0.01), CI-excluded real-provider check that proves
 > the real capture path feeds the same telemetry is gated behind

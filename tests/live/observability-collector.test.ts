@@ -1,12 +1,21 @@
 // EP-OBS-COLLECTOR — the ZERO-SPEND telemetry e2e (Part 2 of the collector spec).
 //
-// Proves the shipped export path works end-to-end at NO provider cost: the
+// Proves the telemetry export path works end-to-end at NO provider cost: the
 // telemetry is fed by the audit-capture OUTBOX (not provider bytes), so seeding
-// the outbox directly (the §4.3 helper) drives the govai_evidence_* gauges, and
-// the govai_audit_bridge_* counters are emitted via the shipped safeMetric path.
-// A real OTel MeterProvider (startTelemetry) exports OTLP/HTTP → a real
-// otel-collector → scraped by a real Prometheus → queried back out, and the
-// SCRAPED value must equal the SEEDED value. No provider is touched.
+// the outbox directly (the §4.3 helper) drives the metric values. A real OTel
+// MeterProvider (startTelemetry) exports OTLP/HTTP → a real otel-collector →
+// scraped by a real Prometheus → queried back out, and the SCRAPED value must
+// equal the SEEDED value. No provider is touched.
+//
+// ★ What this proves, precisely (PR #114 @codex Finding 2 — the honest labels):
+//   - govai_audit_bridge_* COUNTERS: emitted via the SHIPPED app path
+//     (createOtelAuditBridgeMetrics) — the real production emitter.
+//   - govai_evidence_* GAUGES: registered HERE BY THE TEST (registerEvidenceGauges
+//     with a per-org source below). No app boot path registers them yet — apps/api
+//     builds only the govai_app pool (session-org-scoped), so it has no operator-
+//     privileged pool to enumerate all orgs; boot-wiring is a deferred follow-up EP.
+//     So for the GAUGES this validates the TRANSPORT + SHAPE (emit→collect→scrape→
+//     query of the frozen names/labels), NOT that the running app emits them.
 //
 // Lives in tests/live/ (CI-excluded). Run: `pnpm test:obs` (needs Docker).
 // D1: testcontainers (matches §4.3). D2: forceFlush() on the global MeterProvider
