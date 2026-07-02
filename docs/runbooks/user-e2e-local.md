@@ -83,5 +83,8 @@ upstream). The optional Part B (real passthrough, << $0.01) is triple-gated and 
 unless `GOVAI_LIVE_PROVIDER_BUDGET_OK=1` + a real key are set:
 
 ```bash
-pnpm test:live       # all tests/live (needs Docker); Part B skips without the budget-ack
+# file-scoped: runs ONLY the user-e2e suite (needs Docker); Part B skips without the budget-ack.
+# NOT `pnpm test:live` here — that sets GOVAI_LIVE_TESTS=1 and also runs the provider live
+# suites, whose beforeAll throws without ANTHROPIC_API_KEY/OPENAI_API_KEY (failing before this).
+pnpm test:user-e2e
 ```

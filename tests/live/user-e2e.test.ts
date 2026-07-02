@@ -23,16 +23,19 @@ import {
   seedProviderCredential,
   type Stack,
 } from '../integration/helpers/server-fixture.js';
+import { createSeedHelpers, type SeedHelpers } from '../integration/helpers/evidence-seed.js';
 
 // A checksum-valid Brazilian CPF (a pii_strong DLP trigger; source-confirmed valid
 // in packages/dlp-br/src/baseline-detectors.test.ts).
 const VALID_CPF = '111.444.777-35';
 
 let stack: Stack;
+let seed: SeedHelpers;
 const auditEvents: unknown[] = [];
 
 beforeAll(async () => {
   stack = await startStack();
+  seed = createSeedHelpers(stack);
   const orig = stack.app.log.info.bind(stack.app.log);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   stack.app.log.info = ((arg: any, msg?: string) => {
@@ -67,6 +70,34 @@ async function setTierMode(orgId: string, tier: string, mode: string): Promise<v
   }
 }
 
+// The org's persisted outbox capture count — the DURABLE audit signal. Read as
+// govai_app, single-org RLS-scoped, via the shipped seed helper's queryAsApp (the
+// same audit_capture_outbox table evidenceSummary + Part 2's gauge source read).
+// A RAW count (not /v1/evidence/summary): a fresh block capture is unsealed and not
+// yet past-SLO, so the summary would only surface it with tSeal=0 — a raw count is
+// the direct "the row landed" signal, decoupled from the seal SLO.
+async function outboxCaptureCount(orgId: string): Promise<number> {
+  const rows = await seed.queryAsApp<{ n: number }>(
+    orgId,
+    `SELECT count(*)::int AS n FROM govai.audit_capture_outbox`,
+  );
+  return rows[0]!.n;
+}
+
+// Bounded poll — the AuditBridge is best-effort + async (governed-anthropic.ts:74-80
+// awaits it, but tolerate eventual consistency), so poll until the count reaches the
+// target or a deadline (then return the last value → the assertion fails, not hangs).
+// Mirrors Part 2's bounded Prometheus poll.
+async function pollOutboxCaptureCount(orgId: string, target: number, timeoutMs = 10_000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let last = await outboxCaptureCount(orgId);
+  while (last < target && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    last = await outboxCaptureCount(orgId);
+  }
+  return last;
+}
+
 describe('EP-E2E-USER Part A — governance BLOCKS at 403, structurally zero-spend', () => {
   it('a starter/production org + a risk-D tool → exactly 403 enforcement_blocked:D, provider never reached, audited', async () => {
     auditEvents.length = 0;
@@ -76,6 +107,10 @@ describe('EP-E2E-USER Part A — governance BLOCKS at 403, structurally zero-spe
     //   BEFORE resolveProviderKey (:306) — a dummy/absent key still yielding a clean 403 is
     //   the PRIMARY proof the upstream was never called (a resolved key would surface an
     //   upstream error, not a govai 403).
+
+    // BEFORE: the org's persisted outbox capture count (fresh org → 0). The (e)
+    // assertion below proves the block DURABLY persisted a capture, not just logged.
+    const before = await outboxCaptureCount(org.org_id);
 
     const res = await stack.app.inject({
       method: 'POST',
@@ -119,6 +154,15 @@ describe('EP-E2E-USER Part A — governance BLOCKS at 403, structurally zero-spe
     expect(ev['native_response_hash']).toBeUndefined();
     expect(ev['capability_id']).toBe('anthropic.messages.create');
     // (c) provider never reached: no credential was seeded, yet the govai 403 is clean.
+
+    // (e) ★ DURABLY audited — the blocked attempt PERSISTED an outbox capture row, not
+    //     just a log line. Because emitAuditEvent logs BEFORE awaiting the best-effort
+    //     AuditBridge (governed-anthropic.ts:74-80, which swallows capture failures), a
+    //     regression that dropped the persisted row would still pass the (d) log-spy
+    //     checks above — so read the PERSISTED layer: assert the org's audit_capture_outbox
+    //     count incremented by exactly 1 (bounded poll, single-org RLS-scoped).
+    const afterCaptures = await pollOutboxCaptureCount(org.org_id, before + 1);
+    expect(afterCaptures).toBe(before + 1);
   });
 
   it('control — a CPF WITHOUT a risk-D tool escalates to C → decision "ask" (non-blocking); CPF alone cannot 403 at base A', async () => {
