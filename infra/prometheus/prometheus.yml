@@ -1,0 +1,11 @@
+# Prometheus config (EP-OBS-COLLECTOR). One scrape job → the OTel collector's
+# Prometheus exporter. Fast interval so the telemetry e2e doesn't wait long.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: govai-otel-collector
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['otel-collector:8889']

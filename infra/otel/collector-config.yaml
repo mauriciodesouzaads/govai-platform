@@ -1,0 +1,37 @@
+# OpenTelemetry Collector config (EP-OBS-COLLECTOR, v1 — metrics only).
+# Receives the OTLP/HTTP metrics apps/api + apps/audit-sealer emit (via
+# @govai/observability startTelemetry, gated on OTEL_EXPORTER_OTLP_ENDPOINT) and
+# re-exposes them on a Prometheus scrape endpoint. NO traces pipeline (the app
+# emits metrics only). Additive/local — pinned image tag in docker-compose.yml.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  # Prometheus scrapes the collector here (see infra/prometheus/prometheus.yml).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  # stdout — lets the e2e read the collector's output if a scrape assertion needs debugging.
+  debug:
+    verbosity: normal
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus, debug]

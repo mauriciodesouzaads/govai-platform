@@ -414,9 +414,15 @@ importers:
       '@govai/dlp-br':
         specifier: workspace:*
         version: link:../packages/dlp-br
+      '@govai/observability':
+        specifier: workspace:*
+        version: link:../packages/observability
       '@govai/signing':
         specifier: workspace:*
         version: link:../packages/signing
+      '@opentelemetry/api':
+        specifier: 1.9.1
+        version: 1.9.1
       '@testcontainers/postgresql':
         specifier: 11.14.0
         version: 11.14.0

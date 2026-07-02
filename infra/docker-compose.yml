@@ -30,5 +30,9 @@ services:
       timeout: 3s
       retries: 20
 
+# The observability stack (otel-collector + Prometheus + Grafana) lives in a SEPARATE
+# file — infra/docker-compose.observability.yml — so this file's `up postgres` never
+# evaluates the Grafana refuse-if-missing secret. See docs/runbooks/observability-local.md.
+
 volumes:
   govai_pg_data:
