@@ -78,4 +78,16 @@ describe('server D6 gauge-wiring gate — the 2×2 matrix (EP-EVIDENCE-GAUGE-WIR
     await buildWith(OTEL_ENDPOINT, ENUM_URL);
     expect(hoisted.registerEvidenceGauges).toHaveBeenCalledTimes(1);
   });
+
+  // FIXUP1: G4 upgraded from "absent" to "absent OR empty" — an EMPTY-string env value
+  // must disable the wiring without throwing (matches loadEnv's ''→unset normalization).
+  it('cell {endpoint set, url EMPTY string} — no throw, disabled (enumerator_url_unset)', async () => {
+    await buildWith(OTEL_ENDPOINT, '');
+    expect(hoisted.registerEvidenceGauges).not.toHaveBeenCalled();
+  });
+
+  it('cell {endpoint EMPTY string, url set} — no throw, disabled (otel_endpoint_unset)', async () => {
+    await buildWith('', ENUM_URL);
+    expect(hoisted.registerEvidenceGauges).not.toHaveBeenCalled();
+  });
 });

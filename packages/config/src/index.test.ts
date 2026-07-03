@@ -82,3 +82,45 @@ describe('config / AWS KMS env vars', () => {
     expect(() => loadEnv({ ...awsBase, KMS_DEV_SEED: 'a'.repeat(64) })).toThrow(BootError);
   });
 });
+
+describe('config / empty-env normalization (absent === empty) — EP-EVIDENCE-GAUGE-WIRING FIXUP1', () => {
+  it('normalizes exported-empty vars to unset so the documented off-state boots', () => {
+    // .env.example ships these empty (DATABASE_URL=, GOVAI_EVIDENCE_ENUMERATOR_URL=, …); an
+    // exported-empty var must read as "unset", not '' (which a .min(1) schema would reject).
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      DATABASE_URL: '',
+      DATABASE_ADMIN_URL: '',
+      GOVAI_EVIDENCE_ENUMERATOR_URL: '',
+      OTEL_EXPORTER_OTLP_ENDPOINT: '',
+    });
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.DATABASE_ADMIN_URL).toBeUndefined();
+    expect(env.GOVAI_EVIDENCE_ENUMERATOR_URL).toBeUndefined();
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
+  });
+
+  it('an empty coerce-key falls back to its default (not coerced to 0)', () => {
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      API_PORT: '',
+      EVIDENCE_T_SEAL_SECONDS: '',
+      EVIDENCE_DEFAULT_WINDOW_SECONDS: '',
+    });
+    expect(env.API_PORT).toBe(8080);
+    expect(env.EVIDENCE_T_SEAL_SECONDS).toBe(300);
+    expect(env.EVIDENCE_DEFAULT_WINDOW_SECONDS).toBe(86_400);
+  });
+
+  it('a present non-empty value still validates (min(1) intact)', () => {
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://u:p@localhost:5432/govai',
+      GOVAI_EVIDENCE_ENUMERATOR_URL: 'postgres://govai_evidence_enumerator:pw@localhost:5432/govai',
+    });
+    expect(env.DATABASE_URL).toBe('postgres://u:p@localhost:5432/govai');
+    expect(env.GOVAI_EVIDENCE_ENUMERATOR_URL).toBe(
+      'postgres://govai_evidence_enumerator:pw@localhost:5432/govai',
+    );
+  });
+});

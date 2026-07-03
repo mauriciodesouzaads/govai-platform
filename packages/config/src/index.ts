@@ -75,7 +75,16 @@ export class BootError extends Error {
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): GovAIEnv {
-  const parsed = EnvSchema.safeParse(source);
+  // Env contract: absent === empty. An exported-but-empty var (a `.env` line like
+  // `DATABASE_URL=` / `GOVAI_EVIDENCE_ENUMERATOR_URL=`, the documented "off" idiom) must
+  // read as "unset", not as `''` — otherwise a `.min(1)` schema rejects it and boot fails
+  // on the default off-state. Normalize `''` → absent at the boundary: `.min(1)` stays
+  // meaningful for present-but-garbage values, `.optional()` forgives the absence, and
+  // `z.coerce` keys fall back to their defaults instead of coercing `''` → 0.
+  const normalized = Object.fromEntries(
+    Object.entries(source).filter(([, v]) => v !== ''),
+  );
+  const parsed = EnvSchema.safeParse(normalized);
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `${i.path.join('.')}: ${i.message}`)
