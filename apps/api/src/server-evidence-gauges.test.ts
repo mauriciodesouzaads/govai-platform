@@ -90,4 +90,13 @@ describe('server D6 gauge-wiring gate — the 2×2 matrix (EP-EVIDENCE-GAUGE-WIR
     await buildWith('', ENUM_URL);
     expect(hoisted.registerEvidenceGauges).not.toHaveBeenCalled();
   });
+
+  // FIXUP2 D-D: with no injected pool and no DATABASE_URL, the app must fail loud + named
+  // (the guard fires before createPool; tests that inject overrides.pool are unaffected).
+  it('D-D — buildServer with no injected pool and no DATABASE_URL throws a named BootError', async () => {
+    // envWith uses loadEnv({ NODE_ENV: 'test', … }) → env has no DATABASE_URL; no pool override.
+    await expect(buildServer({ env: envWith(OTEL_ENDPOINT, undefined) })).rejects.toThrow(
+      /DATABASE_URL/,
+    );
+  });
 });

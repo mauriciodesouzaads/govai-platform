@@ -48,6 +48,14 @@ export type ServerOverrides = Partial<{
 export async function buildServer(overrides: ServerOverrides = {}): Promise<FastifyInstance> {
   const env = overrides.env ?? loadEnv(process.env);
   assertCorsSafeForProd(env);
+  // EP-EVIDENCE-GAUGE-WIRING FIXUP2: a loud, named boot failure when the app must build its
+  // own pool but DATABASE_URL is absent — restores diagnosability after FIXUP1 normalized
+  // ''→undefined (a missing/empty DATABASE_URL would otherwise silently reach createPool('')).
+  // Skipped when a pool is injected (tests). Deliberately NOT in loadEnv, whose legitimate
+  // partial-env callers (the U3 boot suite, the config unit test) pass no DATABASE_URL.
+  if (!overrides.pool && !env.DATABASE_URL) {
+    throw new BootError('DATABASE_URL is required');
+  }
   const kms = createKmsFromEnv(env);
 
   if (env.NODE_ENV === 'production') {

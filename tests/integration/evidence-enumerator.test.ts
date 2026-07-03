@@ -76,6 +76,14 @@ describe('EP-EVIDENCE-GAUGE-WIRING — enumerate-only role (INV-1) + two-pool ga
           code: '42501',
         });
       }
+      // Column-scope (FIXUP2): the enumerator holds SELECT on govai.orgs.id ONLY — any
+      // other org column denies with permission denied (42501), so the blast radius is
+      // literally "org UUIDs and nothing more".
+      for (const col of ['name', 'tier', 'operational_mode']) {
+        await expect(c.query(`SELECT ${col} FROM govai.orgs LIMIT 1`)).rejects.toMatchObject({
+          code: '42501',
+        });
+      }
       // No EXECUTE on the SECURITY DEFINER capture fn either (grant-absence, in-catalog).
       const r = await c.query<{ can_exec: boolean | null }>(
         `SELECT bool_or(has_function_privilege(p.oid, 'EXECUTE')) AS can_exec

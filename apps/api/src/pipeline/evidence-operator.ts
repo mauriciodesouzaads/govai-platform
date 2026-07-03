@@ -45,7 +45,10 @@ import {
  * never in a loosened evidence-table RLS.
  */
 export async function listOrgIds(client: PoolClient): Promise<string[]> {
-  const r = await client.query<{ id: string }>(`SELECT id::text FROM govai.orgs ORDER BY created_at, id`);
+  // ORDER BY id only (not created_at): the evidence enumerator holds a column grant on
+  // `id` alone (migration 0028), so ordering must not reference any other column. Order is
+  // not consumer-visible — accumulation is per-org and order-independent.
+  const r = await client.query<{ id: string }>(`SELECT id::text FROM govai.orgs ORDER BY id`);
   return r.rows.map((row) => row.id);
 }
 

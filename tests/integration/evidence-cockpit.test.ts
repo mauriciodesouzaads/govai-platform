@@ -233,6 +233,17 @@ describe('§4.3(e) — catalog guard incl. the NOBYPASSRLS precondition', () => 
         );
         expect(p.rows[0]?.has).toBe(false);
       }
+
+      // Column-scope (FIXUP2): NO table-level SELECT on govai.orgs, but SELECT on the id
+      // column — "org UUIDs and nothing more" is literal.
+      const orgsTbl = await c.query<{ has: boolean }>(
+        `SELECT has_table_privilege('govai_evidence_enumerator', 'govai.orgs', 'SELECT') AS has`,
+      );
+      expect(orgsTbl.rows[0]?.has).toBe(false);
+      const orgsId = await c.query<{ has: boolean }>(
+        `SELECT has_column_privilege('govai_evidence_enumerator', 'govai.orgs', 'id', 'SELECT') AS has`,
+      );
+      expect(orgsId.rows[0]?.has).toBe(true);
     } finally {
       c.release();
     }
