@@ -58,6 +58,44 @@ CREATE SCHEMA IF NOT EXISTS govai AUTHORIZATION govai_audit_writer;
 
 GRANT USAGE ON SCHEMA govai TO govai_app;
 
+-- Role: govai_evidence_enumerator (EP-EVIDENCE-GAUGE-WIRING).
+-- Least-privilege enumerate-only identity for the evidence gauge source: its ENTIRE
+-- capability is SELECT on govai.orgs (granted in migration 0028). It can read no
+-- evidence, execute no function, and write nothing (INV-1: no single database
+-- identity holds both "enumerate all orgs" and "read evidence").
+-- ★ Deliberate asymmetry vs govai_app: govai_app is MANDATORY and FAILS loudly
+-- without its password; the enumerator is an OPTIONAL feature, so it is created
+-- NOLOGIN and stays unreachable until explicitly provisioned. LOGIN and PASSWORD are
+-- granted TOGETHER, atomically, only when the GUC `govai.evidence_enumerator_password`
+-- is present — there is NO password-less LOGIN state at any point (so an unprovisioned
+-- role is unreachable under every pg_hba auth mode), and the GUC's absence never breaks
+-- an existing `migrate` run.
+DO $$
+BEGIN
+  CREATE ROLE govai_evidence_enumerator NOINHERIT NOLOGIN;
+EXCEPTION
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'role govai_evidence_enumerator already exists, skipping';
+END
+$$;
+
+GRANT USAGE ON SCHEMA govai TO govai_evidence_enumerator;
+
+-- Conditional provisioning: LOGIN + password together, only if the GUC is set.
+DO $$
+DECLARE
+  v_password text := current_setting('govai.evidence_enumerator_password', true);
+BEGIN
+  IF v_password IS NULL THEN
+    RAISE NOTICE 'govai_evidence_enumerator present, NOLOGIN (unprovisioned); set govai.evidence_enumerator_password to enable login';
+  ELSIF length(v_password) < 8 THEN
+    RAISE EXCEPTION 'govai.evidence_enumerator_password must be >= 8 chars when set.';
+  ELSE
+    EXECUTE format('ALTER ROLE govai_evidence_enumerator WITH LOGIN PASSWORD %L', v_password);
+  END IF;
+END
+$$;
+
 -- Migrator role recipe (executor das migrations da app):
 -- O usuário que rodar as migrations 0001+ precisa poder fazer SET ROLE govai_audit_writer.
 -- Em Testcontainers/dev: o superuser conecta e roda este script + as migrations diretamente.

@@ -1,7 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import type { Pool } from 'pg';
 
-import { aggregateOperatorView, type OrgEvidence } from './evidence-operator.js';
-import type { EvidenceSummary } from './evidence-reports.js';
+import {
+  aggregateOperatorView,
+  createEvidenceGaugeSource,
+  enumerateAllOrgs,
+  type OrgEvidence,
+} from './evidence-operator.js';
+import type { EvidenceSummary, ReportScope } from './evidence-reports.js';
 
 function summaryWith(overrides: {
   coverage: number;
@@ -93,5 +99,76 @@ describe('aggregateOperatorView — cross-org fold (aggregate columns only)', ()
 
   it('reports null coverage floor for an empty org set', () => {
     expect(aggregateOperatorView([]).totals.coverage_ratio_min).toBeNull();
+  });
+});
+
+const SCOPE: ReportScope = { windowSeconds: 86_400, tSealSeconds: 0 };
+
+describe('enumerateAllOrgs — Pool→PoolClient wrapper (EP-EVIDENCE-GAUGE-WIRING U1)', () => {
+  it('connects, lists via listOrgIds, and releases the client', async () => {
+    const client = {
+      query: vi.fn(async () => ({ rows: [{ id: 'org-1' }, { id: 'org-2' }] })),
+      release: vi.fn(),
+    };
+    const connect = vi.fn(async () => client);
+    const ids = await enumerateAllOrgs({ connect } as unknown as Pool);
+    expect(ids).toEqual(['org-1', 'org-2']);
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the client even when the query throws (release-on-throw)', async () => {
+    const client = {
+      query: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+      release: vi.fn(),
+    };
+    const pool = { connect: vi.fn(async () => client) } as unknown as Pool;
+    await expect(enumerateAllOrgs(pool)).rejects.toThrow('boom');
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createEvidenceGaugeSource — two-pool routing (EP-EVIDENCE-GAUGE-WIRING U2/I6)', () => {
+  it('U2 — enumeration uses enumeratePool while reads use pool (INV-1 code half)', async () => {
+    let enumReceived: unknown = null;
+    const enumerate = vi.fn(async (p: Pool) => {
+      enumReceived = p;
+      return ['org-1'];
+    });
+    const enumeratePool = { id: 'ENUM' } as unknown as Pool;
+    // A read pool whose connect() throws a marker — reaching it proves reads used `pool`.
+    const pool = {
+      connect: vi.fn(async () => {
+        throw new Error('READ_POOL_CONNECTED');
+      }),
+    } as unknown as Pool;
+
+    const source = createEvidenceGaugeSource({ pool, scope: SCOPE, enumerate, enumeratePool });
+    await expect(source()).rejects.toThrow('READ_POOL_CONNECTED'); // reads connected `pool`
+    expect(enumReceived).toBe(enumeratePool); // enumeration used enumeratePool
+  });
+
+  it('U2 — without enumeratePool, enumeration falls back to pool (backward-compatible)', async () => {
+    let enumReceived: unknown = null;
+    const enumerate = vi.fn(async (p: Pool) => {
+      enumReceived = p;
+      return []; // [] ⇒ no read path is taken
+    });
+    const pool = { id: 'READ' } as unknown as Pool;
+    const source = createEvidenceGaugeSource({ pool, scope: SCOPE, enumerate });
+    const points = await source();
+    expect(enumReceived).toBe(pool);
+    expect(points).toEqual([]);
+  });
+
+  it('I6 — zero orgs ⇒ empty points, no throw', async () => {
+    const source = createEvidenceGaugeSource({
+      pool: {} as unknown as Pool,
+      scope: SCOPE,
+      enumerate: async () => [],
+    });
+    await expect(source()).resolves.toEqual([]);
   });
 });

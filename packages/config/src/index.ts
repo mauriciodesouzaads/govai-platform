@@ -17,6 +17,11 @@ const EnvSchema = z.object({
 
   DATABASE_URL: z.string().min(1).optional(),
   DATABASE_ADMIN_URL: z.string().min(1).optional(),
+  // EP-EVIDENCE-GAUGE-WIRING: optional connection string for the least-privilege
+  // govai_evidence_enumerator role (enumerate-only — SELECT on govai.orgs, nothing
+  // else). When unset, the evidence-gauge boot wiring is fully off (server.ts). This
+  // is NEVER the app or admin credential; leaking it enumerates org UUIDs and nothing more.
+  GOVAI_EVIDENCE_ENUMERATOR_URL: z.string().min(1).optional(),
   REDIS_URL: z.string().min(1).optional(),
 
   API_PORT: z.coerce.number().int().min(1).max(65535).default(8080),

@@ -18,6 +18,10 @@ const BOOTSTRAP_PATH = join(__dirname, '..', '..', '..', '..', 'infra', 'postgre
 export type MigrateOptions = {
   adminConnectionString: string;
   appPassword: string;
+  /** Optional (EP-EVIDENCE-GAUGE-WIRING). When present, injected as the
+   *  `govai.evidence_enumerator_password` GUC so bootstrap provisions the
+   *  govai_evidence_enumerator role LOGIN. Absent ⇒ the role stays NOLOGIN. */
+  enumeratorPassword?: string;
   log?: (msg: string) => void;
 };
 
@@ -31,6 +35,13 @@ export async function migrate(opts: MigrateOptions): Promise<void> {
   const c = await pool.connect();
   try {
     await c.query(`SET govai.app_password = '${opts.appPassword.replace(/'/g, "''")}'`);
+    // EP-EVIDENCE-GAUGE-WIRING: optional. Present ⇒ bootstrap provisions the evidence
+    // enumerator LOGIN in the same session; absent ⇒ the role stays NOLOGIN (no injection).
+    if (opts.enumeratorPassword) {
+      await c.query(
+        `SET govai.evidence_enumerator_password = '${opts.enumeratorPassword.replace(/'/g, "''")}'`,
+      );
+    }
     log(`[bootstrap] executando ${BOOTSTRAP_PATH}`);
     const bootstrap = await readFile(BOOTSTRAP_PATH, 'utf8');
     await c.query(bootstrap);
@@ -54,6 +65,8 @@ export async function migrate(opts: MigrateOptions): Promise<void> {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const conn = process.env['DATABASE_ADMIN_URL'];
   const appPassword = process.env['GOVAI_DB_APP_PASSWORD'];
+  // Optional (EP-EVIDENCE-GAUGE-WIRING): absent ⇒ enumerator stays NOLOGIN, no failure.
+  const enumeratorPassword = process.env['GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD'];
   if (!conn) {
     console.error('DATABASE_ADMIN_URL is required');
     process.exit(1);
@@ -62,7 +75,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error('GOVAI_DB_APP_PASSWORD is required (>= 8 chars). See docs/runbooks/db-roles-production.md.');
     process.exit(1);
   }
-  migrate({ adminConnectionString: conn, appPassword })
+  migrate({ adminConnectionString: conn, appPassword, enumeratorPassword })
     .then(() => process.exit(0))
     .catch((err) => {
       console.error(err);

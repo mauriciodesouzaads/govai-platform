@@ -19,6 +19,12 @@ export type TestDb = {
   appPool: Pool;
   /** Per-container random password for govai_app — needed by tests that re-run migrate. */
   appPassword: string;
+  /** Per-container random password + URL for govai_evidence_enumerator (EP-EVIDENCE-
+   *  GAUGE-WIRING). The role is created NOLOGIN by default (unprovisioned); a test
+   *  provisions LOGIN by re-running migrate(adminUrl, appPassword, enumeratorPassword),
+   *  then connects via enumeratorUrl. */
+  enumeratorPassword: string;
+  enumeratorUrl: string;
   /**
    * Teardown coordination flag (issue #28). When true, expected Postgres
    * disconnect errors emitted by the pg client during testcontainer shutdown
@@ -98,7 +104,11 @@ export function installPostgresPoolShutdownGuard(
  * never relies on a hardcoded literal. Caller must use the same password when
  * connecting as the `govai_app` role afterward.
  */
-export async function migrate(adminConn: string, appPassword: string): Promise<void> {
+export async function migrate(
+  adminConn: string,
+  appPassword: string,
+  enumeratorPassword?: string,
+): Promise<void> {
   if (!appPassword || appPassword.length < 8) {
     throw new Error('migrate: appPassword must be >= 8 chars');
   }
@@ -108,6 +118,12 @@ export async function migrate(adminConn: string, appPassword: string): Promise<v
   try {
     // Custom GUCs of the form `prefix.name` are session-scoped without prior config.
     await c.query(`SET govai.app_password = '${appPassword.replace(/'/g, "''")}'`);
+    // EP-EVIDENCE-GAUGE-WIRING: optional — provisions govai_evidence_enumerator LOGIN.
+    if (enumeratorPassword) {
+      await c.query(
+        `SET govai.evidence_enumerator_password = '${enumeratorPassword.replace(/'/g, "''")}'`,
+      );
+    }
     const bootstrap = await readFile(BOOTSTRAP_PATH, 'utf8');
     await c.query(bootstrap);
     const files = (await readdir(MIGRATIONS_DIR))
@@ -140,6 +156,11 @@ export async function startPostgres(): Promise<TestDb> {
   // same way this fixture does.
   const appPassword = randomBytes(24).toString('hex');
   const appUrl = `postgres://govai_app:${encodeURIComponent(appPassword)}@${host}:${port}/govai`;
+  // EP-EVIDENCE-GAUGE-WIRING: generate the enumerator credential + URL, but do NOT
+  // provision LOGIN by default — the role stays NOLOGIN (production default + the I7
+  // unprovisioned state). A test provisions it by re-running migrate with this password.
+  const enumeratorPassword = randomBytes(24).toString('hex');
+  const enumeratorUrl = `postgres://govai_evidence_enumerator:${encodeURIComponent(enumeratorPassword)}@${host}:${port}/govai`;
 
   await migrate(adminUrl, appPassword);
 
@@ -153,7 +174,17 @@ export async function startPostgres(): Promise<TestDb> {
   installPostgresPoolShutdownGuard(adminPool, shuttingDown, 'admin');
   installPostgresPoolShutdownGuard(appPool, shuttingDown, 'app');
 
-  return { container, adminUrl, appUrl, adminPool, appPool, appPassword, shuttingDown };
+  return {
+    container,
+    adminUrl,
+    appUrl,
+    adminPool,
+    appPool,
+    appPassword,
+    enumeratorPassword,
+    enumeratorUrl,
+    shuttingDown,
+  };
 }
 
 export async function stopPostgres(db: TestDb): Promise<void> {

@@ -49,6 +49,22 @@ export async function listOrgIds(client: PoolClient): Promise<string[]> {
   return r.rows.map((row) => row.id);
 }
 
+/**
+ * Pool-level enumeration wrapper (EP-EVIDENCE-GAUGE-WIRING): connect → listOrgIds →
+ * release. Closes the Pool-vs-PoolClient mismatch so this can be passed directly as
+ * the `enumerate` option. Runs on whichever pool is supplied — in the boot wiring
+ * that is the operator-privileged enumerator pool (see createEvidenceGaugeSource's
+ * enumeratePool); the per-org reads never use it.
+ */
+export async function enumerateAllOrgs(pool: Pool): Promise<readonly string[]> {
+  const client = await pool.connect();
+  try {
+    return await listOrgIds(client);
+  } finally {
+    client.release();
+  }
+}
+
 export interface OrgEvidence {
   org_id: string;
   summary: EvidenceSummary;
@@ -160,9 +176,16 @@ export function createEvidenceGaugeSource(opts: {
   pool: Pool;
   scope: ReportScope;
   enumerate: (pool: Pool) => Promise<readonly string[]>;
+  /** EP-EVIDENCE-GAUGE-WIRING (INV-1): when set, ENUMERATION runs on this
+   *  operator-privileged pool while the per-org READS stay on `pool` (govai_app) —
+   *  no single database identity holds both enumerate and read. Defaults to `pool`
+   *  (backward-compatible: existing call sites keep one-pool behaviour). */
+  enumeratePool?: Pool;
 }): EvidenceGaugeSource {
   return async (): Promise<EvidenceGaugePoint[]> => {
-    const orgIds = await opts.enumerate(opts.pool);
+    // Enumeration on the enumerator pool when provided; the per-org reads STAY on
+    // opts.pool (govai_app under withTenant) — INV-1's code half.
+    const orgIds = await opts.enumerate(opts.enumeratePool ?? opts.pool);
     const perOrg = await accumulateEvidenceAcrossOrgs(opts.pool, orgIds, opts.scope);
     return perOrg.flatMap(({ org_id, summary }) => summaryToGaugePoints(org_id, summary));
   };
