@@ -75,14 +75,26 @@ export class BootError extends Error {
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): GovAIEnv {
-  // Env contract: absent === empty. An exported-but-empty var (a `.env` line like
-  // `DATABASE_URL=` / `GOVAI_EVIDENCE_ENUMERATOR_URL=`, the documented "off" idiom) must
-  // read as "unset", not as `''` — otherwise a `.min(1)` schema rejects it and boot fails
-  // on the default off-state. Normalize `''` → absent at the boundary: `.min(1)` stays
-  // meaningful for present-but-garbage values, `.optional()` forgives the absence, and
-  // `z.coerce` keys fall back to their defaults instead of coercing `''` → 0.
+  // Empty-as-unset is a property of designated OFF-SWITCHES, not a global env-contract
+  // change: for the allowlisted optional off-switches/overrides below, an exported-empty
+  // value (a `.env` line `DATABASE_URL=` etc., the documented "off" idiom) reads as "unset".
+  // For EVERY other key — NODE_ENV, API_PORT, and all future keys — `''` reaches the schema
+  // and fails LOUD; an explicitly-provided invalid value must never silently become a
+  // default (@codex 3522162726: NODE_ENV='' must not silently downgrade a production boot).
+  const EMPTY_MEANS_UNSET = new Set([
+    'DATABASE_URL',
+    'DATABASE_ADMIN_URL',
+    'REDIS_URL',
+    'GOVAI_EVIDENCE_ENUMERATOR_URL',
+    'OTEL_EXPORTER_OTLP_ENDPOINT',
+    'GOVAI_PROVIDER_BASE_URL',
+    // Listed to preserve the tSeal-0 kill: EVIDENCE_T_SEAL_SECONDS is
+    // .nonnegative().default(300), so an un-filtered '' would coerce to a SILENT 0.
+    'EVIDENCE_T_SEAL_SECONDS',
+    'EVIDENCE_DEFAULT_WINDOW_SECONDS',
+  ]);
   const normalized = Object.fromEntries(
-    Object.entries(source).filter(([, v]) => v !== ''),
+    Object.entries(source).filter(([k, v]) => !(v === '' && EMPTY_MEANS_UNSET.has(k))),
   );
   const parsed = EnvSchema.safeParse(normalized);
   if (!parsed.success) {

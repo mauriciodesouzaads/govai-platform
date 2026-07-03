@@ -100,14 +100,15 @@ describe('config / empty-env normalization (absent === empty) — EP-EVIDENCE-GA
     expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
   });
 
-  it('an empty coerce-key falls back to its default (not coerced to 0)', () => {
+  it('an empty ALLOWLISTED coerce-key falls back to its default (tSeal-0 kill preserved)', () => {
+    // FIXUP3: API_PORT removed — it is NOT an allowlisted off-switch, so API_PORT='' now
+    // fails loud (asserted in the FIXUP3 describe below). The EVIDENCE_* keys stay listed
+    // so their '' does not resurrect a silent 0 / an invalid window.
     const env = loadEnv({
       NODE_ENV: 'test',
-      API_PORT: '',
       EVIDENCE_T_SEAL_SECONDS: '',
       EVIDENCE_DEFAULT_WINDOW_SECONDS: '',
     });
-    expect(env.API_PORT).toBe(8080);
     expect(env.EVIDENCE_T_SEAL_SECONDS).toBe(300);
     expect(env.EVIDENCE_DEFAULT_WINDOW_SECONDS).toBe(86_400);
   });
@@ -122,5 +123,18 @@ describe('config / empty-env normalization (absent === empty) — EP-EVIDENCE-GA
     expect(env.GOVAI_EVIDENCE_ENUMERATOR_URL).toBe(
       'postgres://govai_evidence_enumerator:pw@localhost:5432/govai',
     );
+  });
+});
+
+describe('config / empty-as-unset is ALLOWLISTED — non-off-switches fail loud (FIXUP3)', () => {
+  it('NODE_ENV="" FAILS loudly naming NODE_ENV (must not silently downgrade a prod boot)', () => {
+    // The regression cell: NODE_ENV is enum-with-default; before FIXUP1, '' failed loud;
+    // the FIXUP1 blanket filter downgraded it to the 'development' default (all prod guards
+    // off); FIXUP3 restores the loud failure — NODE_ENV is not an allowlisted off-switch.
+    expect(() => loadEnv({ NODE_ENV: '' })).toThrow(/NODE_ENV/);
+  });
+
+  it('a non-allowlisted coerce key (API_PORT="") fails loudly (strict contract restored)', () => {
+    expect(() => loadEnv({ NODE_ENV: 'test', API_PORT: '' })).toThrow(BootError);
   });
 });
