@@ -90,8 +90,14 @@ DECLARE
   v_password text := current_setting('govai.evidence_enumerator_password', true);
 BEGIN
   IF v_password IS NULL OR v_password = '' THEN
+    -- Terminate any live enumerator sessions so deprovision is immediate + total: NOLOGIN
+    -- only blocks NEW connections; pg_terminate_backend closes existing ones. Idempotent
+    -- (no rows when none are connected). Runs as the migration superuser (may signal backends).
+    PERFORM pg_terminate_backend(pid)
+      FROM pg_stat_activity
+      WHERE usename = 'govai_evidence_enumerator' AND pid <> pg_backend_pid();
     ALTER ROLE govai_evidence_enumerator WITH NOLOGIN PASSWORD NULL;
-    RAISE NOTICE 'govai_evidence_enumerator deprovisioned (NOLOGIN, password cleared); set govai.evidence_enumerator_password to (re)provision.';
+    RAISE NOTICE 'govai_evidence_enumerator deprovisioned (NOLOGIN, password cleared, live sessions terminated); set govai.evidence_enumerator_password to (re)provision.';
   ELSIF length(v_password) < 8 THEN
     RAISE EXCEPTION 'govai.evidence_enumerator_password must be >= 8 chars when set.';
   ELSE

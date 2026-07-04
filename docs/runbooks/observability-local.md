@@ -41,8 +41,11 @@ Grafana refuse-if-missing secret; only bringing up this file requires `GRAFANA_A
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # exporter POSTs to /v1/metrics
-# For the per-org govai_evidence_* gauges, also provision + point at the enumerator role
-# (see .env.example): set GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD before `migrate`, then:
+# For the per-org govai_evidence_* gauges, provision + point at the enumerator role.
+# ★ REQUIRED before `migrate`: without this password export, bootstrap DEPROVISIONS the
+#   enumerator (NOLOGIN + live sessions terminated) and the gauges cannot authenticate.
+#   Generate: openssl rand -hex 24 | xargs printf 'GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD=%s\n'
+export GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD=<generated-above>
 export GOVAI_EVIDENCE_ENUMERATOR_URL=postgres://govai_evidence_enumerator:<pw>@localhost:5432/govai
 docker compose -f infra/docker-compose.yml up -d postgres
 pnpm --filter @govai/api run migrate
@@ -58,7 +61,10 @@ CI/default state).
 > **Disable or rotate the enumerator credential:** remove `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD`
 > (or set a new value) and re-run `pnpm --filter @govai/api run migrate` — the role is
 > declaratively NOLOGIN'd (password cleared) / re-provisioned on every bootstrap run; the GUC
-> is the single source of truth for its LOGIN state.
+> is the single source of truth for its LOGIN state. Deprovision is **immediate and total** —
+> it terminates any live enumerator sessions, not just future logins (re-point/restart the API
+> afterward). (Re)provisioning or rotating requires `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD` to
+> be exported on that **same** `migrate` invocation, exactly as in §2.
 
 ## 3. See the metrics
 

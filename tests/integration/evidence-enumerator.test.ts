@@ -43,6 +43,10 @@ beforeAll(async () => {
   // conditional ALTER path), then connect a real least-privilege pool.
   await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword);
   enumPool = new Pool({ connectionString: stack.db.enumeratorUrl });
+  // FIXUP5: the deprovision cell (last) runs pg_terminate_backend for ALL enumerator backends
+  // — including this pool's idle connections. Swallow the resulting async pool error (the pool
+  // is torn down in afterAll regardless); no assertion depends on it.
+  enumPool.on('error', () => undefined);
 }, 240_000);
 
 afterAll(async () => {
@@ -124,25 +128,30 @@ describe('EP-EVIDENCE-GAUGE-WIRING — enumerate-only role (INV-1) + two-pool ga
     }
   });
 
-  // FIXUP4 — I7 made TOTAL (both directions + live auth). MUST run last: it deprovisions the
-  // shared enumerator role that the cells above use via enumPool.
-  it('deprovision-on-absent: the credential stops authenticating after a GUC-less bootstrap re-run', async () => {
-    // Currently provisioned — a fresh connection with the enumerator credential succeeds.
-    const ok = new Client({ connectionString: stack.db.enumeratorUrl });
-    await ok.connect();
-    await ok.query('SELECT 1');
-    await ok.end();
+  // FIXUP5 — I7 made TOTAL: deprovision TERMINATES the live session AND blocks future auth.
+  // MUST run last: it deprovisions the shared enumerator role that the cells above use.
+  it('deprovision-on-absent terminates the live session AND blocks future auth', async () => {
+    // A LIVE enumerator connection, held open across the deprovision.
+    const live = new Client({ connectionString: stack.db.enumeratorUrl });
+    live.on('error', () => undefined); // swallow the async disconnect when the backend is killed
+    await live.connect();
+    await live.query('SELECT 1'); // succeeds while provisioned
 
-    // Re-run bootstrap WITHOUT the enumerator password → deprovision (NOLOGIN + password null).
+    // Re-run bootstrap WITHOUT the enumerator password → deprovision: terminate live sessions
+    // + NOLOGIN + clear the password.
     await migrate(stack.db.adminUrl, stack.db.appPassword);
 
-    // rolcanlogin is now false...
+    // (1) the PRE-EXISTING connection's backend was terminated — its next query rejects.
+    await expect(live.query('SELECT 1')).rejects.toThrow();
+    await live.end().catch(() => undefined);
+
+    // (2) rolcanlogin is now false.
     const r = await stack.db.adminPool.query<{ rolcanlogin: boolean }>(
       `SELECT rolcanlogin FROM pg_roles WHERE rolname = 'govai_evidence_enumerator'`,
     );
     expect(r.rows[0]?.rolcanlogin).toBe(false);
 
-    // ...and the SAME connection string now fails authentication.
+    // (3) the SAME connection string now fails NEW authentication.
     const denied = new Client({ connectionString: stack.db.enumeratorUrl });
     await expect(denied.connect()).rejects.toThrow();
     await denied.end().catch(() => undefined);
