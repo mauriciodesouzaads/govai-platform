@@ -43,7 +43,7 @@ describe('bootstrap + migrations idempotency', () => {
     }
   });
 
-  it('govai_evidence_enumerator is NOLOGIN-until-provisioned + idempotent (EP-EVIDENCE-GAUGE-WIRING I7 + C1)', async () => {
+  it('govai_evidence_enumerator LOGIN state tracks the GUC — provision + idempotent + deprovision-on-absent (I7 total, FIXUP4)', async () => {
     const ROLE = 'govai_evidence_enumerator';
     // startPostgres migrated WITHOUT the enumerator password ⇒ NOLOGIN (unprovisioned).
     expect(await rolcanlogin(ROLE)).toBe(false);
@@ -56,5 +56,9 @@ describe('bootstrap + migrations idempotency', () => {
     // GUC present on a second run ⇒ stays LOGIN (present×2 idempotent).
     await migrate(db.adminUrl, db.appPassword, db.enumeratorPassword);
     expect(await rolcanlogin(ROLE)).toBe(true);
+    // (d) present→absent (FIXUP4 deprovision-on-absent): a GUC-less re-run of a PROVISIONED
+    // role NOLOGINs it and clears the password — the GUC is the single source of truth.
+    await migrate(db.adminUrl, db.appPassword);
+    expect(await rolcanlogin(ROLE)).toBe(false);
   });
 });

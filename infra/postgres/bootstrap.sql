@@ -81,13 +81,17 @@ $$;
 
 GRANT USAGE ON SCHEMA govai TO govai_evidence_enumerator;
 
--- Conditional provisioning: LOGIN + password together, only if the GUC is set.
+-- Conditional provisioning: the GUC is the SINGLE SOURCE OF TRUTH for the LOGIN state on
+-- EVERY run (FIXUP4). Absent/empty ⇒ DEPROVISION (NOLOGIN + clear the stored password
+-- verifier, declaratively and idempotent — removing the GUC both disables AND rotates);
+-- present + valid (>= 8) ⇒ LOGIN with that password; present + invalid (< 8) ⇒ fail loud.
 DO $$
 DECLARE
   v_password text := current_setting('govai.evidence_enumerator_password', true);
 BEGIN
-  IF v_password IS NULL THEN
-    RAISE NOTICE 'govai_evidence_enumerator present, NOLOGIN (unprovisioned); set govai.evidence_enumerator_password to enable login';
+  IF v_password IS NULL OR v_password = '' THEN
+    ALTER ROLE govai_evidence_enumerator WITH NOLOGIN PASSWORD NULL;
+    RAISE NOTICE 'govai_evidence_enumerator deprovisioned (NOLOGIN, password cleared); set govai.evidence_enumerator_password to (re)provision.';
   ELSIF length(v_password) < 8 THEN
     RAISE EXCEPTION 'govai.evidence_enumerator_password must be >= 8 chars when set.';
   ELSE

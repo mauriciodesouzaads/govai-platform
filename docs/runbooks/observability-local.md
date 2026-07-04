@@ -55,6 +55,11 @@ MeterProvider and the periodic reader exports metrics; additionally, with
 per-org. With either **unset** the boot is byte-identical and export is a no-op (the
 CI/default state).
 
+> **Disable or rotate the enumerator credential:** remove `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD`
+> (or set a new value) and re-run `pnpm --filter @govai/api run migrate` — the role is
+> declaratively NOLOGIN'd (password cleared) / re-provisioned on every bootstrap run; the GUC
+> is the single source of truth for its LOGIN state.
+
 ## 3. See the metrics
 
 - Grafana: <http://localhost:3000> (admin / `$GRAFANA_ADMIN_PASSWORD`) →

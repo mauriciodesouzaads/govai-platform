@@ -9,7 +9,7 @@
 //     the app pool, emitting safe-labelled points (org_hash, never raw org_id) per org.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { Pool } from 'pg';
+import { Client, Pool } from 'pg';
 import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
 import { createSeedHelpers, type SeedHelpers } from './helpers/evidence-seed.js';
 import { migrate } from './setup.js';
@@ -122,5 +122,29 @@ describe('EP-EVIDENCE-GAUGE-WIRING — enumerate-only role (INV-1) + two-pool ga
       expect(attrs).toHaveProperty('org_hash');
       expect(attrs).not.toHaveProperty('org_id');
     }
+  });
+
+  // FIXUP4 — I7 made TOTAL (both directions + live auth). MUST run last: it deprovisions the
+  // shared enumerator role that the cells above use via enumPool.
+  it('deprovision-on-absent: the credential stops authenticating after a GUC-less bootstrap re-run', async () => {
+    // Currently provisioned — a fresh connection with the enumerator credential succeeds.
+    const ok = new Client({ connectionString: stack.db.enumeratorUrl });
+    await ok.connect();
+    await ok.query('SELECT 1');
+    await ok.end();
+
+    // Re-run bootstrap WITHOUT the enumerator password → deprovision (NOLOGIN + password null).
+    await migrate(stack.db.adminUrl, stack.db.appPassword);
+
+    // rolcanlogin is now false...
+    const r = await stack.db.adminPool.query<{ rolcanlogin: boolean }>(
+      `SELECT rolcanlogin FROM pg_roles WHERE rolname = 'govai_evidence_enumerator'`,
+    );
+    expect(r.rows[0]?.rolcanlogin).toBe(false);
+
+    // ...and the SAME connection string now fails authentication.
+    const denied = new Client({ connectionString: stack.db.enumeratorUrl });
+    await expect(denied.connect()).rejects.toThrow();
+    await denied.end().catch(() => undefined);
   });
 });
