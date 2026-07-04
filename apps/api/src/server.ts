@@ -76,6 +76,20 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
     disableRequestLogging: false,
   });
 
+  // FIXUP6 (class fix): absorb async pool 'error' events so a transient backend loss never
+  // throws-unhandled and kills the API. ONLY when the app OWNS the pool — an injected pool
+  // (tests) owns its own lifecycle. Attached here (not at the createPool line) because app.log
+  // does not exist until the Fastify app is created. Main-pool errors are an operational alarm
+  // (error) but still absorbed; the pool attempts its own reconnection.
+  if (!overrides.pool) {
+    pool.on('error', (err) => {
+      app.log.error(
+        { err, pool: 'app' },
+        'app database pool error (connection lost; pool will attempt recovery)',
+      );
+    });
+  }
+
   await app.register(helmet, { contentSecurityPolicy: false });
   const origins = originsFromCsv(env.API_CORS_ORIGINS);
   await app.register(cors, {
@@ -111,6 +125,15 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   let enumeratorPool: Pool | null = null;
   if (telemetry.enabled && env.GOVAI_EVIDENCE_ENUMERATOR_URL) {
     enumeratorPool = createPool({ connectionString: env.GOVAI_EVIDENCE_ENUMERATOR_URL, max: 2 });
+    // FIXUP6 (class fix): absorb the enumerator pool's async 'error' (e.g. FIXUP5's
+    // deprovision-terminate kills its backends) — observe-only stays observe-only, never
+    // throws-unhandled. Non-fatal: gauge collection pauses until reprovision/restart.
+    enumeratorPool.on('error', (err) => {
+      app.log.warn(
+        { err, pool: 'evidence_enumerator' },
+        'enumerator pool error (non-fatal; gauge collection may pause until reprovision/restart)',
+      );
+    });
     const scope = {
       windowSeconds: env.EVIDENCE_DEFAULT_WINDOW_SECONDS,
       tSealSeconds: env.EVIDENCE_T_SEAL_SECONDS,

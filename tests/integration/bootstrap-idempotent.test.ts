@@ -61,4 +61,15 @@ describe('bootstrap + migrations idempotency', () => {
     await migrate(db.adminUrl, db.appPassword);
     expect(await rolcanlogin(ROLE)).toBe(false);
   });
+
+  it('present-invalid (<8 chars) on a provisioned role fails loud with NO side effect (FIXUP6 6th cell)', async () => {
+    const ROLE = 'govai_evidence_enumerator';
+    // Provision (LOGIN).
+    await migrate(db.adminUrl, db.appPassword, db.enumeratorPassword);
+    expect(await rolcanlogin(ROLE)).toBe(true);
+    // A present-but-invalid (<8) password ⇒ bootstrap RAISE EXCEPTION (migrate rejects) with
+    // NO side effect: the role stays LOGIN — no NOLOGIN, no terminate, no password change.
+    await expect(migrate(db.adminUrl, db.appPassword, 'short')).rejects.toThrow();
+    expect(await rolcanlogin(ROLE)).toBe(true);
+  });
 });

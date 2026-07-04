@@ -20,6 +20,8 @@ import {
 } from '../../apps/api/src/pipeline/evidence-operator.js';
 import { safeEvidenceLabels } from '../../apps/api/src/pipeline/evidence-metrics.js';
 import type { ReportScope } from '../../apps/api/src/pipeline/evidence-reports.js';
+import { metrics } from '@opentelemetry/api';
+import { buildServer } from '../../apps/api/src/server.js';
 
 let stack: Stack;
 let seed: SeedHelpers;
@@ -155,5 +157,38 @@ describe('EP-EVIDENCE-GAUGE-WIRING — enumerate-only role (INV-1) + two-pool ga
     const denied = new Client({ connectionString: stack.db.enumeratorUrl });
     await expect(denied.connect()).rejects.toThrow();
     await denied.end().catch(() => undefined);
+  });
+
+  // FIXUP6 D-C.3 — the SHIPPED server survives a live deprovision: the enumerator pool's
+  // 'error' listener (D-A) absorbs the terminate-induced disconnect and the API stays up.
+  // Self-contained (the FIXUP5 cell above left the role deprovisioned): re-provision first.
+  it('the shipped server survives a live deprovision (enumerator pool error absorbed, API stays up)', async () => {
+    await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword); // re-provision
+
+    // A real server with the enumerator wired: OTEL set (a dead endpoint is fine) →
+    // telemetry.enabled; enumerator URL set → the enumerator pool + its FIXUP6 error listener.
+    const app = await buildServer({
+      env: {
+        ...stack.env,
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:39996',
+        GOVAI_EVIDENCE_ENUMERATOR_URL: stack.db.enumeratorUrl,
+      },
+    });
+    try {
+      // Force a gauge collection so the enumerator pool actually connects (enumerates orgs).
+      const mp = metrics.getMeterProvider() as unknown as { forceFlush?: () => Promise<void> };
+      await mp.forceFlush?.().catch(() => undefined);
+
+      // Deprovision → pg_terminate_backend kills the enumerator pool's backend → the pool's
+      // 'error' listener absorbs it (warn). The server must NOT crash.
+      await migrate(stack.db.adminUrl, stack.db.appPassword);
+      await new Promise((r) => setTimeout(r, 250)); // let the async pool 'error' fire + be absorbed
+
+      // Survival proof: the server still responds.
+      const res = await app.inject({ method: 'GET', url: '/health' });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
   });
 });

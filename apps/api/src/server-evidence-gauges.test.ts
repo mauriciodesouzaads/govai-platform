@@ -11,6 +11,10 @@ const hoisted = vi.hoisted(() => ({
   registerEvidenceGauges: vi.fn(() => ({ unregister: vi.fn() })),
   createEvidenceGaugeSource: vi.fn(() => async () => []),
   enumerateAllOrgs: vi.fn(),
+  // Each createPool call returns a FRESH pool with an `on` spy — server.ts attaches an
+  // 'error' listener to every pool it owns (FIXUP6 class fix); the fresh objects let the
+  // test distinguish the main pool (call 0) from the enumerator pool (call 1).
+  createPool: vi.fn(() => ({ end: async () => undefined, on: vi.fn() })),
 }));
 
 vi.mock('@govai/observability', async (importActual) => ({
@@ -23,7 +27,7 @@ vi.mock('@govai/observability', async (importActual) => ({
 
 vi.mock('./db/client.js', async (importActual) => ({
   ...(await importActual<typeof import('./db/client.js')>()),
-  createPool: vi.fn(() => ({ end: async () => undefined })),
+  createPool: hoisted.createPool,
 }));
 
 vi.mock('./pipeline/evidence-metrics.js', async (importActual) => ({
@@ -98,5 +102,38 @@ describe('server D6 gauge-wiring gate — the 2×2 matrix (EP-EVIDENCE-GAUGE-WIR
     await expect(buildServer({ env: envWith(OTEL_ENDPOINT, undefined) })).rejects.toThrow(
       /DATABASE_URL/,
     );
+  });
+
+  // FIXUP6 D-C.1 (class fix): BOTH long-lived pools the app OWNS get an absorbing 'error'
+  // listener — the enumerator pool (warn) and the main app pool (error). Built WITHOUT
+  // overrides.pool so the app creates both via createPool.
+  it('class fix — both app-owned pools get an absorbing error listener (warn enumerator / error app)', async () => {
+    hoisted.createPool.mockClear();
+    const app = await buildServer({
+      env: { ...envWith(OTEL_ENDPOINT, ENUM_URL), DATABASE_URL: 'postgres://unit' },
+    });
+    try {
+      // createPool call 0 = main pool (server.ts:70-72), call 1 = enumerator pool (:113).
+      const pools = hoisted.createPool.mock.results.map(
+        (r) => r.value as { on: ReturnType<typeof vi.fn> },
+      );
+      expect(pools.length).toBeGreaterThanOrEqual(2);
+      const errorListener = (p: { on: ReturnType<typeof vi.fn> }) =>
+        p.on.mock.calls.find((c) => c[0] === 'error')?.[1] as ((e: Error) => void) | undefined;
+      const mainListener = errorListener(pools[0]!);
+      const enumListener = errorListener(pools[1]!);
+      expect(mainListener).toBeTypeOf('function');
+      expect(enumListener).toBeTypeOf('function');
+
+      // Invoking each ABSORBS (no throw) and logs at the intended level.
+      const warnSpy = vi.spyOn(app.log, 'warn');
+      const errorSpy = vi.spyOn(app.log, 'error');
+      expect(() => enumListener!(new Error('boom'))).not.toThrow();
+      expect(() => mainListener!(new Error('boom'))).not.toThrow();
+      expect(warnSpy).toHaveBeenCalled(); // enumerator pool → warn
+      expect(errorSpy).toHaveBeenCalled(); // app pool → error
+    } finally {
+      await app.close();
+    }
   });
 });
