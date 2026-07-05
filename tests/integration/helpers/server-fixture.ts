@@ -208,7 +208,16 @@ export async function setBaselineDlpAction(
   const c = await stack.db.adminPool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('SET LOCAL ROLE govai_audit_writer');
+    // EP-GATE-MECHANIZATION D6: seed under govai_app, NOT govai_audit_writer. On dlp_baseline_config
+    // the writer has dbc_insert_writer but NO UPDATE policy (0005), so a REPEAT seed of the same
+    // (org, detector) — the ON CONFLICT DO UPDATE below — hits a missing RLS UPDATE policy and
+    // intermittently fails ("new row violates row-level security policy"). govai_app has BOTH
+    // dbc_insert_app and dbc_update_app, so both the INSERT and the DO UPDATE paths have a policy.
+    // Those policies are PER-TENANT (org_id = current_setting('app.org_id')), so the app.org_id set
+    // immediately below MUST equal the seeded row's org_id — it does ($1 for both). (Not a
+    // production change: production never writes this table — dlp.ts only SELECTs it; adding a
+    // writer UPDATE policy would be the wrong fix, a production privilege expansion to serve a test.)
+    await c.query('SET LOCAL ROLE govai_app');
     await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
     await c.query(
       `INSERT INTO govai.dlp_baseline_config (org_id, detector, action)
