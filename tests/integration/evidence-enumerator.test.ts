@@ -38,6 +38,25 @@ const READ_SET = [
   'govai.evidence_provider_without_audit',
 ] as const;
 
+// The enumerator credential (stack.db.enumeratorUrl) provisioned with stack.db.enumeratorPassword.
+async function enumeratorCanLogin(): Promise<boolean> {
+  const r = await stack.db.adminPool.query<{ rolcanlogin: boolean }>(
+    `SELECT rolcanlogin FROM pg_roles WHERE rolname = 'govai_evidence_enumerator'`,
+  );
+  return r.rows[0]?.rolcanlogin ?? false;
+}
+async function freshEnumeratorConnectSucceeds(): Promise<void> {
+  const client = new Client({ connectionString: stack.db.enumeratorUrl });
+  await client.connect();
+  await client.query('SELECT 1');
+  await client.end().catch(() => undefined);
+}
+async function freshEnumeratorConnectFails(): Promise<void> {
+  const client = new Client({ connectionString: stack.db.enumeratorUrl });
+  await expect(client.connect()).rejects.toThrow();
+  await client.end().catch(() => undefined);
+}
+
 beforeAll(async () => {
   stack = await startStack();
   seed = createSeedHelpers(stack);
@@ -130,38 +149,81 @@ describe('EP-EVIDENCE-GAUGE-WIRING — enumerate-only role (INV-1) + two-pool ga
     }
   });
 
-  // FIXUP5 — I7 made TOTAL: deprovision TERMINATES the live session AND blocks future auth.
-  // MUST run last: it deprovisions the shared enumerator role that the cells above use.
-  it('deprovision-on-absent terminates the live session AND blocks future auth', async () => {
+  // ── EP-EVIDENCE-GAUGE-WIRING CREDENTIAL-LIFECYCLE-RUNNER: the five-way machine, runner-side ──
+  // Every cell below is self-contained (re-provisions at its start) since some deprovision the
+  // shared role. The race #9 fix lives in the RUNNER: bootstrap commits NOLOGIN, then the runner
+  // sweeps live sessions post-commit. NOTE: these are executable DOCUMENTATION — CI does not run
+  // integration; the guarantee is source-verify + the bot + a local green run.
+
+  // Cell A (race closure — the core of #9): once the runner RETURNS, NOLOGIN is COMMITTED, so a
+  // FRESH connection on the revoked credential cannot authenticate. We deliberately do NOT assert
+  // "zero sessions at the commit instant" (impossible + benign — a live session is reaped by the
+  // post-commit sweep, Cell B); the load-bearing invariant is "no NEW auth once the runner returns".
+  it('Cell A — after an explicit deprovision returns, a fresh connection on the old credential fails auth', async () => {
+    await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword); // provision
+    await freshEnumeratorConnectSucceeds(); // sanity: provisioned ⇒ auth works
+    await migrate(stack.db.adminUrl, stack.db.appPassword, undefined, '1'); // explicit deprovision
+    expect(await enumeratorCanLogin()).toBe(false); // NOLOGIN committed (visible to new sessions)
+    await freshEnumeratorConnectFails(); // the race the fix closes: no new auth post-commit
+  });
+
+  // ★ Cell C (routine-migration footgun regression): a migrate with NEITHER a password NOR the
+  // deprovision signal must LEAVE the role untouched — a schema migration must never drop the
+  // gauges by omission (the pre-fix "absent password ⇒ deprovision" sentinel is gone).
+  it('Cell C — a routine migration (no password, no deprovision) leaves a provisioned role LOGIN-capable', async () => {
+    await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword); // provision
+    expect(await enumeratorCanLogin()).toBe(true);
+    await migrate(stack.db.adminUrl, stack.db.appPassword); // routine migration: no enumerator signal
+    expect(await enumeratorCanLogin()).toBe(true); // still LOGIN — untouched
+    await freshEnumeratorConnectSucceeds(); // and still reachable
+  });
+
+  // Cell D (conflicting intent fails loud, state unchanged): password + deprovision=1 together is
+  // rejected BEFORE bootstrap runs, so a previously-provisioned role is left exactly as it was.
+  it('Cell D — password AND deprovision=1 fails loud, leaving the existing state unchanged', async () => {
+    await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword); // provision
+    await expect(
+      migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword, '1'),
+    ).rejects.toThrow();
+    expect(await enumeratorCanLogin()).toBe(true); // unchanged — no bootstrap ran
+  });
+
+  // Cell E (invalid deprovision value fails loud, state unchanged): the sole accepted value is
+  // '1'; anything else is rejected before bootstrap.
+  it('Cell E — an invalid deprovision value fails loud, leaving the existing state unchanged', async () => {
+    await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword); // provision
+    await expect(
+      migrate(stack.db.adminUrl, stack.db.appPassword, undefined, 'maybe'),
+    ).rejects.toThrow();
+    expect(await enumeratorCanLogin()).toBe(true); // unchanged
+  });
+
+  // Cell B (post-commit live-session sweep — the former FIXUP5 cell, now via the explicit signal):
+  // the runner's post-commit bounded sweep terminates an already-live enumerator session, and the
+  // committed NOLOGIN blocks any new auth. MUST run late — it leaves the role deprovisioned.
+  it('Cell B — an explicit deprovision terminates a live session (runner sweep) AND blocks future auth', async () => {
+    await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword); // provision
     // A LIVE enumerator connection, held open across the deprovision.
     const live = new Client({ connectionString: stack.db.enumeratorUrl });
     live.on('error', () => undefined); // swallow the async disconnect when the backend is killed
     await live.connect();
     await live.query('SELECT 1'); // succeeds while provisioned
 
-    // Re-run bootstrap WITHOUT the enumerator password → deprovision: terminate live sessions
-    // + NOLOGIN + clear the password.
-    await migrate(stack.db.adminUrl, stack.db.appPassword);
+    // Explicit deprovision: bootstrap commits NOLOGIN; the runner then sweeps live sessions.
+    await migrate(stack.db.adminUrl, stack.db.appPassword, undefined, '1');
 
-    // (1) the PRE-EXISTING connection's backend was terminated — its next query rejects.
+    // (1) the PRE-EXISTING connection's backend was terminated by the post-commit sweep.
     await expect(live.query('SELECT 1')).rejects.toThrow();
     await live.end().catch(() => undefined);
-
-    // (2) rolcanlogin is now false.
-    const r = await stack.db.adminPool.query<{ rolcanlogin: boolean }>(
-      `SELECT rolcanlogin FROM pg_roles WHERE rolname = 'govai_evidence_enumerator'`,
-    );
-    expect(r.rows[0]?.rolcanlogin).toBe(false);
-
+    // (2) rolcanlogin is now false (committed).
+    expect(await enumeratorCanLogin()).toBe(false);
     // (3) the SAME connection string now fails NEW authentication.
-    const denied = new Client({ connectionString: stack.db.enumeratorUrl });
-    await expect(denied.connect()).rejects.toThrow();
-    await denied.end().catch(() => undefined);
+    await freshEnumeratorConnectFails();
   });
 
   // FIXUP6 D-C.3 — the SHIPPED server survives a live deprovision: the enumerator pool's
-  // 'error' listener (D-A) absorbs the terminate-induced disconnect and the API stays up.
-  // Self-contained (the FIXUP5 cell above left the role deprovisioned): re-provision first.
+  // 'error' listener (D-A) absorbs the runner-sweep-induced disconnect and the API stays up.
+  // Self-contained (Cell B above left the role deprovisioned): re-provision first.
   it('the shipped server survives a live deprovision (enumerator pool error absorbed, API stays up)', async () => {
     await migrate(stack.db.adminUrl, stack.db.appPassword, stack.db.enumeratorPassword); // re-provision
 
@@ -179,9 +241,9 @@ describe('EP-EVIDENCE-GAUGE-WIRING — enumerate-only role (INV-1) + two-pool ga
       const mp = metrics.getMeterProvider() as unknown as { forceFlush?: () => Promise<void> };
       await mp.forceFlush?.().catch(() => undefined);
 
-      // Deprovision → pg_terminate_backend kills the enumerator pool's backend → the pool's
-      // 'error' listener absorbs it (warn). The server must NOT crash.
-      await migrate(stack.db.adminUrl, stack.db.appPassword);
+      // Explicit deprovision → the runner's post-commit sweep kills the enumerator pool's
+      // backend → the pool's 'error' listener absorbs it (warn). The server must NOT crash.
+      await migrate(stack.db.adminUrl, stack.db.appPassword, undefined, '1');
       await new Promise((r) => setTimeout(r, 250)); // let the async pool 'error' fire + be absorbed
 
       // Survival proof: the server still responds.

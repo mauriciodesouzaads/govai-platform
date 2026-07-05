@@ -1,5 +1,9 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
+// EP-EVIDENCE-GAUGE-WIRING CREDENTIAL-LIFECYCLE-RUNNER: the SAME shared applier the production
+// runner uses (apps/api/src/db/migrate.ts) — imported, not re-implemented, so the two runners'
+// enumerator lifecycle (five-way gating + post-commit sweep) cannot drift.
+import { applyEnumeratorLifecycle } from '../../apps/api/src/db/migrate.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,6 +112,7 @@ export async function migrate(
   adminConn: string,
   appPassword: string,
   enumeratorPassword?: string,
+  enumeratorDeprovision?: string,
 ): Promise<void> {
   if (!appPassword || appPassword.length < 8) {
     throw new Error('migrate: appPassword must be >= 8 chars');
@@ -118,14 +123,18 @@ export async function migrate(
   try {
     // Custom GUCs of the form `prefix.name` are session-scoped without prior config.
     await c.query(`SET govai.app_password = '${appPassword.replace(/'/g, "''")}'`);
-    // EP-EVIDENCE-GAUGE-WIRING: optional — provisions govai_evidence_enumerator LOGIN.
-    if (enumeratorPassword) {
-      await c.query(
-        `SET govai.evidence_enumerator_password = '${enumeratorPassword.replace(/'/g, "''")}'`,
-      );
-    }
     const bootstrap = await readFile(BOOTSTRAP_PATH, 'utf8');
-    await c.query(bootstrap);
+    // EP-EVIDENCE-GAUGE-WIRING CREDENTIAL-LIFECYCLE-RUNNER: identical enumerator lifecycle to
+    // the production runner — the SAME applyEnumeratorLifecycle (five-way gating + post-commit
+    // sweep on deprovision). Mirrors migrate.ts by SHARING the function, not copying it.
+    await applyEnumeratorLifecycle(
+      c,
+      { password: enumeratorPassword, deprovision: enumeratorDeprovision },
+      async () => {
+        await c.query(bootstrap);
+      },
+      (m) => console.warn(m),
+    );
     const files = (await readdir(MIGRATIONS_DIR))
       .filter((f) => f.endsWith('.sql'))
       .sort((a, b) => a.localeCompare(b));

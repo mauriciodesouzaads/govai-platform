@@ -42,8 +42,8 @@ Grafana refuse-if-missing secret; only bringing up this file requires `GRAFANA_A
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # exporter POSTs to /v1/metrics
 # For the per-org govai_evidence_* gauges, provision + point at the enumerator role.
-# ★ REQUIRED before `migrate`: without this password export, bootstrap DEPROVISIONS the
-#   enumerator (NOLOGIN + live sessions terminated) and the gauges cannot authenticate.
+# Export this password to PROVISION/ROTATE the enumerator on `migrate`. Omitting it leaves the
+# role UNTOUCHED (a routine migration never drops the gauges); to DISABLE it, see the note below.
 #   Generate: openssl rand -hex 24 | xargs printf 'GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD=%s\n'
 export GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD=<generated-above>
 export GOVAI_EVIDENCE_ENUMERATOR_URL=postgres://govai_evidence_enumerator:<pw>@localhost:5432/govai
@@ -58,13 +58,25 @@ MeterProvider and the periodic reader exports metrics; additionally, with
 per-org. With either **unset** the boot is byte-identical and export is a no-op (the
 CI/default state).
 
-> **Disable or rotate the enumerator credential:** remove `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD`
-> (or set a new value) and re-run `pnpm --filter @govai/api run migrate` — the role is
-> declaratively NOLOGIN'd (password cleared) / re-provisioned on every bootstrap run; the GUC
-> is the single source of truth for its LOGIN state. Deprovision is **immediate and total** —
-> it terminates any live enumerator sessions, not just future logins (re-point/restart the API
-> afterward). (Re)provisioning or rotating requires `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD` to
-> be exported on that **same** `migrate` invocation, exactly as in §2.
+> **Enumerator credential lifecycle (five-way, GUC-driven):** the LOGIN state on each `migrate`
+> is chosen by two INDEPENDENT signals — `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD` and the explicit
+> `GOVAI_DB_EVIDENCE_ENUMERATOR_DEPROVISION` (sole accepted value `1`). There is no password
+> sentinel: an absent password no longer means "disable".
+> - **Provision / rotate:** export the password (no deprovision flag) → `LOGIN` with that password.
+> - **Routine migration:** neither signal → the role is **left untouched**; the gauges survive (a
+>   schema migration must never drop them by omission).
+> - **Disable (deprovision):** export `GOVAI_DB_EVIDENCE_ENUMERATOR_DEPROVISION=1` with **no**
+>   password and re-run `migrate` → the role is set `NOLOGIN` (password cleared), then the runner
+>   runs a post-commit bounded sweep of live enumerator sessions.
+> - Password **and** `DEPROVISION=1` together, or any deprovision value other than `1`, **fail loud**.
+>
+> Deprovision guarantees, precisely (do not overclaim):
+> - **Hard guarantee:** once `NOLOGIN` commits (the `migrate` call returns), **no fresh
+>   authentication** with the revoked credential can succeed.
+> - **Normal behavior:** the runner's post-commit sweep terminates already-live enumerator sessions.
+> - **Exception:** if the bounded sweep reaches its cap it logs a `WARNING` and continues (it never
+>   fails the migration — the role is already `NOLOGIN`); re-run the deprovision or restart the API
+>   to reap any remaining pre-existing sessions.
 
 ## 3. See the metrics
 

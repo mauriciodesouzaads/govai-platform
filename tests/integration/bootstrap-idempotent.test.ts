@@ -43,22 +43,27 @@ describe('bootstrap + migrations idempotency', () => {
     }
   });
 
-  it('govai_evidence_enumerator LOGIN state tracks the GUC — provision + idempotent + deprovision-on-absent (I7 total, FIXUP4)', async () => {
+  it('govai_evidence_enumerator LOGIN state — five-way signals: provision + idempotent + routine-untouched + explicit deprovision', async () => {
     const ROLE = 'govai_evidence_enumerator';
-    // startPostgres migrated WITHOUT the enumerator password ⇒ NOLOGIN (unprovisioned).
+    // startPostgres migrated with NO enumerator signal ⇒ role CREATED NOLOGIN, then cell 3
+    // (no signal) leaves it untouched ⇒ NOLOGIN.
     expect(await rolcanlogin(ROLE)).toBe(false);
-    // Absent GUC on a second run ⇒ stays NOLOGIN (absent×2 idempotent).
+    // No signal on a second run ⇒ still untouched (idempotent) ⇒ NOLOGIN.
     await migrate(db.adminUrl, db.appPassword);
     expect(await rolcanlogin(ROLE)).toBe(false);
-    // GUC present ⇒ provisioned LOGIN (absent→present transition).
+    // Password present ⇒ provisioned LOGIN (provision transition).
     await migrate(db.adminUrl, db.appPassword, db.enumeratorPassword);
     expect(await rolcanlogin(ROLE)).toBe(true);
-    // GUC present on a second run ⇒ stays LOGIN (present×2 idempotent).
+    // Password present on a second run ⇒ stays LOGIN (rotate / idempotent).
     await migrate(db.adminUrl, db.appPassword, db.enumeratorPassword);
     expect(await rolcanlogin(ROLE)).toBe(true);
-    // (d) present→absent (FIXUP4 deprovision-on-absent): a GUC-less re-run of a PROVISIONED
-    // role NOLOGINs it and clears the password — the GUC is the single source of truth.
+    // ★ Cell 3 on a PROVISIONED role (the footgun fix): a routine migration with NO password and
+    // NO deprovision signal LEAVES the role LOGIN — omission no longer deprovisions.
     await migrate(db.adminUrl, db.appPassword);
+    expect(await rolcanlogin(ROLE)).toBe(true);
+    // Cell 4 — an EXPLICIT deprovision (DEPROVISION=1, no password) NOLOGINs it. The password +
+    // deprovision GUC pair is the single source of truth; disabling now requires the explicit signal.
+    await migrate(db.adminUrl, db.appPassword, undefined, '1');
     expect(await rolcanlogin(ROLE)).toBe(false);
   });
 
