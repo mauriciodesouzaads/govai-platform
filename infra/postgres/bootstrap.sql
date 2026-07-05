@@ -58,6 +58,77 @@ CREATE SCHEMA IF NOT EXISTS govai AUTHORIZATION govai_audit_writer;
 
 GRANT USAGE ON SCHEMA govai TO govai_app;
 
+-- Role: govai_evidence_enumerator (EP-EVIDENCE-GAUGE-WIRING).
+-- Least-privilege enumerate-only identity for the evidence gauge source: its ENTIRE
+-- capability is SELECT on govai.orgs (granted in migration 0028). It can read no
+-- evidence, execute no function, and write nothing (INV-1: no single database
+-- identity holds both "enumerate all orgs" and "read evidence").
+-- ★ Deliberate asymmetry vs govai_app: govai_app is MANDATORY and FAILS loudly
+-- without its password; the enumerator is an OPTIONAL feature, so it is created
+-- NOLOGIN and stays unreachable until explicitly provisioned. LOGIN and PASSWORD are
+-- granted TOGETHER, atomically, only when the GUC `govai.evidence_enumerator_password`
+-- is present — there is NO password-less LOGIN state at any point (so an unprovisioned
+-- role is unreachable under every pg_hba auth mode), and the GUC's absence never breaks
+-- an existing `migrate` run.
+DO $$
+BEGIN
+  CREATE ROLE govai_evidence_enumerator NOINHERIT NOLOGIN;
+EXCEPTION
+  WHEN duplicate_object THEN
+    RAISE NOTICE 'role govai_evidence_enumerator already exists, skipping';
+END
+$$;
+
+GRANT USAGE ON SCHEMA govai TO govai_evidence_enumerator;
+
+-- Five-way lifecycle state machine (EP-EVIDENCE-GAUGE-WIRING CREDENTIAL-LIFECYCLE-RUNNER).
+-- Two INDEPENDENT signals drive the LOGIN state: the password GUC
+-- `govai.evidence_enumerator_password` and an EXPLICIT deprovision GUC
+-- `govai.evidence_enumerator_deprovision` (sole accepted value '1'). There is NO magic
+-- password sentinel — an ABSENT password no longer means "deprovision" (that footgun let a
+-- routine schema migration silently drop the gauges by omission). The five cells:
+--   1. password present (>= 8), no deprovision  → LOGIN PASSWORD  (provision / rotate)
+--   2. password present AND deprovision = '1'    → RAISE           (conflicting intent)
+--   3. no password, no deprovision               → LEAVE UNTOUCHED (routine migration)
+--   4. no password, deprovision = '1'            → NOLOGIN PASSWORD NULL (declarative disable)
+--   5. deprovision set to anything but '1'        → RAISE           (invalid signal)
+-- The migration runner enforces cells 2 and 5 (fail-loud) BEFORE it calls this file, and runs
+-- the post-commit session sweep for cell 4. This block is the SAME machine, enforced in-DB, so
+-- a direct bootstrap run (bypassing the runner) is equally safe. ★ NO pg_terminate_backend
+-- here: the whole file runs as ONE implicit transaction, so pre-commit it is inert for the
+-- reconnect race (nothing here is visible to another session until the file COMMITS). The
+-- session sweep therefore lives in the runner, AFTER c.query(bootstrap) returns (the commit).
+DO $$
+DECLARE
+  v_password text := current_setting('govai.evidence_enumerator_password', true);
+  v_deprovision text := current_setting('govai.evidence_enumerator_deprovision', true);
+  v_has_password boolean := v_password IS NOT NULL AND v_password <> '';
+  v_deprovision_set boolean := v_deprovision IS NOT NULL AND v_deprovision <> '';
+BEGIN
+  IF v_deprovision_set AND v_deprovision <> '1' THEN
+    -- Cell 5: an explicit deprovision signal must be exactly '1'.
+    RAISE EXCEPTION 'govai.evidence_enumerator_deprovision must be unset, empty, or ''1'' (got ''%'').', v_deprovision;
+  ELSIF v_has_password AND v_deprovision_set THEN
+    -- Cell 2: provision and deprovision are mutually exclusive.
+    RAISE EXCEPTION 'conflicting enumerator lifecycle intent: a password AND deprovision=1 are both set; provide exactly one.';
+  ELSIF v_deprovision_set THEN
+    -- Cell 4: declarative disable (NOLOGIN + clear the verifier). NOLOGIN blocks ALL new
+    -- authentication once this file commits; the runner reaps live sessions post-commit.
+    ALTER ROLE govai_evidence_enumerator WITH NOLOGIN PASSWORD NULL;
+    RAISE NOTICE 'govai_evidence_enumerator deprovisioned (NOLOGIN, password cleared); the migration runner sweeps live sessions post-commit.';
+  ELSIF v_has_password THEN
+    -- Cell 1: provision / rotate. LOGIN and PASSWORD granted atomically; length < 8 fails loud.
+    IF length(v_password) < 8 THEN
+      RAISE EXCEPTION 'govai.evidence_enumerator_password must be >= 8 chars when set.';
+    END IF;
+    EXECUTE format('ALTER ROLE govai_evidence_enumerator WITH LOGIN PASSWORD %L', v_password);
+  ELSE
+    -- Cell 3: no signal ⇒ leave the role exactly as-is (a routine migration must not drop it).
+    RAISE NOTICE 'govai_evidence_enumerator unchanged (no password or deprovision signal).';
+  END IF;
+END
+$$;
+
 -- Migrator role recipe (executor das migrations da app):
 -- O usuário que rodar as migrations 0001+ precisa poder fazer SET ROLE govai_audit_writer.
 -- Em Testcontainers/dev: o superuser conecta e roda este script + as migrations diretamente.

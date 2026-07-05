@@ -25,6 +25,8 @@ import { workroomRunsRoute } from './routes/workroom-runs.js';
 import { workroomApprovalsRoute } from './routes/workroom-approvals.js';
 import { regulatoryRoute } from './routes/regulatory.js';
 import { registerRequestIdentityHook } from './pipeline/request-identity-hook.js';
+import { createEvidenceGaugeSource, enumerateAllOrgs } from './pipeline/evidence-operator.js';
+import { registerEvidenceGauges } from './pipeline/evidence-metrics.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -46,6 +48,14 @@ export type ServerOverrides = Partial<{
 export async function buildServer(overrides: ServerOverrides = {}): Promise<FastifyInstance> {
   const env = overrides.env ?? loadEnv(process.env);
   assertCorsSafeForProd(env);
+  // EP-EVIDENCE-GAUGE-WIRING FIXUP2: a loud, named boot failure when the app must build its
+  // own pool but DATABASE_URL is absent — restores diagnosability after FIXUP1 normalized
+  // ''→undefined (a missing/empty DATABASE_URL would otherwise silently reach createPool('')).
+  // Skipped when a pool is injected (tests). Deliberately NOT in loadEnv, whose legitimate
+  // partial-env callers (the U3 boot suite, the config unit test) pass no DATABASE_URL.
+  if (!overrides.pool && !env.DATABASE_URL) {
+    throw new BootError('DATABASE_URL is required');
+  }
   const kms = createKmsFromEnv(env);
 
   if (env.NODE_ENV === 'production') {
@@ -65,6 +75,20 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
     logger: { level: env.NODE_ENV === 'production' ? 'info' : 'debug' },
     disableRequestLogging: false,
   });
+
+  // FIXUP6 (class fix): absorb async pool 'error' events so a transient backend loss never
+  // throws-unhandled and kills the API. ONLY when the app OWNS the pool — an injected pool
+  // (tests) owns its own lifecycle. Attached here (not at the createPool line) because app.log
+  // does not exist until the Fastify app is created. Main-pool errors are an operational alarm
+  // (error) but still absorbed; the pool attempts its own reconnection.
+  if (!overrides.pool) {
+    pool.on('error', (err) => {
+      app.log.error(
+        { err, pool: 'app' },
+        'app database pool error (connection lost; pool will attempt recovery)',
+      );
+    });
+  }
 
   await app.register(helmet, { contentSecurityPolicy: false });
   const origins = originsFromCsv(env.API_CORS_ORIGINS);
@@ -91,6 +115,44 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   // OTEL_EXPORTER_OTLP_ENDPOINT: a no-op with the endpoint unset. Observe-only.
   const telemetry = startTelemetry(env, { serviceName: 'govai-api', logger: app.log });
 
+  // EP-EVIDENCE-GAUGE-WIRING: wire the govai_evidence_* gauges (EP-008D) into boot —
+  // gated identically to startTelemetry (OTEL endpoint) PLUS the enumerator URL, so with
+  // either unset boot is byte-identical. Must run AFTER startTelemetry (getMeter needs the
+  // global MeterProvider). INV-1: enumeration runs on a least-privilege enumerator pool;
+  // the per-org reads stay on the app `pool` under withTenant. Observe-only (the shipped
+  // batch callback try/catches). Handles are closed in onClose below.
+  let evidenceGauges: { unregister(): void } | null = null;
+  let enumeratorPool: Pool | null = null;
+  if (telemetry.enabled && env.GOVAI_EVIDENCE_ENUMERATOR_URL) {
+    enumeratorPool = createPool({ connectionString: env.GOVAI_EVIDENCE_ENUMERATOR_URL, max: 2 });
+    // FIXUP6 (class fix): absorb the enumerator pool's async 'error' (e.g. FIXUP5's
+    // deprovision-terminate kills its backends) — observe-only stays observe-only, never
+    // throws-unhandled. Non-fatal: gauge collection pauses until reprovision/restart.
+    enumeratorPool.on('error', (err) => {
+      app.log.warn(
+        { err, pool: 'evidence_enumerator' },
+        'enumerator pool error (non-fatal; gauge collection may pause until reprovision/restart)',
+      );
+    });
+    const scope = {
+      windowSeconds: env.EVIDENCE_DEFAULT_WINDOW_SECONDS,
+      tSealSeconds: env.EVIDENCE_T_SEAL_SECONDS,
+    };
+    const source = createEvidenceGaugeSource({
+      pool,
+      scope,
+      enumerate: enumerateAllOrgs,
+      enumeratePool: enumeratorPool,
+    });
+    evidenceGauges = registerEvidenceGauges(source);
+    app.log.info({ evidence_gauges: 'registered' });
+  } else {
+    app.log.info({
+      evidence_gauges: 'disabled',
+      reason: !telemetry.enabled ? 'otel_endpoint_unset' : 'enumerator_url_unset',
+    });
+  }
+
   await app.register(healthRoute);
   await app.register(capabilitiesRoute);
   await app.register(runsRoute);
@@ -114,9 +176,11 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(regulatoryRoute);
 
   app.addHook('onClose', async () => {
-    await telemetry.shutdown().catch(() => undefined);
+    evidenceGauges?.unregister(); // (1) remove the batch callback before provider shutdown (sync)
+    await telemetry.shutdown().catch(() => undefined); // (2) existing, unchanged
+    await enumeratorPool?.end().catch(() => undefined); // (3) created locally ⇒ no overrides guard
     if (!overrides.pool) {
-      await pool.end().catch(() => undefined);
+      await pool.end().catch(() => undefined); // (4) existing guarded close, unchanged
     }
   });
 

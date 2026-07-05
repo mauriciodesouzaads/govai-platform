@@ -6,15 +6,14 @@ emit (via `@govai/observability` `startTelemetry`, gated on
 counters (EP-008B) and the sealer's ADR-025 instruments become **observable** in
 Prometheus/Grafana.
 
-> ⚠️ **Not emitted by app boot yet: the `govai_evidence_*` gauges (EP-008D).** Their
-> registration plumbing (`registerEvidenceGauges` / `createEvidenceGaugeSource`) and
-> per-org source ship, but **no `apps/api` boot path registers them** — the cross-org
-> emission needs an operator-privileged pool that sees all orgs, and `apps/api`
-> constructs only the `govai_app` pool (RLS-scoped to one org). Wiring them into boot
-> is a **follow-up EP**. Until then, setting `OTEL_EXPORTER_OTLP_ENDPOINT` yields the
-> audit-bridge counters + sealer instruments, **not** `govai_evidence_*` series. (The
-> `pnpm test:obs` live test exercises the gauge transport by registering the source
-> itself — see §4.)
+> ✅ **The `govai_evidence_*` gauges (EP-008D) now emit per-org from app boot** — set
+> BOTH `OTEL_EXPORTER_OTLP_ENDPOINT` AND `GOVAI_EVIDENCE_ENUMERATOR_URL` (the
+> least-privilege enumerate-only role; provision it via `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD`,
+> see `.env.example`). With either unset, the wiring is fully off and boot is
+> byte-identical. Enumeration runs on the operator-privileged `govai_evidence_enumerator`
+> pool (whose entire capability is `SELECT` on `govai.orgs`); every per-org read stays on
+> the `govai_app` pool under `withTenant` — no single database identity holds both
+> enumerate and read (INV-1).
 
 Everything here is **additive and local**. No provider spend is involved.
 
@@ -42,23 +41,50 @@ Grafana refuse-if-missing secret; only bringing up this file requires `GRAFANA_A
 
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   # exporter POSTs to /v1/metrics
+# For the per-org govai_evidence_* gauges, provision + point at the enumerator role.
+# Export this password to PROVISION/ROTATE the enumerator on `migrate`. Omitting it leaves the
+# role UNTOUCHED (a routine migration never drops the gauges); to DISABLE it, see the note below.
+#   Generate: openssl rand -hex 24 | xargs printf 'GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD=%s\n'
+export GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD=<generated-above>
+export GOVAI_EVIDENCE_ENUMERATOR_URL=postgres://govai_evidence_enumerator:<pw>@localhost:5432/govai
 docker compose -f infra/docker-compose.yml up -d postgres
 pnpm --filter @govai/api run migrate
 pnpm --filter @govai/api run dev
 ```
 
-With the endpoint set, `startTelemetry` registers the global MeterProvider and the
-periodic reader exports metrics; with it **unset** the boot is byte-identical and
-export is a no-op (the CI/default state).
+With `OTEL_EXPORTER_OTLP_ENDPOINT` set, `startTelemetry` registers the global
+MeterProvider and the periodic reader exports metrics; additionally, with
+`GOVAI_EVIDENCE_ENUMERATOR_URL` set the `govai_evidence_*` gauges register and emit
+per-org. With either **unset** the boot is byte-identical and export is a no-op (the
+CI/default state).
+
+> **Enumerator credential lifecycle (five-way, GUC-driven):** the LOGIN state on each `migrate`
+> is chosen by two INDEPENDENT signals — `GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD` and the explicit
+> `GOVAI_DB_EVIDENCE_ENUMERATOR_DEPROVISION` (sole accepted value `1`). There is no password
+> sentinel: an absent password no longer means "disable".
+> - **Provision / rotate:** export the password (no deprovision flag) → `LOGIN` with that password.
+> - **Routine migration:** neither signal → the role is **left untouched**; the gauges survive (a
+>   schema migration must never drop them by omission).
+> - **Disable (deprovision):** export `GOVAI_DB_EVIDENCE_ENUMERATOR_DEPROVISION=1` with **no**
+>   password and re-run `migrate` → the role is set `NOLOGIN` (password cleared), then the runner
+>   runs a post-commit bounded sweep of live enumerator sessions.
+> - Password **and** `DEPROVISION=1` together, or any deprovision value other than `1`, **fail loud**.
+>
+> Deprovision guarantees, precisely (do not overclaim):
+> - **Hard guarantee:** once `NOLOGIN` commits (the `migrate` call returns), **no fresh
+>   authentication** with the revoked credential can succeed.
+> - **Normal behavior:** the runner's post-commit sweep terminates already-live enumerator sessions.
+> - **Exception:** if the bounded sweep reaches its cap it logs a `WARNING` and continues (it never
+>   fails the migration — the role is already `NOLOGIN`); re-run the deprovision or restart the API
+>   to reap any remaining pre-existing sessions.
 
 ## 3. See the metrics
 
 - Grafana: <http://localhost:3000> (admin / `$GRAFANA_ADMIN_PASSWORD`) →
   dashboard **"GovAI — Evidence & Audit-Bridge Telemetry"**.
 - Prometheus directly: <http://localhost:9090> → `govai_audit_bridge_drops_total`,
-  `govai_audit_bridge_captures_total`, etc. (the `govai_evidence_*` gauges are **not**
-  emitted by app boot yet — see the note above; a follow-up EP wires them, and the
-  dashboard's evidence panels stay empty until then.)
+  `govai_audit_bridge_captures_total`, and — with `GOVAI_EVIDENCE_ENUMERATOR_URL` set —
+  the per-org `govai_evidence_*` gauges (`govai_evidence_coverage_ratio`, etc.).
 
 ## 4. Prove it end-to-end (ZERO provider spend)
 
@@ -74,12 +100,15 @@ It seeds a known outbox shape + a known drop snapshot, `forceFlush`es the export
 then asserts the value queried back out of the Prometheus HTTP API equals the seeded
 value for a `govai_evidence_*` gauge and `govai_audit_bridge_{drops,captures}_total`.
 
-> What Part 2 proves — and what it does not: the `govai_audit_bridge_*` **counters**
-> go through the real shipped app path (`createOtelAuditBridgeMetrics`). The
-> `govai_evidence_*` **gauges** are registered by the **test itself**
-> (`registerEvidenceGauges` with a per-org source), because no app boot path registers
-> them yet — so Part 2 validates the gauge **transport + shape** end-to-end, not that
-> the running app emits them. App-boot wiring is the follow-up EP noted at the top.
+> What Part 2 proves — and what it does not: the `govai_audit_bridge_*` **counters** go
+> through the real shipped app path (`createOtelAuditBridgeMetrics`). The `govai_evidence_*`
+> **gauges** are now registered by the **real app boot** as well — whenever both
+> `OTEL_EXPORTER_OTLP_ENDPOINT` and `GOVAI_EVIDENCE_ENUMERATOR_URL` are set (§2). `test:obs`
+> does not rely on that boot path: it registers its **own test-controlled** gauge source
+> (`registerEvidenceGauges` over a fixed per-org source), seeds a known value, and asserts the
+> exact number queried back out of the Prometheus HTTP API. So Part 2 validates the gauge
+> **transport + shape + query-back** end-to-end on deterministic data — zero provider spend, no
+> dependency on a real provider or database — rather than asserting the running app's own emission.
 
 > The OPTIONAL, budget-capped (<< $0.01), CI-excluded real-provider check that proves
 > the real capture path feeds the same telemetry is gated behind

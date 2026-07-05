@@ -31,7 +31,14 @@ const SCOPE: ReportScope = { windowSeconds: 86_400, tSealSeconds: 0 };
 
 // The three evidence-plane roles whose NOBYPASSRLS posture the catalog guard
 // verifies (the attribute lives in the unread bootstrap.sql).
-const EVIDENCE_PLANE_ROLES = ['govai_app', 'govai_audit_writer', 'govai_audit_sealer'] as const;
+const EVIDENCE_PLANE_ROLES = [
+  'govai_app',
+  'govai_audit_writer',
+  'govai_audit_sealer',
+  // EP-EVIDENCE-GAUGE-WIRING (INV-1): the least-privilege enumerate-only role — covered by
+  // the NOBYPASSRLS assertion below like every other evidence-plane role.
+  'govai_evidence_enumerator',
+] as const;
 const CAPTURE_BASE_TABLES = [
   'audit_capture_outbox',
   'audit_capture_chain_state',
@@ -196,14 +203,47 @@ describe('§4.3(e) — catalog guard incl. the NOBYPASSRLS precondition', () => 
     }
   });
 
-  it('EP-008D added NO new role (no operator/evidence role exists)', async () => {
+  // INVARIANT TRANSITION: EP-008D shipped NO operator role (per-org accumulation).
+  // EP-EVIDENCE-GAUGE-WIRING replaces that with INV-1 — EXACTLY ONE evidence-namespace
+  // role, govai_evidence_enumerator, whose entire capability is enumerate-only (SELECT on
+  // govai.orgs) and which holds NO privilege on the evidence read-set. (spec rev1 §2/§4.)
+  it('EP-EVIDENCE-GAUGE-WIRING adds EXACTLY ONE evidence role — enumerate-only, no read privilege (INV-1)', async () => {
     const c = await stack.db.adminPool.connect();
     try {
-      const r = await c.query<{ rolname: string }>(
+      const roles = await c.query<{ rolname: string }>(
         `SELECT rolname FROM pg_roles
-          WHERE rolname LIKE 'govai_evidence%' OR rolname ILIKE '%operator%'`,
+          WHERE rolname LIKE 'govai_evidence%' OR rolname ILIKE '%operator%'
+          ORDER BY rolname`,
       );
-      expect(r.rows).toHaveLength(0);
+      expect(roles.rows.map((r) => r.rolname)).toEqual(['govai_evidence_enumerator']);
+
+      // INV-1 at the catalog level: no SELECT privilege on any evidence read-set object.
+      const READ_SET = [
+        'govai.audit_capture_outbox',
+        'govai.audit_events',
+        'govai.provider_invocations',
+        'govai.evidence_capture_completeness',
+        'govai.evidence_chain_backlog',
+        'govai.evidence_provider_without_audit',
+      ];
+      for (const obj of READ_SET) {
+        const p = await c.query<{ has: boolean }>(
+          `SELECT has_table_privilege('govai_evidence_enumerator', $1, 'SELECT') AS has`,
+          [obj],
+        );
+        expect(p.rows[0]?.has).toBe(false);
+      }
+
+      // Column-scope (FIXUP2): NO table-level SELECT on govai.orgs, but SELECT on the id
+      // column — "org UUIDs and nothing more" is literal.
+      const orgsTbl = await c.query<{ has: boolean }>(
+        `SELECT has_table_privilege('govai_evidence_enumerator', 'govai.orgs', 'SELECT') AS has`,
+      );
+      expect(orgsTbl.rows[0]?.has).toBe(false);
+      const orgsId = await c.query<{ has: boolean }>(
+        `SELECT has_column_privilege('govai_evidence_enumerator', 'govai.orgs', 'id', 'SELECT') AS has`,
+      );
+      expect(orgsId.rows[0]?.has).toBe(true);
     } finally {
       c.release();
     }

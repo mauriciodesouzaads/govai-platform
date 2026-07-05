@@ -17,6 +17,11 @@ const EnvSchema = z.object({
 
   DATABASE_URL: z.string().min(1).optional(),
   DATABASE_ADMIN_URL: z.string().min(1).optional(),
+  // EP-EVIDENCE-GAUGE-WIRING: optional connection string for the least-privilege
+  // govai_evidence_enumerator role (enumerate-only — SELECT on govai.orgs, nothing
+  // else). When unset, the evidence-gauge boot wiring is fully off (server.ts). This
+  // is NEVER the app or admin credential; leaking it enumerates org UUIDs and nothing more.
+  GOVAI_EVIDENCE_ENUMERATOR_URL: z.string().min(1).optional(),
   REDIS_URL: z.string().min(1).optional(),
 
   API_PORT: z.coerce.number().int().min(1).max(65535).default(8080),
@@ -70,7 +75,28 @@ export class BootError extends Error {
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): GovAIEnv {
-  const parsed = EnvSchema.safeParse(source);
+  // Empty-as-unset is a property of designated OFF-SWITCHES, not a global env-contract
+  // change: for the allowlisted optional off-switches/overrides below, an exported-empty
+  // value (a `.env` line `DATABASE_URL=` etc., the documented "off" idiom) reads as "unset".
+  // For EVERY other key — NODE_ENV, API_PORT, and all future keys — `''` reaches the schema
+  // and fails LOUD; an explicitly-provided invalid value must never silently become a
+  // default (@codex 3522162726: NODE_ENV='' must not silently downgrade a production boot).
+  const EMPTY_MEANS_UNSET = new Set([
+    'DATABASE_URL',
+    'DATABASE_ADMIN_URL',
+    'REDIS_URL',
+    'GOVAI_EVIDENCE_ENUMERATOR_URL',
+    'OTEL_EXPORTER_OTLP_ENDPOINT',
+    'GOVAI_PROVIDER_BASE_URL',
+    // Listed to preserve the tSeal-0 kill: EVIDENCE_T_SEAL_SECONDS is
+    // .nonnegative().default(300), so an un-filtered '' would coerce to a SILENT 0.
+    'EVIDENCE_T_SEAL_SECONDS',
+    'EVIDENCE_DEFAULT_WINDOW_SECONDS',
+  ]);
+  const normalized = Object.fromEntries(
+    Object.entries(source).filter(([k, v]) => !(v === '' && EMPTY_MEANS_UNSET.has(k))),
+  );
+  const parsed = EnvSchema.safeParse(normalized);
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `${i.path.join('.')}: ${i.message}`)

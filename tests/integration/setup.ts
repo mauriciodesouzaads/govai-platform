@@ -1,5 +1,9 @@
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
+// EP-EVIDENCE-GAUGE-WIRING CREDENTIAL-LIFECYCLE-RUNNER: the SAME shared applier the production
+// runner uses (apps/api/src/db/migrate.ts) — imported, not re-implemented, so the two runners'
+// enumerator lifecycle (five-way gating + post-commit sweep) cannot drift.
+import { applyEnumeratorLifecycle } from '../../apps/api/src/db/migrate.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +23,12 @@ export type TestDb = {
   appPool: Pool;
   /** Per-container random password for govai_app — needed by tests that re-run migrate. */
   appPassword: string;
+  /** Per-container random password + URL for govai_evidence_enumerator (EP-EVIDENCE-
+   *  GAUGE-WIRING). The role is created NOLOGIN by default (unprovisioned); a test
+   *  provisions LOGIN by re-running migrate(adminUrl, appPassword, enumeratorPassword),
+   *  then connects via enumeratorUrl. */
+  enumeratorPassword: string;
+  enumeratorUrl: string;
   /**
    * Teardown coordination flag (issue #28). When true, expected Postgres
    * disconnect errors emitted by the pg client during testcontainer shutdown
@@ -98,7 +108,12 @@ export function installPostgresPoolShutdownGuard(
  * never relies on a hardcoded literal. Caller must use the same password when
  * connecting as the `govai_app` role afterward.
  */
-export async function migrate(adminConn: string, appPassword: string): Promise<void> {
+export async function migrate(
+  adminConn: string,
+  appPassword: string,
+  enumeratorPassword?: string,
+  enumeratorDeprovision?: string,
+): Promise<void> {
   if (!appPassword || appPassword.length < 8) {
     throw new Error('migrate: appPassword must be >= 8 chars');
   }
@@ -109,7 +124,17 @@ export async function migrate(adminConn: string, appPassword: string): Promise<v
     // Custom GUCs of the form `prefix.name` are session-scoped without prior config.
     await c.query(`SET govai.app_password = '${appPassword.replace(/'/g, "''")}'`);
     const bootstrap = await readFile(BOOTSTRAP_PATH, 'utf8');
-    await c.query(bootstrap);
+    // EP-EVIDENCE-GAUGE-WIRING CREDENTIAL-LIFECYCLE-RUNNER: identical enumerator lifecycle to
+    // the production runner — the SAME applyEnumeratorLifecycle (five-way gating + post-commit
+    // sweep on deprovision). Mirrors migrate.ts by SHARING the function, not copying it.
+    await applyEnumeratorLifecycle(
+      c,
+      { password: enumeratorPassword, deprovision: enumeratorDeprovision },
+      async () => {
+        await c.query(bootstrap);
+      },
+      (m) => console.warn(m),
+    );
     const files = (await readdir(MIGRATIONS_DIR))
       .filter((f) => f.endsWith('.sql'))
       .sort((a, b) => a.localeCompare(b));
@@ -140,6 +165,11 @@ export async function startPostgres(): Promise<TestDb> {
   // same way this fixture does.
   const appPassword = randomBytes(24).toString('hex');
   const appUrl = `postgres://govai_app:${encodeURIComponent(appPassword)}@${host}:${port}/govai`;
+  // EP-EVIDENCE-GAUGE-WIRING: generate the enumerator credential + URL, but do NOT
+  // provision LOGIN by default — the role stays NOLOGIN (production default + the I7
+  // unprovisioned state). A test provisions it by re-running migrate with this password.
+  const enumeratorPassword = randomBytes(24).toString('hex');
+  const enumeratorUrl = `postgres://govai_evidence_enumerator:${encodeURIComponent(enumeratorPassword)}@${host}:${port}/govai`;
 
   await migrate(adminUrl, appPassword);
 
@@ -153,7 +183,17 @@ export async function startPostgres(): Promise<TestDb> {
   installPostgresPoolShutdownGuard(adminPool, shuttingDown, 'admin');
   installPostgresPoolShutdownGuard(appPool, shuttingDown, 'app');
 
-  return { container, adminUrl, appUrl, adminPool, appPool, appPassword, shuttingDown };
+  return {
+    container,
+    adminUrl,
+    appUrl,
+    adminPool,
+    appPool,
+    appPassword,
+    enumeratorPassword,
+    enumeratorUrl,
+    shuttingDown,
+  };
 }
 
 export async function stopPostgres(db: TestDb): Promise<void> {

@@ -82,3 +82,59 @@ describe('config / AWS KMS env vars', () => {
     expect(() => loadEnv({ ...awsBase, KMS_DEV_SEED: 'a'.repeat(64) })).toThrow(BootError);
   });
 });
+
+describe('config / empty-env normalization (absent === empty) — EP-EVIDENCE-GAUGE-WIRING FIXUP1', () => {
+  it('normalizes exported-empty vars to unset so the documented off-state boots', () => {
+    // .env.example ships these empty (DATABASE_URL=, GOVAI_EVIDENCE_ENUMERATOR_URL=, …); an
+    // exported-empty var must read as "unset", not '' (which a .min(1) schema would reject).
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      DATABASE_URL: '',
+      DATABASE_ADMIN_URL: '',
+      GOVAI_EVIDENCE_ENUMERATOR_URL: '',
+      OTEL_EXPORTER_OTLP_ENDPOINT: '',
+    });
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.DATABASE_ADMIN_URL).toBeUndefined();
+    expect(env.GOVAI_EVIDENCE_ENUMERATOR_URL).toBeUndefined();
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
+  });
+
+  it('an empty ALLOWLISTED coerce-key falls back to its default (tSeal-0 kill preserved)', () => {
+    // FIXUP3: API_PORT removed — it is NOT an allowlisted off-switch, so API_PORT='' now
+    // fails loud (asserted in the FIXUP3 describe below). The EVIDENCE_* keys stay listed
+    // so their '' does not resurrect a silent 0 / an invalid window.
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      EVIDENCE_T_SEAL_SECONDS: '',
+      EVIDENCE_DEFAULT_WINDOW_SECONDS: '',
+    });
+    expect(env.EVIDENCE_T_SEAL_SECONDS).toBe(300);
+    expect(env.EVIDENCE_DEFAULT_WINDOW_SECONDS).toBe(86_400);
+  });
+
+  it('a present non-empty value still validates (min(1) intact)', () => {
+    const env = loadEnv({
+      NODE_ENV: 'test',
+      DATABASE_URL: 'postgres://u:p@localhost:5432/govai',
+      GOVAI_EVIDENCE_ENUMERATOR_URL: 'postgres://govai_evidence_enumerator:pw@localhost:5432/govai',
+    });
+    expect(env.DATABASE_URL).toBe('postgres://u:p@localhost:5432/govai');
+    expect(env.GOVAI_EVIDENCE_ENUMERATOR_URL).toBe(
+      'postgres://govai_evidence_enumerator:pw@localhost:5432/govai',
+    );
+  });
+});
+
+describe('config / empty-as-unset is ALLOWLISTED — non-off-switches fail loud (FIXUP3)', () => {
+  it('NODE_ENV="" FAILS loudly naming NODE_ENV (must not silently downgrade a prod boot)', () => {
+    // The regression cell: NODE_ENV is enum-with-default; before FIXUP1, '' failed loud;
+    // the FIXUP1 blanket filter downgraded it to the 'development' default (all prod guards
+    // off); FIXUP3 restores the loud failure — NODE_ENV is not an allowlisted off-switch.
+    expect(() => loadEnv({ NODE_ENV: '' })).toThrow(/NODE_ENV/);
+  });
+
+  it('a non-allowlisted coerce key (API_PORT="") fails loudly (strict contract restored)', () => {
+    expect(() => loadEnv({ NODE_ENV: 'test', API_PORT: '' })).toThrow(BootError);
+  });
+});

@@ -1,10 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { metrics } from '@opentelemetry/api';
+import { startTelemetry, type TelemetryHandle } from '@govai/observability';
 
 import {
   EVIDENCE_METRIC_NAMES,
   safeEvidenceLabels,
   areEvidenceLabelsSafe,
   summaryToGaugePoints,
+  registerEvidenceGauges,
 } from './evidence-metrics.js';
 import type { EvidenceSummary } from './evidence-reports.js';
 
@@ -112,5 +115,43 @@ describe('summaryToGaugePoints — reports → metrics bridge', () => {
       (p) => p.metric,
     );
     expect(metrics).toContain('nativeDropEstimate');
+  });
+});
+
+describe('registerEvidenceGauges — lifecycle (EP-EVIDENCE-GAUGE-WIRING I4)', () => {
+  let telemetry: TelemetryHandle;
+
+  beforeAll(() => {
+    // A real global MeterProvider (endpoint set ⇒ enabled). The export target is a dead
+    // port; collection still fires the batch callback (the export failure is swallowed).
+    telemetry = startTelemetry(
+      { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:39997' },
+      { serviceName: 'evidence-metrics-test' },
+    );
+  });
+
+  afterAll(async () => {
+    await telemetry?.shutdown().catch(() => undefined);
+  });
+
+  async function forceCollect(): Promise<void> {
+    const p = metrics.getMeterProvider() as unknown as { forceFlush?: () => Promise<void> };
+    await p.forceFlush?.().catch(() => undefined);
+  }
+
+  it('invokes the source on collection, and STOPS invoking it after unregister()', async () => {
+    expect(telemetry.enabled).toBe(true);
+    const source = vi.fn(() => [
+      { metric: 'coverageRatio' as const, value: 1, labels: { org_id: 'x' } },
+    ]);
+
+    const handle = registerEvidenceGauges(source, 'govai.evidence.test.i4');
+    await forceCollect();
+    expect(source).toHaveBeenCalled(); // registered ⇒ collected
+
+    handle.unregister();
+    source.mockClear();
+    await forceCollect();
+    expect(source).not.toHaveBeenCalled(); // unregistered ⇒ no further collection
   });
 });
