@@ -100,12 +100,15 @@ It seeds a known outbox shape + a known drop snapshot, `forceFlush`es the export
 then asserts the value queried back out of the Prometheus HTTP API equals the seeded
 value for a `govai_evidence_*` gauge and `govai_audit_bridge_{drops,captures}_total`.
 
-> What Part 2 proves — and what it does not: the `govai_audit_bridge_*` **counters**
-> go through the real shipped app path (`createOtelAuditBridgeMetrics`). The
-> `govai_evidence_*` **gauges** are registered by the **test itself**
-> (`registerEvidenceGauges` with a per-org source), because no app boot path registers
-> them yet — so Part 2 validates the gauge **transport + shape** end-to-end, not that
-> the running app emits them. App-boot wiring is the follow-up EP noted at the top.
+> What Part 2 proves — and what it does not: the `govai_audit_bridge_*` **counters** go
+> through the real shipped app path (`createOtelAuditBridgeMetrics`). The `govai_evidence_*`
+> **gauges** are now registered by the **real app boot** as well — whenever both
+> `OTEL_EXPORTER_OTLP_ENDPOINT` and `GOVAI_EVIDENCE_ENUMERATOR_URL` are set (§2). `test:obs`
+> does not rely on that boot path: it registers its **own test-controlled** gauge source
+> (`registerEvidenceGauges` over a fixed per-org source), seeds a known value, and asserts the
+> exact number queried back out of the Prometheus HTTP API. So Part 2 validates the gauge
+> **transport + shape + query-back** end-to-end on deterministic data — zero provider spend, no
+> dependency on a real provider or database — rather than asserting the running app's own emission.
 
 > The OPTIONAL, budget-capped (<< $0.01), CI-excluded real-provider check that proves
 > the real capture path feeds the same telemetry is gated behind
