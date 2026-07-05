@@ -30,6 +30,43 @@ services:
       timeout: 3s
       retries: 20
 
+  # EP-SEALER-DEPLOY: the B3 AuditSealer as a runnable deploy unit (self-contained esbuild bundle,
+  # `node dist/bundle.mjs`, non-root). NOTE: Postgres here is NOT auto-migrated (see the postgres
+  # note above) — run `pnpm --filter @govai/api run migrate` (with GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD
+  # set, to provision the enumerator) BEFORE the sealer can be healthy; until then the sealer stays
+  # alive but NOT ready (startup probe / org_discovery), by design.
+  audit-sealer:
+    build:
+      context: ..
+      dockerfile: apps/audit-sealer/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The sealer's OWN connection — the runner identity is a member of both phase roles
+      # (govai_audit_sealer + govai_app). Never the API request pool.
+      AUDIT_SEALER_DATABASE_URL: ${AUDIT_SEALER_DATABASE_URL:?AUDIT_SEALER_DATABASE_URL must be set (the sealer role connection); see .env.example}
+      # ★ RUNTIME org-discovery URL: connects AS the least-privilege govai_evidence_enumerator role
+      # (PR #115) to SELECT id FROM govai.orgs. This is a RUNTIME connection URL — NOT the
+      # migrate-time provision password GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD (which MANAGES the
+      # credential and must never be runtime config). Optional here; if unset, pin AUDIT_SEALER_ORG_IDS
+      # instead. With NEITHER set the sealer fails loud at boot (no silent empty discovery).
+      AUDIT_SEALER_ENUMERATOR_DATABASE_URL: ${AUDIT_SEALER_ENUMERATOR_DATABASE_URL:-}
+      AUDIT_SEALER_ORG_IDS: ${AUDIT_SEALER_ORG_IDS:-}
+      AUDIT_SEALER_HEALTH_FILE: /app/health/audit-sealer-health.json
+      # KMS: dev provider by default (GOVAI_KMS_PROVIDER=dev + KMS_DEV_SEED); production wires AWS KMS.
+      GOVAI_KMS_PROVIDER: ${GOVAI_KMS_PROVIDER:-dev}
+      KMS_DEV_SEED: ${KMS_DEV_SEED:?KMS_DEV_SEED must be set for the dev KMS provider; see .env.example}
+      # Optional OTLP telemetry — a no-op when unset.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    healthcheck:
+      # Reads the sealer's readiness health-file; healthy iff readiness.ready.
+      test: ["CMD", "node", "-e", "const j=JSON.parse(require('fs').readFileSync('/app/health/audit-sealer-health.json','utf8'));process.exit(j.readiness&&j.readiness.ready?0:1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
 # The observability stack (otel-collector + Prometheus + Grafana) lives in a SEPARATE
 # file — infra/docker-compose.observability.yml — so this file's `up postgres` never
 # evaluates the Grafana refuse-if-missing secret. See docs/runbooks/observability-local.md.

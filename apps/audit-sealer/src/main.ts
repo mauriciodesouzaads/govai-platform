@@ -4,10 +4,13 @@
 // startup probe leaves the runner not-ready (no crash-loop).
 
 import { loadEnv } from '@govai/config';
-import { createKmsFromEnv } from '@govai/core-identity';
+// Import KMS from the ./kms subpath, NOT the package index: the index re-exports api-keys, which
+// pulls the native `argon2` (a .node binding the sealer never uses). Narrowing to /kms keeps
+// argon2 out of the esbuild bundle entirely, so the deployable stays a clean, self-contained JS.
+import { createKmsFromEnv } from '@govai/core-identity/kms';
 import { startTelemetry } from '@govai/observability';
 import { loadSealerConfig } from './config.js';
-import { listOrgsFromEnv } from './org-discovery.js';
+import { resolveOrgDiscovery } from './org-discovery.js';
 import { createRunner } from './runner.js';
 import { createLogger } from './logging.js';
 
@@ -24,10 +27,16 @@ async function main(): Promise<void> {
   // between loadEnv and createRunner. Observe-only.
   const telemetry = startTelemetry(env, { serviceName: 'govai-audit-sealer', logger });
 
+  // EP-SEALER-DEPLOY: resolve the tenant-discovery source. DEFAULT = the DB via the enumerator
+  // runtime URL (closes the silent-drop); the AUDIT_SEALER_ORG_IDS CSV is an optional override.
+  // Throws SealerConfigError at boot if neither is configured (caught by main().catch → exit 1).
+  const discovery = resolveOrgDiscovery(config, process.env);
+  logger.info({ org_discovery_source: discovery.source }, 'audit_sealer: org discovery resolved');
+
   const runner = createRunner({
     config,
     kms,
-    listOrgs: listOrgsFromEnv(process.env),
+    listOrgs: discovery.listOrgs,
     logger,
   });
 
@@ -48,6 +57,7 @@ async function main(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, 'audit_sealer: shutting down — draining');
     await runner.stop();
+    await discovery.enumeratorPool?.end().catch(() => undefined); // close the discovery pool (DB source only)
     await telemetry.shutdown().catch(() => undefined);
     logger.info('audit_sealer: drained; exiting');
     process.exit(0);

@@ -10,6 +10,13 @@ import { z } from 'zod';
 
 const ConfigSchema = z.object({
   databaseUrl: z.string().min(1, 'AUDIT_SEALER_DATABASE_URL is required'),
+  // EP-SEALER-DEPLOY: the RUNTIME connection URL for org discovery AS the least-privilege
+  // govai_evidence_enumerator role (PR #115). This is a runtime connection config — NOT the
+  // migrate-time provision password (GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD, which manages the
+  // credential and is never referenced here). Optional: absent ⇒ discovery falls back to the
+  // AUDIT_SEALER_ORG_IDS CSV override (see org-discovery.resolveOrgDiscovery). Distinct from the
+  // sealer's own AUDIT_SEALER_DATABASE_URL, so it rotates independently and never shares a pool.
+  enumeratorDatabaseUrl: z.string().min(1).optional(),
   poolMax: z.number().int().positive(),
   workerId: z.string().min(1),
   healthFilePath: z.string().min(1),
@@ -62,6 +69,12 @@ function str(source: NodeJS.ProcessEnv, key: string, fallback: string): string {
   return raw === undefined || raw === '' ? fallback : raw;
 }
 
+/** Optional string env: undefined when unset or empty (so an unset URL stays optional). */
+function strOpt(source: NodeJS.ProcessEnv, key: string): string | undefined {
+  const raw = source[key];
+  return raw === undefined || raw === '' ? undefined : raw;
+}
+
 /**
  * Build the runner config from the environment. Throws `SealerConfigError` with
  * a payload-free message when invalid (missing DB URL, non-numeric override).
@@ -70,6 +83,7 @@ function str(source: NodeJS.ProcessEnv, key: string, fallback: string): string {
 export function loadSealerConfig(source: NodeJS.ProcessEnv = process.env): SealerConfig {
   const candidate = {
     databaseUrl: str(source, 'AUDIT_SEALER_DATABASE_URL', ''),
+    enumeratorDatabaseUrl: strOpt(source, 'AUDIT_SEALER_ENUMERATOR_DATABASE_URL'),
     poolMax: num(source, 'AUDIT_SEALER_POOL_MAX', 2),
     workerId: str(source, 'AUDIT_SEALER_WORKER_ID', 'audit-sealer-1'),
     healthFilePath: str(source, 'AUDIT_SEALER_HEALTH_FILE', '/tmp/audit-sealer-health.json'),

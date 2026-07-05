@@ -15,7 +15,7 @@
 // retries on a persistent error) and then emits the terminal-stall alert/metric.
 
 import type { Pool } from 'pg';
-import type { Kms } from '@govai/core-identity';
+import type { Kms } from '@govai/core-identity/kms';
 import {
   loadSealingCaptureForRecovery,
   buildAuditCaptureSealingEvent,

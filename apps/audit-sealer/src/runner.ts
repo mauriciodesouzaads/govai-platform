@@ -3,12 +3,13 @@
 // NOT-ready (liveness intact) rather than crash-looping.
 
 import type { Pool } from 'pg';
-import type { Kms } from '@govai/core-identity';
+import type { Kms } from '@govai/core-identity/kms';
+import { sanitizeSealerError } from '@govai/core-audit';
 import type { SealerConfig } from './config.js';
 import { createSealerPool } from './pool.js';
 import { validateStartup } from './startup-validation.js';
 import { startClaimLoop, type ClaimLoopHandle } from './claim-loop.js';
-import { HealthState } from './health.js';
+import { HealthState, withDiscoveryHealth } from './health.js';
 import { createHealthFilePublisher, type HealthFilePublisher } from './health-file.js';
 import { createOtelSealerMetrics, type SealerMetrics } from './metrics.js';
 import { createLogger, type SealerLogger } from './logging.js';
@@ -47,6 +48,10 @@ export function createRunner(deps: RunnerDeps): Runner {
   });
   let loop: ClaimLoopHandle | null = null;
 
+  // EP-SEALER-DEPLOY: every discovery call (startup probe + loop) drives readiness fail-loud —
+  // a failure ⇒ readiness `org_discovery_failed`, a later success recovers. Republish on change.
+  const listOrgsTracked = withDiscoveryHealth(deps.listOrgs, health, () => healthFile.publish());
+
   return {
     health,
     async start(): Promise<StartResult> {
@@ -67,6 +72,17 @@ export function createRunner(deps: RunnerDeps): Runner {
         );
         return { started: false, ready: false };
       }
+      // EP-SEALER-DEPLOY: startup org-discovery probe — fail-loud but RECOVERABLE. A failure sets
+      // readiness `org_discovery_failed` (via the wrapper) yet does NOT crash or block the loop:
+      // the loop keeps retrying discovery and readiness recovers on the next success. No stale/
+      // empty set is sealed — a failed discovery throws before any org is scanned.
+      await listOrgsTracked().catch((err: unknown) => {
+        logger.error(
+          { err: sanitizeSealerError(err) },
+          'audit_sealer: startup org-discovery probe failed — readiness NOT ready (org_discovery_failed); loop will retry',
+        );
+      });
+      healthFile.publish();
       logger.info(
         { worker_id: deps.config.workerId },
         'audit_sealer: startup validated; starting claim loop',
@@ -77,13 +93,13 @@ export function createRunner(deps: RunnerDeps): Runner {
         config: deps.config,
         metrics,
         logger,
-        listOrgs: deps.listOrgs,
+        listOrgs: listOrgsTracked,
         onBacklogAlert: (healthy) => {
           health.setBacklogHealthy(healthy);
           healthFile.publish();
         },
       });
-      return { started: true, ready: true };
+      return { started: true, ready: health.readiness().ready };
     },
     async stop() {
       health.setLive(false);
