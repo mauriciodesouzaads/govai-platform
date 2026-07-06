@@ -85,4 +85,43 @@ describe('resolveOrgDiscovery — DB is the DEFAULT source; CSV is an explicit o
       SealerConfigError,
     );
   });
+
+  // FIXUP2 (@codex P2, org-discovery.ts:95): an override that PASSES the trim guard but parses to
+  // ZERO valid tokens is the silent-drop this EP closes — throw. Whitespace-only stays unset→DB.
+  it('FIXUP2: a delimiters-only override (","/",,,"/" , , ") parses to ZERO tokens ⇒ throws', () => {
+    for (const bad of [',', ',,,', ' , , ']) {
+      const makePool = vi.fn((_url: string) => fakePool([A]));
+      expect(() =>
+        resolveOrgDiscovery(
+          cfg('postgres://enum@localhost/govai'),
+          { AUDIT_SEALER_ORG_IDS: bad } as NodeJS.ProcessEnv,
+          makePool,
+        ),
+      ).toThrow(SealerConfigError);
+      expect(makePool).not.toHaveBeenCalled(); // it throws — never reaches DB / pool creation
+    }
+  });
+
+  it('FIXUP2: whitespace-only ("   ") is UNSET ⇒ DB discovery, NOT a throw (whitespace=unset policy)', () => {
+    const makePool = vi.fn((_url: string) => fakePool([A]));
+    const r = resolveOrgDiscovery(
+      cfg('postgres://enum@localhost/govai'),
+      { AUDIT_SEALER_ORG_IDS: '   ' } as NodeJS.ProcessEnv,
+      makePool,
+    );
+    expect(r.source).toBe('db');
+    expect(makePool).toHaveBeenCalled();
+  });
+
+  it('FIXUP2: a valid CSV override (>=1 UUID) still works — CSV source, no enumerator pool', () => {
+    const makePool = vi.fn((_url: string) => fakePool([A]));
+    const r = resolveOrgDiscovery(
+      cfg('postgres://enum@localhost/govai'),
+      { AUDIT_SEALER_ORG_IDS: A } as NodeJS.ProcessEnv,
+      makePool,
+    );
+    expect(r.source).toBe('csv');
+    expect(r.enumeratorPool).toBeUndefined();
+    expect(makePool).not.toHaveBeenCalled();
+  });
 });

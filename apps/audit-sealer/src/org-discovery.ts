@@ -91,8 +91,19 @@ export function resolveOrgDiscovery(
 ): ResolvedOrgDiscovery {
   const csv = env['AUDIT_SEALER_ORG_IDS'];
   if (csv !== undefined && csv.trim() !== '') {
-    // Explicit override. listOrgsFromEnv parses eagerly (throws on a malformed token at boot).
-    return { listOrgs: listOrgsFromEnv(env), source: 'csv' };
+    // Explicit override (whitespace-only "   " never reaches here — the .trim() guard routes it to
+    // DB discovery, the whitespace=unset policy). parseOrgIdsCsv throws on a malformed token; AND an
+    // override that PASSES the trim guard but yields ZERO valid tokens (delimiters-only: "," / ",,,"
+    // / " , , ") is a config error too — otherwise it silently resolves to zero orgs and, with the
+    // readiness gate, reports ready-while-blind (the exact silent-drop this EP closes).
+    const ids = parseOrgIdsCsv(csv);
+    if (ids.length === 0) {
+      throw new SealerConfigError(
+        `AUDIT_SEALER_ORG_IDS is set (${JSON.stringify(csv)}) but resolves to zero org ids ` +
+          '(only delimiters/empty segments). Provide at least one org UUID, or unset it to use DB discovery.',
+      );
+    }
+    return { listOrgs: async () => ids, source: 'csv' };
   }
   if (config.enumeratorDatabaseUrl) {
     const enumeratorPool = makePool(config.enumeratorDatabaseUrl);
