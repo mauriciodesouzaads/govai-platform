@@ -1,13 +1,16 @@
-// Org enumeration for the loop. The outbox is under FORCE RLS scoped by
-// app.org_id, so a cross-tenant "find all orgs with work" SELECT is not available
-// to the sealer role without a dedicated grant/view — which would be a migration
-// (out of scope for EP-006). The org list is therefore a CONFIG seam:
-// `AUDIT_SEALER_ORG_IDS` (CSV). The per-org loop itself is fully RLS-scoped. A
-// future EP may add a granted discovery view; until then deployment supplies the
-// tenant list. Tests inject `listOrgs` directly, so the loop logic is exercised
-// independently of this seam.
+// Org enumeration for the loop. The outbox is under FORCE RLS scoped by app.org_id, so a
+// cross-tenant "find all orgs" SELECT is not available to the SEALER role. EP-SEALER-DEPLOY
+// closes the silent-drop (a tenant left off a hand-maintained list would never get sealed, with
+// no alarm) by making the DEFAULT source the DATABASE, discovered AS the least-privilege
+// `govai_evidence_enumerator` role (PR #115: column-scoped `SELECT (id) ON govai.orgs`,
+// registry-wide `USING true` — INV-1: it reads only `orgs.id`, no evidence, no EXECUTE). The
+// enumerator connects via a RUNTIME URL (`AUDIT_SEALER_ENUMERATOR_DATABASE_URL`), NOT the
+// migrate-time provision password. The `AUDIT_SEALER_ORG_IDS` CSV remains an optional override
+// (testing/pinning). The per-org loop itself stays fully RLS-scoped under the sealer role. Tests
+// inject `listOrgs` directly, so the loop logic is exercised independently of this seam.
 
-import { SealerConfigError } from './config.js';
+import { Pool } from 'pg';
+import { SealerConfigError, type SealerConfig } from './config.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -37,4 +40,77 @@ export function listOrgsFromEnv(source: NodeJS.ProcessEnv = process.env): () => 
   // Parse eagerly so a malformed token fails at boot, not silently at first scan.
   const ids = parseOrgIdsCsv(source['AUDIT_SEALER_ORG_IDS'] ?? '');
   return async () => ids;
+}
+
+/**
+ * Discover the full tenant set from the SOURCE OF TRUTH (`govai.orgs`) via a pool connected AS
+ * the `govai_evidence_enumerator` role. INV-1: the enumerator's only capability is `SELECT (id)`,
+ * so this reads org UUIDs and nothing else. A query failure REJECTS (the caller drives readiness
+ * fail-loud from that — never a silent empty set).
+ */
+export function listOrgsFromDb(pool: Pool): () => Promise<string[]> {
+  return async () => {
+    const r = await pool.query<{ id: string }>('SELECT id::text AS id FROM govai.orgs ORDER BY id');
+    return r.rows.map((row) => row.id);
+  };
+}
+
+/** Create the dedicated least-privilege enumerator discovery pool (runtime URL, small, capped). */
+export function createEnumeratorPool(url: string): Pool {
+  const pool = new Pool({
+    connectionString: url,
+    max: 2,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+    application_name: 'govai-audit-sealer:discovery',
+  });
+  // FIXUP6 lesson (PR #115): every long-lived pool needs an 'error' listener, else a dropped idle
+  // connection surfaces as an unhandled error and crashes the process. The discovery QUERY path
+  // (listOrgsFromDb) is what drives readiness; this async listener just absorbs idle-conn errors.
+  pool.on('error', () => undefined);
+  return pool;
+}
+
+export interface ResolvedOrgDiscovery {
+  listOrgs: () => Promise<string[]>;
+  /** Present only for DB discovery — the caller (main) closes it on shutdown. */
+  enumeratorPool?: Pool;
+  source: 'csv' | 'db';
+}
+
+/**
+ * Resolve the org-discovery source. DEFAULT = the DB (via the enumerator runtime URL), so a tenant
+ * absent from a hand-maintained list can no longer be silently dropped. The `AUDIT_SEALER_ORG_IDS`
+ * CSV is honored ONLY when explicitly set (an override, for testing/pinning). With neither
+ * configured, FAIL LOUD at boot rather than silently discovering nothing.
+ */
+export function resolveOrgDiscovery(
+  config: SealerConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  makePool: (url: string) => Pool = createEnumeratorPool,
+): ResolvedOrgDiscovery {
+  const csv = env['AUDIT_SEALER_ORG_IDS'];
+  if (csv !== undefined && csv.trim() !== '') {
+    // Explicit override (whitespace-only "   " never reaches here — the .trim() guard routes it to
+    // DB discovery, the whitespace=unset policy). parseOrgIdsCsv throws on a malformed token; AND an
+    // override that PASSES the trim guard but yields ZERO valid tokens (delimiters-only: "," / ",,,"
+    // / " , , ") is a config error too — otherwise it silently resolves to zero orgs and, with the
+    // readiness gate, reports ready-while-blind (the exact silent-drop this EP closes).
+    const ids = parseOrgIdsCsv(csv);
+    if (ids.length === 0) {
+      throw new SealerConfigError(
+        `AUDIT_SEALER_ORG_IDS is set (${JSON.stringify(csv)}) but resolves to zero org ids ` +
+          '(only delimiters/empty segments). Provide at least one org UUID, or unset it to use DB discovery.',
+      );
+    }
+    return { listOrgs: async () => ids, source: 'csv' };
+  }
+  if (config.enumeratorDatabaseUrl) {
+    const enumeratorPool = makePool(config.enumeratorDatabaseUrl);
+    return { listOrgs: listOrgsFromDb(enumeratorPool), enumeratorPool, source: 'db' };
+  }
+  throw new SealerConfigError(
+    'org discovery is unconfigured: set AUDIT_SEALER_ENUMERATOR_DATABASE_URL (DB discovery as the ' +
+      'enumerator role — the default) or AUDIT_SEALER_ORG_IDS (an explicit CSV override).',
+  );
 }

@@ -6,6 +6,7 @@
   "main": "./src/main.ts",
   "scripts": {
     "build": "tsc -p .",
+    "build:bundle": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node24 --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\" --outfile=dist/bundle.mjs",
     "typecheck": "tsc -p . --noEmit",
     "dev": "tsx src/main.ts"
   },
@@ -24,6 +25,7 @@
     "@opentelemetry/sdk-metrics": "2.7.1",
     "@types/node": "24.10.0",
     "@types/pg": "8.15.6",
+    "esbuild": "0.27.7",
     "tsx": "4.21.0",
     "typescript": "5.9.3"
   }

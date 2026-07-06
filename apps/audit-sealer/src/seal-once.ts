@@ -8,7 +8,7 @@
 // never touches a `sealing` row (that is the SEPARATE stale-recovery path).
 
 import type { Pool } from 'pg';
-import type { Kms } from '@govai/core-identity';
+import type { Kms } from '@govai/core-identity/kms';
 import { sealNextAuditCapture, type SealNextAuditCaptureResult } from '@govai/core-audit';
 import { setLocalAppOrgId } from './tenant-context.js';
 import { makeWithSealerPhaseRole } from './phase-role.js';

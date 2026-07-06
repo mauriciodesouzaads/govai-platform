@@ -6,7 +6,7 @@
 // wraps it with idle/empty/error backoff + graceful drain.
 
 import type { Pool, PoolClient } from 'pg';
-import type { Kms } from '@govai/core-identity';
+import type { Kms } from '@govai/core-identity/kms';
 import { sanitizeSealerError } from '@govai/core-audit';
 import type { SealerConfig } from './config.js';
 import type { SealerMetrics } from './metrics.js';

@@ -1,9 +1,28 @@
-import { describe, it, expect } from 'vitest';
-import { parseOrgIdsCsv, listOrgsFromEnv } from './org-discovery.js';
-import { SealerConfigError } from './config.js';
+import { describe, it, expect, vi } from 'vitest';
+import type { Pool } from 'pg';
+import {
+  parseOrgIdsCsv,
+  listOrgsFromEnv,
+  listOrgsFromDb,
+  resolveOrgDiscovery,
+} from './org-discovery.js';
+import { SealerConfigError, loadSealerConfig, type SealerConfig } from './config.js';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
+
+/** A SealerConfig with a valid own-URL and an optional enumerator URL. */
+function cfg(enumeratorUrl?: string): SealerConfig {
+  return loadSealerConfig({
+    AUDIT_SEALER_DATABASE_URL: 'postgres://app@localhost/govai',
+    ...(enumeratorUrl ? { AUDIT_SEALER_ENUMERATOR_DATABASE_URL: enumeratorUrl } : {}),
+  } as NodeJS.ProcessEnv);
+}
+
+/** A fake Pool whose query returns the given org ids as { id } rows. */
+function fakePool(ids: string[]): Pool {
+  return { query: vi.fn(async () => ({ rows: ids.map((id) => ({ id })) })) } as unknown as Pool;
+}
 
 describe('parseOrgIdsCsv — FIX 3: a malformed token is a config error, not a silent drop', () => {
   it('returns the ids for a clean CSV', () => {
@@ -25,5 +44,84 @@ describe('parseOrgIdsCsv — FIX 3: a malformed token is a config error, not a s
     expect(() =>
       listOrgsFromEnv({ AUDIT_SEALER_ORG_IDS: `${A},bad` } as NodeJS.ProcessEnv),
     ).toThrow(SealerConfigError);
+  });
+});
+
+describe('listOrgsFromDb — read the full tenant set from govai.orgs (as the enumerator)', () => {
+  it('returns the org ids the query yields', async () => {
+    const pool = fakePool([A, B]);
+    expect(await listOrgsFromDb(pool)()).toEqual([A, B]);
+    expect(pool.query).toHaveBeenCalledWith(expect.stringMatching(/SELECT id.*FROM govai\.orgs/s));
+  });
+  it('propagates a query failure (so readiness can fail loud — never a silent empty set)', async () => {
+    const pool = { query: vi.fn(async () => { throw new Error('connect ECONNREFUSED'); }) } as unknown as Pool;
+    await expect(listOrgsFromDb(pool)()).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+describe('resolveOrgDiscovery — DB is the DEFAULT source; CSV is an explicit override', () => {
+  it('DEFAULT: no CSV, enumerator URL set ⇒ DB discovery (pool created from the runtime URL)', () => {
+    const makePool = vi.fn((_url: string) => fakePool([A]));
+    const r = resolveOrgDiscovery(cfg('postgres://enum@localhost/govai'), {} as NodeJS.ProcessEnv, makePool);
+    expect(r.source).toBe('db');
+    expect(r.enumeratorPool).toBeDefined();
+    expect(makePool).toHaveBeenCalledWith('postgres://enum@localhost/govai');
+  });
+
+  it('OVERRIDE: AUDIT_SEALER_ORG_IDS set ⇒ CSV source, enumerator pool NOT created (even if URL set)', () => {
+    const makePool = vi.fn((_url: string) => fakePool([A]));
+    const r = resolveOrgDiscovery(
+      cfg('postgres://enum@localhost/govai'),
+      { AUDIT_SEALER_ORG_IDS: `${A},${B}` } as NodeJS.ProcessEnv,
+      makePool,
+    );
+    expect(r.source).toBe('csv');
+    expect(r.enumeratorPool).toBeUndefined();
+    expect(makePool).not.toHaveBeenCalled();
+  });
+
+  it('FAIL LOUD: neither the enumerator URL nor the CSV ⇒ SealerConfigError at boot', () => {
+    expect(() => resolveOrgDiscovery(cfg(undefined), {} as NodeJS.ProcessEnv, vi.fn())).toThrow(
+      SealerConfigError,
+    );
+  });
+
+  // FIXUP2 (@codex P2, org-discovery.ts:95): an override that PASSES the trim guard but parses to
+  // ZERO valid tokens is the silent-drop this EP closes — throw. Whitespace-only stays unset→DB.
+  it('FIXUP2: a delimiters-only override (","/",,,"/" , , ") parses to ZERO tokens ⇒ throws', () => {
+    for (const bad of [',', ',,,', ' , , ']) {
+      const makePool = vi.fn((_url: string) => fakePool([A]));
+      expect(() =>
+        resolveOrgDiscovery(
+          cfg('postgres://enum@localhost/govai'),
+          { AUDIT_SEALER_ORG_IDS: bad } as NodeJS.ProcessEnv,
+          makePool,
+        ),
+      ).toThrow(SealerConfigError);
+      expect(makePool).not.toHaveBeenCalled(); // it throws — never reaches DB / pool creation
+    }
+  });
+
+  it('FIXUP2: whitespace-only ("   ") is UNSET ⇒ DB discovery, NOT a throw (whitespace=unset policy)', () => {
+    const makePool = vi.fn((_url: string) => fakePool([A]));
+    const r = resolveOrgDiscovery(
+      cfg('postgres://enum@localhost/govai'),
+      { AUDIT_SEALER_ORG_IDS: '   ' } as NodeJS.ProcessEnv,
+      makePool,
+    );
+    expect(r.source).toBe('db');
+    expect(makePool).toHaveBeenCalled();
+  });
+
+  it('FIXUP2: a valid CSV override (>=1 UUID) still works — CSV source, no enumerator pool', () => {
+    const makePool = vi.fn((_url: string) => fakePool([A]));
+    const r = resolveOrgDiscovery(
+      cfg('postgres://enum@localhost/govai'),
+      { AUDIT_SEALER_ORG_IDS: A } as NodeJS.ProcessEnv,
+      makePool,
+    );
+    expect(r.source).toBe('csv');
+    expect(r.enumeratorPool).toBeUndefined();
+    expect(makePool).not.toHaveBeenCalled();
   });
 });

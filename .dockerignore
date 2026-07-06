@@ -1,0 +1,11 @@
+# Docker build context hygiene (EP-SEALER-DEPLOY): the audit-sealer image builds with the repo
+# root as context (it needs the pnpm workspace to bundle the @govai/* deps). Exclude host-specific
+# and generated artifacts so the build is reproducible (pnpm install regenerates node_modules for
+# the image's platform) and the context stays small.
+**/node_modules
+.git
+**/dist
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+*.log
