@@ -5,17 +5,26 @@ import type { StartupValidationResult } from './startup-validation.js';
 
 const OK_STARTUP: StartupValidationResult = { ready: true, checks: [{ name: 'db_connectivity', ok: true }] };
 
-describe('HealthState — the discoveryHealthy dimension + reason precedence', () => {
-  it('a startup-validated sealer with healthy discovery + backlog is ready', () => {
+describe('HealthState — the discoveryHealthy / discoveryProbed dimensions + reason precedence', () => {
+  it('Fix 2: NOT ready before the first discovery probe resolves (org_discovery_pending, not ready-while-blind)', () => {
+    const h = new HealthState();
+    h.setStartup(OK_STARTUP); // startup passed, but discovery has not been probed yet
+    expect(h.readiness().ready).toBe(false);
+    expect(h.readiness().reason).toBe('org_discovery_pending');
+  });
+
+  it('a startup-validated sealer with a RESOLVED healthy discovery + backlog is ready', () => {
     const h = new HealthState();
     h.setStartup(OK_STARTUP);
+    h.setDiscoveryProbed(true);
     expect(h.readiness().ready).toBe(true);
     expect(h.readiness().reason).toBeUndefined();
   });
 
-  it('discovery unhealthy ⇒ NOT ready with reason org_discovery_failed', () => {
+  it('discovery probed but unhealthy ⇒ NOT ready with reason org_discovery_failed', () => {
     const h = new HealthState();
     h.setStartup(OK_STARTUP);
+    h.setDiscoveryProbed(true);
     h.setDiscoveryHealthy(false);
     expect(h.readiness().ready).toBe(false);
     expect(h.readiness().reason).toBe('org_discovery_failed');
@@ -24,6 +33,7 @@ describe('HealthState — the discoveryHealthy dimension + reason precedence', (
   it('recovers: a later healthy discovery flips readiness back to ready', () => {
     const h = new HealthState();
     h.setStartup(OK_STARTUP);
+    h.setDiscoveryProbed(true);
     h.setDiscoveryHealthy(false);
     h.setDiscoveryHealthy(true);
     expect(h.readiness().ready).toBe(true);
@@ -32,8 +42,17 @@ describe('HealthState — the discoveryHealthy dimension + reason precedence', (
   it('precedence: a failed startup probe outranks discovery (startup_probe_failed wins)', () => {
     const h = new HealthState();
     h.setStartup({ ready: false, checks: [{ name: 'set_role_govai_audit_sealer', ok: false }] });
+    h.setDiscoveryProbed(true);
     h.setDiscoveryHealthy(false);
     expect(h.readiness().reason).toBe('startup_probe_failed');
+  });
+
+  it('precedence: pending (not yet probed) outranks failed — a fresh sealer reads pending, not failed', () => {
+    const h = new HealthState();
+    h.setStartup(OK_STARTUP);
+    // discoveryProbed still false; even if discoveryHealthy were toggled, pending wins until probed
+    h.setDiscoveryHealthy(false);
+    expect(h.readiness().reason).toBe('org_discovery_pending');
   });
 });
 

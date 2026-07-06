@@ -493,6 +493,7 @@ describe('S10 — readiness semantics (sealer-scoped, provider unaffected)', () 
     const ok = await validateStartup(runnerPool);
     const healthOk = new HealthState();
     healthOk.setStartup(ok);
+    healthOk.setDiscoveryProbed(true); // Fix 2: readiness is not ready until the first discovery probe resolves
     const rOk = healthOk.readiness();
     expect(rOk.ready).toBe(true);
     expect(rOk.scope).toBe('audit-sealer');

@@ -36,6 +36,11 @@ services:
   # set, to provision the enumerator) BEFORE the sealer can be healthy; until then the sealer stays
   # alive but NOT ready (startup probe / org_discovery), by design.
   audit-sealer:
+    # FIXUP (PR #117 Fix 3): a `sealer` compose profile so `docker compose up -d postgres` never
+    # selects this service. Belt-and-suspenders with the optionalized (`:-`) sealer-only envs below
+    # — the repo already separates `:?` envs (the observability stack was moved to its own file for
+    # exactly this reason), so `${VAR:?}` is evaluated at compose-model-build even for `up postgres`.
+    profiles: ["sealer"]
     build:
       context: ..
       dockerfile: apps/audit-sealer/Dockerfile
@@ -43,9 +48,17 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # FIXUP (PR #117 Fix 1): NODE_ENV=development. The Dockerfile hard-sets NODE_ENV=production,
+      # but @govai/config loadEnv() THROWS in production when KMS_DEV_SEED is set or
+      # GOVAI_KMS_PROVIDER=dev — so the dev-KMS vars this local file injects would crash the
+      # container at boot. Compose `environment:` overrides the image ENV; under development both
+      # KMS guards are skipped. This compose is a local/dev file — development is the honest value.
+      NODE_ENV: development
       # The sealer's OWN connection — the runner identity is a member of both phase roles
-      # (govai_audit_sealer + govai_app). Never the API request pool.
-      AUDIT_SEALER_DATABASE_URL: ${AUDIT_SEALER_DATABASE_URL:?AUDIT_SEALER_DATABASE_URL must be set (the sealer role connection); see .env.example}
+      # (govai_audit_sealer + govai_app). Never the API request pool. Optionalized to `:-` (Fix 3)
+      # so `up -d postgres` doesn't require it; the sealer APP fails loud on a missing value at boot
+      # (config.ts: databaseUrl is z.string().min(1)) when the `sealer` profile is actually started.
+      AUDIT_SEALER_DATABASE_URL: ${AUDIT_SEALER_DATABASE_URL:-}
       # ★ RUNTIME org-discovery URL: connects AS the least-privilege govai_evidence_enumerator role
       # (PR #115) to SELECT id FROM govai.orgs. This is a RUNTIME connection URL — NOT the
       # migrate-time provision password GOVAI_DB_EVIDENCE_ENUMERATOR_PASSWORD (which MANAGES the
@@ -55,8 +68,10 @@ services:
       AUDIT_SEALER_ORG_IDS: ${AUDIT_SEALER_ORG_IDS:-}
       AUDIT_SEALER_HEALTH_FILE: /app/health/audit-sealer-health.json
       # KMS: dev provider by default (GOVAI_KMS_PROVIDER=dev + KMS_DEV_SEED); production wires AWS KMS.
+      # KMS_DEV_SEED optionalized to `:-` (Fix 3) so `up -d postgres` doesn't require it; when the
+      # `sealer` profile runs, loadEnv (under NODE_ENV=development) validates the KMS config at boot.
       GOVAI_KMS_PROVIDER: ${GOVAI_KMS_PROVIDER:-dev}
-      KMS_DEV_SEED: ${KMS_DEV_SEED:?KMS_DEV_SEED must be set for the dev KMS provider; see .env.example}
+      KMS_DEV_SEED: ${KMS_DEV_SEED:-}
       # Optional OTLP telemetry — a no-op when unset.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     healthcheck:

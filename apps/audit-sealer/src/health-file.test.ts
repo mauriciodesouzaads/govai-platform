@@ -35,6 +35,7 @@ describe('health-file publisher — FIX 1: readiness is EXPOSED (not in-memory o
   it('writes a READY surface when the probe passed', () => {
     const health = new HealthState();
     health.setStartup({ ready: true, checks: [] });
+    health.setDiscoveryProbed(true); // Fix 2: readiness is not ready until the first discovery probe resolves
     const pub = createHealthFilePublisher(health, { path });
     pub.publish();
     const surface = JSON.parse(readFileSync(path, 'utf8')) as { readiness: { ready: boolean } };

@@ -22,6 +22,12 @@ export class HealthState {
   // — the sealer is never "healthy while blind" to a tenant. Recoverable: a later success flips
   // it back true. Defaults true (CSV discovery, which never fails at runtime, stays healthy).
   private discoveryHealthy = true;
+  // FIXUP (PR #117 Fix 2): readiness must NOT report ready until the FIRST discovery probe has
+  // RESOLVED. `discoveryHealthy` defaults true, so without this gate readiness would publish
+  // ready:true in the window between the startup validation and the (up to ~10s) discovery probe
+  // — ready-while-blind. Starts false; the discovery wrapper sets it true on the first resolve
+  // (success OR failure), distinguishing "pending" from "failed". The CSV path resolves instantly.
+  private discoveryProbed = false;
 
   setLive(live: boolean): void {
     this.live = live;
@@ -39,26 +45,34 @@ export class HealthState {
     this.discoveryHealthy = healthy;
   }
 
+  setDiscoveryProbed(probed: boolean): void {
+    this.discoveryProbed = probed;
+  }
+
   liveness(): { live: boolean } {
     return { live: this.live };
   }
 
   readiness(): ReadinessReport {
     const probeReady = this.startup?.ready === true;
-    const ready = probeReady && this.discoveryHealthy && this.backlogHealthy;
+    const ready = probeReady && this.discoveryProbed && this.discoveryHealthy && this.backlogHealthy;
     const base: ReadinessReport = {
       ready,
       scope: 'audit-sealer',
       provider_native_unaffected: true,
     };
     if (ready) return base;
-    // Precedence: a failed startup probe is the most fundamental; then blind discovery; then
-    // backlog. `org_discovery_failed` is surfaced distinctly so the silent-drop is observable.
+    // Precedence: a failed startup probe is the most fundamental; then discovery not-yet-resolved
+    // (pending), then blind discovery (failed), then backlog. `org_discovery_pending` vs
+    // `org_discovery_failed` distinguishes "the first probe hasn't resolved" from "discovery is
+    // down" — both keep readiness false, so there is no ready-while-blind window.
     const reason = !probeReady
       ? 'startup_probe_failed'
-      : !this.discoveryHealthy
-        ? 'org_discovery_failed'
-        : 'backlog_critical';
+      : !this.discoveryProbed
+        ? 'org_discovery_pending'
+        : !this.discoveryHealthy
+          ? 'org_discovery_failed'
+          : 'backlog_critical';
     return {
       ...base,
       reason,
@@ -82,6 +96,7 @@ export function withDiscoveryHealth(
   let healthy: boolean | null = null; // null = unknown until the first call
   const set = (next: boolean): void => {
     health.setDiscoveryHealthy(next);
+    health.setDiscoveryProbed(true); // the probe RESOLVED (success or failure) — no longer pending
     if (healthy !== next) {
       healthy = next;
       onChange?.();
