@@ -7,7 +7,14 @@ export default defineConfig({
     include: [
       'packages/*/src/**/*.test.ts',
       'apps/*/src/**/*.test.ts',
-      'tests/integration/**/*.test.ts',
+      // EP-GATE-MECHANIZATION: wire GOVAI_INTEGRATION into a real gate at the ONLY layer that
+      // stops container startup. The integration files start their testcontainer from a top-level
+      // (module-scope) beforeAll, so a describe.skip wrapper would NOT prevent it — the hook runs
+      // at import. Excluding them from `include` when GOVAI_INTEGRATION is unset/empty means the
+      // modules are never collected, so no beforeAll runs and no Postgres container starts (fast,
+      // Docker-free unit-only `pnpm test`). `pnpm test:integration` sets GOVAI_INTEGRATION=1 and
+      // gets today's full suite.
+      ...(process.env['GOVAI_INTEGRATION'] ? ['tests/integration/**/*.test.ts'] : []),
     ],
     exclude: [
       '**/node_modules/**',

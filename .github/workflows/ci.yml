@@ -6,7 +6,9 @@ permissions:
   contents: read
   pull-requests: read
 jobs:
-  test:
+  # Fast feedback on every push + PR. No GOVAI_INTEGRATION ⇒ vitest excludes tests/integration/**
+  # (see vitest.config.ts) ⇒ Docker-free unit-only run.
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +26,39 @@ jobs:
       - run: pnpm test
       - name: re2 smoke
         run: pnpm --filter @govai/dlp-br run smoke:re2
+      # A2 §9(c)(ii): fail the check if any authorship/tool-attribution string appears in the PR's
+      # commit messages or body. base_ref + body are passed via env (never inlined) to avoid script
+      # injection from an untrusted PR body. PR-only (base_ref is empty on push).
+      - name: A2 forbidden-strings check
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git fetch origin "$BASE_REF" --depth=50 || true
+          pattern='co-authored-by|generated with claude|claude code|🤖|generated-with'
+          hit=0
+          if git log --format='%B' "origin/${BASE_REF}..HEAD" 2>/dev/null | grep -iEq "$pattern"; then
+            echo "::error::A2 violation — forbidden authorship/tool string in a commit message"; hit=1
+          fi
+          if printf '%s' "$PR_BODY" | grep -iEq "$pattern"; then
+            echo "::error::A2 violation — forbidden authorship/tool string in the PR body"; hit=1
+          fi
+          if [ "$hit" -eq 0 ]; then echo "A2 clean (commit messages + PR body)"; else exit 1; fi
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # The strong gate (branch protection requires this job on main): full suite with testcontainers
+  # Postgres. GOVAI_INTEGRATION=1 ⇒ vitest includes tests/integration/** (unit + integration).
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.33.2 }
+      - run: pnpm install --frozen-lockfile
+      - name: integration suite (testcontainers Postgres)
+        run: pnpm test:integration
