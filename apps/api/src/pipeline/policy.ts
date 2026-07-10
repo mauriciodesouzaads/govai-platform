@@ -24,17 +24,22 @@ export function decidePolicy(
   let kind: 'allow' | 'deny' | 'mutate' | 'ask' = 'allow';
   let needsRedaction = false;
 
+  // P0.1 P2-fix (Codex, PR #118): cada reason reporta a ação EFETIVA do
+  // próprio span (`f.action` = máximo sobre os detectores-membro), nunca a
+  // ação configurada do detector do rótulo vencedor — senão o registro de
+  // auditoria contradiz a ação tomada (um CPF nu negado por phone_br=deny
+  // reportaria "detect" do rótulo cpf). O enforcement já era efetivo via
+  // `highestAction`; isto alinha o REPORTING à decisão.
   if (dlp.highestAction === 'deny' && dlp.findings.length > 0) {
     kind = 'deny';
     for (const f of dlp.findings) {
-      reasons.push(`dlp.${f.detector}: action=deny match at index ${f.index}`);
+      reasons.push(`dlp.${f.detector}: action=${f.action} match at index ${f.index}`);
     }
   } else if (dlp.highestAction === 'redact' && dlp.findings.length > 0) {
     kind = 'mutate';
     needsRedaction = true;
     for (const f of dlp.findings) {
-      const action = dlp.configByDetector.get(f.detector) ?? 'detect';
-      reasons.push(`dlp.${f.detector}: action=${action} match at index ${f.index}`);
+      reasons.push(`dlp.${f.detector}: action=${f.action} match at index ${f.index}`);
     }
   } else if (dlp.findings.length > 0) {
     reasons.push(`dlp: ${dlp.findings.length} detection(s), no enforcement action`);
