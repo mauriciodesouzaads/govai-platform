@@ -18,7 +18,7 @@
 import { describe, it, expect } from 'vitest';
 import { scanSensitiveData, type DetectorFinding, type SensitiveDataFinding } from '@govai/dlp-br';
 import { decidePolicy } from './policy.js';
-import type { DlpScanResult } from './dlp.js';
+import { mergeWithActions, type DlpScanResult } from './dlp.js';
 
 const ctx = {
   capabilityId: 'anthropic.messages.create',
@@ -27,20 +27,24 @@ const ctx = {
 };
 
 function buildDlp(
-  findings: DetectorFinding[],
+  rawFindings: DetectorFinding[],
   config: Array<{ detector: string; action: 'detect' | 'redact' | 'deny' }>,
   sensitiveFindings?: SensitiveDataFinding[],
 ): DlpScanResult {
   const configByDetector = new Map<string, 'detect' | 'redact' | 'deny'>();
   for (const c of config) configByDetector.set(c.detector, c.action);
+  // F5/F6: o resultado real do scan carrega SPANS FUNDIDOS com ação efetiva;
+  // o helper roteia pela mesma API pública usada pelo dlpPreScan. Todos os
+  // casos deste arquivo usam achados disjuntos — a fusão é identidade aqui.
+  const findings = mergeWithActions(rawFindings, configByDetector);
   let highestAction: 'detect' | 'redact' | 'deny' = 'detect';
   const rank = { detect: 0, redact: 1, deny: 2 } as const;
   for (const f of findings) {
-    const a = configByDetector.get(f.detector) ?? 'detect';
-    if (rank[a] > rank[highestAction]) highestAction = a;
+    if (rank[f.action] > rank[highestAction]) highestAction = f.action;
   }
   return {
     findings,
+    rawFindings,
     configByDetector,
     highestAction,
     ...(sensitiveFindings ? { sensitiveFindings } : {}),

@@ -120,6 +120,49 @@ describe('Governed Run E2E', () => {
     expect(echo).toContain('REDACTED:email');
   });
 
+  it('E2E.3b — F5/F6: CPF nu (casa cpf+phone_br, action=redact) → UM marcador, zero dígitos, 1 linha em dlp_findings', async () => {
+    const org = await seedOrg(stack);
+    await setBaselineDlpAction(stack, org.org_id, 'cpf', 'redact');
+    const res = await inject(stack, 'POST', '/v1/runs', org.api_key, {
+      workspace_id: org.workspace_id,
+      capability: 'openai.responses.create',
+      model: 'gpt-fixture-1',
+      input: 'meu cpf 11144477735 ok',
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.body as {
+      run_id: string;
+      status: string;
+      policy_decision: { kind: string };
+      output: unknown;
+    };
+    expect(body.status).toBe('completed');
+    expect(body.policy_decision.kind).toBe('mutate');
+    // O span fundido (cpf+phone_br) vira UM marcador rotulado pelo detector de
+    // classe mais forte; nenhum dígito do CPF sobrevive; nada de phone_br.
+    const echo = JSON.stringify(body.output);
+    expect(echo).not.toContain('11144477735');
+    expect(echo).toContain('REDACTED:cpf');
+    expect(echo).not.toContain('REDACTED:phone_br');
+    expect((echo.match(/REDACTED:/g) ?? []).length).toBe(1);
+
+    // F6: a contagem persistida é por SPAN fundido — exatamente 1 linha, com a
+    // ação efetiva do span.
+    const c = await stack.db.appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await setLocalAppOrgId(c, org.org_id);
+      const rows = await c.query(
+        `SELECT detector_id, action, count FROM govai.dlp_findings WHERE run_id = $1::uuid`,
+        [body.run_id],
+      );
+      await c.query('COMMIT');
+      expect(rows.rows).toEqual([{ detector_id: 'cpf', action: 'redact', count: 1 }]);
+    } finally {
+      c.release();
+    }
+  });
+
   it('E2E.4 — cross-tenant: orgA run not visible to orgB GET /v1/audit-events', async () => {
     const orgA = await seedOrg(stack, 'orgA');
     const orgB = await seedOrg(stack, 'orgB');

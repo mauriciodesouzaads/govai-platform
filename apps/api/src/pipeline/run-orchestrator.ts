@@ -20,7 +20,7 @@ import type { Kms } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
 import { chainIdFor, type PassthroughInvoked } from '@govai/core-events';
 import type { GovAIEnv } from '@govai/config';
-import { detectAllBaseline } from '@govai/dlp-br';
+import { detectAllBaseline, mergeFindingSpans } from '@govai/dlp-br';
 import {
   handleAnthropicGovernedMessages,
   forwardRaw as forwardRawAnthropic,
@@ -448,12 +448,16 @@ const inMemoryDlpScan: AnthropicDlpScanFn & OpenAIDlpScanFn = async (text) => {
   // the time the body reaches the handler it is either redacted (no findings)
   // or accepted (findings emit a `dlp_decisions` audit entry but enforcement
   // already approved). The handler's own scan stays no-DB on this code path.
-  const findings = detectAllBaseline(text);
+  //
+  // F6: spans fundidos, não matches brutos — um CPF nu (casa cpf+phone_br)
+  // conta como UM achado de classe forte; `findings_count`/`finding_classes`
+  // do evento derivam daqui. A escalação de risco é invariante (a classe mais
+  // forte do span é preservada; o máximo decide).
+  const findings = mergeFindingSpans(detectAllBaseline(text));
   return {
     findings: findings.map((f) => ({
       detector: f.detector,
-      signal_class:
-        f.detector === 'cpf' || f.detector === 'cnpj' ? 'pii_strong' : 'pii_standard',
+      signal_class: f.signal_class,
     })),
   };
 };
@@ -558,17 +562,15 @@ export async function executeGovernedRun(
         };
       }
 
+      // F6: 1 linha por SPAN fundido (não por match bruto). `detector_id` é o
+      // rótulo vencedor do span; `action` é a ação EFETIVA do span (máximo
+      // sobre os detectores-membro — preserva um deny/redact configurado num
+      // detector que perdeu o rótulo).
       for (const f of dlp.findings) {
         await client.query(
           `INSERT INTO govai.dlp_findings (id, run_id, org_id, detector_id, detector_kind, count, action)
            VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, 'baseline', 1, $5::text)`,
-          [
-            randomUUID(),
-            runId,
-            identity.org_id,
-            f.detector,
-            dlp.configByDetector.get(f.detector) ?? 'detect',
-          ],
+          [randomUUID(), runId, identity.org_id, f.detector, f.action],
         );
       }
 

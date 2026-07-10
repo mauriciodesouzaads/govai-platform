@@ -9,7 +9,7 @@
 // handler's tenant context.
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { detectAllBaseline } from '@govai/dlp-br';
+import { detectAllBaseline, mergeFindingSpans } from '@govai/dlp-br';
 import {
   registerAnthropicGoverned,
   type AnthropicGovernedDeps,
@@ -60,12 +60,15 @@ export async function governedAnthropicRoute(app: FastifyInstance): Promise<void
   const dlpScan = async (
     text: string,
   ): Promise<{ findings: ReadonlyArray<{ detector: string; signal_class?: string }> }> => {
-    const findings = detectAllBaseline(text);
+    // F6: spans fundidos, não matches brutos — um CPF nu (casa cpf+phone_br)
+    // conta como UM achado; `findings_count`/`finding_classes` do evento
+    // derivam daqui. Sem mudança de comportamento: detecta-e-escala, não
+    // redige (a classe mais forte do span preserva a escalação).
+    const findings = mergeFindingSpans(detectAllBaseline(text));
     return {
       findings: findings.map((f) => ({
         detector: f.detector,
-        signal_class:
-          f.detector === 'cpf' || f.detector === 'cnpj' ? 'pii_strong' : 'pii_standard',
+        signal_class: f.signal_class,
       })),
     };
   };

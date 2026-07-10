@@ -121,3 +121,84 @@ export function detectPhoneBr(text: string): DetectorFinding[] {
 export function detectAllBaseline(text: string): DetectorFinding[] {
   return [...detectCpf(text), ...detectCnpj(text), ...detectEmail(text), ...detectPhoneBr(text)];
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// F5/F6 — span merge. `detectAllBaseline` concatena 4 detectores independentes
+// que podem casar o MESMO trecho (um CPF nu de 11 dígitos casa CPF_RE e
+// PHONE_BR_RE; um e-mail com CPF no local-part casa três). Redigir ou contar
+// sobre os matches BRUTOS corrompe o texto (F5) e infla contagens (F6).
+// `mergeFindingSpans` funde intervalos [index, index+length) que se sobrepõem
+// OU se tocam, produzindo spans DISJUNTOS — a única forma segura de redigir
+// e a unidade honesta de contagem (1 span = 1 achado).
+
+/** Subconjunto estrutural de DetectorFinding suficiente para o merge. */
+export type FindingSpan = { detector: string; index: number; length: number };
+
+/** Detectores baseline de classe forte (pii_strong). Em sincronia com o
+ *  fallback de `ddpClassifyDetector` (core-governance/resolve-governance). */
+export const BASELINE_STRONG_DETECTORS: ReadonlySet<string> = new Set(['cpf', 'cnpj']);
+
+export type MergedFinding = {
+  /**
+   * O rótulo VENCEDOR do span fundido (decisão de design F5): vence o detector
+   * de classe mais forte (pii_strong > pii_standard); empate dentro da classe
+   * → ordem alfabética. Determinístico por construção (independe da ordem de
+   * concatenação dos detectores).
+   */
+  detector: string;
+  /** Todos os detectores-membro do span (dedup, ordem alfabética). */
+  detectors: string[];
+  signal_class: 'pii_strong' | 'pii_standard';
+  index: number;
+  length: number;
+};
+
+/**
+ * Funde achados em spans disjuntos. Cobre aninhamento TOTAL (um intervalo
+ * contido no outro), sobreposição PARCIAL e intervalos que se TOCAM
+ * (fim de A == início de B). Entrada sem sobreposição → um span por achado,
+ * nas mesmas posições (identidade). Idempotente sobre a própria saída.
+ */
+export function mergeFindingSpans(findings: ReadonlyArray<FindingSpan>): MergedFinding[] {
+  if (findings.length === 0) return [];
+  const sorted = findings
+    .slice()
+    .sort(
+      (a, b) =>
+        a.index - b.index || b.length - a.length || a.detector.localeCompare(b.detector),
+    );
+
+  const out: MergedFinding[] = [];
+  let start = sorted[0]!.index;
+  let end = start + sorted[0]!.length;
+  let members = new Set<string>([sorted[0]!.detector]);
+
+  const flush = (): void => {
+    const detectors = [...members].sort();
+    const strong = detectors.filter((d) => BASELINE_STRONG_DETECTORS.has(d));
+    const winnerPool = strong.length > 0 ? strong : detectors;
+    out.push({
+      detector: winnerPool[0]!,
+      detectors,
+      signal_class: strong.length > 0 ? 'pii_strong' : 'pii_standard',
+      index: start,
+      length: end - start,
+    });
+  };
+
+  for (const f of sorted.slice(1)) {
+    const fEnd = f.index + f.length;
+    if (f.index <= end) {
+      // sobrepõe ou toca o span corrente → funde
+      if (fEnd > end) end = fEnd;
+      members.add(f.detector);
+    } else {
+      flush();
+      start = f.index;
+      end = fEnd;
+      members = new Set([f.detector]);
+    }
+  }
+  flush();
+  return out;
+}
