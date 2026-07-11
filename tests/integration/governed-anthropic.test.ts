@@ -118,6 +118,33 @@ describe('Batch G — /governed/anthropic/v1/messages', () => {
     expect((dlp[0]!['finding_classes'] as string[]).indexOf('cpf')).toBeGreaterThanOrEqual(0);
   });
 
+  it('F6 — CPF nu (casa cpf+phone_br) conta como UM span: findings_count=1, finding_classes=[cpf], escalação intacta', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/governed/anthropic/v1/messages',
+      headers: {
+        'content-type': 'application/json',
+        'x-govai-api-key': org.api_key,
+      },
+      payload: JSON.stringify({
+        model: 'claude-fixture-1',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'meu cpf 11144477735 ok' }],
+      }),
+    });
+    // Comportamento do /governed INALTERADO: detecta-e-escala, não redige.
+    expect(res.statusCode).toBe(200);
+    const ev = takeInvoked()[0]!;
+    expect(ev['effective_risk_class']).toBe('C');
+    expect(ev['risk_escalation_reasons']).toContain('dlp:cpf:pii_strong');
+    const dlp = ev['dlp_decisions'] as Array<Record<string, unknown>>;
+    expect(dlp.length).toBe(1);
+    expect(dlp[0]!['findings_count']).toBe(1);
+    expect(dlp[0]!['finding_classes']).toEqual(['cpf']);
+  });
+
   it('blocked tool (computer_use) on /v1/messages → 403 + dlp/tool emit + body_forward_mode=blocked', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);

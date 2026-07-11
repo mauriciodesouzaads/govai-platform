@@ -16,9 +16,14 @@
 // inputs.
 
 import { describe, it, expect } from 'vitest';
-import { scanSensitiveData, type DetectorFinding, type SensitiveDataFinding } from '@govai/dlp-br';
+import {
+  detectAllBaseline,
+  scanSensitiveData,
+  type DetectorFinding,
+  type SensitiveDataFinding,
+} from '@govai/dlp-br';
 import { decidePolicy } from './policy.js';
-import type { DlpScanResult } from './dlp.js';
+import { mergeWithActions, type DlpScanResult } from './dlp.js';
 
 const ctx = {
   capabilityId: 'anthropic.messages.create',
@@ -27,20 +32,24 @@ const ctx = {
 };
 
 function buildDlp(
-  findings: DetectorFinding[],
+  rawFindings: DetectorFinding[],
   config: Array<{ detector: string; action: 'detect' | 'redact' | 'deny' }>,
   sensitiveFindings?: SensitiveDataFinding[],
 ): DlpScanResult {
   const configByDetector = new Map<string, 'detect' | 'redact' | 'deny'>();
   for (const c of config) configByDetector.set(c.detector, c.action);
+  // F5/F6: o resultado real do scan carrega SPANS FUNDIDOS com ação efetiva;
+  // o helper roteia pela mesma API pública usada pelo dlpPreScan. Todos os
+  // casos deste arquivo usam achados disjuntos — a fusão é identidade aqui.
+  const findings = mergeWithActions(rawFindings, configByDetector);
   let highestAction: 'detect' | 'redact' | 'deny' = 'detect';
   const rank = { detect: 0, redact: 1, deny: 2 } as const;
   for (const f of findings) {
-    const a = configByDetector.get(f.detector) ?? 'detect';
-    if (rank[a] > rank[highestAction]) highestAction = a;
+    if (rank[f.action] > rank[highestAction]) highestAction = f.action;
   }
   return {
     findings,
+    rawFindings,
     configByDetector,
     highestAction,
     ...(sensitiveFindings ? { sensitiveFindings } : {}),
@@ -227,5 +236,56 @@ describe('decidePolicy / advisory-action boundary (SD1)', () => {
     for (const banned of ['4111111111111111', 'E11.9', '9999']) {
       expect(ser).not.toContain(banned);
     }
+  });
+});
+
+// P0.1 P2-fix (Codex, PR #118) — a reason reporta a ação EFETIVA do span,
+// não a ação configurada do detector do rótulo vencedor. O análogo, na camada
+// de REPORTING, do teste de enforcement em dlp.test.ts ("preserva um deny
+// configurado num detector que PERDEU o rótulo do span").
+describe('decidePolicy / reason reports the span EFFECTIVE action', () => {
+  it('span fundido cpf(detect)+phone_br(deny) → kind=deny e a reason reporta deny (a efetiva), não detect', () => {
+    const text = 'meu cpf 11144477735 ok';
+    const dlp = buildDlp(detectAllBaseline(text), [
+      { detector: 'cpf', action: 'detect' },
+      { detector: 'phone_br', action: 'deny' },
+    ]);
+    expect(dlp.findings.length).toBe(1); // premissa: um span fundido, rótulo cpf
+    expect(dlp.findings[0]!.detector).toBe('cpf');
+    const { decision } = decidePolicy(ctx, dlp);
+    expect(decision.kind).toBe('deny');
+    expect(decision.reasons).toEqual(['dlp.cpf: action=deny match at index 8']);
+  });
+
+  it('span fundido cpf(detect)+phone_br(redact) → kind=mutate e a reason reporta redact, não detect', () => {
+    const text = 'meu cpf 11144477735 ok';
+    const dlp = buildDlp(detectAllBaseline(text), [
+      { detector: 'cpf', action: 'detect' },
+      { detector: 'phone_br', action: 'redact' },
+    ]);
+    const { decision, needsRedaction } = decidePolicy(ctx, dlp);
+    expect(decision.kind).toBe('mutate');
+    expect(needsRedaction).toBe(true);
+    expect(decision.reasons).toEqual(['dlp.cpf: action=redact match at index 8']);
+  });
+
+  it('spans disjuntos com ações distintas: cada reason reporta a ação do PRÓPRIO span', () => {
+    const text = 'a@b.com meio 111.444.777-35 fim';
+    const dlp = buildDlp(detectAllBaseline(text), [
+      { detector: 'email', action: 'deny' },
+      { detector: 'cpf', action: 'detect' },
+    ]);
+    expect(dlp.findings.map((f) => [f.detector, f.action])).toEqual([
+      ['email', 'deny'],
+      ['cpf', 'detect'],
+    ]);
+    const { decision } = decidePolicy(ctx, dlp);
+    expect(decision.kind).toBe('deny');
+    // por-span: o span que negou reporta deny; o co-presente reporta a própria
+    // ação (detect) — o registro nunca sobre- nem sub-afirma por span.
+    expect(decision.reasons).toEqual([
+      'dlp.email: action=deny match at index 0',
+      'dlp.cpf: action=detect match at index 13',
+    ]);
   });
 });
