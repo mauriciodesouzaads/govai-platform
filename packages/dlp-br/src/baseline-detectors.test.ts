@@ -124,13 +124,23 @@ describe('mergeFindingSpans (F5/F6)', () => {
     expect(a[0]!.length).toBe(14);
   });
 
-  it('é idempotente sobre a própria saída', () => {
-    const once = mergeFindingSpans(detectAllBaseline('meu cpf 11144477735 ok'));
+  it('é INTEGRALMENTE idempotente: re-fundir a saída devolve o objeto COMPLETO, com detectors[] preservado (critério D do FIXUP3)', () => {
+    // Sobreposto (cpf+phone_br) + disjunto (email) na mesma entrada.
+    const raw = detectAllBaseline('meu cpf 11144477735 e a@b.com ok');
+    const once = mergeFindingSpans(raw);
     const twice = mergeFindingSpans(once);
-    expect(twice).toMatchObject(
-      once.map(({ detector, index, length }) => ({ detector, index, length })),
-    );
-    expect(twice.length).toBe(once.length);
+    expect(twice).toEqual(once); // deep-equal do objeto completo, não campos parciais
+    // e o span fundido multi-detector manteve TODOS os membros, ordenados:
+    const cpfSpan = twice.find((s) => s.detector === 'cpf')!;
+    expect(cpfSpan.detectors).toEqual(['cpf', 'phone_br']);
+    // terceira aplicação idem (ponto fixo):
+    expect(mergeFindingSpans(twice)).toEqual(once);
+  });
+
+  it('re-fusão de um SUBCONJUNTO filtrado de spans fundidos é identidade (a interação A×C do FIXUP3)', () => {
+    const once = mergeFindingSpans(detectAllBaseline('meu cpf 11144477735 e a@b.com ok'));
+    const subset = once.filter((s) => s.detector === 'cpf'); // subconjunto disjunto
+    expect(mergeFindingSpans(subset)).toEqual(subset);
   });
 
   it('entrada vazia → saída vazia', () => {

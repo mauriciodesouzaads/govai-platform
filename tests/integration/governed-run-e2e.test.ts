@@ -163,6 +163,108 @@ describe('Governed Run E2E', () => {
     }
   });
 
+  it('E2E.3c — FIXUP3 critério B (mista): email=redact + cpf=detect → provider recebe email redigido E CPF preservado; reasons e dlp_findings por span', async () => {
+    const org = await seedOrg(stack);
+    await setBaselineDlpAction(stack, org.org_id, 'email', 'redact');
+    await setBaselineDlpAction(stack, org.org_id, 'cpf', 'detect');
+    const res = await inject(stack, 'POST', '/v1/runs', org.api_key, {
+      workspace_id: org.workspace_id,
+      capability: 'openai.responses.create',
+      model: 'gpt-fixture-1',
+      input: 'Mande para teste@ex.com o cpf 111.444.777-35 fim',
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.body as {
+      run_id: string;
+      status: string;
+      policy_decision: { kind: string; reasons: string[] };
+      output: unknown;
+    };
+    expect(body.status).toBe('completed');
+    expect(body.policy_decision.kind).toBe('mutate');
+
+    // A asserção na ponta certa (o que SAI da GovAI): o provider-echo recebe
+    // SOMENTE o email redigido; o CPF (action=detect) é preservado — política
+    // configurada, não vazamento (spans disjuntos; F5 é sobre sobrepostos).
+    const echo = JSON.stringify(body.output);
+    expect(echo).toContain('REDACTED:email');
+    expect(echo).not.toContain('teste@ex.com');
+    expect(echo).toContain('111.444.777-35');
+    expect(echo).not.toContain('REDACTED:cpf');
+
+    // Reasons por span, honestas (cada uma reporta a ação do PRÓPRIO span).
+    expect(body.policy_decision.reasons).toHaveLength(2);
+    expect(body.policy_decision.reasons).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^dlp\.email: action=redact match at index \d+$/),
+        expect.stringMatching(/^dlp\.cpf: action=detect match at index \d+$/),
+      ]),
+    );
+
+    // dlp_findings preservam as ações individuais.
+    const c = await stack.db.appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await setLocalAppOrgId(c, org.org_id);
+      const rows = await c.query(
+        `SELECT detector_id, action FROM govai.dlp_findings WHERE run_id = $1::uuid ORDER BY detector_id`,
+        [body.run_id],
+      );
+      await c.query('COMMIT');
+      expect(rows.rows).toEqual([
+        { detector_id: 'cpf', action: 'detect' },
+        { detector_id: 'email', action: 'redact' },
+      ]);
+    } finally {
+      c.release();
+    }
+  });
+
+  it('E2E.2b — FIXUP3 critério C (deny completo): CPF nu (cpf=detect + phone_br=deny) → 403, run.status=denied, policy_decision.kind=deny, zero invocation, 1 dlp_finding fundido {cpf, deny}', async () => {
+    const org = await seedOrg(stack);
+    await setBaselineDlpAction(stack, org.org_id, 'cpf', 'detect');
+    await setBaselineDlpAction(stack, org.org_id, 'phone_br', 'deny');
+    const res = await inject(stack, 'POST', '/v1/runs', org.api_key, {
+      workspace_id: org.workspace_id,
+      capability: 'anthropic.messages.create',
+      model: 'claude-fixture-1',
+      input: 'meu cpf 11144477735 ok',
+    });
+    expect(res.statusCode).toBe(403);
+    const body = res.body as {
+      run_id: string;
+      status: string;
+      policy_decision: { kind: string; reasons: string[] };
+    };
+    expect(body.status).toBe('denied'); // o estado da RUN
+    expect(body.policy_decision.kind).toBe('deny'); // o tipo da DECISÃO
+    // A reason reporta a ação EFETIVA do span (deny, vinda do phone_br membro).
+    expect(body.policy_decision.reasons).toEqual([
+      expect.stringMatching(/^dlp\.cpf: action=deny match at index \d+$/),
+    ]);
+
+    const c = await stack.db.appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await setLocalAppOrgId(c, org.org_id);
+      const inv = await c.query(
+        `SELECT count(*)::text AS c FROM govai.provider_invocations WHERE run_id = $1::uuid`,
+        [body.run_id],
+      );
+      expect(inv.rows[0].c).toBe('0');
+      // FIXUP3 Mudança B: a run NEGADA também grava a evidência por span —
+      // EXATAMENTE 1 span fundido, rótulo vencedor cpf, ação efetiva deny.
+      const rows = await c.query(
+        `SELECT detector_id, action, count FROM govai.dlp_findings WHERE run_id = $1::uuid`,
+        [body.run_id],
+      );
+      await c.query('COMMIT');
+      expect(rows.rows).toEqual([{ detector_id: 'cpf', action: 'deny', count: 1 }]);
+    } finally {
+      c.release();
+    }
+  });
+
   it('E2E.4 — cross-tenant: orgA run not visible to orgB GET /v1/audit-events', async () => {
     const orgA = await seedOrg(stack, 'orgA');
     const orgB = await seedOrg(stack, 'orgB');

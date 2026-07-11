@@ -50,7 +50,7 @@ import {
   resolveAnthropicProviderKey,
   resolveOpenAIProviderKey,
 } from './provider-credentials.js';
-import { dlpPreScan, redactFindings } from './dlp.js';
+import { dlpPreScan, redactFindings, type MergedDlpFinding } from './dlp.js';
 import { decidePolicy, persistPolicyDecision } from './policy.js';
 
 export type SupportedCapabilityId =
@@ -443,6 +443,29 @@ function buildOpenAITenant(identity: AuthIdentity): OpenAIGovernedTenant {
   };
 }
 
+// FIXUP3 (Mudança B): 1 linha em govai.dlp_findings por SPAN fundido, chamada
+// UMA vez logo após persistPolicyDecision — dentro da MESMA transação — para
+// que os TRÊS caminhos (deny/redact/allow) persistam a evidência por span.
+// Antes, o INSERT vinha depois do early-return do deny, e a run mais severa
+// (negada) ficava SEM os dlp_findings.
+async function persistMergedDlpFindings(
+  client: PoolClient,
+  orgId: string,
+  runId: string,
+  findings: ReadonlyArray<MergedDlpFinding>,
+): Promise<void> {
+  // `detector_id` é o rótulo vencedor do span; `action` é a ação EFETIVA
+  // (máximo sobre os detectores-membro — preserva um deny/redact configurado
+  // num detector que perdeu o rótulo).
+  for (const f of findings) {
+    await client.query(
+      `INSERT INTO govai.dlp_findings (id, run_id, org_id, detector_id, detector_kind, count, action)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, 'baseline', 1, $5::text)`,
+      [randomUUID(), runId, orgId, f.detector, f.action],
+    );
+  }
+}
+
 const inMemoryDlpScan: AnthropicDlpScanFn & OpenAIDlpScanFn = async (text) => {
   // The orchestrator already pre-scans (DB-aware) over the input string, so by
   // the time the body reaches the handler it is either redacted (no findings)
@@ -513,7 +536,7 @@ export async function executeGovernedRun(
       );
 
       const dlp = await dlpPreScan(client, body.input);
-      const { decision, needsRedaction } = decidePolicy(
+      const { decision } = decidePolicy(
         {
           capabilityId: body.capability,
           effectiveLevel: resolved.effectiveFacets[0]?.effectiveLevel ?? 1,
@@ -522,6 +545,10 @@ export async function executeGovernedRun(
         dlp,
       );
       await persistPolicyDecision(client, identity.org_id, runId, decision);
+      // FIXUP3 (Mudança B): persiste os spans fundidos AQUI — antes do branch
+      // de deny — para que a run NEGADA também grave a evidência por detector
+      // (mesma transação; o COMMIT do deny vem depois).
+      await persistMergedDlpFindings(client, identity.org_id, runId, dlp.findings);
 
       if (decision.kind === 'deny') {
         await client.query(
@@ -562,19 +589,15 @@ export async function executeGovernedRun(
         };
       }
 
-      // F6: 1 linha por SPAN fundido (não por match bruto). `detector_id` é o
-      // rótulo vencedor do span; `action` é a ação EFETIVA do span (máximo
-      // sobre os detectores-membro — preserva um deny/redact configurado num
-      // detector que perdeu o rótulo).
-      for (const f of dlp.findings) {
-        await client.query(
-          `INSERT INTO govai.dlp_findings (id, run_id, org_id, detector_id, detector_kind, count, action)
-           VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, 'baseline', 1, $5::text)`,
-          [randomUUID(), runId, identity.org_id, f.detector, f.action],
-        );
-      }
-
-      const effectiveInput = needsRedaction ? redactFindings(body.input, dlp.findings) : body.input;
+      // FIXUP3 (Mudança A): redigir SÓ os spans cuja ação EFETIVA é `redact`.
+      // Antes, `needsRedaction` (global) mandava TODOS os spans ao redator —
+      // um span `detect` co-presente era redigido contra a política. A
+      // condição deriva da LISTA FILTRADA (não do flag global), eliminando
+      // qualquer possibilidade de divergência entre o flag e a lista. Spans
+      // `deny` nunca chegam aqui (o caminho deny retornou acima).
+      const redactionSpans = dlp.findings.filter((f) => f.action === 'redact');
+      const effectiveInput =
+        redactionSpans.length > 0 ? redactFindings(body.input, redactionSpans) : body.input;
 
       // The provider-native request body is known before dispatch — build it
       // and hash it once so the network/fetch failure path persists a real

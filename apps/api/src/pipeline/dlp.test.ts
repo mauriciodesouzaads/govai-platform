@@ -106,3 +106,40 @@ describe('mergeWithActions (F6 — a ação efetiva do span)', () => {
     ]);
   });
 });
+
+// FIXUP3 — critérios A e E (redação seletiva por ação efetiva; reconstrução
+// sobre subconjunto filtrado). A composição que o handoff mandou provar:
+// SÓ spans `action=redact` chegam ao redator; `detect` fica intacto.
+describe('redação seletiva por ação efetiva (FIXUP3 — critérios A e E)', () => {
+  it('A — mista: email=redact + cpf=detect (disjuntos) → só o email é redigido; o CPF permanece', () => {
+    const text = 'Mande para teste@ex.com o cpf 111.444.777-35 fim';
+    const merged = mergeWithActions(
+      detectAllBaseline(text),
+      config({ email: 'redact', cpf: 'detect' }),
+    );
+    expect(merged.map((m) => [m.detector, m.action])).toEqual([
+      ['email', 'redact'],
+      ['cpf', 'detect'],
+    ]);
+    const redactionSpans = merged.filter((f) => f.action === 'redact');
+    const out = redactFindings(text, redactionSpans);
+    expect(out).toBe('Mande para [REDACTED:email] o cpf 111.444.777-35 fim');
+    expect(out).toContain('111.444.777-35'); // detect = NÃO redigir (política, não vazamento)
+    expect(out).not.toContain('teste@ex.com');
+  });
+
+  it('E — [redact, detect, redact] disjuntos: 1º e 3º mutados; o 2º e os separadores byte-idênticos', () => {
+    //           0123456789012345678901234567
+    const text = 'xx AAAA yy BBBB zz CCCC ww';
+    const spans = [
+      { detector: 'email', index: 3, length: 4, action: 'redact' as const },
+      { detector: 'cpf', index: 11, length: 4, action: 'detect' as const },
+      { detector: 'phone_br', index: 19, length: 4, action: 'redact' as const },
+    ];
+    const redactionSpans = spans.filter((f) => f.action === 'redact');
+    const out = redactFindings(text, redactionSpans);
+    expect(out).toBe('xx [REDACTED:email] yy BBBB zz [REDACTED:phone_br] ww');
+    // reconstrução esquerda→direita: nenhum índice reaplicado sobre string mutada;
+    // o trecho do span filtrado fora (BBBB) e os separadores permanecem intactos.
+  });
+});

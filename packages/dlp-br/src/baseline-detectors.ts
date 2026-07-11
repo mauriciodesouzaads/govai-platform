@@ -131,8 +131,16 @@ export function detectAllBaseline(text: string): DetectorFinding[] {
 // OU se tocam, produzindo spans DISJUNTOS — a única forma segura de redigir
 // e a unidade honesta de contagem (1 span = 1 achado).
 
-/** Subconjunto estrutural de DetectorFinding suficiente para o merge. */
-export type FindingSpan = { detector: string; index: number; length: number };
+/** Subconjunto estrutural de DetectorFinding suficiente para o merge.
+ *  `detectors` (opcional) permite re-fundir spans JÁ fundidos sem perder os
+ *  detectores-membro — é o que torna `mergeFindingSpans` integralmente
+ *  idempotente (FIXUP3, Mudança C). */
+export type FindingSpan = {
+  detector: string;
+  index: number;
+  length: number;
+  detectors?: readonly string[];
+};
 
 /** Detectores baseline de classe forte (pii_strong). Em sincronia com o
  *  fallback de `ddpClassifyDetector` (core-governance/resolve-governance). */
@@ -157,7 +165,12 @@ export type MergedFinding = {
  * Funde achados em spans disjuntos. Cobre aninhamento TOTAL (um intervalo
  * contido no outro), sobreposição PARCIAL e intervalos que se TOCAM
  * (fim de A == início de B). Entrada sem sobreposição → um span por achado,
- * nas mesmas posições (identidade). Idempotente sobre a própria saída.
+ * nas mesmas posições (identidade).
+ *
+ * INTEGRALMENTE idempotente (FIXUP3, Mudança C): spans já fundidos carregam
+ * `detectors[]`, e a re-fusão preserva TODOS os membros
+ * (`f.detectors ?? [f.detector]`) — re-fundir a própria saída devolve objetos
+ * deep-equal (detector vencedor, membros, classe, geometria).
  */
 export function mergeFindingSpans(findings: ReadonlyArray<FindingSpan>): MergedFinding[] {
   if (findings.length === 0) return [];
@@ -171,7 +184,7 @@ export function mergeFindingSpans(findings: ReadonlyArray<FindingSpan>): MergedF
   const out: MergedFinding[] = [];
   let start = sorted[0]!.index;
   let end = start + sorted[0]!.length;
-  let members = new Set<string>([sorted[0]!.detector]);
+  let members = new Set<string>(sorted[0]!.detectors ?? [sorted[0]!.detector]);
 
   const flush = (): void => {
     const detectors = [...members].sort();
@@ -191,12 +204,12 @@ export function mergeFindingSpans(findings: ReadonlyArray<FindingSpan>): MergedF
     if (f.index <= end) {
       // sobrepõe ou toca o span corrente → funde
       if (fEnd > end) end = fEnd;
-      members.add(f.detector);
+      for (const d of f.detectors ?? [f.detector]) members.add(d);
     } else {
       flush();
       start = f.index;
       end = fEnd;
-      members = new Set([f.detector]);
+      members = new Set(f.detectors ?? [f.detector]);
     }
   }
   flush();
