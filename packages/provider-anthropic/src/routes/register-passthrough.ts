@@ -3,7 +3,7 @@
 // Audit emit always sets BOTH for provider-namespaced capabilities.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { BetaTokenPolicyEntry, Capability } from '@govai/core-types';
+import type { BetaTokenPolicyEntry, Capability, ResolvedProviderCredential } from '@govai/core-types';
 import { resolveGovernance } from '@govai/core-governance';
 import {
   ANTHROPIC_BETA_POLICY,
@@ -30,7 +30,7 @@ export type AnthropicPassthroughDeps = {
   /** Upstream base URL (https://api.anthropic.com in production; loopback in tests). */
   upstreamBaseUrl: string;
   /** Resolve credentials per request: returns Anthropic API key for the tenant. */
-  resolveProviderKey: (req: FastifyRequest) => Promise<string>;
+  resolveProviderKey: (req: FastifyRequest) => Promise<ResolvedProviderCredential>;
   /** Resolve tenant context per request. */
   resolveTenant: (req: FastifyRequest) => Promise<TenantContext>;
   /** Active org_beta_overrides loader (org_id, provider) → array of {beta_token, id}. */
@@ -302,8 +302,9 @@ export async function registerAnthropicPassthrough(
       }
 
       // Forward.
-      const providerKey = await deps.resolveProviderKey(req);
-      const headers = buildOutboundHeaders(req.headers, providerKey);
+      // F1: .apiKey builds headers (memory only); .source flows to credential_source.
+      const resolvedCredential = await deps.resolveProviderKey(req);
+      const headers = buildOutboundHeaders(req.headers, resolvedCredential.apiKey);
       const concretePath = req.url
         .replace(/^\/passthrough\/anthropic/, '')
         .replace(/\?.*$/, '');
@@ -404,7 +405,7 @@ export async function registerAnthropicPassthrough(
                 latency_ms: final.latency_ms,
                 occurred_at: occurredAt,
                 status_code: streamRes.status,
-                credential_source: 'tenant_provider_credential',
+                credential_source: resolvedCredential.source,
                 allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
                 ...(streamRes.provider_request_id
                   ? { provider_request_id: streamRes.provider_request_id }
@@ -479,7 +480,7 @@ export async function registerAnthropicPassthrough(
           latency_ms: fwd.latency_ms,
           occurred_at: occurredAt,
           status_code: fwd.status,
-          credential_source: 'tenant_provider_credential',
+          credential_source: resolvedCredential.source,
           allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
           ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
           body_forward_mode: 'raw',

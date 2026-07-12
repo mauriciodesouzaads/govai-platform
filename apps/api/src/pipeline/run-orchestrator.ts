@@ -800,6 +800,10 @@ export async function executeGovernedRun(
         // governed-native blocked: persist failed run with the captured v3 audit
         // already in chain.
         const failedInvocationId = randomUUID();
+        // C-2: persist the REAL SHA-256 of the final native request body (the
+        // body that would have been forwarded), mirroring the network-failure
+        // INSERT above (the 32-byte Buffer `nativeRequestHash` via $5::bytea) —
+        // NOT the '\x00' placeholder and NOT the 64-char hex string.
         await client.query(
           `INSERT INTO govai.provider_invocations (
              id, run_id, org_id, provider, native_endpoint, native_method,
@@ -807,7 +811,7 @@ export async function executeGovernedRun(
              latency_ms, status_code, provider_request_id, error_class
            ) VALUES (
              $1::uuid, $2::uuid, $3::uuid, $4::text, '/governed-blocked', 'POST',
-             '\\x00'::bytea, NULL, false, '{"source":"governed_blocked"}'::jsonb,
+             $5::bytea, NULL, false, '{"source":"governed_blocked"}'::jsonb,
              0, 403, NULL, 'governed_blocked'
            )`,
           [
@@ -815,6 +819,7 @@ export async function executeGovernedRun(
             runId,
             identity.org_id,
             body.capability.split('.')[0],
+            nativeRequestHash,
           ],
         );
         await client.query(
@@ -1160,7 +1165,11 @@ export async function executePassthroughRun(
       // Resolve the tenant provider key BEFORE inserting the run row: if no
       // credential is available the provider call is never attempted, and no
       // `govai.runs` row should be persisted for it.
-      const providerKey =
+      // F1 adapter: this /v1/runs passthrough path uses the resolved key ONLY
+      // to build outbound headers (it emits no passthrough.invoked event of its
+      // own — its evidence is the run.* lifecycle), so `.source` is not carried
+      // to an event here. The resolver now returns { apiKey, source }; take .apiKey.
+      const resolvedCredential =
         plan.provider === 'anthropic'
           ? await resolveAnthropicProviderKey(
               { env: deps.env, pool: deps.pool, kms: deps.kms },
@@ -1170,6 +1179,7 @@ export async function executePassthroughRun(
               { env: deps.env, pool: deps.pool, kms: deps.kms },
               { orgId: identity.org_id, operationalMode: identity.operational_mode },
             );
+      const providerKey = resolvedCredential.apiKey;
 
       const runId = randomUUID();
       await client.query(

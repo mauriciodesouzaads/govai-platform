@@ -68,6 +68,9 @@ importers:
       '@govai/core-tenant':
         specifier: workspace:*
         version: link:../../packages/core-tenant
+      '@govai/core-types':
+        specifier: workspace:*
+        version: link:../../packages/core-types
       '@govai/dlp-br':
         specifier: workspace:*
         version: link:../../packages/dlp-br

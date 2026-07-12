@@ -67,9 +67,11 @@ describe('provider-credentials / tenant isolation', () => {
       orgId: orgB.org_id,
       operationalMode: 'production',
     });
-    expect(a).toBe(KEY_A_ANTHROPIC);
-    expect(b).toBe(KEY_B_ANTHROPIC);
-    expect(a).not.toBe(b);
+    expect(a.apiKey).toBe(KEY_A_ANTHROPIC);
+    expect(b.apiKey).toBe(KEY_B_ANTHROPIC);
+    expect(a.apiKey).not.toBe(b.apiKey);
+    expect(a.source).toBe('tenant_provider_credential');
+    expect(b.source).toBe('tenant_provider_credential');
   });
 
   it('tenant A cannot SELECT tenant B credential row under RLS', async () => {
@@ -177,7 +179,8 @@ describe('provider-credentials / tenant isolation', () => {
       orgId: org.org_id,
       operationalMode: 'test',
     });
-    expect(k).toBe('sk-ant-test-hermetic');
+    expect(k.apiKey).toBe('sk-ant-test-hermetic');
+    expect(k.source).toBe('hermetic_test_placeholder');
   });
 
   it('hermetic placeholder is NOT returned in production mode even on loopback', async () => {
@@ -210,7 +213,8 @@ describe('provider-credentials / tenant isolation', () => {
       orgId: org.org_id,
       operationalMode: 'production',
     });
-    expect(k).toBe(KEY_A_OPENAI);
+    expect(k.apiKey).toBe(KEY_A_OPENAI);
+    expect(k.source).toBe('tenant_provider_credential');
   });
 
   it('credential for one provider does not leak to the other provider', async () => {
@@ -227,7 +231,8 @@ describe('provider-credentials / tenant isolation', () => {
       orgId: org.org_id,
       operationalMode: 'production',
     });
-    expect(a).toBe(KEY_A_ANTHROPIC);
+    expect(a.apiKey).toBe(KEY_A_ANTHROPIC);
+    expect(a.source).toBe('tenant_provider_credential');
 
     let captured: Error | null = null;
     try {

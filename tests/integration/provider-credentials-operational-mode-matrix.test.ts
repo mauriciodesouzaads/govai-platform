@@ -108,7 +108,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'production',
     });
-    expect(k).toBe(TENANT_KEY);
+    expect(k.apiKey).toBe(TENANT_KEY);
+    expect(k.source).toBe('tenant_provider_credential');
   });
 
   it('production + env present + tenant present => tenant plaintext (env ignored)', async () => {
@@ -123,8 +124,9 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'production',
     });
-    expect(k).toBe(TENANT_KEY);
-    expect(k).not.toBe(ENV_KEY);
+    expect(k.apiKey).toBe(TENANT_KEY);
+    expect(k.source).toBe('tenant_provider_credential');
+    expect(k.apiKey).not.toBe(ENV_KEY);
   });
 
   // ---- pilot mode ---------------------------------------------------------
@@ -162,7 +164,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'pilot',
     });
-    expect(k).toBe(TENANT_KEY);
+    expect(k.apiKey).toBe(TENANT_KEY);
+    expect(k.source).toBe('tenant_provider_credential');
   });
 
   // ---- dev mode -----------------------------------------------------------
@@ -183,7 +186,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'dev',
     });
-    expect(k).toBe(ENV_KEY);
+    expect(k.apiKey).toBe(ENV_KEY);
+    expect(k.source).toBe('platform_env');
   });
 
   it('dev + env + tenant present => tenant plaintext (env ignored)', async () => {
@@ -198,7 +202,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'dev',
     });
-    expect(k).toBe(TENANT_KEY);
+    expect(k.apiKey).toBe(TENANT_KEY);
+    expect(k.source).toBe('tenant_provider_credential');
   });
 
   // ---- test mode (loopback hermetic) -------------------------------------
@@ -209,7 +214,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'test',
     });
-    expect(k).toBe('sk-ant-test-hermetic');
+    expect(k.apiKey).toBe('sk-ant-test-hermetic');
+    expect(k.source).toBe('hermetic_test_placeholder');
   });
 
   it('test + loopback + env + no tenant => env value', async () => {
@@ -218,7 +224,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'test',
     });
-    expect(k).toBe(ENV_KEY);
+    expect(k.apiKey).toBe(ENV_KEY);
+    expect(k.source).toBe('platform_env');
   });
 
   it('test + loopback + tenant present => tenant plaintext', async () => {
@@ -233,7 +240,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       orgId: org.org_id,
       operationalMode: 'test',
     });
-    expect(k).toBe(TENANT_KEY);
+    expect(k.apiKey).toBe(TENANT_KEY);
+    expect(k.source).toBe('tenant_provider_credential');
   });
 
   // ---- test mode (non-loopback) ------------------------------------------
@@ -260,7 +268,8 @@ describe('provider-credentials / operational-mode matrix', () => {
       }),
       { orgId: org.org_id, operationalMode: 'test' },
     );
-    expect(k).toBe(ENV_KEY);
+    expect(k.apiKey).toBe(ENV_KEY);
+    expect(k.source).toBe('platform_env');
   });
 
   // ---- isHermetic NEGATIVE coverage --------------------------------------

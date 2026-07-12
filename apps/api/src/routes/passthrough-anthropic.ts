@@ -8,6 +8,7 @@ import {
   type AnthropicPassthroughDeps,
   type TenantContext,
 } from '@govai/provider-anthropic';
+import type { ResolvedProviderCredential } from '@govai/core-types';
 import { authenticateApiKey } from '../pipeline/auth.js';
 import { resolveAnthropicProviderKey } from '../pipeline/provider-credentials.js';
 import type { OperationalMode } from '../pipeline/auth.js';
@@ -60,7 +61,7 @@ export async function passthroughAnthropicRoute(app: FastifyInstance): Promise<v
     }
   };
 
-  const resolveProviderKey = async (req: FastifyRequest): Promise<string> => {
+  const resolveProviderKey = async (req: FastifyRequest): Promise<ResolvedProviderCredential> => {
     const cached = requestIdentities.get(req);
     if (!cached) {
       // Defensive: should always be cached since resolveTenant runs first.

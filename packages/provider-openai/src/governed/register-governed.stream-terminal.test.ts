@@ -112,7 +112,10 @@ beforeAll(async () => {
   const deps: OpenAIGovernedDeps = {
     upstreamBaseUrl: 'http://upstream.invalid',
     resolveTenant: async () => tenant,
-    resolveProviderKey: async () => 'k',
+    // F1 Point 1: a non-coincidental source proves the streaming FINALIZER
+    // carries the resolver's source through to the terminal event (both
+    // /v1/responses and /v1/chat/completions share pumpResult).
+    resolveProviderKey: async () => ({ apiKey: 'k', source: 'platform_env' }),
     dlpScan: async () => ({ findings: [] }),
     emitAuditEvent: (ev) => {
       if (emitShouldThrow) throw new Error('emit boom');
@@ -161,6 +164,8 @@ describe('EP-008C OpenAI governed stream terminal-completeness', () => {
     expect(ev['stream_outcome']).toBe('complete');
     expect(ev['stream_final_hash']).toBe(ctl.finalHash);
     expect((ev['tenant_context'] as { org_id: string }).org_id).toBe(ORG);
+    // F1 Point 1: the source flows through the /v1/responses streaming finalizer.
+    expect(ev['credential_source']).toBe('platform_env');
   });
 
   it('(2) mid-stream upstream error → terminal once with partial hash + stream_outcome=upstream_error + identity', async () => {
@@ -216,6 +221,8 @@ describe('EP-008C OpenAI governed stream terminal-completeness', () => {
     expect(ev['is_stream']).toBe(true);
     expect(ev['stream_outcome']).toBe('complete');
     expect(ev['native_endpoint']).toBe('/v1/chat/completions');
+    // F1 Point 1: the source flows through the /v1/chat/completions streaming finalizer.
+    expect(ev['credential_source']).toBe('platform_env');
   });
 
   it('(6) early disconnect PRE-HEADER → upstream aborted (no orphan), NO terminal emitted', async () => {

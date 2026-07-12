@@ -22,6 +22,7 @@
     "@govai/core-governance": "workspace:*",
     "@govai/core-identity": "workspace:*",
     "@govai/core-tenant": "workspace:*",
+    "@govai/core-types": "workspace:*",
     "@govai/dlp-br": "workspace:*",
     "@govai/observability": "workspace:*",
     "@govai/provider-anthropic": "workspace:*",

@@ -33,6 +33,7 @@ import type { Pool } from 'pg';
 import type { GovAIEnv } from '@govai/config';
 import type { Kms } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
+import type { ResolvedProviderCredential } from '@govai/core-types';
 import { isLoopbackUrl } from './capability-resolution.js';
 import type { OperationalMode } from './auth.js';
 
@@ -136,16 +137,21 @@ async function tryLoadTenantKey(
   }
 }
 
+// F1: the resolver returns the resolved key PLUS the provenance of which path
+// won (`source`). The source is tagged at the exact decision point that
+// chooses the credential — never re-derived downstream. The precedence matrix
+// itself is UNCHANGED (tenant always wins; production/pilot fail closed; dev
+// env-only where it already was; test/hermetic per the existing matrix).
 async function resolveProviderKey(
   deps: ProviderCredentialResolverDeps,
   ctx: ProviderCredentialResolverContext,
   provider: ProviderName,
   envKey: string | undefined,
   hermeticPlaceholder: string,
-): Promise<string> {
+): Promise<ResolvedProviderCredential> {
   // Tenant credential always wins.
   const tenant = await tryLoadTenantKey(deps, ctx.orgId, provider);
-  if (tenant) return tenant;
+  if (tenant) return { apiKey: tenant, source: 'tenant_provider_credential' };
 
   // No tenant credential — apply the operational-mode matrix.
   const mode = ctx.operationalMode;
@@ -159,7 +165,7 @@ async function resolveProviderKey(
   }
 
   if (mode === 'dev') {
-    if (envKey && envKey.length > 0) return envKey;
+    if (envKey && envKey.length > 0) return { apiKey: envKey, source: 'platform_env' };
     throw new MissingProviderKeyError(
       provider,
       ctx.orgId,
@@ -168,8 +174,10 @@ async function resolveProviderKey(
   }
 
   // mode === 'test'
-  if (envKey && envKey.length > 0) return envKey;
-  if (isHermetic(deps.env)) return hermeticPlaceholder;
+  if (envKey && envKey.length > 0) return { apiKey: envKey, source: 'platform_env' };
+  if (isHermetic(deps.env)) {
+    return { apiKey: hermeticPlaceholder, source: 'hermetic_test_placeholder' };
+  }
   throw new MissingProviderKeyError(
     provider,
     ctx.orgId,
@@ -180,13 +188,13 @@ async function resolveProviderKey(
 export async function resolveAnthropicProviderKey(
   deps: ProviderCredentialResolverDeps,
   ctx: ProviderCredentialResolverContext,
-): Promise<string> {
+): Promise<ResolvedProviderCredential> {
   return resolveProviderKey(deps, ctx, 'anthropic', deps.env.ANTHROPIC_API_KEY, HERMETIC_ANTHROPIC);
 }
 
 export async function resolveOpenAIProviderKey(
   deps: ProviderCredentialResolverDeps,
   ctx: ProviderCredentialResolverContext,
-): Promise<string> {
+): Promise<ResolvedProviderCredential> {
   return resolveProviderKey(deps, ctx, 'openai', deps.env.OPENAI_API_KEY, HERMETIC_OPENAI);
 }

@@ -113,7 +113,7 @@ beforeAll(async () => {
   const deps: OpenAIPassthroughDeps = {
     upstreamBaseUrl: 'http://upstream.invalid',
     resolveTenant: async () => tenant,
-    resolveProviderKey: async () => 'k',
+    resolveProviderKey: async () => ({ apiKey: 'k', source: 'tenant_provider_credential' }),
     activeOverridesLoader: async () => [],
     emitAuditEvent: (ev: unknown) => {
       if (emitShouldThrow) throw new Error('emit boom');
