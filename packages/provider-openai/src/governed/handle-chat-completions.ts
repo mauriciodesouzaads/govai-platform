@@ -199,15 +199,17 @@ export async function handleOpenAIGovernedChatCompletions(
     return { kind: 'blocked', status_code: 403, reason, audit_event: ev, governance };
   }
 
-  // F1: resolved credential carries provenance; .apiKey builds headers, .source flows to events.
-  const resolvedCredential = await deps.resolveProviderKey(
+  // F1: destructure directly so the streaming finalizer closes over `source`
+  // only — never the credential object or `apiKey`. `apiKey` builds headers
+  // (memory only); `source` flows into the emitted events.
+  const { apiKey, source } = await deps.resolveProviderKey(
     input.tenant.org_id,
     input.tenant.operational_mode,
   );
   const organization = deps.resolveProviderOrganization
     ? await deps.resolveProviderOrganization(input.tenant.org_id)
     : undefined;
-  const outHeaders = buildOutboundHeaders(input.inboundHeaders, resolvedCredential.apiKey, organization);
+  const outHeaders = buildOutboundHeaders(input.inboundHeaders, apiKey, organization);
 
   if (input.isStream) {
     const stream = await forwardStream({
@@ -243,7 +245,7 @@ export async function handleOpenAIGovernedChatCompletions(
         latency_ms: final.latency_ms,
         status_code: stream.status,
         occurred_at: occurredAt.toISOString(),
-        credential_source: resolvedCredential.source,
+        credential_source: source,
         allowlist_version: OPENAI_BETA_POLICY_VERSION,
         ...(stream.provider_request_id ? { provider_request_id: stream.provider_request_id } : {}),
         body_forward_mode: 'raw',
@@ -307,7 +309,7 @@ export async function handleOpenAIGovernedChatCompletions(
     latency_ms: fwd.latency_ms,
     status_code: fwd.status,
     occurred_at: occurredAt.toISOString(),
-    credential_source: resolvedCredential.source,
+    credential_source: source,
     allowlist_version: OPENAI_BETA_POLICY_VERSION,
     ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
     body_forward_mode: 'raw',

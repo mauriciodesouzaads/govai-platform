@@ -114,7 +114,9 @@ beforeAll(async () => {
   const deps: AnthropicGovernedDeps = {
     upstreamBaseUrl: 'http://upstream.invalid',
     resolveTenant: async () => tenant,
-    resolveProviderKey: async () => ({ apiKey: 'k', source: 'tenant_provider_credential' }),
+    // F1 Point 1: a non-coincidental source proves the streaming FINALIZER
+    // carries the resolver's source through to the terminal event.
+    resolveProviderKey: async () => ({ apiKey: 'k', source: 'platform_env' }),
     dlpScan: async () => ({ findings: [] }),
     emitAuditEvent: (ev) => {
       if (emitShouldThrow) throw new Error('emit boom');
@@ -163,6 +165,8 @@ describe('EP-008C Anthropic governed stream terminal-completeness', () => {
     expect(ev['stream_outcome']).toBe('complete');
     expect(ev['stream_final_hash']).toBe(ctl.finalHash);
     expect((ev['tenant_context'] as { org_id: string }).org_id).toBe(ORG);
+    // F1 Point 1: the source flows through the streaming finalizer.
+    expect(ev['credential_source']).toBe('platform_env');
   });
 
   it('(2) mid-stream upstream error → terminal once with partial hash + stream_outcome=upstream_error + identity', async () => {

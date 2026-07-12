@@ -72,6 +72,14 @@ async function postResponses(body: unknown): Promise<Response> {
   });
 }
 
+async function postChatCompletions(body: unknown): Promise<Response> {
+  return fetch(`${govUrl}/governed/openai/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 describe('F1 — governed OpenAI credential_source', () => {
   it('B — a forwarded request emits credential_source === the resolver source (platform_env), resolver called once', async () => {
     const res = await postResponses({ model: 'gpt-x', input: 'hi' });
@@ -85,6 +93,38 @@ describe('F1 — governed OpenAI credential_source', () => {
     const res = await postResponses({
       model: 'gpt-x',
       input: 'hi',
+      // computer_use_preview → blocked_at_validation → 403 before any provider call.
+      tools: [{ type: 'computer_use_preview' }],
+    });
+    expect(res.status).toBe(403);
+    await res.text();
+    const ev = invoked();
+    expect(ev['credential_source']).toBe('not_resolved_pre_provider_block');
+    expect(ev['body_forward_mode']).toBe('blocked');
+    expect(resolveSpy).toHaveBeenCalledTimes(0);
+  });
+});
+
+// Point 2: Chat Completions is a SEPARATE governed producer (its own emit
+// logic) and was modified independently by F1 — so it gets its own proof.
+describe('F1 — governed OpenAI chat completions credential_source (Point 2)', () => {
+  it('B — a forwarded chat-completions request emits credential_source=platform_env, resolver called once', async () => {
+    const res = await postChatCompletions({
+      model: 'gpt-x',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(res.status).toBe(200);
+    await res.text();
+    const ev = invoked();
+    expect(ev['native_endpoint']).toBe('/v1/chat/completions');
+    expect(ev['credential_source']).toBe('platform_env');
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('C — a blocked chat-completions request emits not_resolved_pre_provider_block AND never calls the resolver', async () => {
+    const res = await postChatCompletions({
+      model: 'gpt-x',
+      messages: [{ role: 'user', content: 'hi' }],
       // computer_use_preview → blocked_at_validation → 403 before any provider call.
       tools: [{ type: 'computer_use_preview' }],
     });

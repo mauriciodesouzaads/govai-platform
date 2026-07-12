@@ -308,13 +308,15 @@ export async function handleAnthropicGovernedMessages(
     };
   }
 
-  // Forward. F1: the resolved credential carries its provenance; `.apiKey`
-  // builds headers (memory only), `.source` flows into the emitted events.
-  const resolvedCredential = await deps.resolveProviderKey(
+  // Forward. F1: destructure directly so the streaming finalizer can close over
+  // `source` (the only credential value evidence needs) WITHOUT capturing the
+  // whole credential object or `apiKey` for the life of the stream. `apiKey`
+  // builds headers (memory only); `source` flows into the emitted events.
+  const { apiKey, source } = await deps.resolveProviderKey(
     input.tenant.org_id,
     input.tenant.operational_mode,
   );
-  const outHeaders = buildOutboundHeaders(input.inboundHeaders, resolvedCredential.apiKey);
+  const outHeaders = buildOutboundHeaders(input.inboundHeaders, apiKey);
 
   if (input.isStream) {
     const stream = await forwardStream({
@@ -355,7 +357,7 @@ export async function handleAnthropicGovernedMessages(
         latency_ms: final.latency_ms,
         status_code: stream.status,
         occurred_at: occurredAt.toISOString(),
-        credential_source: resolvedCredential.source,
+        credential_source: source,
         allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
         ...(stream.provider_request_id ? { provider_request_id: stream.provider_request_id } : {}),
         body_forward_mode: 'raw',
@@ -420,7 +422,7 @@ export async function handleAnthropicGovernedMessages(
     latency_ms: fwd.latency_ms,
     status_code: fwd.status,
     occurred_at: occurredAt.toISOString(),
-    credential_source: resolvedCredential.source,
+    credential_source: source,
     allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
     ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
     body_forward_mode: 'raw',
