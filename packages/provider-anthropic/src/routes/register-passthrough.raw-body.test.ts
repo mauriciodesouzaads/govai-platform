@@ -99,7 +99,7 @@ beforeAll(async () => {
   const deps: AnthropicPassthroughDeps = {
     upstreamBaseUrl: fakeUrl,
     resolveTenant: async () => tenant,
-    resolveProviderKey: async () => 'harness-fake-provider-key',
+    resolveProviderKey: async () => ({ apiKey: 'harness-fake-provider-key', source: 'tenant_provider_credential' }),
     activeOverridesLoader: async () => [],
     emitAuditEvent: (ev: unknown) => {
       auditEvents.push(ev);
@@ -147,6 +147,9 @@ describe('Anthropic passthrough raw-body preservation (real socket, app.listen +
     expect(ev['native_request_hash']).toBe(sha256(sentRawBody));
     expect(ev['native_request_hash']).toBe(sha256(cap.rawBody));
     expect(ev['body_forward_mode']).toBe('raw');
+    // F1: the passthrough producer emits the resolver's source (the mock
+    // returns a tenant credential), not a hardcoded literal by coincidence.
+    expect(ev['credential_source']).toBe('tenant_provider_credential');
 
     // Only AFTER byte equality: semantic assertions.
     const parsed = JSON.parse(cap.rawBody.toString('utf8')) as Record<string, unknown>;

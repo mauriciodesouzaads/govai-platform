@@ -6,7 +6,7 @@
 // event — Issue [PR3/pre-sunset] tracks final audit semantics for that case.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { BetaTokenPolicyEntry, Capability } from '@govai/core-types';
+import type { BetaTokenPolicyEntry, Capability, ResolvedProviderCredential } from '@govai/core-types';
 import { resolveGovernance } from '@govai/core-governance';
 import { OPENAI_BETA_POLICY, OPENAI_BETA_POLICY_VERSION } from '../beta-policy.js';
 import {
@@ -36,7 +36,7 @@ export type OpenAIPassthroughDeps = {
   /** Upstream base URL (https://api.openai.com in production; loopback in tests). */
   upstreamBaseUrl: string;
   /** Resolve credentials per request: returns OpenAI API key for the tenant. */
-  resolveProviderKey: (req: FastifyRequest) => Promise<string>;
+  resolveProviderKey: (req: FastifyRequest) => Promise<ResolvedProviderCredential>;
   /** Optional OpenAI organization id per request. */
   resolveProviderOrganization?: (req: FastifyRequest) => Promise<string | undefined>;
   /** Resolve tenant context per request. */
@@ -364,11 +364,12 @@ export async function registerOpenAIPassthrough(
       }
 
       // Forward.
-      const providerKey = await deps.resolveProviderKey(req);
+      // F1: .apiKey builds headers (memory only); .source flows to credential_source.
+      const resolvedCredential = await deps.resolveProviderKey(req);
       const organization = deps.resolveProviderOrganization
         ? await deps.resolveProviderOrganization(req)
         : undefined;
-      const headers = buildOutboundHeaders(req.headers, providerKey, organization);
+      const headers = buildOutboundHeaders(req.headers, resolvedCredential.apiKey, organization);
       const concretePath = req.url
         .replace(/^\/passthrough\/openai/, '')
         .replace(/\?.*$/, '');
@@ -464,7 +465,7 @@ export async function registerOpenAIPassthrough(
                 latency_ms: final.latency_ms,
                 occurred_at: occurredAt,
                 status_code: streamRes.status,
-                credential_source: 'tenant_provider_credential',
+                credential_source: resolvedCredential.source,
                 allowlist_version: OPENAI_BETA_POLICY_VERSION,
                 ...(streamRes.provider_request_id
                   ? { provider_request_id: streamRes.provider_request_id }
@@ -540,7 +541,7 @@ export async function registerOpenAIPassthrough(
           latency_ms: fwd.latency_ms,
           occurred_at: occurredAt,
           status_code: fwd.status,
-          credential_source: 'tenant_provider_credential',
+          credential_source: resolvedCredential.source,
           allowlist_version: OPENAI_BETA_POLICY_VERSION,
           ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
           body_forward_mode: 'raw',

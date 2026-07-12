@@ -2,7 +2,7 @@
 // Same pattern as Anthropic handle-messages: real governance, no simulations.
 
 import { createHash, randomUUID } from 'node:crypto';
-import type { Capability, OperationalMode } from '@govai/core-types';
+import type { Capability, OperationalMode, ResolvedProviderCredential } from '@govai/core-types';
 import {
   resolveGovernance,
   type DlpFindingLite,
@@ -43,7 +43,10 @@ export type GovernedHandleDeps = {
    * operational mode already resolved at auth time so the resolver does NOT
    * need to re-query `govai.org_tier_lookup` (issue #25).
    */
-  resolveProviderKey: (orgId: string, operationalMode: OperationalMode) => Promise<string>;
+  resolveProviderKey: (
+    orgId: string,
+    operationalMode: OperationalMode,
+  ) => Promise<ResolvedProviderCredential>;
   resolveProviderOrganization?: (orgId: string) => Promise<string | undefined>;
   dlpScan: DlpScanFn;
   emitAuditEvent: (event: PassthroughInvoked) => Promise<void> | void;
@@ -253,7 +256,8 @@ export async function handleOpenAIGovernedResponses(
       latency_ms: 0,
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
-      credential_source: 'tenant_provider_credential',
+      // F1: blocked before the provider — no credential was resolved.
+      credential_source: 'not_resolved_pre_provider_block',
       allowlist_version: OPENAI_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
       dlp_decisions: dlpDecisions,
@@ -269,14 +273,15 @@ export async function handleOpenAIGovernedResponses(
     return { kind: 'blocked', status_code: 403, reason, audit_event: ev, governance };
   }
 
-  const providerKey = await deps.resolveProviderKey(
+  // F1: resolved credential carries provenance; .apiKey builds headers, .source flows to events.
+  const resolvedCredential = await deps.resolveProviderKey(
     input.tenant.org_id,
     input.tenant.operational_mode,
   );
   const organization = deps.resolveProviderOrganization
     ? await deps.resolveProviderOrganization(input.tenant.org_id)
     : undefined;
-  const outHeaders = buildOutboundHeaders(input.inboundHeaders, providerKey, organization);
+  const outHeaders = buildOutboundHeaders(input.inboundHeaders, resolvedCredential.apiKey, organization);
 
   if (input.isStream) {
     const stream = await forwardStream({
@@ -312,7 +317,7 @@ export async function handleOpenAIGovernedResponses(
         latency_ms: final.latency_ms,
         status_code: stream.status,
         occurred_at: occurredAt.toISOString(),
-        credential_source: 'tenant_provider_credential',
+        credential_source: resolvedCredential.source,
         allowlist_version: OPENAI_BETA_POLICY_VERSION,
         ...(stream.provider_request_id ? { provider_request_id: stream.provider_request_id } : {}),
         body_forward_mode: 'raw',
@@ -376,7 +381,7 @@ export async function handleOpenAIGovernedResponses(
     latency_ms: fwd.latency_ms,
     status_code: fwd.status,
     occurred_at: occurredAt.toISOString(),
-    credential_source: 'tenant_provider_credential',
+    credential_source: resolvedCredential.source,
     allowlist_version: OPENAI_BETA_POLICY_VERSION,
     ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
     body_forward_mode: 'raw',

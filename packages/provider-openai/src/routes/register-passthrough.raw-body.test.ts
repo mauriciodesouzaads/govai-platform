@@ -96,7 +96,7 @@ beforeAll(async () => {
   const deps: OpenAIPassthroughDeps = {
     upstreamBaseUrl: fakeUrl,
     resolveTenant: async () => tenant,
-    resolveProviderKey: async () => 'harness-fake-provider-key',
+    resolveProviderKey: async () => ({ apiKey: 'harness-fake-provider-key', source: 'tenant_provider_credential' }),
     activeOverridesLoader: async () => [],
     emitAuditEvent: (ev: unknown) => {
       auditEvents.push(ev);
@@ -258,6 +258,9 @@ describe('OpenAI passthrough raw-body preservation (real socket, app.listen + fe
     const ev = invokedEvent();
     expect(ev['native_request_hash']).toBe(sha256(sentRawBody));
     expect(ev['is_stream']).toBe(false);
+    // F1: the passthrough producer emits the resolver's source (the mock
+    // returns a tenant credential), not a hardcoded literal by coincidence.
+    expect(ev['credential_source']).toBe('tenant_provider_credential');
   });
 
   it('classifies tools from the raw Buffer path (valid JSON with top-level tools)', async () => {

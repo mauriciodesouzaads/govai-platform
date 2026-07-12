@@ -112,7 +112,7 @@ beforeAll(async () => {
   const deps: OpenAIGovernedDeps = {
     upstreamBaseUrl: 'http://upstream.invalid',
     resolveTenant: async () => tenant,
-    resolveProviderKey: async () => 'k',
+    resolveProviderKey: async () => ({ apiKey: 'k', source: 'tenant_provider_credential' }),
     dlpScan: async () => ({ findings: [] }),
     emitAuditEvent: (ev) => {
       if (emitShouldThrow) throw new Error('emit boom');

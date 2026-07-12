@@ -1,6 +1,7 @@
 // E2E.1-E2E.5: full Governed Run pipeline against hermetic provider.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   startStack,
   stopStack,
@@ -314,6 +315,41 @@ describe('Governed Run E2E', () => {
       expect(events.statusCode).toBe(200);
       const ev = events.body as { events: Array<{ event_type: string }> };
       expect(ev.events.map((e) => e.event_type)).toContain('run.failed');
+
+      // C-2 (representation twin): the network-failure INSERT persists the REAL
+      // 32-byte binary SHA-256 of the final native request body via $5::bytea —
+      // the IDENTICAL representation the governed_blocked branch now uses (both
+      // pass the `nativeRequestHash` Buffer, never '\x00' and never the 64-char
+      // hex string). Proven here on the reachable twin; the blocked branch is
+      // byte-identical by construction (see the execution report — the
+      // governed_blocked branch is not independently reachable via /v1/runs).
+      // The expected digest is computed INDEPENDENTLY from the known native body.
+      const expectedNativeBody = Buffer.from(
+        JSON.stringify({
+          model: 'claude-fixture-1',
+          max_tokens: 1024,
+          messages: [{ role: 'user', content: 'test' }],
+        }),
+        'utf8',
+      );
+      const expectedDigest = createHash('sha256').update(expectedNativeBody).digest();
+      const c = await failStack.db.appPool.connect();
+      try {
+        await c.query('BEGIN');
+        await setLocalAppOrgId(c, org.org_id);
+        const inv = await c.query<{ hash: Buffer; len: number }>(
+          `SELECT native_request_hash AS hash, octet_length(native_request_hash) AS len
+             FROM govai.provider_invocations WHERE run_id = $1::uuid`,
+          [body.run_id],
+        );
+        await c.query('COMMIT');
+        expect(inv.rows).toHaveLength(1);
+        expect(inv.rows[0]!.len).toBe(32); // 32 binary bytes, NOT 64 ASCII hex chars
+        expect(Buffer.compare(inv.rows[0]!.hash, expectedDigest)).toBe(0);
+        expect(Buffer.compare(inv.rows[0]!.hash, Buffer.alloc(32))).not.toBe(0); // != \x00…
+      } finally {
+        c.release();
+      }
     } finally {
       await stopStack(failStack);
     }

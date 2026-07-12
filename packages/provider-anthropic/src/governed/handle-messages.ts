@@ -7,7 +7,7 @@
 // capability from registry, computeEffectiveRiskClass + computeEnforcement).
 
 import { createHash, randomUUID } from 'node:crypto';
-import type { Capability, OperationalMode } from '@govai/core-types';
+import type { Capability, OperationalMode, ResolvedProviderCredential } from '@govai/core-types';
 import {
   resolveGovernance,
   type DlpFindingLite,
@@ -44,11 +44,15 @@ export type DlpScanFn = (text: string) => Promise<{
 export type GovernedHandleDeps = {
   upstreamBaseUrl: string;
   /**
-   * Returns the Anthropic API key for this tenant. The caller passes the
-   * operational mode already resolved at auth time so the resolver does NOT
-   * need to re-query `govai.org_tier_lookup` (issue #25).
+   * Returns the Anthropic API key for this tenant PLUS its provenance (F1).
+   * The caller passes the operational mode already resolved at auth time so the
+   * resolver does NOT need to re-query `govai.org_tier_lookup` (issue #25).
+   * `.apiKey` builds headers (memory only); `.source` flows to `credential_source`.
    */
-  resolveProviderKey: (orgId: string, operationalMode: OperationalMode) => Promise<string>;
+  resolveProviderKey: (
+    orgId: string,
+    operationalMode: OperationalMode,
+  ) => Promise<ResolvedProviderCredential>;
   /** DLP pre-scan (org-aware via the caller). Returns findings only. */
   dlpScan: DlpScanFn;
   /** Audit sink: caller persists into the audit chain. */
@@ -280,7 +284,9 @@ export async function handleAnthropicGovernedMessages(
       latency_ms: 0,
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
-      credential_source: 'tenant_provider_credential',
+      // F1: the request blocked BEFORE the provider — no credential was
+      // resolved (the resolver is not called on this path).
+      credential_source: 'not_resolved_pre_provider_block',
       allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
       dlp_decisions: dlpDecisions,
@@ -302,12 +308,13 @@ export async function handleAnthropicGovernedMessages(
     };
   }
 
-  // Forward.
-  const providerKey = await deps.resolveProviderKey(
+  // Forward. F1: the resolved credential carries its provenance; `.apiKey`
+  // builds headers (memory only), `.source` flows into the emitted events.
+  const resolvedCredential = await deps.resolveProviderKey(
     input.tenant.org_id,
     input.tenant.operational_mode,
   );
-  const outHeaders = buildOutboundHeaders(input.inboundHeaders, providerKey);
+  const outHeaders = buildOutboundHeaders(input.inboundHeaders, resolvedCredential.apiKey);
 
   if (input.isStream) {
     const stream = await forwardStream({
@@ -348,7 +355,7 @@ export async function handleAnthropicGovernedMessages(
         latency_ms: final.latency_ms,
         status_code: stream.status,
         occurred_at: occurredAt.toISOString(),
-        credential_source: 'tenant_provider_credential',
+        credential_source: resolvedCredential.source,
         allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
         ...(stream.provider_request_id ? { provider_request_id: stream.provider_request_id } : {}),
         body_forward_mode: 'raw',
@@ -413,7 +420,7 @@ export async function handleAnthropicGovernedMessages(
     latency_ms: fwd.latency_ms,
     status_code: fwd.status,
     occurred_at: occurredAt.toISOString(),
-    credential_source: 'tenant_provider_credential',
+    credential_source: resolvedCredential.source,
     allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
     ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
     body_forward_mode: 'raw',

@@ -203,11 +203,14 @@ describe('provider-credentials / plaintext leak canary', () => {
 
     let plaintext: string | undefined;
     try {
-      plaintext = await resolveAnthropicProviderKey(deps(), {
+      const resolved = await resolveAnthropicProviderKey(deps(), {
         orgId: org.org_id,
         operationalMode: 'production',
       });
+      plaintext = resolved.apiKey;
       expect(plaintext).toBe(CANARY_PLAINTEXT);
+      // F1: a tenant credential resolved → tenant provenance.
+      expect(resolved.source).toBe('tenant_provider_credential');
     } finally {
       plaintext = '<consumed>';
     }
@@ -369,7 +372,7 @@ describe('provider-credentials / plaintext leak canary', () => {
       orgId: org.org_id,
       operationalMode: 'production',
     });
-    expect(k).toBe(CANARY_PLAINTEXT);
+    expect(k.apiKey).toBe(CANARY_PLAINTEXT);
 
     // No surface should contain the canary outside the test-local variable.
     await assertNoCanaryAcrossSurfaces({ orgId: org.org_id });
