@@ -24,7 +24,7 @@
 // govaiRequestId echoed to THAT response, and each `audit_bridge.capture` log
 // line must pair that capture_id with that response's X-GovAI-Request-Id.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
@@ -54,13 +54,22 @@ type Gate = {
   released: Promise<void>;
   signalArrived: () => void;
   release: () => void;
+  /** Complete request Promises associated with this gate via track(). Cleanup
+   *  awaits THESE (request settlement), not upstream-handler bookkeeping. */
+  requests: Set<Promise<unknown>>;
+};
+
+type GateHandle = {
+  arrived: Promise<void>;
+  release: () => void;
+  track: <T>(request: Promise<T>) => Promise<T>;
 };
 
 const gates = new Map<string, Gate>();
 const timeline: string[] = [];
 const upstreamHits: Array<{ url: string; headers: Record<string, unknown> }> = [];
 
-function gate(id: string): { arrived: Promise<void>; release: () => void } {
+function gate(id: string): GateHandle {
   let signalArrived!: () => void;
   let release!: () => void;
   const arrived = new Promise<void>((r) => {
@@ -69,7 +78,7 @@ function gate(id: string): { arrived: Promise<void>; release: () => void } {
   const released = new Promise<void>((r) => {
     release = r;
   });
-  const g: Gate = { arrived, released, signalArrived, release };
+  const g: Gate = { arrived, released, signalArrived, release, requests: new Set() };
   gates.set(id, g);
   return {
     arrived,
@@ -77,7 +86,49 @@ function gate(id: string): { arrived: Promise<void>; release: () => void } {
       timeline.push(`release:${id}`);
       release();
     },
+    // Associates the COMPLETE request Promise with this gate and returns the
+    // exact same Promise (no transformation, no rejection suppression) so a
+    // failed test's parked request can be released AND awaited by cleanup.
+    track: <T>(request: Promise<T>): Promise<T> => {
+      g.requests.add(request);
+      return request;
+    },
   };
+}
+
+/**
+ * Fail-safe cleanup (PR #120 P2): release every outstanding internal gate and
+ * wait for every request Promise tracked against those gates to settle. Runs
+ * after EVERY test (and in final teardown) so an assertion or timeout that
+ * fires before a test's public `release()` call cannot strand a parked
+ * upstream handler, hang server closure, or leak a still-running request into
+ * a later test.
+ *
+ * Contract: release raw internal resolvers → await tracked request settlement.
+ * "Drained" means every tracked request Promise has settled — NOT merely that
+ * the upstream handler returned, and no claim about transport-level flushing.
+ * Late arrivals are covered either way: a handler that already captured its
+ * Gate sees `released` resolve (Path A); a handler that looks up the gate
+ * AFTER the registry snapshot finds none and skips parking entirely (Path B) —
+ * in both paths the tracked request Promise is what cleanup awaits, so nothing
+ * completes unobserved. `Promise.allSettled` is intentional: cleanup owns
+ * COMPLETION, not result adjudication — a rejected tracked request must not
+ * replace the original test failure with a teardown rejection (each test
+ * remains responsible for asserting its own request result). The raw internal
+ * resolvers are used directly — never the public wrapper — so cleanup can
+ * never fabricate a `release:<id>` timeline event. Residual (deliberate): if a
+ * tracked request stalls for a reason UNRELATED to its gate, cleanup waits and
+ * the Vitest hook/test timeout exposes the stuck request instead of an
+ * internal timeout hiding it.
+ */
+async function releaseAndDrainOutstandingGates(): Promise<void> {
+  const outstanding = [...gates.values()];
+  gates.clear();
+  for (const g of outstanding) {
+    g.release(); // raw resolver: idempotent, no timeline event
+  }
+  const trackedRequests = outstanding.flatMap((g) => [...g.requests]);
+  await Promise.allSettled(trackedRequests);
 }
 
 function startLatchUpstream(): Promise<{ server: Server; baseUrl: string }> {
@@ -184,9 +235,47 @@ beforeAll(async () => {
   listenBaseUrl = `http://127.0.0.1:${addr.port}`;
 }, 240_000);
 
+// PR #120 P2: per-test fail-safe. If an assertion/timeout fired before a
+// test's public release() calls, this releases the stranded requests and waits
+// for their COMPLETE request Promises before the next test runs — the original
+// test failure stays primary, no parked handler survives into a later test.
+// Deliberately does NOT clear logs/timeline (tests own their resets) and does
+// NOT catch assertion failures.
+afterEach(async () => {
+  await releaseAndDrainOutstandingGates();
+});
+
+// Final teardown: attempt ALL THREE phases (gate drain → app stack → custom
+// upstream) even when an earlier phase throws, and preserve EVERY error — a
+// later phase's failure must never silently replace an earlier one.
 afterAll(async () => {
-  if (stack) await stopStack(stack);
-  if (upstream) await new Promise<void>((r) => upstream.server.close(() => r()));
+  const errors: unknown[] = [];
+  try {
+    await releaseAndDrainOutstandingGates();
+  } catch (err) {
+    errors.push(err);
+  }
+  try {
+    if (stack) await stopStack(stack);
+  } catch (err) {
+    errors.push(err);
+  }
+  try {
+    if (upstream) {
+      await new Promise<void>((resolve, reject) => {
+        upstream.server.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+  } catch (err) {
+    errors.push(err);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, 'request-identity fixture teardown failed in multiple phases');
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -357,20 +446,24 @@ describe('P0-PRE-F4 — deterministic request-identity isolation (interleaved, r
     const gB = gate(latchB);
 
     // Request A establishes identity A, then parks inside its upstream forward.
-    const pA = app.inject(
-      anthropicMessagesReq(org.api_key, 'request A', {
-        'x-govai-idempotency-key': KEY_A,
-        'x-test-latch': latchA,
-      }),
+    const pA = gA.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'request A', {
+          'x-govai-idempotency-key': KEY_A,
+          'x-test-latch': latchA,
+        }),
+      ),
     );
     await gA.arrived; // BARRIER: A advanced past the identity hook into its forward.
 
     // Request B establishes identity B while A is parked.
-    const pB = app.inject(
-      anthropicMessagesReq(org.api_key, 'request B', {
-        'x-govai-idempotency-key': KEY_B,
-        'x-test-latch': latchB,
-      }),
+    const pB = gB.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'request B', {
+          'x-govai-idempotency-key': KEY_B,
+          'x-test-latch': latchB,
+        }),
+      ),
     );
     await gB.arrived; // BARRIER: B advanced past the identity hook too; both in flight.
 
@@ -433,11 +526,13 @@ describe('P0-PRE-F4 — deterministic request-identity isolation (interleaved, r
     const latch = `N-${randomUUID()}`;
     const g = gate(latch);
 
-    const pDirect = app.inject(
-      anthropicMessagesReq(org.api_key, 'parked while health runs', {
-        'x-govai-idempotency-key': `f4-n-${randomUUID()}`,
-        'x-test-latch': latch,
-      }),
+    const pDirect = g.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'parked while health runs', {
+          'x-govai-idempotency-key': `f4-n-${randomUUID()}`,
+          'x-test-latch': latch,
+        }),
+      ),
     );
     await g.arrived;
 
@@ -469,25 +564,29 @@ describe('P0-PRE-F4 — cross-route isolation (Anthropic ∥ OpenAI, inverted re
     const gAnt = gate(latchAnt);
     const gOai = gate(latchOai);
 
-    const pAnt = app.inject(
-      anthropicMessagesReq(org.api_key, 'cross-route anthropic', {
-        'x-govai-idempotency-key': KEY_ANT,
-        'x-test-latch': latchAnt,
-      }),
+    const pAnt = gAnt.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'cross-route anthropic', {
+          'x-govai-idempotency-key': KEY_ANT,
+          'x-test-latch': latchAnt,
+        }),
+      ),
     );
     await gAnt.arrived;
 
-    const pOai = app.inject({
-      method: 'POST',
-      url: '/passthrough/openai/v1/embeddings',
-      headers: {
-        'x-govai-api-key': org.api_key,
-        'content-type': 'application/json',
-        'x-govai-idempotency-key': KEY_OAI,
-        'x-test-latch': latchOai,
-      },
-      payload: JSON.stringify({ model: 'text-embedding-3-small', input: 'cross-route openai' }),
-    });
+    const pOai = gOai.track(
+      app.inject({
+        method: 'POST',
+        url: '/passthrough/openai/v1/embeddings',
+        headers: {
+          'x-govai-api-key': org.api_key,
+          'content-type': 'application/json',
+          'x-govai-idempotency-key': KEY_OAI,
+          'x-test-latch': latchOai,
+        },
+        payload: JSON.stringify({ model: 'text-embedding-3-small', input: 'cross-route openai' }),
+      }),
+    );
     await gOai.arrived;
 
     // Inverted release: the LATER-established identity resolves first.
@@ -546,11 +645,13 @@ describe('P0-PRE-F4 — keyed ∥ keyless overlap', () => {
     const gK = gate(latchK);
 
     // Keyed request parks first (its hash is live in ITS context).
-    const pKeyed = app.inject(
-      anthropicMessagesReq(org.api_key, 'keyed parked', {
-        'x-govai-idempotency-key': KEY,
-        'x-test-latch': latchK,
-      }),
+    const pKeyed = gK.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'keyed parked', {
+          'x-govai-idempotency-key': KEY,
+          'x-test-latch': latchK,
+        }),
+      ),
     );
     await gK.arrived;
 
@@ -612,11 +713,13 @@ describe('P0-PRE-F4 — governed blocked path keeps the originating identity', (
 
     // Park an unrelated passthrough request so the blocked request runs under
     // real concurrency, not in isolation.
-    const pParked = app.inject(
-      anthropicMessagesReq(org.api_key, 'parked bystander', {
-        'x-govai-idempotency-key': `f4-bystander-${randomUUID()}`,
-        'x-test-latch': latch,
-      }),
+    const pParked = g.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'parked bystander', {
+          'x-govai-idempotency-key': `f4-bystander-${randomUUID()}`,
+          'x-test-latch': latch,
+        }),
+      ),
     );
     await g.arrived;
     const hitsBefore = upstreamHits.length;
@@ -695,22 +798,26 @@ describe('P0-PRE-F4 — streaming terminal identity (delayed emission, overlappe
     const gSA = gate(latchSA);
     const gSB = gate(latchSB);
 
-    const pSA = app.inject(
-      anthropicMessagesReq(
-        org.api_key,
-        'stream A',
-        { 'x-govai-idempotency-key': KEY_SA, 'x-test-latch': latchSA },
-        true,
+    const pSA = gSA.track(
+      app.inject(
+        anthropicMessagesReq(
+          org.api_key,
+          'stream A',
+          { 'x-govai-idempotency-key': KEY_SA, 'x-test-latch': latchSA },
+          true,
+        ),
       ),
     );
     await gSA.arrived; // stream A parked mid-drain, terminal pending
 
-    const pSB = app.inject(
-      anthropicMessagesReq(
-        org.api_key,
-        'stream B',
-        { 'x-govai-idempotency-key': KEY_SB, 'x-test-latch': latchSB },
-        true,
+    const pSB = gSB.track(
+      app.inject(
+        anthropicMessagesReq(
+          org.api_key,
+          'stream B',
+          { 'x-govai-idempotency-key': KEY_SB, 'x-test-latch': latchSB },
+          true,
+        ),
       ),
     );
     await gSB.arrived; // stream B parked mid-drain too
@@ -794,16 +901,18 @@ describe('P0-PRE-F4 — streaming terminal identity (delayed emission, overlappe
     const latch = `ERR-${randomUUID()}`;
     const g = gate(latch);
 
-    const pErr = app.inject(
-      anthropicMessagesReq(
-        org.api_key,
-        'stream that dies upstream',
-        {
-          'x-govai-idempotency-key': KEY_ERR,
-          'x-test-latch': latch,
-          'x-test-upstream-mode': 'destroy',
-        },
-        true,
+    const pErr = g.track(
+      app.inject(
+        anthropicMessagesReq(
+          org.api_key,
+          'stream that dies upstream',
+          {
+            'x-govai-idempotency-key': KEY_ERR,
+            'x-test-latch': latch,
+            'x-test-upstream-mode': 'destroy',
+          },
+          true,
+        ),
       ),
     );
     await g.arrived; // headers + first chunk delivered; stream is live
@@ -903,6 +1012,156 @@ describe('P0-PRE-F4 — real-socket keep-alive sequence (keyed → keyless → n
     expect(rowKeyless!.redaction_metadata.audit_bridge?.identity_scope).toBe('govai_request_id');
     expect(rowKeyless!.redaction_metadata.audit_bridge?.idempotency_key_hash).toBeUndefined();
     expect(missingIdentityLogs()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #120 P2 — cleanup-contract tests for releaseAndDrainOutstandingGates().
+// These prove the fail-safe mechanism itself; the nine tests above remain the
+// behavioral isolation proofs.
+// ---------------------------------------------------------------------------
+
+describe('P0-PRE-F4 — gate cleanup contract (fail-safe release and tracked-request drain)', () => {
+  it('cleanup releases a parked request and fabricates no public release event', async () => {
+    timeline.length = 0;
+    const org = await seedOrg(stack);
+    const latch = `CLN1-${randomUUID()}`;
+    const g = gate(latch);
+
+    const pReq = g.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'parked for cleanup', {
+          'x-test-latch': latch,
+        }),
+      ),
+    );
+    await g.arrived; // the request is genuinely parked at the gate
+
+    // Simulates the failure path: the public release() wrapper is NEVER called.
+    await releaseAndDrainOutstandingGates();
+
+    // The request completed (cleanup awaited its settlement), the registry is
+    // empty, and the timeline shows the REAL handler events only — arrive from
+    // the handler, resume from the handler after the raw release — and no
+    // fabricated release:<id> from cleanup.
+    const res = await pReq;
+    expect(res.statusCode).toBe(200);
+    expect(gates.size).toBe(0);
+    expect(timeline).toEqual([`arrive:${latch}`, `resume:${latch}`]);
+  });
+
+  it('cleanup waits for the COMPLETE real request, not merely the upstream handler', async () => {
+    const org = await seedOrg(stack);
+    const KEY = `f4-cln2-${randomUUID()}`;
+    const latch = `CLN2-${randomUUID()}`;
+    const g = gate(latch);
+
+    const pReq = g.track(
+      app.inject(
+        anthropicMessagesReq(org.api_key, 'cleanup awaits my settlement', {
+          'x-govai-idempotency-key': KEY,
+          'x-test-latch': latch,
+        }),
+      ),
+    );
+    await g.arrived;
+
+    // Settlement flag registered BEFORE cleanup: its callback runs when the
+    // request Promise settles, so it is a strict witness that cleanup did not
+    // resolve first.
+    let settled = false;
+    void pReq.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    await releaseAndDrainOutstandingGates();
+
+    expect(settled).toBe(true); // the request Promise settled BEFORE cleanup resolved
+    const res = await pReq;
+    expect(res.statusCode).toBe(200); // the API request truly completed
+    expect(gates.size).toBe(0); // no gate-controlled request remains registered
+    // Its evidence is observable: the capture row for this key exists.
+    const rows = await outboxRows(org.org_id);
+    expect(
+      rows.some((r) => r.capture_id === keyedCaptureId(ANTHROPIC_MSG_COORDS(org.org_id), KEY)),
+    ).toBe(true);
+  });
+
+  // HELPER-CONTRACT test (synthetic, pre-authorized Form B): proves cleanup
+  // keeps waiting for a tracked Promise that settles only AFTER cleanup began
+  // (the late-completion contract). It deliberately does NOT exercise Fastify
+  // or the upstream handler — the real arrived-request integration coverage is
+  // the two tests above; this one pins the helper's tracked-Promise waiting
+  // contract with explicit deferred control (no sleeps, no scheduling luck).
+  it('helper contract: cleanup stays pending until a late-settling tracked Promise settles', async () => {
+    const latch = `CLN3-${randomUUID()}`;
+    const g = gate(latch);
+
+    let resolveLate!: (v: string) => void;
+    const late = new Promise<string>((r) => {
+      resolveLate = r;
+    });
+    const tracked = g.track(late);
+    expect(tracked).toBe(late); // track() returns the exact same Promise
+
+    let cleanupDone = false;
+    const cleanupP = releaseAndDrainOutstandingGates().then(() => {
+      cleanupDone = true;
+    });
+
+    // The synchronous phase already ran: registry snapshotted + cleared.
+    expect(gates.size).toBe(0);
+    // Give cleanup every opportunity to (incorrectly) finish: the tracked
+    // Promise is still pending, so cleanup MUST still be pending too.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cleanupDone).toBe(false);
+
+    resolveLate('late-settlement');
+    await cleanupP;
+    expect(cleanupDone).toBe(true);
+  });
+
+  it('a gate with no tracked request cannot block cleanup', async () => {
+    timeline.length = 0;
+    const latch = `CLN4-${randomUUID()}`;
+    gate(latch); // created, never given a request
+
+    // Zero tracked Promises → allSettled([]) → cleanup returns immediately
+    // (this await completing at all is the no-block proof).
+    await releaseAndDrainOutstandingGates();
+
+    expect(gates.size).toBe(0);
+    expect(timeline).toEqual([]); // no fabricated public release event, no handler activity
+  });
+
+  it('a rejected tracked request settles cleanup without replacing it', async () => {
+    const latch = `CLN5-${randomUUID()}`;
+    const g = gate(latch);
+
+    let rejectLate!: (e: Error) => void;
+    const failing = new Promise<never>((_resolve, reject) => {
+      rejectLate = reject;
+    });
+    g.track(failing);
+    // The TEST owns the rejection (cleanup must neither suppress nor rethrow it).
+    let sawRejection = false;
+    void failing.catch(() => {
+      sawRejection = true;
+    });
+
+    const cleanupP = releaseAndDrainOutstandingGates();
+    expect(gates.size).toBe(0); // raw release + registry clear already happened
+
+    rejectLate(new Error('tracked request rejected after raw release'));
+    // allSettled: cleanup RESOLVES despite the tracked rejection — awaiting it
+    // without try/catch is the proof that the rejection was not rethrown.
+    await cleanupP;
+    expect(sawRejection).toBe(true); // cleanup waited for settlement (the rejection happened)
   });
 });
 
