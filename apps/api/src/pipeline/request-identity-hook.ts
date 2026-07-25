@@ -82,10 +82,12 @@ export function registerRequestIdentityHook(app: FastifyInstance): void {
     // AR-2: AsyncLocalStorage is the PRIMARY propagation channel. `done()` runs
     // synchronously inside `run()`, so the continuation Fastify drives from here
     // — and every async resource it creates — reads this request's identity via
-    // `getStore()`, while the store ends with the callback instead of leaking
-    // into the ambient context (the F4 hardening; falsification found no
-    // observable cross-request contamination at the base, and this boundary is
-    // the explicit-ownership replacement for the unbounded `enterWith()`).
+    // `getStore()`. When the `run()` callback returns, the caller's prior
+    // ambient context is restored; asynchronous resources created by the
+    // continuation retain the request-owned store for their own lifecycle. This
+    // explicit ownership boundary replaces the unbounded ambient transition from
+    // `enterWith()` (the F4 hardening; falsification found no observable
+    // cross-request contamination at the base).
     // The `WeakMap<FastifyRequest>` precedent already used by the passthrough
     // routes remains the pre-approved fallback if a streaming case ever loses
     // the async context deterministically.

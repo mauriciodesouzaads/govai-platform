@@ -4,7 +4,8 @@
 
 - **Evidence-first source of truth** for the current implementation state of GovAI.
 - **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner; it consumes no provider traffic and runs outside the request hot path (see §3 and §7).
-- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `c3cd39f36c0b465ac236ed8d01aedabe20703c77` (2026-06-27), not from memory.
+- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `719fefc25502bb9f7547743f339b38fa3a20c4c7` (2026-07-25), not from memory.
+- **The P0 "Truth and Integrity" program (2026-07) landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`) and the F4 preventive hardening (PR #120, merge `719fefc2`) are merged. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state, and the narrow follow-up register.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
@@ -27,34 +28,35 @@ Counts from `find` at the source commit (not from docs):
 - architecture docs (`docs/architecture/**.md`): **66**
 - regulatory docs (`docs/architecture/regulatory/*.md`): **20** (18–25 series present; **no** 26–30 files exist)
 - ADR docs (`docs/architecture/adr/*.md`): **23** (ADR-001..014 + ADR-020..028; **missing** ADR-015..019; ADR-028 is the most recent — `Accepted` and in main)
-- API route files (`apps/api/src/routes/*`): **17** (16 routes + `_not-implemented.ts`)
-- DB migrations (`apps/api/src/db/migrations/*`): **26** (0001..0027, **missing** 0006; highest `0027_evidence_completeness_views.sql`)
-- test files (`*.test.ts`/`*.spec.ts`): **165** on disk; **162** run by the default `pnpm test` (3 under `tests/live/` are live-gated; the suite runs **2056** tests)
+- API route files (`apps/api/src/routes/*`): **18** (17 routes + `_not-implemented.ts`; `evidence.ts` added by EP-008D)
+- DB migrations (`apps/api/src/db/migrations/*`): **27** (0001..0028, **missing** 0006; highest `0028_evidence_enumerator_policy.sql`)
+- test files (`*.test.ts`/`*.spec.ts`): **181** on disk — **109** unit (under `apps/`+`packages/`), **67** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate (`vitest.config.ts`), the default `pnpm test` is **unit-only** (109 files, **1258** tests, reproduced locally at this anchor); `pnpm test:integration` adds the integration files (CI runs both jobs)
 
 ---
 
 ## 1. Runtime surfaces
 
-All surfaces registered in `apps/api/src/server.ts:93-112`. Status reflects **runtime execution**; audit-evidence capture is a separate axis (§3).
+All surfaces registered in `apps/api/src/server.ts:156-176` (the direct-route identity hook registers at `:170`). Status reflects **runtime execution**; audit-evidence capture is a separate axis (§3).
 
 | Surface | Status | Route/entrypoint | Handler/service | Tests | Limitations | Next step |
 |---|---|---|---|---|---|---|
-| Health | IMPLEMENTED_RUNTIME_SOURCE_VERIFIED_TESTS_NOT_LOCATED | `routes/health.ts` (`server.ts:93`) | inline | dedicated route test not located in this review | liveness/readiness | — |
-| Capabilities | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/capabilities.ts` (`:94`) | `@govai/core-governance` | `tests/integration/capabilities-by-org.test.ts` | per-org view; default-deny | — |
-| `/v1/runs` | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/runs.ts` (`:95`) | `pipeline/run-orchestrator.ts` | `tests/integration/governed-run-e2e.test.ts`, `runs-passthrough-mode.test.ts` | governed+passthrough; writes run-lifecycle audit to chain via `auditAppend` (§3) | — |
-| Audit events | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/audit-events.ts` (`:96`) | reads HMAC chain | `audit-events-rls.test.ts`, `audit-events-pagination.test.ts` | read-only | — |
+| Health | IMPLEMENTED_RUNTIME_SOURCE_VERIFIED_TESTS_NOT_LOCATED | `routes/health.ts` (`server.ts:156`) | inline | dedicated route test not located in this review | liveness/readiness | — |
+| Capabilities | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/capabilities.ts` (`:157`) | `@govai/core-governance` | `tests/integration/capabilities-by-org.test.ts` | per-org view; default-deny | — |
+| `/v1/runs` | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/runs.ts` (`:158`) | `pipeline/run-orchestrator.ts` | `tests/integration/governed-run-e2e.test.ts`, `runs-passthrough-mode.test.ts` | governed+passthrough; writes run-lifecycle audit to chain via `auditAppend` (§3) | — |
+| Audit events | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/audit-events.ts` (`:159`) | reads HMAC chain | `audit-events-rls.test.ts`, `audit-events-pagination.test.ts` | read-only | — |
 | Admin audit crypto-shred | PLANNED | `routes/admin-audit-shred.ts:41` (`sendNotImplemented … 'PR3'`) | stub | n/a | not-implemented stub; `crypto_shredded` state + ADR-011 exist in schema | implement later |
 | Admin DLP detector CRUD | PLANNED | `routes/admin-dlp.ts:40` (`sendNotImplemented … 'PR3'`) | stub | n/a | admin CRUD stub; DLP pre-scan itself runs in governed surfaces | implement later |
-| Passthrough Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-anthropic.ts` (`:99`) | `@govai/provider-anthropic` | `tests/integration/anthropic-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Passthrough OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-openai.ts` (`:100`) | `@govai/provider-openai` | `tests/integration/openai-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Governed Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-anthropic.ts` (`:101`) | `@govai/provider-anthropic/governed` | `tests/integration/governed-anthropic.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Governed OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-openai.ts` (`:102`) | `@govai/provider-openai/governed` | `tests/integration/governed-openai.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Admin provider credentials | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/admin-provider-credentials.ts` (`:107`) | KMS envelope; `auditAppend` (`:164,289`) | `admin-provider-credentials-*.test.ts` (6 files) | SET/GET/REVOKE; no rotation policy | — |
-| Workrooms (Phase 1) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workrooms.ts` (`:108`) | inline; migration 0012 | `tests/integration/workroom-participants.test.ts` (+ ~20 workroom tests) | partial runtime (Phase 1) | — |
-| Workroom transcript (Phase 2) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-transcript.ts` (`:109`) | migration 0013 | `workroom-messages.test.ts`, `workroom-audit-subview.test.ts` | partial runtime (Phase 2) | — |
-| Workroom runs (Phase 3) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-runs.ts` (`:110`) | `run-orchestrator.ts` `WorkroomRunContext`; migration 0014 | `workroom-runs.test.ts`, `workroom-runs-mode.test.ts` | partial runtime (Phase 3) | — |
-| Workroom approvals (Phase 4) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-approvals.ts` (`:111`) | migration 0015 | `workroom-approvals.test.ts`, `workroom-approvals-runs.test.ts` | partial runtime (Phase 4); SoD/TOCTOU | — |
-| Regulatory | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/regulatory.ts` (`:112`) | `regulatory/service.ts`; migrations 0016–0024 | `regulatory-*.test.ts` (11 files) | **evidence only, not runtime enforcement** (§4/§5) | — |
+| Passthrough Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-anthropic.ts` (`:163`) | `@govai/provider-anthropic` | `tests/integration/anthropic-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
+| Passthrough OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-openai.ts` (`:164`) | `@govai/provider-openai` | `tests/integration/openai-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
+| Governed Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-anthropic.ts` (`:165`) | `@govai/provider-anthropic/governed` | `tests/integration/governed-anthropic.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
+| Governed OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-openai.ts` (`:166`) | `@govai/provider-openai/governed` | `tests/integration/governed-openai.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
+| Admin provider credentials | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/admin-provider-credentials.ts` (`:171`) | KMS envelope; `auditAppend` (`:165,289`) | `admin-provider-credentials-*.test.ts` (6 files) | SET/GET/REVOKE; no rotation policy | — |
+| Workrooms (Phase 1) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workrooms.ts` (`:172`) | inline; migration 0012 | `tests/integration/workroom-participants.test.ts` (+ ~20 workroom tests) | partial runtime (Phase 1) | — |
+| Workroom transcript (Phase 2) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-transcript.ts` (`:173`) | migration 0013 | `workroom-messages.test.ts`, `workroom-audit-subview.test.ts` | partial runtime (Phase 2) | — |
+| Workroom runs (Phase 3) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-runs.ts` (`:174`) | `run-orchestrator.ts` `WorkroomRunContext`; migration 0014 | `workroom-runs.test.ts`, `workroom-runs-mode.test.ts` | partial runtime (Phase 3) | — |
+| Workroom approvals (Phase 4) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-approvals.ts` (`:175`) | migration 0015 | `workroom-approvals.test.ts`, `workroom-approvals-runs.test.ts` | partial runtime (Phase 4); SoD/TOCTOU | — |
+| Regulatory | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/regulatory.ts` (`:176`) | `regulatory/service.ts`; migrations 0016–0024 | `regulatory-*.test.ts` (11 files) | **evidence only, not runtime enforcement** (§4/§5) | — |
+| Evidence read API (`/v1/evidence`) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-008D) | `routes/evidence.ts` (`:160`) | `pipeline/evidence-reports.ts` (EC summary + gap lists) | `tests/integration/evidence-reports.test.ts`, `evidence-cockpit.test.ts` | read-only, RLS-scoped (the auditor IS the tenant — per-org view, no cross-tenant operator role); `/gaps` enum `ec1\|ec2\|ec3seal\|ec3drop\|ec4`; EC-5 deferred | real EC-5 (separate Option-A EP) |
 
 Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are `DOCUMENTED_TARGET_ONLY`. Workroom is **not complete**.
 
@@ -94,21 +96,21 @@ Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are
 | B3 — sealer **runner** | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-006) | `apps/audit-sealer` — a dedicated deploy unit consuming `@govai/core-audit` verbatim: Shape-S per-seal tx (claim→append→mark_sealed via `withSealerPhaseRole`), the SEPARATE stale-recovery path (`loadSealingCaptureForRecovery` → idempotent re-append + mark_sealed; recoverable rows ADVANCED never failed; terminal stall surfaced via `terminal_failure` metric, not silently retried), startup readiness probe, bounded claim loop, OTel metrics. Integration-tested S0–S11 (`tests/integration/audit-sealer-runner.test.ts`) incl. the §8.3 no-duplicate byte-identical recovery proof. ADR-022–026 Accepted; ADR-023 Option A(b) impl/tested PR #92; Phase 2.5 wired PR-B #98. B3 authorized + implemented (EP-006); see `specs/audit-sealer-b3-technical-plan.md` |
 | Append/seal idempotency | capture: SOLVED; mark_sealed same-event: PARTIAL; **append→mark_sealed partial-failure: Option A(b) IMPLEMENTED/TESTED (PR #92)** | ADR-023 Option A(b) implemented/tested in PR #92 — deterministic `audit_event_id` = UUIDv5(org_id+capture_id) in `packages/core-audit/` (`auditAppend(eventId?)` lookup-after-lock + correspondence/payload-presence guards); `audit_events.id` is PK so no migration was needed. These former B3 preconditions are now satisfied — Phase 2.5/AuditBridge wiring (PR-B / EP-004) and the B3 runner (EP-006) are implemented and tested; ADR-028 accepted/merged |
 | Stale-sealing recovery | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-006) | ADR-023; implemented as the SEPARATE stale-recovery path in `apps/audit-sealer/src/stale-recovery.ts` (reconstructs via the EP-005.5 `loadSealingCaptureForRecovery`, idempotent re-append + mark_sealed; recoverable rows advanced, unrecoverable/divergent rows terminal-failed + alerted). Tested S3/S5/S6 |
-| Evidence completeness (counts, provider-without-audit) | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED (EP-008A/B/C) | EP-008A migration `0027` ships three read-only `security_invoker` evidence views — `govai.evidence_capture_completeness` (EC-1.a), `govai.evidence_chain_backlog` (EC-1.b), `govai.evidence_provider_without_audit` (EC-3a); EP-008B adds the best-effort EC-3b drop/capture OTel counters (`govai_audit_bridge_drops_total` / `govai_audit_bridge_captures_total`, cardinality-safe, observe-only) in `apps/api/src/pipeline/audit-bridge-metrics.ts`; EP-008C adds stream-terminal completeness (the terminal `PassthroughInvoked` fires on every stream termination via `@govai/provider-stream-http`, with `stream_outcome` in the envelope + the capture projection); the OTel MeterProvider exporting the counters is the shared `@govai/observability` bootstrap (EP-OBS-REFACTOR). The reporting/metrics layer EXISTS; the operator/auditor cockpit read surface (EC-4 run-lifecycle + EC-5 reports) remains (EP-008D / Phase-4 §7). Tests: `tests/integration/evidence-completeness.test.ts` (EP-008A views + tenant isolation + security_invoker catalog guard); the `@govai/provider-stream-http` helper unit tests (`packages/provider-stream-http/src/index.test.ts`) + the four per-surface stream-terminal e2e (`packages/provider-{anthropic,openai}/src/{routes,governed}/register-*.stream-terminal.test.ts`) (EP-008C); the EC-3b counter coverage in `apps/api/src/pipeline/audit-bridge-metrics.test.ts` (EP-008B) |
+| Evidence completeness (counts, provider-without-audit) | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED (EP-008A/B/C) | EP-008A migration `0027` ships three read-only `security_invoker` evidence views — `govai.evidence_capture_completeness` (EC-1.a), `govai.evidence_chain_backlog` (EC-1.b), `govai.evidence_provider_without_audit` (EC-3a); EP-008B adds the best-effort EC-3b drop/capture OTel counters (`govai_audit_bridge_drops_total` / `govai_audit_bridge_captures_total`, cardinality-safe, observe-only) in `apps/api/src/pipeline/audit-bridge-metrics.ts`; EP-008C adds stream-terminal completeness (the terminal `PassthroughInvoked` fires on every stream termination via `@govai/provider-stream-http`, with `stream_outcome` in the envelope + the capture projection); the OTel MeterProvider exporting the counters is the shared `@govai/observability` bootstrap (EP-OBS-REFACTOR). The reporting/metrics layer EXISTS, and the read surface shipped after this row was first written: EP-008D (PR #113, main `8eb1eab`) added the EC reports (`pipeline/evidence-reports.ts`), the RLS-scoped `/v1/evidence` read API (`routes/evidence.ts` — the auditor IS the tenant; per-org accumulation, no cross-tenant operator role) and EC-4 run-lifecycle coverage; EP-OBS-COLLECTOR (PR #114, `d2fef204`) added the OTLP collector/Prometheus/Grafana stack; EP-EVIDENCE-GAUGE-WIRING (PR #115, `2f620b47`, migration `0028`) wired the `govai_evidence_*` gauges into `apps/api` boot behind the least-privilege `govai_evidence_enumerator` role (INV-1: no single DB identity holds enumerate+read). Real EC-5 remains deferred to a separate Option-A EP. Tests: `tests/integration/evidence-completeness.test.ts` (EP-008A views + tenant isolation + security_invoker catalog guard); the `@govai/provider-stream-http` helper unit tests (`packages/provider-stream-http/src/index.test.ts`) + the four per-surface stream-terminal e2e (`packages/provider-{anthropic,openai}/src/{routes,governed}/register-*.stream-terminal.test.ts`) (EP-008C); the EC-3b counter coverage in `apps/api/src/pipeline/audit-bridge-metrics.test.ts` (EP-008B) |
 
 ### Runtime-to-evidence wiring (WIRED — PR-B / EP-004, source + integration verified)
 
 This was the loose thread between runtime and the evidence plane; **PR-B (EP-004) wires it.** **Source-verified on the EP-004 branch (base main `d2c2785`); integration-tested against real Postgres:**
 
 1. **Direct governed-native and passthrough routes now dispatch into the B0/B1 capture outbox.** Each route's `emitAuditEvent` closure keeps its existing `app.log.info(...)` line AND appends `await auditBridge(event, requestIdentityAls.getStore())`, where `auditBridge = makeAuditBridge({ pool: app.govai.pool, log: app.log })` — in all four of `routes/governed-openai.ts`, `routes/governed-anthropic.ts`, `routes/passthrough-openai.ts`, `routes/passthrough-anthropic.ts`.
-2. **An ingress identity hook** (`pipeline/request-identity-hook.ts`, registered once in `server.ts` via `registerRequestIdentityHook(app)`) builds the per-request `AuditBridgeRequestIdentity` for the four direct-route prefixes (reading `X-GovAI-Idempotency-Key`), enters it into `requestIdentityAls` so the dispatcher reads the SAME identity, echoes `X-GovAI-Request-Id`, and returns HTTP 400 `invalid_idempotency_key` on a malformed key. The passthrough producers take an injectable clock (`now?`) so an idempotent replay can hold `occurred_at` stable.
+2. **An ingress identity hook** (`pipeline/request-identity-hook.ts`, registered once in `server.ts` via `registerRequestIdentityHook(app)`) builds the per-request `AuditBridgeRequestIdentity` for the four direct-route prefixes (reading `X-GovAI-Idempotency-Key`), runs the remainder of the request lifecycle inside a request-owned `requestIdentityAls.run()` scope so the dispatcher reads the SAME identity (the F4 preventive hardening, PR #120 — see §8), echoes `X-GovAI-Request-Id` (the echo does not reach direct streaming responses — a pre-existing, separately-tracked gap; §8), and returns HTTP 400 `invalid_idempotency_key` on a malformed key. The passthrough producers take an injectable clock (`now?`) so an idempotent replay can hold `occurred_at` stable.
 3. **`captureAuditEvent` now has runtime call-sites** (via `makeAuditBridge` → `pipeline/audit-bridge.ts`). The AuditBridge validates/narrows `event: unknown` via `PassthroughInvokedSchema` (v4) before mapping to `captureAuditEvent` → outbox; it is best_effort (never fails the request path).
 4. **Integration-tested end-to-end:** `tests/integration/audit-bridge-wiring.test.ts` (one capture row per route; rev4 `redaction_metadata.audit_bridge` shape; RLS isolation; no banned keys/raw content; byte-fidelity non-regression; best_effort on capture failure; ingress 400 + `X-GovAI-Request-Id`) and `tests/integration/audit-bridge-idempotency.test.ts` (the same-key replay REUSE proof I3 — one row, stable `capture_seq`, no conflict — and the divergent-`occurred_at` CONFLICT proof I4 — 23505 → error log → request still 2xx → no second row).
 5. **B3 seals captures already in the outbox.** With the four direct routes now feeding the outbox (PR-B #98) and the B3 runner implemented (EP-006, `apps/audit-sealer`), the runtime → capture → seal arc is closed: direct-route runtime events are captured to the outbox and the dedicated sealer advances them into the HMAC chain.
 
 Separately documented (not the same path):
-- **`/v1/runs` orchestrator writes some audit events directly to the HMAC chain via `auditAppend`** (run lifecycle: deny/complete/fail/run) — `run-orchestrator.ts:527,618,736,799,885,963,1229,1328`. This is the legacy append chain, **not** the capture outbox.
-- **Regulatory** (`regulatory/service.ts:249`) and **admin provider credentials** (`admin-provider-credentials.ts:164,289`) also write via `auditAppend` directly.
+- **`/v1/runs` orchestrator writes some audit events directly to the HMAC chain via `auditAppend`** (run lifecycle: deny/complete/fail/run) — `run-orchestrator.ts:558,643,761,829,915,993,1264,1363`. This is the legacy append chain, **not** the capture outbox.
+- **Regulatory** (`regulatory/service.ts:249`) and **admin provider credentials** (`admin-provider-credentials.ts:165,289`) also write via `auditAppend` directly.
 
 **Status lines:**
 - Runtime-to-evidence dispatch for **direct governed-native / passthrough** routes: **IMPLEMENTED & INTEGRATION-TESTED (PR-B / EP-004)** — the AuditBridge (ADR-027) is wired into all four routes; `event: unknown` is validated/narrowed via `PassthroughInvokedSchema` (v4) before `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" absorption intent for direct routes; `/v1/runs` remains distinct and chain-authoritative via `auditAppend`.
@@ -174,3 +176,46 @@ Summarized in [stale-docs-register.md](./stale-docs-register.md): README status 
 - **No compliance/legal/certification claim** unless validated externally.
 - **No document is a source of truth unless it distinguishes evidence from target architecture.**
 - **Runtime route existence does not imply runtime evidence capture** (see §3).
+
+---
+
+## 8. P0 findings register (F1–F6, C-2) and F4 canonical state
+
+The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `719fefc2` (2026-07-25) is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it.
+
+| Finding | Classification | Implementation status | Landed by / next | Subject |
+|---|---|---|---|---|
+| F1 | DEMONSTRATED | CORRECTED | P0.2 / `19bcb452` (PR #119) | real provider-credential provenance |
+| F2 | PENDING_SOURCE_CLASSIFICATION | OPEN | separate source adjudication + sealed-schema decision (do not classify as demonstrated, latent or disproved before that) | block-source provenance / sealed-schema decision |
+| F3 | DEMONSTRATED | OPEN | P0.3 transaction and dispatch-state program | transaction and dispatch-state work |
+| F4 | LATENT_ARCHITECTURAL_RISK_NOT_OBSERVED_AS_FAILURE | PREVENTIVE_HARDENING_MERGED_AND_DUAL_VERIFIED | PR #120 / merge `719fefc2`, tree `c13d83db` | AuditBridge request-identity lifecycle scoping |
+| F5 | DEMONSTRATED | CORRECTED | P0.1 / `ed18736a` (PR #118) | demonstrated overlapping-span redaction paths |
+| F6 | DEMONSTRATED | CORRECTED | P0.1 / `ed18736a` (PR #118) | evidence counts derived from fused spans |
+| C-2 | DEMONSTRATED — catalogued **SEPARATE from the F1–F6 numbering** | CORRECTED | P0.2 / `19bcb452` (PR #119) | real SHA-256 of the blocked native request body (`run-orchestrator.ts:803`) |
+
+### F4 canonical state
+
+```text
+F4_CODE_STATUS=CLOSED
+F4_CLASSIFICATION=PREVENTIVE_HARDENING
+F4_BASELINE_FALSIFICATION_RESULT=NO_OBSERVABLE_FAILURE_REPRODUCED
+F4_MERGE_SHA=719fefc25502bb9f7547743f339b38fa3a20c4c7
+F4_MERGE_TREE=c13d83dbc78b7ddda81b542cb6fab568623a54ff
+F4_DUAL_DIFF_VERIFY=PASS
+F4_DUAL_MERGE_VERIFY=PASS
+F4_MAIN_CI=GREEN
+```
+
+F4 is **preventive hardening** — it is NOT a proven cross-request contamination defect, NOT a repaired evidence lie, and NOT a reproduced production failure:
+
+- The deterministic falsification harness (`tests/integration/request-identity-isolation.test.ts`) reproduced **no** observable identity contamination and **no** delayed-stream context loss against the tested previous implementation.
+- `enterWith()` nevertheless lacked an explicit callback-owned restoration boundary.
+- The merged change places Fastify's continuation (`done()`) inside `AsyncLocalStorage.run()` in `pipeline/request-identity-hook.ts`.
+- Asynchronous resources created by that continuation retain the request-owned store; the caller's previous ambient context is restored when the `run()` callback returns.
+- The harness is now a permanent regression guard for the asynchronous and transactional work expected in P0.3.
+- The harness cleanup fix tracks complete request Promises, so parked requests cannot obscure the original test failure.
+
+### Follow-up register (narrow, non-blocking)
+
+- **SEEDORG_FLAKE_CANDIDATE** — root cause: **UNVERIFIED**. Observed symptom: an earlier unrelated integration attempt reported a primary-key prefix collision. Status: follow-up test-harness investigation; priority: does not block F4 closure. `seedOrg` itself is unmodified.
+- **DIRECT_STREAM_REQUEST_ID_HEADER_GAP** — status: **PRE_EXISTING**; introduced by F4: NO; F4-blocking: NO. Direct streaming responses do not carry the `X-GovAI-Request-Id` echo; resolving it is a separate future behavior-and-compatibility decision.
