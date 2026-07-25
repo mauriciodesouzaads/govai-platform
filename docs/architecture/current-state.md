@@ -5,7 +5,7 @@
 - **Evidence-first source of truth** for the current implementation state of GovAI.
 - **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner; it consumes no provider traffic and runs outside the request hot path (see §3 and §7).
 - Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `719fefc25502bb9f7547743f339b38fa3a20c4c7` (2026-07-25), not from memory.
-- **The P0 "Truth and Integrity" program (2026-07) landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`) and the F4 preventive hardening (PR #120, merge `719fefc2`) are merged. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state, and the narrow follow-up register.
+- **Three P0 "Truth and Integrity" packages have landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`) and the F4 preventive hardening (PR #120, merge `719fefc2`). F2 and F3 remain open. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state and the narrow follow-up register.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)

@@ -20,8 +20,8 @@ P0
 
 Current P0 sequence (recorded 2026-07-25 at main `719fefc2`):
 
-1. **F4 canonical state roll** — this PR (three architecture docs + one comment-only source correction).
-2. **EP-11 source revalidation and deadline protection.** EP-11 has an external OpenAI deadline of 2026-08-26, but its current "Files API sunset" label must be revalidated. Official sources currently identify the Assistants API as the surface shutting down on that date, while `/v1/files` remains documented as active.
+1. **EP-DOCS-04 / PR #121 — F4 canonical state roll.** Reconciles the three hand-maintained architecture documents and the comment-only ALS description with the merged and dual-verified F4 state.
+2. **EP-11 owner adjudication and deadline protection.** The source inspection completed on 2026-07-25 and confirmed that the 2026-08-26 shutdown applies to the Assistants API, not the Files API. `/v1/files` and `purpose="assistants"` remain documented as active. The date-triggered GovAI deny requires an explicit owner/ADR decision; this roadmap entry records no implementation decision.
 3. **P0.3-A / F3** transaction and dispatch-state program.
 4. Remaining P0.3 PRs.
 5. **F2** source adjudication and implementation.
