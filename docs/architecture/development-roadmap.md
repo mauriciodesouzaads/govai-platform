@@ -28,11 +28,13 @@ Current P0 sequence at main `e422280d`:
 2. **P0.3-A / F3 — NEXT.** Transaction and dispatch-state
    integrity program. F3 remains demonstrated and open.
 3. **EP-11 — OpenAI Files-purpose provider-truth correction.**
-   ADR-032 is accepted as an implementation constraint. Repository
-   promulgation and runtime implementation remain pending. Remove
-   the false local deny and warning while preserving forwarding and
-   evidence of the provider's actual result. This decision and its
-   priority are not date-dependent.
+   ADR-032 owner adjudication is complete, but the accepted decision
+   remains staged outside the repository. Repository promulgation is
+   pending, and this roadmap is not the constraint text. EP-11 runtime
+   implementation must not begin until ADR-032 is promulgated in the
+   repository. After promulgation, remove the false local deny and
+   warning while preserving forwarding and evidence of the provider's
+   actual result. This decision and its priority are not date-dependent.
 4. **Remaining P0.3 slices.**
 5. **F2** source adjudication and sealed-schema decision.
 6. **PR-0 / D9 documentary closure** when the missing mirror is

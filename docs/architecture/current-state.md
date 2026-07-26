@@ -243,9 +243,10 @@ F4 is **preventive hardening** — it is NOT a proven cross-request contaminatio
   `LOCAL_DENY_EVENT_EMITTED_THEN_DROPPED`, currently includes
   `passthrough.beta_denied` and `tool.validation_blocked`.
   Subfamily B, `LOCAL_DENY_NO_AUDIT_EVENT_EMITTED`, includes the
-  current `purpose_deprecated_post_sunset` branch. ADR-032 removes
-  that specific branch; class-wide evidence remediation remains a
-  separate EP.
+  current `purpose_deprecated_post_sunset` branch. The
+  owner-adjudicated decision remains staged outside the repository
+  as ADR-032; once promulgated, it requires removal of that specific
+  branch. Class-wide evidence remediation remains a separate EP.
 
 ### F4 follow-up register (narrow, non-blocking)
 
