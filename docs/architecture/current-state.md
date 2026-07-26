@@ -235,7 +235,7 @@ F4 is **preventive hardening** — it is NOT a proven cross-request contaminatio
 - The harness is now a permanent regression guard for the asynchronous and transactional work expected in P0.3.
 - The harness cleanup fix tracks complete request Promises, so parked requests cannot obscure the original test failure.
 
-### Follow-up register (narrow, non-blocking)
+### Separate P1 evidence-integrity register
 
 - **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** — separate P1
   evidence-integrity family, outside the F1–F6 + C-2 numbering and
@@ -246,5 +246,8 @@ F4 is **preventive hardening** — it is NOT a proven cross-request contaminatio
   current `purpose_deprecated_post_sunset` branch. ADR-032 removes
   that specific branch; class-wide evidence remediation remains a
   separate EP.
+
+### F4 follow-up register (narrow, non-blocking)
+
 - **SEEDORG_FLAKE_CANDIDATE** — root cause: **UNVERIFIED**. Observed symptom: an earlier unrelated integration attempt reported a primary-key prefix collision. Status: follow-up test-harness investigation; priority: does not block F4 closure. `seedOrg` itself is unmodified.
 - **DIRECT_STREAM_REQUEST_ID_HEADER_GAP** — status: **PRE_EXISTING**; introduced by F4: NO; F4-blocking: NO. Direct streaming responses do not carry the `X-GovAI-Request-Id` echo; resolving it is a separate future behavior-and-compatibility decision.
