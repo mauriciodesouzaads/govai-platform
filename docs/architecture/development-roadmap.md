@@ -1,6 +1,6 @@
 # GovAI Development Roadmap
 
-Anchored on [current-state.md](./current-state.md) (main `719fefc2`, evidence-first). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
+Anchored on [current-state.md](./current-state.md) (main `e422280d`, evidence-first). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
 
 ---
 
@@ -18,14 +18,33 @@ P0
 
 **P0** is an *operational priority* lane inside the macro-phase "Phase 0 — Truth and Integrity" (a truth-and-integrity program over already-shipped evidence surfaces). A P0-priority item does **not** thereby belong to the product-phase numbering below (in particular, it is not part of "Phase 0 — Built and source-verified", which is a product phase that happens to share the label). The canonical F1–F6 + C-2 matrix and the F4 canonical state live in current-state.md §8.
 
-Current P0 sequence (recorded 2026-07-25 at main `719fefc2`):
+Current P0 sequence at main `e422280d`:
 
-1. **EP-DOCS-04 / PR #121 — F4 canonical state roll.** Reconciles the three hand-maintained architecture documents and the comment-only ALS description with the merged and dual-verified F4 state.
-2. **EP-11 owner adjudication and deadline protection.** The source inspection completed on 2026-07-25 and confirmed that the 2026-08-26 shutdown applies to the Assistants API, not the Files API. `/v1/files` and `purpose="assistants"` remain documented as active. The date-triggered GovAI deny requires an explicit owner/ADR decision; this roadmap entry records no implementation decision.
-3. **P0.3-A / F3** transaction and dispatch-state program.
-4. Remaining P0.3 PRs.
-5. **F2** source adjudication and implementation.
-6. **PR-0 / D9 documentary closure** when the missing mirror is located.
+1. **EP-DOCS-04 / PR #121 — COMPLETE.** Squash-merged as
+   `e422280d`, tree `196701d8`, and independently dual
+   merge-verified. The PR reconciled the three hand-maintained
+   architecture documents and corrected one comment-only ALS
+   description; it changed no executable behavior.
+2. **P0.3-A / F3 — NEXT.** Transaction and dispatch-state
+   integrity program. F3 remains demonstrated and open.
+3. **EP-11 — OpenAI Files-purpose provider-truth correction.**
+   ADR-032 is accepted as an implementation constraint. Repository
+   promulgation and runtime implementation remain pending. Remove
+   the false local deny and warning while preserving forwarding and
+   evidence of the provider's actual result. This decision and its
+   priority are not date-dependent.
+4. **Remaining P0.3 slices.**
+5. **F2** source adjudication and sealed-schema decision.
+6. **PR-0 / D9 documentary closure** when the missing mirror is
+   located.
+
+Separate P1 evidence-integrity follow-up:
+
+- **LOCAL_DENY_EVIDENCE_INCOMPLETENESS.** This is not part of
+  EP-11's narrow implementation scope. It contains both local-deny
+  events emitted and dropped at the AuditBridge schema boundary and
+  local-deny branches that emit no audit event. Class-wide
+  remediation requires a separate EP.
 
 D9 state:
 
