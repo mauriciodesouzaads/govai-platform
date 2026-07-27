@@ -4,8 +4,9 @@
 
 - **Evidence-first source of truth** for the current implementation state of GovAI.
 - **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner; it consumes no provider traffic and runs outside the request hot path (see §3 and §7).
-- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `719fefc25502bb9f7547743f339b38fa3a20c4c7` (2026-07-25), not from memory.
+- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `e422280d63d52da2ed08fb488146266b2ef7dac0`, not from memory.
 - **Three P0 "Truth and Integrity" packages have landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`) and the F4 preventive hardening (PR #120, merge `719fefc2`). F2 and F3 remain open. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state and the narrow follow-up register.
+- **EP-DOCS-04 / PR #121 is merged and dual-verified:** squash `e422280d`, tree `196701d8`, single parent `719fefc2`. It reconciles the canonical P0 record and changes no executable behavior.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
@@ -181,7 +182,7 @@ Summarized in [stale-docs-register.md](./stale-docs-register.md): README status 
 
 ## 8. P0 findings register (F1–F6, C-2) and F4 canonical state
 
-The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `719fefc2` (2026-07-25) is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it.
+The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `e422280d` is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it.
 
 | Finding | Classification | Implementation status | Landed by / next | Subject |
 |---|---|---|---|---|
@@ -192,6 +193,25 @@ The P0 "Truth and Integrity" program tracks source findings about evidence truth
 | F5 | DEMONSTRATED | CORRECTED | P0.1 / `ed18736a` (PR #118) | demonstrated overlapping-span redaction paths |
 | F6 | DEMONSTRATED | CORRECTED | P0.1 / `ed18736a` (PR #118) | evidence counts derived from fused spans |
 | C-2 | DEMONSTRATED — catalogued **SEPARATE from the F1–F6 numbering** | CORRECTED | P0.2 / `19bcb452` (PR #119) | real SHA-256 of the blocked native request body (`run-orchestrator.ts:803`) |
+
+### EP-DOCS-04 / PR #121 canonical state
+
+```text
+PR121_STATUS=MERGED_AND_DUAL_VERIFIED
+PR121_MERGE_SHA=e422280d63d52da2ed08fb488146266b2ef7dac0
+PR121_MERGE_TREE=196701d877cc40d977197529f809985162c9254c
+PR121_MERGE_PARENT=719fefc25502bb9f7547743f339b38fa3a20c4c7
+PR121_PARENT_COUNT=1
+PR121_SCOPE=THREE_ARCHITECTURE_DOCS_PLUS_COMMENT_ONLY_ALS_CORRECTION
+PR121_RUNTIME_CHANGE=NONE
+PR121_MAIN_CI=GREEN
+PR121_FABLE5_MERGE_VERIFY=PASS
+PR121_OPUS_MERGE_VERIFY=PASS
+```
+
+The squash tree is byte-identical to the reviewed PR head tree.
+PR #121 does not change the F1–F6 + C-2 classification matrix and
+is not a second F4 runtime implementation.
 
 ### F4 canonical state
 
@@ -215,7 +235,20 @@ F4 is **preventive hardening** — it is NOT a proven cross-request contaminatio
 - The harness is now a permanent regression guard for the asynchronous and transactional work expected in P0.3.
 - The harness cleanup fix tracks complete request Promises, so parked requests cannot obscure the original test failure.
 
-### Follow-up register (narrow, non-blocking)
+### Separate P1 evidence-integrity register
+
+- **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** — separate P1
+  evidence-integrity family, outside the F1–F6 + C-2 numbering and
+  outside the narrow EP-11 implementation scope. Subfamily A,
+  `LOCAL_DENY_EVENT_EMITTED_THEN_DROPPED`, currently includes
+  `passthrough.beta_denied` and `tool.validation_blocked`.
+  Subfamily B, `LOCAL_DENY_NO_AUDIT_EVENT_EMITTED`, includes the
+  current `purpose_deprecated_post_sunset` branch. The
+  owner-adjudicated decision remains staged outside the repository
+  as ADR-032; once promulgated, it requires removal of that specific
+  branch. Class-wide evidence remediation remains a separate EP.
+
+### F4 follow-up register (narrow, non-blocking)
 
 - **SEEDORG_FLAKE_CANDIDATE** — root cause: **UNVERIFIED**. Observed symptom: an earlier unrelated integration attempt reported a primary-key prefix collision. Status: follow-up test-harness investigation; priority: does not block F4 closure. `seedOrg` itself is unmodified.
 - **DIRECT_STREAM_REQUEST_ID_HEADER_GAP** — status: **PRE_EXISTING**; introduced by F4: NO; F4-blocking: NO. Direct streaming responses do not carry the `X-GovAI-Request-Id` echo; resolving it is a separate future behavior-and-compatibility decision.

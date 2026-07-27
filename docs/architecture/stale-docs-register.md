@@ -1,6 +1,6 @@
 # GovAI Stale Docs Register
 
-Documents whose statements no longer match source ([current-state.md](./current-state.md), main `719fefc2`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
+Documents whose statements no longer match source ([current-state.md](./current-state.md), main `e422280d`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
 
 | Document | Stale statement | Current source evidence | Confidence | Severity | Action | Blocks B3? |
 |---|---|---|---|---|---|---|
@@ -12,6 +12,8 @@ Documents whose statements no longer match source ([current-state.md](./current-
 | **Runtime-to-evidence wiring (correction to any "runtime ⇒ evidence captured" assumption)** | Implicit assumption that governed-native runtime produces captured/sealed evidence | **WIRED (PR-B / EP-004):** all four direct routes dispatch `await auditBridge(event, requestIdentityAls.getStore())` via `makeAuditBridge` into the B0/B1 outbox; the ingress identity hook + ADR-028 `captureId` are implemented; I3/I4 proven (see the PR-B / EP-004 reconciliation below) | HIGH (source-verified) | HIGH (B3 false-confidence risk) | **Resolved (EP-004).** Direct-route runtime now feeds the outbox; B3 (EP-006) seals it | no — resolved (EP-004 + EP-006) |
 | Regulatory roadmap (`regulatory/20`, `regulatory/23`, sector mappings) | Not stale, but dense; foundational controls not summarized in one place and are evidence-only | PR-R1..R9 live as foundational controls (migrations 0016–0024 + tests) | MEDIUM (navigability) | MEDIUM | current-state.md §5 cross-links + labels evidence-only | no |
 | `docs/architecture/specs/h1v2-coverage-map.md` + H1 v2 specs | Current and versioned after PR #87 (stable aliases) | matches code at `8be5cfc` | HIGH | — (not stale) | none | no |
+| `current-state.md`, `development-roadmap.md`, `stale-docs-register.md` | Canonical anchor remained `main@719fefc2` after PR #121 merged | `main=e422280d`; tree `196701d8`; parent `719fefc2`; PR #121 merged; main CI green; Fable5 and Opus merge verification PASS | HIGH | HIGH | Re-anchor the three canonical documents in EP-DOCS-05 | no |
+| `development-roadmap.md` P0 register | EP-11 still required owner/ADR adjudication and was framed as deadline protection | ADR-032 owner adjudication is complete, but the accepted decision remains staged outside the repository; repository promulgation is pending; this roadmap is not the constraint text; EP-11 runtime implementation must not begin until the ADR is promulgated; the decision is provider-truth based and date-independent | HIGH | HIGH | Replace with the staged-but-unpromulgated state, explicit implementation gate, and owner-authorized sequence | no |
 
 ### Files referenced by prior session memory but **not present in repository manifest**
 
@@ -28,6 +30,45 @@ Notes:
 - ADR-022/024/025/026 are accepted as design constraints; ADR-023 Option A(b) is implemented/tested in PR #92. There are no remaining B3 blockers: the Phase 2.5 AuditBridge wiring (PR-B / EP-004) and the B3 runner (EP-006) are implemented and tested; ADR-028 accepted/merged.
 
 ---
+
+## EP-DOCS-05 reconciliation — PR #121 merged and dual-verified
+
+PR #121 squash-merged as
+`e422280d63d52da2ed08fb488146266b2ef7dac0`, with tree
+`196701d877cc40d977197529f809985162c9254c`, one parent
+`719fefc25502bb9f7547743f339b38fa3a20c4c7`, exact four-file
+scope and no executable change. Main CI passed. Fable5 and Opus
+independently verified all merge proofs from origin.
+
+The source branch remains preserved. The historical Codex P2
+remains unresolved and outdated.
+
+### Process-control lesson — semantic Codex head attribution
+
+The PR #121 merge remains valid and requires no remediation.
+During the merge mission, a literal probe failed because the Codex
+attribution used Markdown formatting:
+
+    **Reviewed commit:** `50fb0ca143`
+
+The executor inspected the body, proved the correct SHA and
+proceeded. The substantive attribution was correct, but proceeding
+after the defined literal gate failed was a fail-closed
+process-control deviation.
+
+Future irreversible dispatches must define a semantic parser that
+extracts and compares the reviewed SHA. A missing field or SHA
+mismatch is a STOP. The executor may not replace a failed defined
+gate with free-form interpretation.
+
+```text
+FINDING=FAIL_CLOSED_GATE_REINTERPRETED_BY_EXECUTOR
+CLASSIFICATION=PROCESS_CONTROL_DEVIATION
+SEVERITY=P2_PROCESS
+PRODUCT_IMPACT=NONE
+MERGE_VALIDITY=UNAFFECTED
+REMEDIATION=FUTURE_DISPATCH_SEMANTIC_PARSER
+```
 
 ## EP-000 rev 1 reconciliation (2026-06-12)
 
