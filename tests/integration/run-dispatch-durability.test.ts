@@ -829,6 +829,93 @@ describe('T17 — concurrent reconciliation', () => {
 });
 
 // =============================================================================
+// T23 — NON-HTTP duplicate validation: terminal-status equality alone is not
+// equivalence. blocked and local_error duplicates are verified against the
+// persisted terminal event; contradictory evidence is refused, fail closed.
+// =============================================================================
+
+describe('T23 — blocked / local_error duplicate finalizations are verified, never waved through', () => {
+  it('an HTTP-500-failed run refuses a local_error "duplicate" (contradictory failure class)', async () => {
+    const org = await seedOrg(stack);
+    const { ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: httpOutcome(500),
+    });
+    expect(first.finalStatus).toBe('failed');
+
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+        token,
+        outcome: { kind: 'local_error', message: 'pretending this failed locally' },
+      }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+  });
+
+  it('local_error duplicates: same truncated message is idempotent, different message or an http offer is refused', async () => {
+    const org = await seedOrg(stack);
+    const { ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    const message = 'header rewrite failed (synthetic pre-forward)';
+    const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: { kind: 'local_error', message },
+    });
+    expect(first.finalStatus).toBe('failed');
+
+    const dup = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: { kind: 'local_error', message },
+    });
+    expect(dup.duplicate).toBe(true);
+
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+        token,
+        outcome: { kind: 'local_error', message: 'a different local failure story' },
+      }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+
+    // An http "duplicate" on a local_error-failed run: same terminal status,
+    // but there is no invocation for the token — refused.
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: httpOutcome(500) }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+  });
+
+  it('blocked duplicates: same reason is idempotent, a divergent reason is refused', async () => {
+    const org = await seedOrg(stack);
+    const { ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: { kind: 'blocked', reason: 'enforcement_blocked:D' },
+    });
+    expect(first.finalStatus).toBe('denied');
+
+    const dup = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: { kind: 'blocked', reason: 'enforcement_blocked:D' },
+    });
+    expect(dup.duplicate).toBe(true);
+
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+        token,
+        outcome: { kind: 'blocked', reason: 'a_totally_different_reason' },
+      }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+  });
+});
+
+// =============================================================================
 // T12 (TX-B half) — the captured governed v4 is persisted in TX-B exactly
 // once; a blocked dispatch persists the v4, marks denied and creates NO
 // provider invocation (§21.2).

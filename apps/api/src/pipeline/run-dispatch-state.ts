@@ -561,6 +561,33 @@ export type FinalizeResult = {
   duplicate: boolean;
 };
 
+type TerminalEventMeta = {
+  status_code?: number;
+  error_status?: number;
+  native_response_hash?: string;
+  governed_block_reason?: string;
+  error_class?: string;
+  error_message?: string;
+};
+
+/** The persisted terminal lifecycle event's safe metadata — the authoritative
+ *  record every duplicate finalization is verified against (fail closed when
+ *  absent). Exactly one terminal event exists per terminal run. */
+async function readTerminalEventMeta(
+  client: PoolClient,
+  runId: string,
+): Promise<TerminalEventMeta | null> {
+  const ev = await client.query<{ redaction_metadata: TerminalEventMeta | null }>(
+    `SELECT redaction_metadata FROM govai.audit_events
+      WHERE subject_type = 'run' AND subject_id = $1::uuid
+        AND event_type IN ('run.completed', 'run.failed', 'run.denied')
+      ORDER BY sequence_number DESC
+      LIMIT 1`,
+    [runId],
+  );
+  return ev.rows[0]?.redaction_metadata ?? null;
+}
+
 export async function finalizeKnownOutcome(
   pool: Pool,
   kms: Kms,
@@ -643,21 +670,7 @@ export async function finalizeKnownOutcome(
         let knownStatus: number | null = inv.status_code;
         let knownHash: string | null = inv.native_response_hash?.toString('hex') ?? null;
         if (knownStatus === null || knownHash === null) {
-          const ev = await client.query<{
-            redaction_metadata: {
-              status_code?: number;
-              error_status?: number;
-              native_response_hash?: string;
-            } | null;
-          }>(
-            `SELECT redaction_metadata FROM govai.audit_events
-              WHERE subject_type = 'run' AND subject_id = $1::uuid
-                AND event_type IN ('run.completed', 'run.failed')
-              ORDER BY sequence_number DESC
-              LIMIT 1`,
-            [ctx.runId],
-          );
-          const meta = ev.rows[0]?.redaction_metadata ?? null;
+          const meta = await readTerminalEventMeta(client, ctx.runId);
           knownStatus = knownStatus ?? meta?.status_code ?? meta?.error_status ?? null;
           knownHash = knownHash ?? meta?.native_response_hash ?? null;
         }
@@ -672,6 +685,34 @@ export async function finalizeKnownOutcome(
           );
         }
         invocationId = inv.id;
+      } else if (outcome.kind === 'blocked') {
+        // Non-HTTP duplicates are validated too — terminal-status equality
+        // alone is NOT equivalence. A denied run's persisted block reason must
+        // match the offered one exactly; unverifiable ⇒ refused (fail closed).
+        const meta = await readTerminalEventMeta(client, ctx.runId);
+        if (meta?.governed_block_reason === undefined) {
+          throw new DispatchOutcomeConflictError(
+            `run ${ctx.runId}: terminal block reason cannot be verified against the duplicate finalization`,
+          );
+        }
+        if (meta.governed_block_reason !== outcome.reason) {
+          throw new DispatchOutcomeConflictError(
+            `run ${ctx.runId}: duplicate blocked finalization carries a divergent reason`,
+          );
+        }
+      } else {
+        // local_error duplicate: the persisted failure must BE a pre-forward
+        // local error with the same (truncated) message — an HTTP provider
+        // failure or any other failure class is contradictory evidence.
+        const meta = await readTerminalEventMeta(client, ctx.runId);
+        if (
+          meta?.error_class !== 'dispatch_pre_forward_failed' ||
+          meta.error_message !== outcome.message.slice(0, 200)
+        ) {
+          throw new DispatchOutcomeConflictError(
+            `run ${ctx.runId}: duplicate local-error finalization does not match the persisted terminal result`,
+          );
+        }
       }
       return {
         finalStatus: row.status,
