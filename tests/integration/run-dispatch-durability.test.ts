@@ -787,6 +787,45 @@ describe('T17 — concurrent reconciliation', () => {
     expect(fin.reconciled).toBe(true);
     expect(fin.finalStatus).toBe('completed');
   });
+
+  it('a TERMINAL duplicate offering a divergent request identity is refused (fast path has the same guard)', async () => {
+    // Same token, same status, same RESPONSE hash — but a different request
+    // hash or endpoint. The already-terminal fast path must fail closed too,
+    // not just the reconciliation reuse path.
+    const org = await seedOrg(stack);
+    const { ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    expect(claim.claimed).toBe(true);
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+
+    const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: httpOutcome(200),
+    });
+    expect(first.finalStatus).toBe('completed');
+    expect(first.duplicate).toBe(false);
+
+    const divergentRequest = {
+      ...httpOutcome(200),
+      nativeRequestHashHex: createHash('sha256').update('terminal-dup-other-request').digest('hex'),
+    };
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: divergentRequest }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+
+    const divergentEndpoint = { ...httpOutcome(200), nativeEndpoint: '/v1/responses' };
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: divergentEndpoint }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+
+    // The true duplicate still succeeds idempotently.
+    const dup = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: httpOutcome(200),
+    });
+    expect(dup.duplicate).toBe(true);
+  });
 });
 
 // =============================================================================

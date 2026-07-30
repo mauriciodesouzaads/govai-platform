@@ -606,8 +606,10 @@ export async function finalizeKnownOutcome(
           id: string;
           status_code: number | null;
           native_response_hash: Buffer | null;
+          native_endpoint: string;
+          native_request_hash: Buffer;
         }>(
-          `SELECT id, status_code, native_response_hash
+          `SELECT id, status_code, native_response_hash, native_endpoint, native_request_hash
              FROM govai.provider_invocations
             WHERE run_id = $1::uuid AND dispatch_token = $2::uuid`,
           [ctx.runId, input.token],
@@ -616,6 +618,18 @@ export async function finalizeKnownOutcome(
         if (!inv) {
           throw new DispatchOutcomeConflictError(
             `run ${ctx.runId} is terminal but has no invocation for its token`,
+          );
+        }
+        // Request identity first: endpoint + request hash are NOT NULL on every
+        // invocation row (trace or full), so a terminal duplicate carrying a
+        // different request is always detectable — this fast path must not
+        // bypass the identity check insertOrReuseInvocation applies on reuse.
+        if (
+          inv.native_endpoint !== outcome.nativeEndpoint ||
+          inv.native_request_hash.toString('hex') !== outcome.nativeRequestHashHex
+        ) {
+          throw new DispatchOutcomeConflictError(
+            `run ${ctx.runId}: duplicate finalization carries a divergent request identity`,
           );
         }
         // A NULL persisted status_code/response_hash records the earlier UNKNOWN
