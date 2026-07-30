@@ -90,12 +90,14 @@ const EnvSchema = z.object({
     .min(1_000)
     .max(3_600_000)
     .default(60_000),
-  RUN_DISPATCH_RECOVERY_GRACE_MS: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .max(3_600_000)
-    .default(30_000),
+  // min(0) means the coercion idiom Number('') === 0 would let an exported-empty
+  // value silently pass as an intentional zero grace (every sibling knob has
+  // min >= 1, where ''→0 already fails loud). Map '' to NaN BEFORE coercion so
+  // it fails like every other non-off-switch key; an explicit '0' stays valid.
+  RUN_DISPATCH_RECOVERY_GRACE_MS: z.preprocess(
+    (v) => (v === '' ? Number.NaN : v),
+    z.coerce.number().int().min(0).max(3_600_000).default(30_000),
+  ),
   RUN_DISPATCH_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
 });
 

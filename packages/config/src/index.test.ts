@@ -38,6 +38,31 @@ describe('config / boot fail conditions', () => {
     });
     expect(env.NODE_ENV).toBe('development');
   });
+
+  // F3 dispatch knobs are NOT off-switches: '' must fail loud, never silently
+  // coerce to 0. RECOVERY_GRACE_MS is the only knob whose min(0) would admit
+  // the coerced 0 — an exported-empty value would erase the 30s safety margin
+  // and let recovery mark an active run unknown AT its dispatch deadline.
+  it("RUN_DISPATCH_RECOVERY_GRACE_MS='' → boot fail (never a silent 0)", () => {
+    expect(() =>
+      loadEnv({
+        NODE_ENV: 'development',
+        GOVAI_KMS_PROVIDER: 'dev',
+        KMS_DEV_SEED: 'b'.repeat(64),
+        RUN_DISPATCH_RECOVERY_GRACE_MS: '',
+      }),
+    ).toThrow(BootError);
+  });
+
+  it("RUN_DISPATCH_RECOVERY_GRACE_MS='0' stays a valid intentional zero", () => {
+    const env = loadEnv({
+      NODE_ENV: 'development',
+      GOVAI_KMS_PROVIDER: 'dev',
+      KMS_DEV_SEED: 'b'.repeat(64),
+      RUN_DISPATCH_RECOVERY_GRACE_MS: '0',
+    });
+    expect(env.RUN_DISPATCH_RECOVERY_GRACE_MS).toBe(0);
+  });
 });
 
 describe('config / AWS KMS env vars', () => {
