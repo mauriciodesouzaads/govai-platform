@@ -671,6 +671,19 @@ async function persistTerminal<T>(ctx: RunDispatchContext, fn: () => Promise<T>)
  *  chars, so a native body beyond this is a construction bug, not user data. */
 const MAX_NATIVE_BODY_BYTES = 5_000_000;
 
+/**
+ * Remaining forward budget anchored to the DURABLE claim deadline. A process
+ * that stalls between the claim COMMIT and the forward must not start provider
+ * I/O the protocol has already given up on (recovery may have marked the run
+ * unknown, and clients may already observe it): the AbortSignal budget is the
+ * time left until `dispatch_deadline_at`, clamped to the configured budget
+ * (clock skew can only shorten it, never extend past the durable deadline).
+ * Non-positive ⇒ refuse to forward (known local pre-forward failure).
+ */
+function remainingDispatchBudgetMs(deadlineAt: Date, nowMs: number, configuredMs: number): number {
+  return Math.min(configuredMs, deadlineAt.getTime() - nowMs);
+}
+
 type DeterministicPlan = {
   upstreamBaseUrl: string;
   nativeEndpoint: string;
@@ -1048,11 +1061,35 @@ export async function executeGovernedRun(
     return readRunStateResponse(deps, ctx, txa.decision);
   }
 
+  // The abort budget is anchored to the DURABLE deadline fixed at claim time —
+  // a stalled process must not start I/O the protocol already gave up on.
+  const budgetMs = remainingDispatchBudgetMs(claim.deadlineAt, Date.now(), config.timeoutMs);
+  if (budgetMs <= 0) {
+    const fin = await persistTerminal(ctx, () =>
+      finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        outcome: {
+          kind: 'local_error',
+          message: 'dispatch deadline elapsed before the forward started',
+        },
+      }),
+    );
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      ...(fin.auditEventId ? { audit_event_id: fin.auditEventId } : {}),
+      policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+      status: 'failed',
+      retry_safe: false,
+      error_class: 'dispatch_pre_forward_failed',
+    };
+  }
+
   // §19/§20 — provider I/O: ZERO database clients held; credential in memory;
   // v4 captured in memory; bounded by the dispatch AbortSignal.
   const capture = createGovernedV4Capture();
   let forwardStarted = false;
-  const signal = AbortSignal.timeout(config.timeoutMs);
+  const signal = AbortSignal.timeout(budgetMs);
   const handlerInput = {
     rawBody: txa.nativeRequestBody,
     inboundHeaders: plan.inboundHeaders,
@@ -1079,6 +1116,7 @@ export async function executeGovernedRun(
           resolveProviderKey: resolveInMemory,
           dlpScan: inMemoryDlpScan,
           emitAuditEvent: capture.capture,
+          preResolvedCredentialSource: resolvedCredential.source,
         },
       );
     } else if (body.capability === 'openai.responses.create') {
@@ -1089,6 +1127,7 @@ export async function executeGovernedRun(
           resolveProviderKey: resolveInMemory,
           dlpScan: inMemoryDlpScan,
           emitAuditEvent: capture.capture,
+          preResolvedCredentialSource: resolvedCredential.source,
         },
       );
     } else {
@@ -1099,6 +1138,7 @@ export async function executeGovernedRun(
           resolveProviderKey: resolveInMemory,
           dlpScan: inMemoryDlpScan,
           emitAuditEvent: capture.capture,
+          preResolvedCredentialSource: resolvedCredential.source,
         },
       );
     }
@@ -1460,6 +1500,30 @@ export async function executePassthroughRun(
     };
   }
 
+  // The abort budget is anchored to the DURABLE deadline fixed at claim time.
+  const budgetMs = remainingDispatchBudgetMs(claim.deadlineAt, Date.now(), config.timeoutMs);
+  if (budgetMs <= 0) {
+    const fin = await persistTerminal(ctx, () =>
+      finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        outcome: {
+          kind: 'local_error',
+          message: 'dispatch deadline elapsed before the forward started',
+        },
+      }),
+    );
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      ...(fin.auditEventId ? { audit_event_id: fin.auditEventId } : {}),
+      mode: 'passthrough',
+      status: 'failed',
+      native_request_hash: txa.nativeRequestHashHex,
+      retry_safe: false,
+      error_class: 'dispatch_pre_forward_failed',
+    };
+  }
+
   // §19 — raw forward with ZERO database clients held.
   const forwardRaw = provider === 'anthropic' ? forwardRawAnthropic : forwardRawOpenai;
   let forwardStarted = false;
@@ -1472,7 +1536,7 @@ export async function executePassthroughRun(
       method: 'POST',
       headers: outboundHeaders,
       body: txa.plan.body,
-      signal: AbortSignal.timeout(config.timeoutMs),
+      signal: AbortSignal.timeout(budgetMs),
       onDispatchStart: () => {
         forwardStarted = true;
       },
@@ -1560,7 +1624,8 @@ export {
 };
 export type { AuthIdentity, KnownOutcome };
 
-// Internal helper exported for unit testing only (run-orchestrator.test.ts).
-// Not part of the public API; the double-underscore prefix marks it as
+// Internal helpers exported for unit testing only (run-orchestrator.test.ts).
+// Not part of the public API; the double-underscore prefix marks them as
 // test-only and discourages external consumption.
 export { providerUpstreamBaseUrl as __test_providerUpstreamBaseUrl };
+export { remainingDispatchBudgetMs as __test_remainingDispatchBudgetMs };

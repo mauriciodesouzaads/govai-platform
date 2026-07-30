@@ -15,7 +15,10 @@
 // `__test` namespace marked with a JSDoc comment explaining its purpose.
 
 import { describe, it, expect } from 'vitest';
-import { __test_providerUpstreamBaseUrl } from './run-orchestrator.js';
+import {
+  __test_providerUpstreamBaseUrl,
+  __test_remainingDispatchBudgetMs,
+} from './run-orchestrator.js';
 import type { GovAIEnv } from '@govai/config';
 
 function envWith(overrides: Partial<GovAIEnv>): GovAIEnv {
@@ -93,5 +96,29 @@ describe('run-orchestrator / providerUpstreamBaseUrl', () => {
       expect(__test_providerUpstreamBaseUrl(env, 'anthropic').length).toBeGreaterThan(0);
       expect(__test_providerUpstreamBaseUrl(env, 'openai').length).toBeGreaterThan(0);
     }
+  });
+});
+
+// =============================================================================
+// remainingDispatchBudgetMs — the AbortSignal budget is anchored to the
+// DURABLE claim deadline: a stalled executor must not start provider I/O the
+// protocol already gave up on, and clock skew can shorten but never extend
+// the budget past the configured cap.
+// =============================================================================
+
+describe('remainingDispatchBudgetMs', () => {
+  const T0 = 1_700_000_000_000;
+
+  it('deadline in the past → non-positive (the forward must be refused)', () => {
+    expect(__test_remainingDispatchBudgetMs(new Date(T0 - 1), T0, 300_000)).toBeLessThanOrEqual(0);
+    expect(__test_remainingDispatchBudgetMs(new Date(T0), T0, 300_000)).toBe(0);
+  });
+
+  it('deadline sooner than the configured budget → the remaining time wins', () => {
+    expect(__test_remainingDispatchBudgetMs(new Date(T0 + 5_000), T0, 300_000)).toBe(5_000);
+  });
+
+  it('deadline later than the configured budget (skew) → clamped to the configured budget', () => {
+    expect(__test_remainingDispatchBudgetMs(new Date(T0 + 999_000), T0, 300_000)).toBe(300_000);
   });
 });
