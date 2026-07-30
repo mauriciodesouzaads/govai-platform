@@ -155,6 +155,15 @@ describe('T9 — dispatch timeout → outcome_unknown (standalone /v1/runs)', ()
       );
     expect(callsFor(org.workspace_id)).toHaveLength(1);
     expect(callsFor(probeOrg.workspace_id)).toHaveLength(1);
+
+    // EC-3a: the honest-unknown TRACE is valid lifecycle evidence — it must
+    // NOT be reported as a missing-terminal integrity gap.
+    const gaps = await queryAsOrg<{ provider_invocation_id: string }>(
+      org.org_id,
+      'SELECT provider_invocation_id FROM govai.evidence_provider_without_audit WHERE run_id = $1::uuid',
+      [body.run_id],
+    );
+    expect(gaps).toHaveLength(0);
   });
 
   it('GET /v1/runs/:run_id reports the unknown state with retry_safe=false', async () => {
@@ -239,6 +248,14 @@ describe('T9b — post-forward TRANSPORT error → outcome_unknown (§22, real s
       (h) => h['x-test-workspace-id'] === org.workspace_id,
     );
     expect(calls).toHaveLength(1);
+
+    // EC-3a: transport-unknown traces are valid lifecycle evidence, not gaps.
+    const gaps = await queryAsOrg<{ provider_invocation_id: string }>(
+      org.org_id,
+      'SELECT provider_invocation_id FROM govai.evidence_provider_without_audit WHERE run_id = $1::uuid',
+      [body.run_id],
+    );
+    expect(gaps).toHaveLength(0);
   });
 });
 

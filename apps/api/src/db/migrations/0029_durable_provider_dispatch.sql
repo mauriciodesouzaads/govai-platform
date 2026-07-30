@@ -308,4 +308,32 @@ $$;
 REVOKE ALL ON FUNCTION govai.run_dispatch_recovery_candidates(integer, integer, integer, timestamptz, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION govai.run_dispatch_recovery_candidates(integer, integer, integer, timestamptz, uuid) TO govai_app;
 
+-- ===========================================================================
+-- I. EC-3a view refresh — honest unknowns are valid lifecycle evidence
+--
+-- 0027 predates the durable-dispatch protocol: its detector recognizes only
+-- run.completed/run.failed/run.denied, so the §22 honest-unknown invocation
+-- TRACE (run.outcome_unknown is the run's only lifecycle event until — and
+-- unless — a late result reconciles) would be falsely reported by /v1/evidence
+-- and the operator gauges as a missing-terminal integrity gap. This migration
+-- introduces the event type, so it also teaches the dependent view about it.
+-- An invocation whose run has NO lifecycle event at all remains a gap.
+-- ===========================================================================
+
+CREATE OR REPLACE VIEW govai.evidence_provider_without_audit
+  WITH (security_invoker = true) AS
+SELECT
+  pi.org_id, pi.run_id, pi.id AS provider_invocation_id,
+  pi.provider, pi.native_endpoint, pi.status_code, pi.error_class, pi.created_at
+FROM govai.provider_invocations pi
+WHERE NOT EXISTS (
+  SELECT 1 FROM govai.audit_events ae
+   WHERE ae.subject_type = 'run'
+     AND ae.subject_id   = pi.run_id
+     AND ae.event_type IN ('run.completed','run.failed','run.denied','run.outcome_unknown')
+);
+
+REVOKE ALL    ON govai.evidence_provider_without_audit FROM PUBLIC;
+GRANT  SELECT ON govai.evidence_provider_without_audit TO   govai_app;
+
 RESET ROLE;
