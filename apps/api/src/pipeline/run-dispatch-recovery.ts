@@ -16,6 +16,9 @@ import type { Kms } from '@govai/core-identity';
 import type { RunDispatchConfig } from './run-dispatch-config.js';
 import { recoverQueuedStale, recoverRunningStale } from './run-dispatch-state.js';
 
+/** Keyset resume point, TEXT-precision (see CandidateRow.created_at_text). */
+export type SweepCursor = { createdAtText: string; runId: string };
+
 export type RecoverySweepResult = {
   candidates: number;
   queuedFailed: number;
@@ -24,6 +27,12 @@ export type RecoverySweepResult = {
    *  was no longer stale at re-validation time. */
   skipped: number;
   errors: number;
+  /** Non-null when the sweep ended at the page cap with candidates possibly
+   *  remaining: the resume point for the NEXT sweep. Null after an exhausted
+   *  sweep — the next one restarts from the oldest (retry semantics). Without
+   *  the carry, a head-of-line group deeper than cap×batch of non-advancing
+   *  candidates would make every younger stale run permanently unreachable. */
+  nextCursor: SweepCursor | null;
 };
 
 export type RecoveryDeps = {
@@ -47,18 +56,20 @@ type CandidateRow = {
   created_at_text: string;
 };
 
-type SweepCursor = { createdAtText: string; runId: string };
-
 /** Hard cap on discovery pages per sweep: bounds one sweep's runtime while
  *  still letting it advance past a head-of-line group of non-progressing
  *  (failing or row-locked) candidates. The next sweep resumes from the oldest. */
 const MAX_BATCHES_PER_SWEEP = 20;
 
-/** One full sweep. Exported for tests (T7/T8/T16) and reused by the worker.
- *  Pages through the stale set with a keyset cursor so a batch of candidates
- *  that repeatedly fail (or stay locked) can never permanently starve every
- *  younger stale run behind them. */
-export async function runDispatchRecoverySweepOnce(deps: RecoveryDeps): Promise<RecoverySweepResult> {
+/** One full sweep. Exported for tests (T7/T8/T16/T21/T22) and reused by the
+ *  worker. Pages through the stale set with a keyset cursor so a batch of
+ *  candidates that repeatedly fail (or stay locked) can never permanently
+ *  starve every younger stale run behind them. `resumeFrom` continues a
+ *  previous cap-ended sweep (the worker carries `nextCursor` across ticks). */
+export async function runDispatchRecoverySweepOnce(
+  deps: RecoveryDeps,
+  resumeFrom: SweepCursor | null = null,
+): Promise<RecoverySweepResult> {
   const { pool, kms, config } = deps;
   const result: RecoverySweepResult = {
     candidates: 0,
@@ -66,8 +77,10 @@ export async function runDispatchRecoverySweepOnce(deps: RecoveryDeps): Promise<
     runningUnknown: 0,
     skipped: 0,
     errors: 0,
+    nextCursor: null,
   };
-  let cursor: SweepCursor | null = null;
+  let cursor: SweepCursor | null = resumeFrom;
+  let exhausted = false;
   for (let page = 0; page < MAX_BATCHES_PER_SWEEP; page++) {
     const params: [number, number, number, string | null, string | null] = [
       config.preparedGraceMs,
@@ -82,7 +95,10 @@ export async function runDispatchRecoverySweepOnce(deps: RecoveryDeps): Promise<
            $1::integer, $2::integer, $3::integer, $4::timestamptz, $5::uuid)`,
       params,
     );
-    if (discovered.rows.length === 0) break;
+    if (discovered.rows.length === 0) {
+      exhausted = true;
+      break;
+    }
     result.candidates += discovered.rows.length;
     for (const c of discovered.rows) {
       try {
@@ -116,10 +132,16 @@ export async function runDispatchRecoverySweepOnce(deps: RecoveryDeps): Promise<
         );
       }
     }
-    if (discovered.rows.length < config.recoveryBatchSize) break;
+    if (discovered.rows.length < config.recoveryBatchSize) {
+      exhausted = true;
+      break;
+    }
     const last: CandidateRow = discovered.rows[discovered.rows.length - 1]!;
     cursor = { createdAtText: last.created_at_text, runId: last.run_id };
   }
+  // Cap-ended sweep: hand the resume point to the next tick. Exhausted sweep:
+  // restart from the oldest next time (retries previously failing rows).
+  result.nextCursor = exhausted ? null : cursor;
   return result;
 }
 
@@ -135,16 +157,21 @@ export type RecoveryWorkerHandle = {
 export function startRunDispatchRecoveryWorker(deps: RecoveryDeps): RecoveryWorkerHandle {
   let inFlight: Promise<void> | null = null;
   let stopped = false;
+  // Carried across ticks: resume a cap-ended sweep instead of restarting at
+  // the oldest candidates (which could be a permanently non-advancing group).
+  let carry: SweepCursor | null = null;
 
   const tick = (): void => {
     if (stopped || inFlight) return;
-    inFlight = runDispatchRecoverySweepOnce(deps)
+    inFlight = runDispatchRecoverySweepOnce(deps, carry)
       .then((r) => {
+        carry = r.nextCursor;
         if (r.candidates > 0) {
           deps.log?.info({ ...r }, 'run dispatch recovery sweep');
         }
       })
       .catch((err) => {
+        carry = null;
         deps.log?.error(
           { error_name: err instanceof Error ? err.name : 'unknown' },
           'run dispatch recovery sweep failed',

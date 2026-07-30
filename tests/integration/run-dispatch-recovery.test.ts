@@ -345,3 +345,63 @@ describe('T21 — recovery sweep pages past a non-advancing head-of-line candida
     expect(after[0]!.dispatch_error_class).toBe('dispatch_never_claimed');
   });
 });
+
+// =============================================================================
+// T22 — cap carry: when a non-advancing head-of-line group is DEEPER than the
+// whole per-sweep page budget (cap × batch), the cap-ended sweep must hand its
+// cursor to the next sweep — otherwise every later sweep restarts at the same
+// group and younger candidates stay permanently unreachable.
+// =============================================================================
+
+describe('T22 — cap-ended sweep resumes from its cursor on the next sweep', () => {
+  it('20 locked candidates ahead (cap×batch budget), batch size 1: sweep 1 caps with a cursor, sweep 2 resumes and recovers the younger run', async () => {
+    const org = await seedOrg(stack);
+    const blockers: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      // Strictly older than everything else, deterministic order.
+      blockers.push(await seedStaleQueued(org, 600_000, { createdAgoMs: 400_000 - i * 1_000 }));
+    }
+    const younger = await seedStaleQueued(org, 600_000, { createdAgoMs: 60_000 });
+
+    const deps = sweepDeps();
+    const cfg = { ...deps.config, recoveryBatchSize: 1 };
+
+    const locker = await stack.db.appPool.connect();
+    try {
+      await locker.query('BEGIN');
+      await locker.query("SELECT set_config('app.org_id', $1, true)", [org.org_id]);
+      await locker.query('SELECT 1 FROM govai.runs WHERE id = ANY($1::uuid[]) FOR UPDATE', [
+        blockers,
+      ]);
+
+      // Sweep 1: the entire page budget (20 pages × 1) is consumed by the
+      // locked group — cap hit, cursor handed out, younger NOT reached yet.
+      const first = await runDispatchRecoverySweepOnce({ ...deps, config: cfg });
+      expect(first.skipped).toBeGreaterThanOrEqual(20);
+      expect(first.queuedFailed).toBe(0);
+      expect(first.nextCursor).not.toBeNull();
+
+      // Sweep 2 resumes from the carried cursor (exactly what the worker does)
+      // and reaches the younger run in its FIRST page.
+      const second = await runDispatchRecoverySweepOnce({ ...deps, config: cfg }, first.nextCursor);
+      expect(second.queuedFailed).toBeGreaterThanOrEqual(1);
+      await locker.query('ROLLBACK');
+    } finally {
+      locker.release();
+    }
+
+    const rows = await queryAsOrg<{ status: string; dispatch_error_class: string | null }>(
+      org.org_id,
+      'SELECT status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid',
+      [younger],
+    );
+    expect(rows[0]!.status).toBe('failed');
+    expect(rows[0]!.dispatch_error_class).toBe('dispatch_never_claimed');
+
+    // An EXHAUSTED sweep hands out no cursor — the next one restarts from the
+    // oldest (retry semantics for the previously locked group, now unlocked).
+    const third = await runDispatchRecoverySweepOnce(sweepDeps());
+    expect(third.queuedFailed).toBeGreaterThanOrEqual(20);
+    expect(third.nextCursor).toBeNull();
+  });
+});
