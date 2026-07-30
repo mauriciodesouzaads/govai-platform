@@ -730,13 +730,20 @@ async function readRunStateResponse(
 ): Promise<RunResponse> {
   const client = await deps.pool.connect();
   try {
+    let r: { rows: Array<{ status: string; dispatch_error_class: string | null }> };
     await client.query('BEGIN');
-    await setLocalAppOrgId(client, ctx.orgId);
-    const r = await client.query<{ status: string; dispatch_error_class: string | null }>(
-      'SELECT status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid',
-      [ctx.runId],
-    );
-    await client.query('COMMIT');
+    try {
+      await setLocalAppOrgId(client, ctx.orgId);
+      r = await client.query<{ status: string; dispatch_error_class: string | null }>(
+        'SELECT status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid',
+        [ctx.runId],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      // Never hand an open/aborted transaction back to the pool.
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
     const row = r.rows[0];
     const status = row?.status ?? 'failed';
     return {
