@@ -737,6 +737,56 @@ describe('T17 — concurrent reconciliation', () => {
     expect(types.filter((t) => t === 'run.completed')).toHaveLength(1);
     expect(types.filter((t) => t === 'run.outcome_reconciled')).toHaveLength(1);
   });
+
+  it('reconciliation with a DIVERGENT request identity is refused (the immutable trace row is never silently reused)', async () => {
+    // The unknown-trace invocation row recorded (endpoint, request hash); a
+    // late "known result" for the same token must carry the SAME request
+    // identity — otherwise the reconciled/terminal events would cite a request
+    // the immutable invocation row contradicts.
+    const org = await seedOrg(stack);
+    const { runId, ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    expect(claim.claimed).toBe(true);
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+
+    await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
+      token,
+      errorClass: 'provider_io_unknown',
+      forwardStarted: true,
+      invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
+    });
+
+    // Divergent request hash → refused; run stays honestly unknown.
+    const divergentRequest = {
+      ...httpOutcome(200),
+      nativeRequestHashHex: createHash('sha256').update('a-different-request-body').digest('hex'),
+    };
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: divergentRequest }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+
+    // Divergent endpoint → refused too.
+    const divergentEndpoint = { ...httpOutcome(200), nativeEndpoint: '/v1/responses' };
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: divergentEndpoint }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+
+    const still = await queryAsOrg<{ status: string }>(
+      org.org_id,
+      'SELECT status FROM govai.runs WHERE id = $1::uuid',
+      [runId],
+    );
+    expect(still[0]!.status).toBe('outcome_unknown');
+
+    // The TRUE result (matching identity) still reconciles afterwards.
+    const fin = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: httpOutcome(200),
+    });
+    expect(fin.reconciled).toBe(true);
+    expect(fin.finalStatus).toBe('completed');
+  });
 });
 
 // =============================================================================

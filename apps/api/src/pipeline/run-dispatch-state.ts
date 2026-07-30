@@ -279,8 +279,12 @@ async function insertOrReuseInvocation(
     ],
   );
   if (r.rows.length === 1) return { id, inserted: true };
-  const existing = await client.query<{ id: string }>(
-    `SELECT id FROM govai.provider_invocations
+  const existing = await client.query<{
+    id: string;
+    native_endpoint: string;
+    native_request_hash: Buffer;
+  }>(
+    `SELECT id, native_endpoint, native_request_hash FROM govai.provider_invocations
       WHERE run_id = $1::uuid AND dispatch_token = $2::uuid`,
     [ctx.runId, inv.dispatchToken],
   );
@@ -289,7 +293,19 @@ async function insertOrReuseInvocation(
       `invocation upsert for run ${ctx.runId} conflicted but no (run, token) row is visible`,
     );
   }
-  return { id: existing.rows[0]!.id, inserted: false };
+  // The reused row is IMMUTABLE evidence: the caller's outcome must carry the
+  // SAME request identity the trace recorded, or the reconciled/terminal
+  // events would cite a request the invocation row contradicts.
+  const row = existing.rows[0]!;
+  if (
+    row.native_endpoint !== inv.nativeEndpoint ||
+    !row.native_request_hash.equals(inv.nativeRequestHash)
+  ) {
+    throw new DispatchOutcomeConflictError(
+      `run ${ctx.runId}: (run, token) invocation reuse carries a divergent request identity`,
+    );
+  }
+  return { id: row.id, inserted: false };
 }
 
 async function appendTerminalRunEvent(
