@@ -183,7 +183,7 @@ export async function handleOpenAIGovernedChatCompletions(
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
       // F1: blocked before the provider — no credential was resolved.
-      credential_source: 'not_resolved_pre_provider_block',
+      credential_source: deps.preResolvedCredentialSource ?? 'not_resolved_pre_provider_block',
       allowlist_version: OPENAI_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
       dlp_decisions: dlpDecisions,

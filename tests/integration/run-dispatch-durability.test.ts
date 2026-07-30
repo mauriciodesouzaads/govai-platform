@@ -982,6 +982,46 @@ describe('T12 — governed v4 capture persistence', () => {
       },
     );
     expect(blocked.kind).toBe('blocked');
+    // Lazy caller (direct-route shape): the resolver never ran, so the v4
+    // honestly records the non-resolution sentinel (F1 contract preserved).
+    expect(capture.captured()!.credential_source).toBe('not_resolved_pre_provider_block');
+
+    // Eager caller (F3 orchestrator shape): the credential WAS resolved before
+    // the handler ran, so the blocked v4 must record that source — the
+    // evidence never contradicts the actual credential access.
+    const capture2 = createGovernedV4Capture();
+    const blocked2 = await handleAnthropicGovernedMessages(
+      {
+        tenant: {
+          org_id: org.org_id,
+          user_id: org.user_id,
+          tier: 'starter',
+          operational_mode: 'test',
+        },
+        rawBody: Buffer.from(
+          JSON.stringify({
+            model: 'claude-fixture-1',
+            max_tokens: 16,
+            messages: [{ role: 'user', content: 'hi' }],
+            tools: [{ type: 'code_execution_20241022', name: 'code_execution' }],
+          }),
+          'utf8',
+        ),
+        inboundHeaders: { 'content-type': 'application/json' },
+        isStream: false,
+      },
+      {
+        upstreamBaseUrl: stack.provider.baseUrl,
+        resolveProviderKey: async () => {
+          throw new Error('blocked path must not resolve a credential');
+        },
+        dlpScan: async () => ({ findings: [] }),
+        emitAuditEvent: capture2.capture,
+        preResolvedCredentialSource: 'hermetic_test_placeholder',
+      },
+    );
+    expect(blocked2.kind).toBe('blocked');
+    expect(capture2.captured()!.credential_source).toBe('hermetic_test_placeholder');
 
     const fin = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
       token,

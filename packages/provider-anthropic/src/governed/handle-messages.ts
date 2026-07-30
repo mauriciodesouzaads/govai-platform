@@ -59,6 +59,14 @@ export type GovernedHandleDeps = {
   emitAuditEvent: (event: PassthroughInvoked) => Promise<void> | void;
   /** Optional clock for deterministic tests. */
   now?: () => Date;
+  /**
+   * F3/F1: set by callers that resolve the credential EAGERLY (before the
+   * handler runs — the durable-dispatch orchestrator resolves + KMS-decrypts
+   * ahead of TX-A). On a governed block the evidence must then record the
+   * source that WAS resolved, not the lazy-resolution sentinel. Callers that
+   * resolve lazily (the direct routes) omit this and keep the honest sentinel.
+   */
+  preResolvedCredentialSource?: ResolvedProviderCredential['source'];
 };
 
 export type GovernedNonStreamResult = {
@@ -288,9 +296,11 @@ export async function handleAnthropicGovernedMessages(
       latency_ms: 0,
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
-      // F1: the request blocked BEFORE the provider — no credential was
-      // resolved (the resolver is not called on this path).
-      credential_source: 'not_resolved_pre_provider_block',
+      // F1: the request blocked BEFORE the provider — the resolver is not
+      // called on this path. An EAGER caller (F3 orchestrator) already
+      // resolved, so evidence records that source; lazy callers keep the
+      // honest sentinel.
+      credential_source: deps.preResolvedCredentialSource ?? 'not_resolved_pre_provider_block',
       allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
       dlp_decisions: dlpDecisions,

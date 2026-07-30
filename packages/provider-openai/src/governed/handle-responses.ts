@@ -51,6 +51,12 @@ export type GovernedHandleDeps = {
   dlpScan: DlpScanFn;
   emitAuditEvent: (event: PassthroughInvoked) => Promise<void> | void;
   now?: () => Date;
+  /**
+   * F3/F1: set by callers that resolve the credential EAGERLY (before the
+   * handler runs). On a governed block the evidence then records the source
+   * that WAS resolved; lazy callers omit this and keep the honest sentinel.
+   */
+  preResolvedCredentialSource?: ResolvedProviderCredential['source'];
 };
 
 export type GovernedNonStreamResult = {
@@ -261,7 +267,7 @@ export async function handleOpenAIGovernedResponses(
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
       // F1: blocked before the provider — no credential was resolved.
-      credential_source: 'not_resolved_pre_provider_block',
+      credential_source: deps.preResolvedCredentialSource ?? 'not_resolved_pre_provider_block',
       allowlist_version: OPENAI_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
       dlp_decisions: dlpDecisions,
