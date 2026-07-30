@@ -33,6 +33,7 @@ import {
   validateApprovalForRun,
   CapabilityNotSupportedError,
   CapabilityNotRegisteredError,
+  DispatchPersistenceError,
   WorkroomRunContextInvalidError,
   WorkroomApprovalInvalidError,
   type RunRequest,
@@ -475,6 +476,25 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
           error: 'provider_credential_unresolvable',
           provider: err.provider,
           reason: err.reason,
+        };
+      }
+      // Post-claim terminal persistence failed: the provider action MAY have
+      // executed but could not be durably recorded. Return the durable run id
+      // + retry_safe=false + a Location to poll — never a bare 500 that
+      // invites re-executing the action under a new run.
+      if (err instanceof DispatchPersistenceError) {
+        req.log.error(
+          { run_id: err.runId, cause_name: err.causeName, org_id: identity.org_id },
+          'workroom-owned run: dispatch terminal persistence failed',
+        );
+        reply.code(500);
+        reply.header('location', `/v1/runs/${err.runId}`);
+        reply.header('retry-after', '5');
+        return {
+          error: 'dispatch_persistence_failed',
+          run_id: err.runId,
+          audit_chain_id: err.chainId,
+          retry_safe: false,
         };
       }
       req.log.error(

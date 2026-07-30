@@ -632,6 +632,41 @@ function unknownErrorClass(err: unknown): 'provider_timeout' | 'provider_io_unkn
   return name === 'TimeoutError' || name === 'AbortError' ? 'provider_timeout' : 'provider_io_unknown';
 }
 
+/**
+ * Post-claim terminal persistence (TX-B / honest-unknown marking) failed —
+ * e.g. PostgreSQL or audit signing temporarily unavailable AFTER the provider
+ * may already have executed the action. The run row stays durably 'running'
+ * (recovery will mark it unknown on database time); the caller must NOT see a
+ * bare 500 that invites repeating the request — a repeat would execute the
+ * provider action again under a NEW run id. The route maps this to a 500-class
+ * body that still carries the durable run id, retry_safe=false and a Location
+ * to poll.
+ */
+export class DispatchPersistenceError extends Error {
+  constructor(
+    public readonly runId: string,
+    public readonly chainId: string,
+    public readonly causeName: string,
+  ) {
+    super(`dispatch terminal persistence failed for run ${runId}`);
+    this.name = 'DispatchPersistenceError';
+  }
+}
+
+/** Wrap a post-claim persistence call so an infrastructure failure surfaces
+ *  as DispatchPersistenceError (with the run id) instead of a bare 500. */
+async function persistTerminal<T>(ctx: RunDispatchContext, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    throw new DispatchPersistenceError(
+      ctx.runId,
+      ctx.chainId,
+      err instanceof Error ? err.name : 'unknown',
+    );
+  }
+}
+
 /** Defensive deterministic cap (§16): the route already bounds `input` at 50k
  *  chars, so a native body beyond this is a construction bug, not user data. */
 const MAX_NATIVE_BODY_BYTES = 5_000_000;
@@ -1064,10 +1099,12 @@ export async function executeGovernedRun(
     if (!forwardStarted) {
       // §21.3 — known local error provably before the forward started.
       const message = err instanceof Error ? err.message : String(err);
-      const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
-        token: claim.token,
-        outcome: { kind: 'local_error', message },
-      });
+      const fin = await persistTerminal(ctx, () =>
+        finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+          token: claim.token,
+          outcome: { kind: 'local_error', message },
+        }),
+      );
       return {
         run_id: txa.runId,
         audit_chain_id: txa.chainId,
@@ -1079,12 +1116,14 @@ export async function executeGovernedRun(
       };
     }
     // §22 — honest unknown. NEVER retried, NEVER classified as failed.
-    await markOutcomeUnknown(deps.pool, deps.kms, ctx, {
-      token: claim.token,
-      errorClass: unknownErrorClass(err),
-      forwardStarted: true,
-      invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
-    });
+    await persistTerminal(ctx, () =>
+      markOutcomeUnknown(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        errorClass: unknownErrorClass(err),
+        forwardStarted: true,
+        invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
+      }),
+    );
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
@@ -1097,10 +1136,12 @@ export async function executeGovernedRun(
 
   if (result.kind === 'blocked') {
     // §21.2 — known governed block before the forward: denied, NO invocation.
-    const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
-      token: claim.token,
-      outcome: { kind: 'blocked', reason: result.reason, capturedV4: capture.captured() },
-    });
+    const fin = await persistTerminal(ctx, () =>
+      finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        outcome: { kind: 'blocked', reason: result.reason, capturedV4: capture.captured() },
+      }),
+    );
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
@@ -1114,12 +1155,14 @@ export async function executeGovernedRun(
 
   if (result.kind === 'stream') {
     // Unreachable with isStream:false. A fetch DID happen — conservative unknown.
-    await markOutcomeUnknown(deps.pool, deps.kms, ctx, {
-      token: claim.token,
-      errorClass: 'provider_io_unknown',
-      forwardStarted,
-      invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
-    });
+    await persistTerminal(ctx, () =>
+      markOutcomeUnknown(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        errorClass: 'provider_io_unknown',
+        forwardStarted,
+        invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
+      }),
+    );
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
@@ -1132,21 +1175,23 @@ export async function executeGovernedRun(
 
   // §21.1 — known HTTP result (2xx → completed; non-2xx → failed).
   const responseBodyParsed = parseResponseBody(result.response_body_raw);
-  const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
-    token: claim.token,
-    outcome: {
-      kind: 'http',
-      statusCode: result.status_code,
-      nativeEndpoint: result.audit_event.native_endpoint,
-      nativeRequestHashHex: result.native_request_hash_hex,
-      nativeResponseHashHex: result.native_response_hash_hex,
-      latencyMs: result.latency_ms,
-      providerRequestId: result.provider_request_id,
-      usageJson: buildUsageJson(responseBodyParsed),
-      capturedV4: capture.captured(),
-      dlpFindingCount: txa.dlpFindingCount,
-    },
-  });
+  const fin = await persistTerminal(ctx, () =>
+    finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+      token: claim.token,
+      outcome: {
+        kind: 'http',
+        statusCode: result.status_code,
+        nativeEndpoint: result.audit_event.native_endpoint,
+        nativeRequestHashHex: result.native_request_hash_hex,
+        nativeResponseHashHex: result.native_response_hash_hex,
+        latencyMs: result.latency_ms,
+        providerRequestId: result.provider_request_id,
+        usageJson: buildUsageJson(responseBodyParsed),
+        capturedV4: capture.captured(),
+        dlpFindingCount: txa.dlpFindingCount,
+      },
+    }),
+  );
   const ok = fin.finalStatus === 'completed';
   return {
     run_id: txa.runId,
@@ -1428,10 +1473,12 @@ export async function executePassthroughRun(
   } catch (err) {
     if (!forwardStarted) {
       const message = err instanceof Error ? err.message : String(err);
-      const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
-        token: claim.token,
-        outcome: { kind: 'local_error', message },
-      });
+      const fin = await persistTerminal(ctx, () =>
+        finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+          token: claim.token,
+          outcome: { kind: 'local_error', message },
+        }),
+      );
       return {
         run_id: txa.runId,
         audit_chain_id: txa.chainId,
@@ -1443,15 +1490,17 @@ export async function executePassthroughRun(
         error_class: 'dispatch_pre_forward_failed',
       };
     }
-    const unknown = await markOutcomeUnknown(deps.pool, deps.kms, ctx, {
-      token: claim.token,
-      errorClass: unknownErrorClass(err),
-      forwardStarted: true,
-      invocation: {
-        nativeEndpoint: txa.plan.nativeEndpoint,
-        nativeRequestHash: txa.nativeRequestHash,
-      },
-    });
+    const unknown = await persistTerminal(ctx, () =>
+      markOutcomeUnknown(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        errorClass: unknownErrorClass(err),
+        forwardStarted: true,
+        invocation: {
+          nativeEndpoint: txa.plan.nativeEndpoint,
+          nativeRequestHash: txa.nativeRequestHash,
+        },
+      }),
+    );
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
@@ -1466,19 +1515,21 @@ export async function executePassthroughRun(
 
   // §21.1 — known HTTP result.
   const responseBodyParsed = parseResponseBody(fwd.responseBody);
-  const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
-    token: claim.token,
-    outcome: {
-      kind: 'http',
-      statusCode: fwd.status,
-      nativeEndpoint: txa.plan.nativeEndpoint,
-      nativeRequestHashHex: txa.nativeRequestHashHex,
-      nativeResponseHashHex: fwd.native_response_hash,
-      latencyMs: fwd.latency_ms,
-      providerRequestId: fwd.provider_request_id,
-      usageJson: buildUsageJson(responseBodyParsed),
-    },
-  });
+  const fin = await persistTerminal(ctx, () =>
+    finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+      token: claim.token,
+      outcome: {
+        kind: 'http',
+        statusCode: fwd.status,
+        nativeEndpoint: txa.plan.nativeEndpoint,
+        nativeRequestHashHex: txa.nativeRequestHashHex,
+        nativeResponseHashHex: fwd.native_response_hash,
+        latencyMs: fwd.latency_ms,
+        providerRequestId: fwd.provider_request_id,
+        usageJson: buildUsageJson(responseBodyParsed),
+      },
+    }),
+  );
   const ok = fin.finalStatus === 'completed';
   return {
     run_id: txa.runId,

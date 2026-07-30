@@ -7,6 +7,7 @@ import {
   AuthError,
   CapabilityNotSupportedError,
   CapabilityNotRegisteredError,
+  DispatchPersistenceError,
   type RunRequest,
 } from '../pipeline/run-orchestrator.js';
 import { authenticateApiKey } from '../pipeline/auth.js';
@@ -129,6 +130,26 @@ export async function runsRoute(app: FastifyInstance): Promise<void> {
           error: 'provider_credential_unresolvable',
           provider: err.provider,
           reason: err.reason,
+        };
+      }
+      // Post-claim terminal persistence failed: the provider action MAY have
+      // executed but could not be durably recorded. A bare 500 would invite a
+      // repeat that re-executes the action under a NEW run — instead return
+      // the durable run id, retry_safe=false and a Location to poll (recovery
+      // will mark the run honestly on database time).
+      if (err instanceof DispatchPersistenceError) {
+        req.log.error(
+          { run_id: err.runId, cause_name: err.causeName },
+          'dispatch terminal persistence failed in /v1/runs',
+        );
+        reply.code(500);
+        reply.header('location', `/v1/runs/${err.runId}`);
+        reply.header('retry-after', '5');
+        return {
+          error: 'dispatch_persistence_failed',
+          run_id: err.runId,
+          audit_chain_id: err.chainId,
+          retry_safe: false,
         };
       }
       req.log.error({ err }, 'unhandled error in /v1/runs');

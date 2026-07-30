@@ -5,9 +5,11 @@
 // the FORWARDING boundary), T10 (known non-2xx), T11 (late reconciliation),
 // T12 (governed v4 capture, TX-B half), T13 (crash window B), T17 (concurrent
 // reconciliation), T18 (pre-claim + pre-forward known failures), T19 (wrong
-// token + terminal re-entry). Real Testcontainers Postgres + the hermetic
+// token + terminal re-entry), T20 (post-claim persistence failure keeps the
+// durable run id). Real Testcontainers Postgres + the hermetic
 // provider-protocol upstream with a deterministic PARK barrier — no sleeps,
-// no mocked transactions/locks/pools.
+// no mocked transactions/locks/pools (T20 injects a pool outage via a wrapper
+// around a REAL pool).
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { randomUUID, createHash } from 'node:crypto';
@@ -878,6 +880,82 @@ describe('T13 — crash after TX-A, before claim', () => {
     const types = await auditEventTypes(org.org_id, runId);
     expect(types.filter((t) => t === 'run.failed')).toHaveLength(1);
     expect(types).not.toContain('run.dispatch_claimed');
+  });
+});
+
+// =============================================================================
+// T20 — post-claim terminal persistence failure: the provider ANSWERED but
+// TX-B could not persist (pool outage). The response must carry the durable
+// run id + retry_safe=false + a Location to poll — never a bare 500 that
+// invites re-executing the action under a new run. The run row stays
+// 'running' with its token; recovery owns it from here.
+// =============================================================================
+
+describe('T20 — persistence failure after the provider answered', () => {
+  it('TX-B pool outage → 500 dispatch_persistence_failed with run_id, retry_safe=false, Location; run stays running', async () => {
+    const org = await seedOrg(stack);
+    const poison = { active: false };
+    const pool2 = new Pool({ connectionString: stack.db.appUrl, max: 5 });
+    const realConnect = pool2.connect.bind(pool2);
+    (pool2 as unknown as { connect: unknown }).connect = ((...args: unknown[]) => {
+      if (poison.active) {
+        const err = new Error('injected pool outage (T20)');
+        if (typeof args[0] === 'function') {
+          (args[0] as (e: Error) => void)(err);
+          return undefined;
+        }
+        return Promise.reject(err);
+      }
+      return (realConnect as (...a: unknown[]) => unknown)(...args);
+    }) as typeof pool2.connect;
+
+    const app2 = await buildServer({ env: stack.env, pool: pool2 });
+    try {
+      const park = setParkOverride(org.workspace_id);
+      const pending = app2.inject({
+        method: 'POST',
+        url: '/v1/runs',
+        headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+        payload: GOVERNED_BODY(org),
+      });
+      await park.parked; // auth/preflight/TX-A/claim all done; provider in flight
+      poison.active = true; // every later pool acquisition (TX-B) fails
+      park.release();
+      const res = await pending;
+      poison.active = false;
+
+      expect(res.statusCode).toBe(500);
+      const body = JSON.parse(res.body) as {
+        error: string;
+        run_id: string;
+        audit_chain_id: string;
+        retry_safe: boolean;
+      };
+      expect(body.error).toBe('dispatch_persistence_failed');
+      expect(typeof body.run_id).toBe('string');
+      expect(body.retry_safe).toBe(false);
+      expect(res.headers['location']).toBe(`/v1/runs/${body.run_id}`);
+
+      // Durable truth: the run is still 'running' under its single token —
+      // no terminal write, no invented outcome; recovery owns it from here.
+      const rows = await queryAsOrg<{ status: string; dispatch_token: string | null }>(
+        org.org_id,
+        'SELECT status, dispatch_token FROM govai.runs WHERE id = $1::uuid',
+        [body.run_id],
+      );
+      expect(rows[0]!.status).toBe('running');
+      expect(rows[0]!.dispatch_token).not.toBeNull();
+
+      // The status endpoint (healthy pool) reports it honestly, poll-able.
+      const status = await inject(stack, 'GET', `/v1/runs/${body.run_id}`, org.api_key);
+      expect(status.statusCode).toBe(200);
+      const s = status.body as Record<string, unknown>;
+      expect(s['status']).toBe('running');
+      expect(s['retry_safe']).toBe(false);
+    } finally {
+      await app2.close();
+      await pool2.end();
+    }
   });
 });
 
