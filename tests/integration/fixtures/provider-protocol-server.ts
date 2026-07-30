@@ -38,6 +38,59 @@ type ErrorPayload = {
  */
 const errorOverrides = new Map<string, ErrorPayload>();
 
+// =============================================================================
+// EP-P03A-A (F3): per-workspace PARK barrier. A parked workspace's request
+// blocks deterministically inside the upstream handler until the test releases
+// it — the primitive behind the F3 falsification tests (run visible / locks
+// free WHILE the provider call is in flight) and the timeout test. No sleeps:
+// the test awaits `parked` (the request reached the upstream), then asserts,
+// then calls `release()`.
+// =============================================================================
+
+type ParkController = {
+  /** Resolves when a request for this workspace is parked inside the handler. */
+  parked: Promise<void>;
+  /** Releases the parked request; the handler then answers normally. */
+  release: () => void;
+};
+
+type ParkState = {
+  barrier: Promise<void>;
+  release: () => void;
+  signalParked: () => void;
+};
+
+const parkOverrides = new Map<string, ParkState>();
+
+export function setParkOverride(workspaceId: string): ParkController {
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let signalParked!: () => void;
+  const parked = new Promise<void>((resolve) => {
+    signalParked = resolve;
+  });
+  parkOverrides.set(workspaceId, { barrier, release, signalParked });
+  return { parked, release };
+}
+
+export function clearParkOverrides(): void {
+  // Release anything still parked so no Fastify handler awaits forever and
+  // the fixture can close cleanly in afterEach/afterAll.
+  for (const p of parkOverrides.values()) p.release();
+  parkOverrides.clear();
+}
+
+async function maybePark(req: { headers: Record<string, string | string[] | undefined> }): Promise<void> {
+  const wsId = req.headers['x-test-workspace-id'];
+  if (typeof wsId !== 'string') return;
+  const park = parkOverrides.get(wsId);
+  if (!park) return;
+  park.signalParked();
+  await park.barrier;
+}
+
 export function setErrorOverride(
   workspaceId: string,
   override: { status: number; body?: Record<string, unknown> },
@@ -110,6 +163,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       reply.header('x-request-id', requestId);
       reply.header('anthropic-request-id', requestId);
 
+      await maybePark(req);
       const wsErr = workspaceErrorFor(req);
       if (wsErr) {
         reply.code(wsErr.status);
@@ -168,6 +222,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       reply.header('x-request-id', requestId);
       reply.header('openai-request-id', requestId);
 
+      await maybePark(req);
       const wsErr = workspaceErrorFor(req);
       if (wsErr) {
         reply.code(wsErr.status);
@@ -221,6 +276,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       const requestId = randomUUID();
       reply.header('x-request-id', requestId);
 
+      await maybePark(req);
       const wsErr = workspaceErrorFor(req);
       if (wsErr) {
         reply.code(wsErr.status);

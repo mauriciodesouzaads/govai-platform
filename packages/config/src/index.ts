@@ -63,6 +63,40 @@ const EnvSchema = z.object({
     .union([z.literal('0'), z.literal('1')])
     .default('0')
     .transform((v) => v === '1'),
+
+  // EP-P03A-A (F3) — durable provider dispatch. The timeout bounds the provider
+  // fetch via AbortSignal (owner-adjudicated default 300s, hard bounds 1s–15min);
+  // the recovery knobs drive the stale-run sweeper. All are validated loud —
+  // none is an off-switch, so '' fails instead of silently becoming a default.
+  GOVAI_PROVIDER_DISPATCH_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(900_000)
+    .default(300_000),
+  RUN_DISPATCH_RECOVERY_ENABLED: z
+    .union([z.literal('0'), z.literal('1')])
+    .default('1')
+    .transform((v) => v === '1'),
+  RUN_DISPATCH_RECOVERY_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(3_600_000)
+    .default(30_000),
+  RUN_DISPATCH_PREPARED_GRACE_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(3_600_000)
+    .default(60_000),
+  RUN_DISPATCH_RECOVERY_GRACE_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(3_600_000)
+    .default(30_000),
+  RUN_DISPATCH_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
 });
 
 export type GovAIEnv = z.infer<typeof EnvSchema>;

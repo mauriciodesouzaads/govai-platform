@@ -9,6 +9,9 @@ export const RunStatus = z.enum([
   'completed',
   'failed',
   'denied',
+  // EP-P03A-A (F3): the system cannot prove whether the provider executed the
+  // action. Not equivalent to failed; reconcilable; never an authorization to retry.
+  'outcome_unknown',
   'awaiting_approval',
 ]);
 export type RunStatus = z.infer<typeof RunStatus>;
@@ -121,3 +124,6 @@ export * from './workroom-approval-decision.js';
 // AuditBridgeCapturePayloadV1 projection (ADR-028 §4/§7).
 export * from './uuidv5.js';
 export * from './audit-bridge-capture-payload.js';
+
+// EP-P03A-A (F3) — durable provider dispatch lifecycle events v1.
+export * from './run-dispatch-lifecycle.js';

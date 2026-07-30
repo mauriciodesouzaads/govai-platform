@@ -270,10 +270,11 @@ describe('runs-passthrough-mode / unsupported modes', () => {
 });
 
 describe('runs-passthrough-mode / network failure hash consistency', () => {
-  it("mode='passthrough' network/fetch failure persists the real request hash everywhere", async () => {
+  it("mode='passthrough' network/fetch failure → honest outcome_unknown, real request hash everywhere", async () => {
     // A fresh stack pointed at a closed loopback port: forwardRaw's fetch
-    // throws a connection error (a true network/fetch failure, not a provider
-    // HTTP non-2xx response).
+    // throws a connection error AFTER the forward started. F3 (§22): that is
+    // conservatively outcome_unknown over HTTP 202 — never a known failure,
+    // never retried — and the REAL request hash still lands everywhere.
     const failStack = await startStack({
       GOVAI_PROVIDER_BASE_URL: 'http://127.0.0.1:1' as unknown as string,
     });
@@ -296,54 +297,68 @@ describe('runs-passthrough-mode / network failure hash consistency', () => {
         input,
         mode: 'passthrough',
       });
-      expect(res.statusCode).toBe(502);
+      expect(res.statusCode).toBe(202);
       const body = res.body as Record<string, unknown>;
-      expect(body['mode']).toBe('passthrough');
-      expect(body['status']).toBe('failed');
-      // API response carries the real request hash, not a placeholder.
-      expect(body['native_request_hash']).toBe(expectedHash);
+      expect(body['status']).toBe('outcome_unknown');
+      expect(body['retry_safe']).toBe(false);
+      expect(body['error_class']).toBe('dispatch_outcome_unknown');
 
       const runId = body['run_id'] as string;
-      const provInvId = body['provider_invocation_id'] as string;
-      const auditEventId = body['audit_event_id'] as string;
 
       const c = await failStack.db.appPool.connect();
       try {
         await c.query('BEGIN');
         await c.query("SELECT set_config('app.org_id', $1, true)", [org.org_id]);
 
-        // The provider call was attempted → the run row persists, failed.
-        const runRows = await c.query<{ mode: string; status: string }>(
-          'SELECT mode, status FROM govai.runs WHERE id = $1::uuid',
-          [runId],
-        );
+        // The run row persists in the honest unknown state.
+        const runRows = await c.query<{
+          mode: string;
+          status: string;
+          dispatch_error_class: string | null;
+        }>('SELECT mode, status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid', [runId]);
         expect(runRows.rows[0]!.mode).toBe('passthrough');
-        expect(runRows.rows[0]!.status).toBe('failed');
+        expect(runRows.rows[0]!.status).toBe('outcome_unknown');
+        expect(runRows.rows[0]!.dispatch_error_class).toBe('provider_io_unknown');
 
         // provider_invocations.native_request_hash is the real sha256 — never
-        // the old '\x00' placeholder.
-        const invRows = await c.query<{ native_request_hash: Buffer; error_class: string }>(
-          `SELECT native_request_hash, error_class FROM govai.provider_invocations
-            WHERE id = $1::uuid AND run_id = $2::uuid`,
-          [provInvId, runId],
+        // the old '\x00' placeholder — and there is NO invented response hash.
+        const invRows = await c.query<{
+          native_request_hash: Buffer;
+          native_response_hash: Buffer | null;
+          error_class: string;
+        }>(
+          `SELECT native_request_hash, native_response_hash, error_class
+             FROM govai.provider_invocations WHERE run_id = $1::uuid`,
+          [runId],
         );
         expect(invRows.rows.length).toBe(1);
-        expect(invRows.rows[0]!.error_class).toBe('network_error');
+        expect(invRows.rows[0]!.error_class).toBe('dispatch_outcome_unknown');
+        expect(invRows.rows[0]!.native_response_hash).toBeNull();
         const dbHashHex = invRows.rows[0]!.native_request_hash.toString('hex');
         expect(dbHashHex).toBe(expectedHash);
         expect(dbHashHex.length).toBe(64);
         expect(dbHashHex).not.toBe('00');
 
-        // run.failed audit metadata carries the same real hash.
+        // The durable run.dispatch_prepared event carries the same real hash.
         const auditRows = await c.query<{
           event_type: string;
           redaction_metadata: { native_request_hash?: string };
         }>(
-          'SELECT event_type, redaction_metadata FROM govai.audit_events WHERE id = $1::uuid',
-          [auditEventId],
+          `SELECT event_type, redaction_metadata FROM govai.audit_events
+            WHERE subject_id = $1::uuid AND event_type = 'run.dispatch_prepared'`,
+          [runId],
         );
-        expect(auditRows.rows[0]!.event_type).toBe('run.failed');
+        expect(auditRows.rows).toHaveLength(1);
         expect(auditRows.rows[0]!.redaction_metadata.native_request_hash).toBe(expectedHash);
+
+        // run.outcome_unknown on the chain; run.failed NOT.
+        const typeRows = await c.query<{ event_type: string }>(
+          'SELECT event_type FROM govai.audit_events WHERE subject_id = $1::uuid',
+          [runId],
+        );
+        const types = typeRows.rows.map((r) => r.event_type);
+        expect(types).toContain('run.outcome_unknown');
+        expect(types).not.toContain('run.failed');
 
         await c.query('COMMIT');
       } finally {

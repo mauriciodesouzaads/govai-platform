@@ -629,7 +629,7 @@ describe('workroom-runs / deterministic pagination (Codex P2)', () => {
 });
 
 describe('workroom-runs / governed network failure hash', () => {
-  it('a Workroom-owned governed run that fails on network persists a real native_request_hash', async () => {
+  it('a Workroom-owned governed run hitting a network failure goes outcome_unknown with a real native_request_hash', async () => {
     // A fresh stack pointed at a closed loopback port: the governed handler's
     // fetch fails, exercising the governed network/fetch failure path.
     const failStack = await startStack({
@@ -663,7 +663,10 @@ describe('workroom-runs / governed network failure hash', () => {
       expect(r.statusCode).toBe(201);
       const body = r.body as Record<string, unknown>;
       expect(body['mode']).toBe('governed');
-      expect(body['status']).toBe('failed');
+      // F3 (§22): a transport failure after the forward started is honestly
+      // outcome_unknown — never reported as a known failure.
+      expect(body['status']).toBe('outcome_unknown');
+      expect(body['retry_safe']).toBe(false);
       const runId = body['run_id'] as string;
 
       const c = await failStack.db.appPool.connect();
@@ -677,25 +680,25 @@ describe('workroom-runs / governed network failure hash', () => {
           [runId],
         );
         expect(inv.rows.length).toBe(1);
-        expect(inv.rows[0]!.error_class).toBe('network_error');
+        expect(inv.rows[0]!.error_class).toBe('dispatch_outcome_unknown');
         const dbHashHex = inv.rows[0]!.native_request_hash.toString('hex');
         expect(dbHashHex).toBe(expectedHash);
         expect(dbHashHex).not.toBe('00');
         expect(dbHashHex.length).toBe(64);
 
-        // The run_event turn anchors to a real run.failed audit event.
+        // Exactly one run_event turn, anchored to the real run.outcome_unknown
+        // lifecycle event.
         const turn = await c.query<{ audit_event_id: string }>(
           `SELECT audit_event_id FROM govai.workroom_turns
             WHERE payload_ref = $1::uuid AND kind = 'run_event'`,
           [runId],
         );
         expect(turn.rows.length).toBe(1);
-        expect(turn.rows[0]!.audit_event_id).toBe(body['audit_event_id']);
         const ev = await c.query<{ event_type: string }>(
           'SELECT event_type FROM govai.audit_events WHERE id = $1::uuid',
           [turn.rows[0]!.audit_event_id],
         );
-        expect(ev.rows[0]!.event_type).toBe('run.failed');
+        expect(ev.rows[0]!.event_type).toBe('run.outcome_unknown');
 
         await c.query('COMMIT');
       } finally {

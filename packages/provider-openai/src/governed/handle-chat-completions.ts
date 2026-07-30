@@ -286,6 +286,8 @@ export async function handleOpenAIGovernedChatCompletions(
     method: 'POST',
     headers: outHeaders,
     body: input.rawBody,
+    signal: input.signal,
+    onDispatchStart: input.onDispatchStart,
   });
 
   const ev = PassthroughInvokedSchema.parse({

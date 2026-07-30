@@ -1,16 +1,33 @@
 // /v1/runs orchestrator — UX shortcut over the governed-native surface.
 //
-// Macro Architecture Realignment: /v1/runs is no longer the universal core.
-// It is a convenience entry that takes a simplified `{capability, model, input}`
-// shape, runs the existing PR1 DLP+policy decision (input-string level), and
-// then DELEGATES to the canonical governed-native handler (handle*GovernedX)
-// living in @govai/provider-anthropic / @govai/provider-openai. The handler
-// performs body-level DLP, tool classification, real risk + enforcement, native
-// forward, and emits `passthrough.invoked v3` with capability_level='policy_governed'.
+// EP-P03A-A (F3): durable provider dispatch OUTSIDE run database transactions.
+// The pre-F3 flow held one PoolClient and one open transaction across the
+// provider network call (and, for passthrough, the approval row lock). The
+// flow is now phased:
 //
-// Run lifecycle audit events (run.queued/run.completed/run.denied/run.failed)
-// remain on the same chain so existing tests + audit chain integrity stay
-// valid; the canonical fact is the v3 event.
+//   authenticate (short-lived client, released)
+//   → read-only preflight (own client, released; preserves error ordering)
+//   → provider credential lookup (its OWN short transaction, committed +
+//     released) → KMS envelope decrypt OUTSIDE any DB transaction
+//   → TX-A: short durable preparation (run row + request hash + policy +
+//     approval consumption + run.dispatch_prepared v1), committed
+//   → deterministic pre-claim validation (known failure ⇒ queued→failed CAS)
+//   → exclusive claim: CAS queued→running with a fresh dispatch_token
+//     (run.dispatch_claimed v1) — ONLY the CAS winner may call the provider
+//   → provider I/O with ZERO database clients held, bounded by AbortSignal
+//   → TX-B: new connection/transaction persisting the known result, or an
+//     honest `outcome_unknown` when nothing is provable (§22), with late
+//     reconciliation when a known result arrives after recovery marked the
+//     run unknown (§26).
+//
+// Guarantee: AT-MOST-ONCE provider call per run (never exactly-once; never
+// cross-request idempotency — that is P0.3-C). No automatic retry, ever.
+//
+// The canonical governed pipeline still lives in handle*Governed* from
+// @govai/provider-anthropic / @govai/provider-openai; its emitAuditEvent
+// callback is now an in-memory typed capture (§20) persisted in TX-B, and its
+// resolveProviderKey callback returns the credential already resolved in
+// memory before TX-A (§12.4) — no DB, no pool, no KMS inside the handler.
 
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
@@ -18,8 +35,13 @@ import { auditAppend, sha256 } from '@govai/core-audit';
 import { AUDIT_CHAIN_KEY } from './audit-keys.js';
 import type { Kms } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
-import { chainIdFor, type PassthroughInvoked } from '@govai/core-events';
+import {
+  chainIdFor,
+  PassthroughInvokedSchema,
+  type PassthroughInvoked,
+} from '@govai/core-events';
 import type { GovAIEnv } from '@govai/config';
+import type { ResolvedProviderCredential } from '@govai/core-types';
 import { detectAllBaseline, mergeFindingSpans } from '@govai/dlp-br';
 import {
   handleAnthropicGovernedMessages,
@@ -51,7 +73,17 @@ import {
   resolveOpenAIProviderKey,
 } from './provider-credentials.js';
 import { dlpPreScan, redactFindings, type MergedDlpFinding } from './dlp.js';
-import { decidePolicy, persistPolicyDecision } from './policy.js';
+import { decidePolicy, persistPolicyDecision, type PipelinePolicyDecision } from './policy.js';
+import { runDispatchConfigFromEnv, type RunDispatchConfig } from './run-dispatch-config.js';
+import {
+  appendDispatchPreparedEvent,
+  claimDispatch,
+  failPreclaim,
+  finalizeKnownOutcome,
+  markOutcomeUnknown,
+  type KnownOutcome,
+  type RunDispatchContext,
+} from './run-dispatch-state.js';
 
 export type SupportedCapabilityId =
   | 'anthropic.messages.create'
@@ -77,13 +109,18 @@ export type RunRequest = {
 export type RunResponse = {
   run_id: string;
   audit_chain_id: string;
-  audit_event_id: string;
-  policy_decision: { kind: string; reasons: string[] };
+  /** Absent on `outcome_unknown` (the lifecycle event id is not part of the
+   *  minimal §23.1 contract) and on a lost claim answered from current state. */
+  audit_event_id?: string;
+  policy_decision?: { kind: string; reasons: string[] };
   output?: unknown;
-  status: 'completed' | 'denied' | 'failed';
+  status: 'completed' | 'denied' | 'failed' | 'outcome_unknown';
   provider_invocation_id?: string;
-  /** Hex of the canonical passthrough.invoked v3 event the governed handler emitted. */
+  /** Hex of the canonical passthrough.invoked v4 event the governed handler emitted. */
   passthrough_invoked_event_id?: string;
+  /** Always false for protocol v1 (§23): a repeat may re-execute the action. */
+  retry_safe?: boolean;
+  error_class?: string;
 };
 
 export type OrchestratorDeps = {
@@ -96,10 +133,9 @@ export type OrchestratorDeps = {
 /**
  * Optional Workroom context threaded into a run executor (Workroom Phase 3,
  * issue #53). When present, the run is a Workroom-owned run: the orchestrator
- * persists the Workroom-linkage columns on `govai.runs` and creates exactly
- * one `workroom_turns` row of kind `run_event` — both inside the same run
- * transaction, so a Workroom-owned run is never committed without its turn,
- * and a turn is never created without a real run row + real audit event.
+ * persists the Workroom-linkage columns on `govai.runs` and guarantees exactly
+ * one `workroom_turns` row of kind `run_event` for the run's terminal (or
+ * honest-unknown) lifecycle event — enforced by the 0029 partial unique index.
  * When absent, standalone `/v1/runs` behavior is unchanged.
  */
 export type WorkroomRunContext = {
@@ -111,11 +147,10 @@ export type WorkroomRunContext = {
 };
 
 /**
- * Append one `run_event` Workroom turn for a Workroom-owned run, anchored to
- * the run's real terminal audit event (`run.completed` / `run.failed` /
- * `run.denied`). Must be called inside the run transaction, before COMMIT, so
- * it shares the run's atomicity. The advisory xact lock serializes per-workroom
- * turn numbering; the (workroom_id, turn_number) unique index is the backstop.
+ * Append one `run_event` Workroom turn anchored to a real audit event, inside
+ * the caller's transaction. Guarded: at most one turn per run (payload_ref),
+ * with the 0029 partial unique index as backstop. The advisory xact lock
+ * serializes per-workroom turn numbering.
  */
 async function insertRunEventTurn(
   client: PoolClient,
@@ -125,6 +160,12 @@ async function insertRunEventTurn(
   await client.query("SELECT pg_advisory_xact_lock(hashtext('workroom_turn:' || $1)::bigint)", [
     workroomContext.workroom_id,
   ]);
+  const exists = await client.query(
+    `SELECT 1 FROM govai.workroom_turns
+      WHERE kind = 'run_event' AND payload_ref = $1::uuid LIMIT 1`,
+    [runId],
+  );
+  if (exists.rows.length > 0) return;
   const r = await client.query<{ next: string }>(
     'SELECT COALESCE(MAX(turn_number), 0) + 1 AS next FROM govai.workroom_turns WHERE workroom_id = $1',
     [workroomContext.workroom_id],
@@ -160,12 +201,9 @@ export class WorkroomRunContextInvalidError extends Error {
 }
 
 /**
- * Re-validate a WorkroomRunContext inside the run write transaction, before any
- * Workroom column or `workroom_turns` row is written. This closes the TOCTOU
- * gap between the route's preflight check and the orchestrator's own
- * transaction: a participant removed (or a task made stale) in that window must
- * not yield a committed Workroom-owned run. Throwing here triggers the
- * orchestrator's ROLLBACK, so no run row and no turn are committed.
+ * Re-validate a WorkroomRunContext inside a transaction, before any Workroom
+ * column or `workroom_turns` row is written. Runs in the read-only preflight
+ * (fast clean 4xx) AND authoritatively inside TX-A.
  */
 async function assertWorkroomRunContextStillValid(
   client: PoolClient,
@@ -201,7 +239,10 @@ async function assertWorkroomRunContextStillValid(
 // override. It is admitted only when a human-approved, unconsumed,
 // parameter-matched `workroom_approval_requests` row authorizes it. The grant is
 // bound to the exact run parameters via a canonical sha256; the approval is
-// one-time-use, consumed atomically with the authorized run.
+// one-time-use, consumed atomically with the DURABLE PREPARATION of the run
+// (TX-A). F3 consequence (owner-adjudicated): if TX-A commits and the provider
+// is never called, the approval REMAINS consumed — a new execution requires a
+// new authorization. Authorization is at-most-once, never replayed.
 // =============================================================================
 
 /** The provider-semantic parameters an approval is bound to. */
@@ -262,9 +303,9 @@ export type WorkroomApprovalInvalidCode =
 
 /**
  * Raised when an `approval_request_id` supplied to authorize a passthrough
- * override is not in a state that can authorize the run. Thrown inside the run
- * write transaction, so it triggers ROLLBACK — no run row, no turn, and the
- * approval is left unconsumed. The route maps `code` to 404 (not_found) / 403.
+ * override is not in a state that can authorize the run. Thrown inside TX-A,
+ * so it triggers ROLLBACK — no run row, no turn, and the approval is left
+ * unconsumed. The route maps `code` to 404 (not_found) / 403.
  */
 export class WorkroomApprovalInvalidError extends Error {
   constructor(public readonly code: WorkroomApprovalInvalidCode) {
@@ -322,24 +363,22 @@ export type ApprovalConsumptionContext = {
   approval_request_id: string;
 };
 
+const APPROVAL_ROW_SQL = `SELECT status, subject_kind, workroom_id, consumed_at, expires_at, intended_action_hash
+       FROM govai.workroom_approval_requests
+      WHERE id = $1::uuid AND org_id = $2::uuid`;
+
 /**
- * Re-validate the authorizing approval inside the run write transaction, under
- * a `FOR UPDATE` row lock. The lock serializes concurrent consumption: a second
- * run racing for the same approval blocks here until the first commits, then
- * sees `consumed_at` set and is rejected. Throwing triggers ROLLBACK.
+ * Re-validate the authorizing approval inside TX-A, under a `FOR UPDATE` row
+ * lock. The lock serializes concurrent consumption and NEVER survives TX-A's
+ * commit — it can no longer cross claim, provider I/O, timeout or TX-B (F3).
  */
 async function assertApprovalConsumable(
   client: PoolClient,
   identity: AuthIdentity,
   input: { workroomContext: WorkroomRunContext; approvalRequestId: string; body: RunRequest },
 ): Promise<void> {
-  const r = await client.query<ApprovalRowForValidation>(
-    `SELECT status, subject_kind, workroom_id, consumed_at, expires_at, intended_action_hash
-       FROM govai.workroom_approval_requests
-      WHERE id = $1::uuid AND org_id = $2::uuid
-      FOR UPDATE`,
-    [input.approvalRequestId, identity.org_id],
-  );
+  const r = await client.query<ApprovalRowForValidation>(`${APPROVAL_ROW_SQL}
+      FOR UPDATE`, [input.approvalRequestId, identity.org_id]);
   const v = validateApprovalForRun(r.rows[0] ?? null, {
     workroomId: input.workroomContext.workroom_id,
     action: {
@@ -354,11 +393,10 @@ async function assertApprovalConsumable(
 }
 
 /**
- * Consume the authorizing approval — the one-time-use binding to the run the
- * grant authorized. Runs inside the run write transaction after the run row
- * exists, so it shares the run's atomicity. The `consumed_at IS NULL` guard plus
- * the `FOR UPDATE` lock taken by assertApprovalConsumable make consumption
- * exactly-once.
+ * Consume the authorizing approval — one-time-use, bound to the durably
+ * prepared run. Runs inside TX-A after the run row exists. The `consumed_at IS
+ * NULL` guard plus the `FOR UPDATE` lock taken by assertApprovalConsumable make
+ * consumption exactly-once.
  */
 async function consumeApproval(
   client: PoolClient,
@@ -376,21 +414,10 @@ async function consumeApproval(
 }
 
 /**
- * Resolve the upstream provider base URL the orchestrator should pass to the
- * governed handler. Mirrors the fallback behavior of the direct governed
- * routes (apps/api/src/routes/governed-{anthropic,openai}.ts):
- *
- * - If GOVAI_PROVIDER_BASE_URL is set and non-empty, use it (preserves
- *   hermetic loopback test behavior and any operator-pinned proxy).
- * - Otherwise, fall back to the canonical provider production URL.
- *
- * The previous orchestrator code defaulted to `'' (empty string)` when
- * GOVAI_PROVIDER_BASE_URL was unset — which caused the governed handler to
- * attempt `fetch('' + '/v1/messages')` and throw a URL parse error before
- * any network call, producing a fast pre-network 502 on /v1/runs in live
- * mode. The hermetic test fixture always sets GOVAI_PROVIDER_BASE_URL to a
- * loopback URL, so the bug was latent until PR3.1d live validation. See
- * issue #31.
+ * Resolve the upstream provider base URL. Mirrors the fallback behavior of the
+ * direct governed routes: an explicit GOVAI_PROVIDER_BASE_URL wins (hermetic
+ * loopback tests, operator-pinned proxy); otherwise the canonical production
+ * URL. Never returns an empty string (issue #31).
  */
 function providerUpstreamBaseUrl(env: GovAIEnv, provider: 'anthropic' | 'openai'): string {
   if (env.GOVAI_PROVIDER_BASE_URL && env.GOVAI_PROVIDER_BASE_URL.length > 0) {
@@ -446,8 +473,6 @@ function buildOpenAITenant(identity: AuthIdentity): OpenAIGovernedTenant {
 // FIXUP3 (Mudança B): 1 linha em govai.dlp_findings por SPAN fundido, chamada
 // UMA vez logo após persistPolicyDecision — dentro da MESMA transação — para
 // que os TRÊS caminhos (deny/redact/allow) persistam a evidência por span.
-// Antes, o INSERT vinha depois do early-return do deny, e a run mais severa
-// (negada) ficava SEM os dlp_findings.
 async function persistMergedDlpFindings(
   client: PoolClient,
   orgId: string,
@@ -485,26 +510,276 @@ const inMemoryDlpScan: AnthropicDlpScanFn & OpenAIDlpScanFn = async (text) => {
   };
 };
 
-export async function executeGovernedRun(
+// =============================================================================
+// F3 shared building blocks
+// =============================================================================
+
+/** Map an executable capability to its provider, or throw the same
+ *  CapabilityNotSupportedError shape the pre-F3 plan builder threw. */
+function providerForCapability(capability: string): 'anthropic' | 'openai' {
+  switch (capability) {
+    case 'anthropic.messages.create':
+      return 'anthropic';
+    case 'openai.responses.create':
+    case 'openai.chat.completions.create':
+      return 'openai';
+    default:
+      throw new CapabilityNotSupportedError(capability, 'planned');
+  }
+}
+
+/** §12.1 — authenticate on a short-lived client that is released before any
+ *  preflight, credential, KMS or TX-A work. */
+async function authenticateShortLived(pool: Pool, apiKey: string): Promise<AuthIdentity> {
+  const client = await pool.connect();
+  try {
+    return await authenticateApiKey(client, apiKey);
+  } finally {
+    client.release();
+  }
+}
+
+/** §12.2 — short tenant-safe read-only preflight preserving error ordering.
+ *  Takes NO row locks; TX-A re-validates everything authoritatively. */
+async function runPreflight(
   deps: OrchestratorDeps,
-  apiKey: string,
+  identity: AuthIdentity,
   body: RunRequest,
   workroomContext?: WorkroomRunContext,
+  approval?: ApprovalConsumptionContext,
+): Promise<void> {
+  const client = await deps.pool.connect();
+  try {
+    await client.query('BEGIN');
+    try {
+      await setLocalAppOrgId(client, identity.org_id);
+      if (workroomContext) {
+        await assertWorkroomRunContextStillValid(client, identity, workroomContext);
+      }
+      if (approval && workroomContext) {
+        const r = await client.query<ApprovalRowForValidation>(APPROVAL_ROW_SQL, [
+          approval.approval_request_id,
+          identity.org_id,
+        ]);
+        const v = validateApprovalForRun(r.rows[0] ?? null, {
+          workroomId: workroomContext.workroom_id,
+          action: {
+            mode: 'passthrough',
+            capability: body.capability,
+            model: body.model,
+            input: body.input,
+            workspace_id: body.workspace_id,
+          },
+        });
+        if (!v.ok) throw new WorkroomApprovalInvalidError(v.code);
+      }
+      const overrides = await loadOrgOverrides(client, body.capability);
+      const resolved = resolveCapability(body.capability, overrides);
+      assertCapabilityExecutable(resolved, deps.env);
+      providerForCapability(body.capability);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
+  } finally {
+    client.release();
+  }
+}
+
+/** §12.3 — resolve the provider credential fully BEFORE TX-A. The lookup uses
+ *  its own short committed transaction (inside the resolver) and the KMS
+ *  decrypt happens outside any DB transaction. */
+async function resolveCredentialForProvider(
+  deps: OrchestratorDeps,
+  identity: AuthIdentity,
+  provider: 'anthropic' | 'openai',
+): Promise<ResolvedProviderCredential> {
+  return provider === 'anthropic'
+    ? resolveAnthropicProviderKey(
+        { env: deps.env, pool: deps.pool, kms: deps.kms },
+        { orgId: identity.org_id, operationalMode: identity.operational_mode },
+      )
+    : resolveOpenAIProviderKey(
+        { env: deps.env, pool: deps.pool, kms: deps.kms },
+        { orgId: identity.org_id, operationalMode: identity.operational_mode },
+      );
+}
+
+/** §20 — typed in-memory capture of the governed v4 event. No client, no
+ *  query, no KMS, no outbox, no auditAppend; at most one event; validated. */
+export function createGovernedV4Capture(): {
+  capture: (event: PassthroughInvoked) => void;
+  captured: () => PassthroughInvoked | null;
+} {
+  let captured: PassthroughInvoked | null = null;
+  return {
+    capture: (event: PassthroughInvoked): void => {
+      const parsed = PassthroughInvokedSchema.parse(event);
+      if (captured !== null) {
+        throw new Error('governed v4 capture: duplicate event for a single dispatch');
+      }
+      captured = parsed;
+    },
+    captured: () => captured,
+  };
+}
+
+/** §22 — classify a post-forward-start failure. Only OUR AbortSignal aborts
+ *  the fetch, so an abort name maps to the dispatch timeout. */
+function unknownErrorClass(err: unknown): 'provider_timeout' | 'provider_io_unknown' {
+  const name = err instanceof Error ? err.name : '';
+  return name === 'TimeoutError' || name === 'AbortError' ? 'provider_timeout' : 'provider_io_unknown';
+}
+
+/** Defensive deterministic cap (§16): the route already bounds `input` at 50k
+ *  chars, so a native body beyond this is a construction bug, not user data. */
+const MAX_NATIVE_BODY_BYTES = 5_000_000;
+
+type DeterministicPlan = {
+  upstreamBaseUrl: string;
+  nativeEndpoint: string;
+  inboundHeaders: Record<string, string>;
+};
+
+/** §16 — everything deterministic, validated BEFORE the claim so no predictable
+ *  exception is discovered after it. Throwing here ⇒ queued→failed CAS. */
+function buildDeterministicPlan(
+  env: GovAIEnv,
+  provider: 'anthropic' | 'openai',
+  nativeEndpoint: string,
+  nativeRequestBody: Buffer,
+  workspaceId: string,
+  timeoutMs: number,
+): DeterministicPlan {
+  const upstreamBaseUrl = providerUpstreamBaseUrl(env, provider);
+  // URL validity — both the base and the concrete endpoint URL must parse.
+  new URL(upstreamBaseUrl);
+  new URL(`${upstreamBaseUrl.replace(/\/$/, '')}${nativeEndpoint}`);
+  if (!nativeEndpoint.startsWith('/')) {
+    throw new Error(`invalid native endpoint: ${nativeEndpoint}`);
+  }
+  if (nativeRequestBody.length === 0 || nativeRequestBody.length > MAX_NATIVE_BODY_BYTES) {
+    throw new Error(`native request body out of bounds: ${nativeRequestBody.length} bytes`);
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 900_000) {
+    throw new Error(`dispatch timeout out of bounds: ${timeoutMs}`);
+  }
+  const envBaseUrl = env.GOVAI_PROVIDER_BASE_URL ?? '';
+  // Hermetic loopback only: forward the test workspace discriminator so tests
+  // can inject per-workspace upstream behavior. Never set in real environments.
+  const inboundHeaders: Record<string, string> = { 'content-type': 'application/json' };
+  if (env.NODE_ENV === 'test' && isLoopbackUrl(envBaseUrl)) {
+    inboundHeaders['x-test-workspace-id'] = workspaceId;
+  }
+  return { upstreamBaseUrl, nativeEndpoint, inboundHeaders };
+}
+
+function workroomCtxOf(
+  workroomContext?: WorkroomRunContext,
+): { workroomId: string; participantId: string } | null {
+  return workroomContext
+    ? {
+        workroomId: workroomContext.workroom_id,
+        participantId: workroomContext.created_by_participant_id,
+      }
+    : null;
+}
+
+/** Answer honestly from the current durable state after a lost claim (§17) or
+ *  any race with recovery — never generate another token, never re-dispatch. */
+async function readRunStateResponse(
+  deps: OrchestratorDeps,
+  ctx: RunDispatchContext,
+  decision?: PipelinePolicyDecision,
 ): Promise<RunResponse> {
   const client = await deps.pool.connect();
   try {
-    const identity = await authenticateApiKey(client, apiKey);
+    await client.query('BEGIN');
+    await setLocalAppOrgId(client, ctx.orgId);
+    const r = await client.query<{ status: string; dispatch_error_class: string | null }>(
+      'SELECT status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid',
+      [ctx.runId],
+    );
+    await client.query('COMMIT');
+    const row = r.rows[0];
+    const status = row?.status ?? 'failed';
+    return {
+      run_id: ctx.runId,
+      audit_chain_id: ctx.chainId,
+      status:
+        status === 'outcome_unknown'
+          ? 'outcome_unknown'
+          : status === 'denied'
+            ? 'denied'
+            : status === 'completed'
+              ? 'completed'
+              : 'failed',
+      retry_safe: false,
+      ...(row?.dispatch_error_class ? { error_class: row.dispatch_error_class } : {}),
+      ...(decision ? { policy_decision: { kind: decision.kind, reasons: [...decision.reasons] } } : {}),
+    };
+  } finally {
+    client.release();
+  }
+}
 
+function buildUsageJson(responseBodyParsed: unknown): Record<string, unknown> {
+  return {
+    provider_native:
+      responseBodyParsed && typeof responseBodyParsed === 'object'
+        ? ((responseBodyParsed as { usage?: unknown }).usage ?? null)
+        : null,
+    normalized: null,
+    source: 'provider_direct',
+    pricing_table_version: 'v0',
+  };
+}
+
+function parseResponseBody(raw: Buffer): unknown {
+  if (raw.length === 0) return null;
+  try {
+    return JSON.parse(raw.toString('utf8'));
+  } catch {
+    return { raw: raw.toString('utf8') };
+  }
+}
+
+// =============================================================================
+// Governed execution (F3-phased)
+// =============================================================================
+
+type GovernedTxAResult =
+  | { kind: 'denied'; response: RunResponse }
+  | {
+      kind: 'prepared';
+      runId: string;
+      chainId: string;
+      decision: PipelinePolicyDecision;
+      dlpFindingCount: number;
+      nativeRequestBody: Buffer;
+      nativeRequestHash: Buffer;
+      nativeRequestHashHex: string;
+    };
+
+/** §14.1 — TX-A (governed): short durable preparation. Never crosses a
+ *  provider handler, forwarder, fetch, credential lookup, KMS or a nested
+ *  pool acquisition. */
+async function governedTxA(
+  deps: OrchestratorDeps,
+  identity: AuthIdentity,
+  body: RunRequest,
+  workroomContext?: WorkroomRunContext,
+): Promise<GovernedTxAResult> {
+  const client = await deps.pool.connect();
+  try {
     await client.query('BEGIN');
     try {
       await setLocalAppOrgId(client, identity.org_id);
 
-      // Re-validate the Workroom context inside the write transaction (TOCTOU):
-      // the participant/task must still be valid now, not just at route preflight.
       if (workroomContext) {
         await assertWorkroomRunContextStillValid(client, identity, workroomContext);
       }
-
       const overrides = await loadOrgOverrides(client, body.capability);
       const resolved = resolveCapability(body.capability, overrides);
       assertCapabilityExecutable(resolved, deps.env);
@@ -546,11 +821,12 @@ export async function executeGovernedRun(
       );
       await persistPolicyDecision(client, identity.org_id, runId, decision);
       // FIXUP3 (Mudança B): persiste os spans fundidos AQUI — antes do branch
-      // de deny — para que a run NEGADA também grave a evidência por detector
-      // (mesma transação; o COMMIT do deny vem depois).
+      // de deny — para que a run NEGADA também grave a evidência por detector.
       await persistMergedDlpFindings(client, identity.org_id, runId, dlp.findings);
 
       if (decision.kind === 'deny') {
+        // Policy deny commits WITHOUT protocol v1: no dispatch may ever be
+        // claimed for this run, and no provider call is possible.
         await client.query(
           `UPDATE govai.runs SET status = 'denied', completed_at = now() WHERE id = $1::uuid`,
           [runId],
@@ -581,27 +857,22 @@ export async function executeGovernedRun(
         }
         await client.query('COMMIT');
         return {
-          run_id: runId,
-          audit_chain_id: chainId,
-          audit_event_id: denyAudit.eventId,
-          policy_decision: { kind: decision.kind, reasons: [...decision.reasons] },
-          status: 'denied',
+          kind: 'denied',
+          response: {
+            run_id: runId,
+            audit_chain_id: chainId,
+            audit_event_id: denyAudit.eventId,
+            policy_decision: { kind: decision.kind, reasons: [...decision.reasons] },
+            status: 'denied',
+          },
         };
       }
 
       // FIXUP3 (Mudança A): redigir SÓ os spans cuja ação EFETIVA é `redact`.
-      // Antes, `needsRedaction` (global) mandava TODOS os spans ao redator —
-      // um span `detect` co-presente era redigido contra a política. A
-      // condição deriva da LISTA FILTRADA (não do flag global), eliminando
-      // qualquer possibilidade de divergência entre o flag e a lista. Spans
-      // `deny` nunca chegam aqui (o caminho deny retornou acima).
       const redactionSpans = dlp.findings.filter((f) => f.action === 'redact');
       const effectiveInput =
         redactionSpans.length > 0 ? redactFindings(body.input, redactionSpans) : body.input;
 
-      // The provider-native request body is known before dispatch — build it
-      // and hash it once so the network/fetch failure path persists a real
-      // native_request_hash, never a placeholder.
       let nativeRequestBody: Buffer;
       if (body.capability === 'anthropic.messages.create') {
         nativeRequestBody = buildAnthropicMessagesBody(body.model, effectiveInput);
@@ -615,427 +886,42 @@ export async function executeGovernedRun(
       const nativeRequestHash = Buffer.from(sha256(nativeRequestBody));
       const nativeRequestHashHex = nativeRequestHash.toString('hex');
 
+      // Durable preparation: protocol v1, still 'queued' — no claim, no
+      // started_at, no token. The provider CANNOT have been called yet.
+      const preparedAt = new Date();
       await client.query(
-        `UPDATE govai.runs SET status = 'running', started_at = now() WHERE id = $1::uuid`,
+        `UPDATE govai.runs
+            SET dispatch_protocol_version = 1, dispatch_prepared_at = now()
+          WHERE id = $1::uuid`,
         [runId],
       );
-
-      // The env baseUrl (possibly unset/empty) drives ONLY the hermetic
-      // test-workspace-id injection below. The actual upstream URL passed to
-      // the governed handler is resolved per-provider via
-      // providerUpstreamBaseUrl() so the orchestrator's fallback matches the
-      // direct routes' canonical production URLs.
-      const envBaseUrl = deps.env.GOVAI_PROVIDER_BASE_URL ?? '';
-      // Forward the test-only workspace discriminator only on hermetic loopback
-      // (mirrors the PR1 pattern from the legacy provider-invoke). This lets
-      // tests inject per-workspace upstream errors (HTTP 429/500/etc.) without
-      // leaking the header in any real environment.
-      const inboundHeaders: Record<string, string> = { 'content-type': 'application/json' };
-      if (deps.env.NODE_ENV === 'test' && isLoopbackUrl(envBaseUrl)) {
-        inboundHeaders['x-test-workspace-id'] = body.workspace_id;
-      }
-
-      // Capture the v3 audit event id emitted by the governed handler so we can
-      // include it in RunResponse for client traceability.
-      let v3EventId: string | undefined;
-      const captureAudit = async (event: PassthroughInvoked): Promise<void> => {
-        const json = JSON.stringify(event);
-        const r = await auditAppend(client, deps.kms, {
+      await appendDispatchPreparedEvent(
+        client,
+        deps.kms,
+        {
           orgId: identity.org_id,
-          chainId,
-          eventType: 'passthrough.invoked',
-          eventVersion: '4',
-          subjectType: 'run',
-          subjectId: runId,
-          occurredAt: new Date(),
-          payloadHash: sha256(Buffer.from(json, 'utf8')),
-          ...AUDIT_CHAIN_KEY,
-          redactionMetadata: {
-            passthrough_invoked_v4: event as unknown as Record<string, unknown>,
-          },
-        });
-        v3EventId = r.eventId;
-      };
-
-      // Dispatch to the governed handler matching the requested capability.
-      let result:
-        | Awaited<ReturnType<typeof handleAnthropicGovernedMessages>>
-        | Awaited<ReturnType<typeof handleOpenAIGovernedResponses>>
-        | Awaited<ReturnType<typeof handleOpenAIGovernedChatCompletions>>
-        | null = null;
-
-      try {
-        // E2E.5 path: fetch network failures (DNS, connection refused, TLS)
-        // bubble up from the governed handler. Convert into a structured
-        // run.failed response with HTTP 502 instead of 500.
-        if (body.capability === 'anthropic.messages.create') {
-          result = await handleAnthropicGovernedMessages(
-            {
-              tenant: buildAnthropicTenant(identity),
-              rawBody: nativeRequestBody,
-              inboundHeaders,
-              isStream: false,
-            },
-            {
-              upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'anthropic'),
-              resolveProviderKey: async (orgId, operationalMode) =>
-                resolveAnthropicProviderKey(
-                  { env: deps.env, pool: deps.pool, kms: deps.kms },
-                  { orgId, operationalMode },
-                ),
-              dlpScan: inMemoryDlpScan,
-              emitAuditEvent: captureAudit,
-            },
-          );
-        } else if (body.capability === 'openai.responses.create') {
-          result = await handleOpenAIGovernedResponses(
-            {
-              tenant: buildOpenAITenant(identity),
-              rawBody: nativeRequestBody,
-              inboundHeaders,
-              isStream: false,
-            },
-            {
-              upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'openai'),
-              resolveProviderKey: async (orgId, operationalMode) =>
-                resolveOpenAIProviderKey(
-                  { env: deps.env, pool: deps.pool, kms: deps.kms },
-                  { orgId, operationalMode },
-                ),
-              dlpScan: inMemoryDlpScan,
-              emitAuditEvent: captureAudit,
-            },
-          );
-        } else if (body.capability === 'openai.chat.completions.create') {
-          result = await handleOpenAIGovernedChatCompletions(
-            {
-              tenant: buildOpenAITenant(identity),
-              rawBody: nativeRequestBody,
-              inboundHeaders,
-              isStream: false,
-            },
-            {
-              upstreamBaseUrl: providerUpstreamBaseUrl(deps.env, 'openai'),
-              resolveProviderKey: async (orgId, operationalMode) =>
-                resolveOpenAIProviderKey(
-                  { env: deps.env, pool: deps.pool, kms: deps.kms },
-                  { orgId, operationalMode },
-                ),
-              dlpScan: inMemoryDlpScan,
-              emitAuditEvent: captureAudit,
-            },
-          );
-        } else {
-          throw new CapabilityNotSupportedError(body.capability, 'planned');
-        }
-      } catch (err) {
-        if (err instanceof CapabilityNotSupportedError || err instanceof CapabilityNotRegisteredError) {
-          await client.query('ROLLBACK').catch(() => undefined);
-          throw err;
-        }
-        // Network / fetch failure → run.failed with 502.
-        const failedInvocationId = randomUUID();
-        const message = err instanceof Error ? err.message : String(err);
-        await client.query(
-          `INSERT INTO govai.provider_invocations (
-             id, run_id, org_id, provider, native_endpoint, native_method,
-             native_request_hash, native_response_hash, streaming, usage_json,
-             latency_ms, status_code, provider_request_id, error_class
-           ) VALUES (
-             $1::uuid, $2::uuid, $3::uuid, $4::text, '/error', 'POST',
-             $5::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
-             NULL, 0, NULL, 'network_error'
-           )`,
-          [
-            failedInvocationId,
-            runId,
-            identity.org_id,
-            body.capability.split('.')[0],
-            nativeRequestHash,
-          ],
-        );
-        await client.query(
-          `UPDATE govai.runs SET status = 'failed', completed_at = now() WHERE id = $1::uuid`,
-          [runId],
-        );
-        const failAudit = await auditAppend(client, deps.kms, {
-          orgId: identity.org_id,
-          chainId,
-          eventType: 'run.failed',
-          eventVersion: '1',
-          subjectType: 'run',
-          subjectId: runId,
-          occurredAt: new Date(),
-          payloadHash: sha256(Buffer.from(`network_error:${message}`)),
-          ...AUDIT_CHAIN_KEY,
-          redactionMetadata: {
-            actor_user_id: identity.user_id,
-            policy_decision_id: decision.id,
-            provider_invocation_id: failedInvocationId,
-            native_request_hash: nativeRequestHashHex,
-            error_class: 'network_error',
-            error_message: message.slice(0, 200),
-          },
-        });
-        if (workroomContext) {
-          await insertRunEventTurn(client, {
-            orgId: identity.org_id,
-            workroomContext,
-            runId,
-            auditEventId: failAudit.eventId,
-          });
-        }
-        await client.query('COMMIT');
-        return {
-          run_id: runId,
-          audit_chain_id: chainId,
-          audit_event_id: failAudit.eventId,
-          policy_decision: { kind: decision.kind, reasons: [...decision.reasons] },
-          status: 'failed',
-          provider_invocation_id: failedInvocationId,
-        };
-      }
-
-      if (result.kind === 'blocked') {
-        // governed-native blocked: persist failed run with the captured v3 audit
-        // already in chain.
-        const failedInvocationId = randomUUID();
-        // C-2: persist the REAL SHA-256 of the final native request body (the
-        // body that would have been forwarded), mirroring the network-failure
-        // INSERT above (the 32-byte Buffer `nativeRequestHash` via $5::bytea) —
-        // NOT the '\x00' placeholder and NOT the 64-char hex string.
-        await client.query(
-          `INSERT INTO govai.provider_invocations (
-             id, run_id, org_id, provider, native_endpoint, native_method,
-             native_request_hash, native_response_hash, streaming, usage_json,
-             latency_ms, status_code, provider_request_id, error_class
-           ) VALUES (
-             $1::uuid, $2::uuid, $3::uuid, $4::text, '/governed-blocked', 'POST',
-             $5::bytea, NULL, false, '{"source":"governed_blocked"}'::jsonb,
-             0, 403, NULL, 'governed_blocked'
-           )`,
-          [
-            failedInvocationId,
-            runId,
-            identity.org_id,
-            body.capability.split('.')[0],
-            nativeRequestHash,
-          ],
-        );
-        await client.query(
-          `UPDATE govai.runs SET status = 'denied', completed_at = now() WHERE id = $1::uuid`,
-          [runId],
-        );
-        const denyAudit = await auditAppend(client, deps.kms, {
-          orgId: identity.org_id,
-          chainId,
-          eventType: 'run.denied',
-          eventVersion: '1',
-          subjectType: 'run',
-          subjectId: runId,
-          occurredAt: new Date(),
-          payloadHash: sha256(Buffer.from(`governed_blocked:${result.reason}`)),
-          ...AUDIT_CHAIN_KEY,
-          redactionMetadata: {
-            actor_user_id: identity.user_id,
-            policy_decision_id: decision.id,
-            provider_invocation_id: failedInvocationId,
-            governed_block_reason: result.reason,
-          },
-        });
-        if (workroomContext) {
-          await insertRunEventTurn(client, {
-            orgId: identity.org_id,
-            workroomContext,
-            runId,
-            auditEventId: denyAudit.eventId,
-          });
-        }
-        await client.query('COMMIT');
-        return {
-          run_id: runId,
-          audit_chain_id: chainId,
-          audit_event_id: denyAudit.eventId,
-          policy_decision: { kind: decision.kind, reasons: [...decision.reasons] },
-          status: 'denied',
-          provider_invocation_id: failedInvocationId,
-          ...(v3EventId ? { passthrough_invoked_event_id: v3EventId } : {}),
-        };
-      }
-
-      if (result.kind === 'stream') {
-        // /v1/runs does not currently expose streaming via this UX shortcut.
-        // The governed-native surface (/governed/{provider}/*) handles streams.
-        await client.query('ROLLBACK').catch(() => undefined);
-        throw new Error('streaming not supported via /v1/runs UX shortcut; use /governed/* directly');
-      }
-
-      // Non-stream success: build response shape for /v1/runs. The handler
-      // forwarded byte-perfect, so we parse the response JSON for the API
-      // response only (audit chain already has the v3 event with the hash).
-      let responseBodyParsed: unknown = null;
-      if (result.response_body_raw.length > 0) {
-        try {
-          responseBodyParsed = JSON.parse(result.response_body_raw.toString('utf8'));
-        } catch {
-          responseBodyParsed = { raw: result.response_body_raw.toString('utf8') };
-        }
-      }
-
-      // Provider returned non-2xx → run.failed.
-      if (result.status_code < 200 || result.status_code >= 300) {
-        const failedInvocationId = randomUUID();
-        await client.query(
-          `INSERT INTO govai.provider_invocations (
-             id, run_id, org_id, provider, native_endpoint, native_method,
-             native_request_hash, native_response_hash, streaming, usage_json,
-             latency_ms, status_code, provider_request_id, error_class
-           ) VALUES (
-             $1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, 'POST',
-             $6::bytea, $7::bytea, false, '{"source":"governed_failed"}'::jsonb,
-             $8::integer, $9::integer, $10::text, 'provider_error'
-           )`,
-          [
-            failedInvocationId,
-            runId,
-            identity.org_id,
-            body.capability.split('.')[0],
-            result.audit_event.native_endpoint,
-            Buffer.from(result.native_request_hash_hex, 'hex'),
-            Buffer.from(result.native_response_hash_hex, 'hex'),
-            result.latency_ms,
-            result.status_code,
-            result.provider_request_id ?? null,
-          ],
-        );
-        await client.query(
-          `UPDATE govai.runs SET status = 'failed', completed_at = now() WHERE id = $1::uuid`,
-          [runId],
-        );
-        const failAudit = await auditAppend(client, deps.kms, {
-          orgId: identity.org_id,
-          chainId,
-          eventType: 'run.failed',
-          eventVersion: '1',
-          subjectType: 'run',
-          subjectId: runId,
-          occurredAt: new Date(),
-          payloadHash: sha256(Buffer.from(`${result.status_code}:provider_error`)),
-          ...AUDIT_CHAIN_KEY,
-          redactionMetadata: {
-            actor_user_id: identity.user_id,
-            policy_decision_id: decision.id,
-            provider_invocation_id: failedInvocationId,
-            error_status: result.status_code,
-            error_class: 'provider_error',
-          },
-        });
-        if (workroomContext) {
-          await insertRunEventTurn(client, {
-            orgId: identity.org_id,
-            workroomContext,
-            runId,
-            auditEventId: failAudit.eventId,
-          });
-        }
-        await client.query('COMMIT');
-        return {
-          run_id: runId,
-          audit_chain_id: chainId,
-          audit_event_id: failAudit.eventId,
-          policy_decision: { kind: decision.kind, reasons: [...decision.reasons] },
-          status: 'failed',
-          provider_invocation_id: failedInvocationId,
-          ...(v3EventId ? { passthrough_invoked_event_id: v3EventId } : {}),
-        };
-      }
-
-      // Persist successful provider_invocation row.
-      const invocationId = randomUUID();
-      await client.query(
-        `INSERT INTO govai.provider_invocations (
-           id, run_id, org_id, provider, native_endpoint, native_method,
-           native_request_hash, native_response_hash, streaming, usage_json,
-           latency_ms, status_code, provider_request_id, error_class
-         ) VALUES (
-           $1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, 'POST',
-           $6::bytea, $7::bytea, false, $8::jsonb,
-           $9::integer, $10::integer, $11::text, NULL
-         )`,
-        [
-          invocationId,
           runId,
-          identity.org_id,
-          body.capability.split('.')[0],
-          result.audit_event.native_endpoint,
-          Buffer.from(result.native_request_hash_hex, 'hex'),
-          Buffer.from(result.native_response_hash_hex, 'hex'),
-          JSON.stringify({
-            provider_native:
-              responseBodyParsed && typeof responseBodyParsed === 'object'
-                ? (responseBodyParsed as { usage?: unknown }).usage ?? null
-                : null,
-            normalized: null,
-            source: 'provider_direct',
-            pricing_table_version: 'v0',
-          }),
-          result.latency_ms,
-          result.status_code,
-          result.provider_request_id ?? null,
-        ],
-      );
-
-      await client.query(
-        `UPDATE govai.runs SET status = 'completed', completed_at = now() WHERE id = $1::uuid`,
-        [runId],
-      );
-
-      const completeAudit = await auditAppend(client, deps.kms, {
-        orgId: identity.org_id,
-        chainId,
-        eventType: 'run.completed',
-        eventVersion: '1',
-        subjectType: 'run',
-        subjectId: runId,
-        occurredAt: new Date(),
-        payloadHash: sha256(
-          Buffer.from(
-            JSON.stringify({
-              run_id: runId,
-              provider_invocation_id: invocationId,
-              policy_decision_id: decision.id,
-              provider_request_id: result.provider_request_id,
-              finding_count: dlp.findings.length,
-            }),
-          ),
-        ),
-        ...AUDIT_CHAIN_KEY,
-        redactionMetadata: {
-          actor_user_id: identity.user_id,
-          policy_decision_id: decision.id,
-          provider_invocation_id: invocationId,
-          finding_count: dlp.findings.length,
+          chainId,
+          actorUserId: identity.user_id,
+          mode: 'governed',
+          provider: providerForCapability(body.capability),
+          capabilityId: body.capability,
+          model: body.model,
+          workroom: workroomCtxOf(workroomContext),
         },
-      });
+        { nativeRequestHashHex, occurredAt: preparedAt },
+      );
 
-      if (workroomContext) {
-        await insertRunEventTurn(client, {
-          orgId: identity.org_id,
-          workroomContext,
-          runId,
-          auditEventId: completeAudit.eventId,
-        });
-      }
       await client.query('COMMIT');
       return {
-        run_id: runId,
-        audit_chain_id: chainId,
-        audit_event_id: completeAudit.eventId,
-        policy_decision: { kind: decision.kind, reasons: [...decision.reasons] },
-        output: responseBodyParsed,
-        provider_invocation_id: invocationId,
-        ...(v3EventId ? { passthrough_invoked_event_id: v3EventId } : {}),
-        status: 'completed',
+        kind: 'prepared',
+        runId,
+        chainId,
+        decision,
+        dlpFindingCount: dlp.findings.length,
+        nativeRequestBody,
+        nativeRequestHash,
+        nativeRequestHashHex,
       };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -1046,30 +932,252 @@ export async function executeGovernedRun(
   }
 }
 
+export async function executeGovernedRun(
+  deps: OrchestratorDeps,
+  apiKey: string,
+  body: RunRequest,
+  workroomContext?: WorkroomRunContext,
+): Promise<RunResponse> {
+  const config: RunDispatchConfig = runDispatchConfigFromEnv(deps.env);
+
+  // §12.1 — authenticate; client released before anything else.
+  const identity = await authenticateShortLived(deps.pool, apiKey);
+
+  // §12.2 — read-only preflight (error ordering: workroom/capability before credential).
+  await runPreflight(deps, identity, body, workroomContext);
+
+  // §12.3 — credential lookup (own short TX) + KMS decrypt, all before TX-A.
+  const provider = providerForCapability(body.capability);
+  const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+
+  // §14.1 — TX-A: durable preparation (or committed policy deny).
+  const txa = await governedTxA(deps, identity, body, workroomContext);
+  if (txa.kind === 'denied') return txa.response;
+
+  const ctx: RunDispatchContext = {
+    orgId: identity.org_id,
+    runId: txa.runId,
+    chainId: txa.chainId,
+    actorUserId: identity.user_id,
+    mode: 'governed',
+    provider,
+    capabilityId: body.capability,
+    model: body.model,
+    policyDecisionId: txa.decision.id,
+    workroom: workroomCtxOf(workroomContext),
+  };
+  const nativeEndpoint =
+    provider === 'anthropic'
+      ? '/v1/messages'
+      : body.capability === 'openai.responses.create'
+        ? '/v1/responses'
+        : '/v1/chat/completions';
+
+  // §16 — deterministic validation BEFORE the claim.
+  let plan: DeterministicPlan;
+  try {
+    plan = buildDeterministicPlan(
+      deps.env,
+      provider,
+      nativeEndpoint,
+      txa.nativeRequestBody,
+      body.workspace_id,
+      config.timeoutMs,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await failPreclaim(deps.pool, deps.kms, ctx, {
+      errorClass: 'dispatch_preclaim_failed',
+      message,
+    });
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+      status: 'failed',
+      retry_safe: false,
+      error_class: 'dispatch_preclaim_failed',
+    };
+  }
+
+  // §17 — exclusive claim. Only the CAS winner may call the provider.
+  const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
+  if (!claim.claimed) {
+    return readRunStateResponse(deps, ctx, txa.decision);
+  }
+
+  // §19/§20 — provider I/O: ZERO database clients held; credential in memory;
+  // v4 captured in memory; bounded by the dispatch AbortSignal.
+  const capture = createGovernedV4Capture();
+  let forwardStarted = false;
+  const signal = AbortSignal.timeout(config.timeoutMs);
+  const handlerInput = {
+    rawBody: txa.nativeRequestBody,
+    inboundHeaders: plan.inboundHeaders,
+    isStream: false as const,
+    signal,
+    onDispatchStart: () => {
+      forwardStarted = true;
+    },
+  };
+  // §12.4 — the handler's resolver returns ONLY the credential already
+  // resolved in memory: no PostgreSQL, no pool client, no KMS, no network.
+  const resolveInMemory = async (): Promise<ResolvedProviderCredential> => resolvedCredential;
+
+  let result:
+    | Awaited<ReturnType<typeof handleAnthropicGovernedMessages>>
+    | Awaited<ReturnType<typeof handleOpenAIGovernedResponses>>
+    | Awaited<ReturnType<typeof handleOpenAIGovernedChatCompletions>>;
+  try {
+    if (body.capability === 'anthropic.messages.create') {
+      result = await handleAnthropicGovernedMessages(
+        { ...handlerInput, tenant: buildAnthropicTenant(identity) },
+        {
+          upstreamBaseUrl: plan.upstreamBaseUrl,
+          resolveProviderKey: resolveInMemory,
+          dlpScan: inMemoryDlpScan,
+          emitAuditEvent: capture.capture,
+        },
+      );
+    } else if (body.capability === 'openai.responses.create') {
+      result = await handleOpenAIGovernedResponses(
+        { ...handlerInput, tenant: buildOpenAITenant(identity) },
+        {
+          upstreamBaseUrl: plan.upstreamBaseUrl,
+          resolveProviderKey: resolveInMemory,
+          dlpScan: inMemoryDlpScan,
+          emitAuditEvent: capture.capture,
+        },
+      );
+    } else {
+      result = await handleOpenAIGovernedChatCompletions(
+        { ...handlerInput, tenant: buildOpenAITenant(identity) },
+        {
+          upstreamBaseUrl: plan.upstreamBaseUrl,
+          resolveProviderKey: resolveInMemory,
+          dlpScan: inMemoryDlpScan,
+          emitAuditEvent: capture.capture,
+        },
+      );
+    }
+  } catch (err) {
+    if (!forwardStarted) {
+      // §21.3 — known local error provably before the forward started.
+      const message = err instanceof Error ? err.message : String(err);
+      const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        outcome: { kind: 'local_error', message },
+      });
+      return {
+        run_id: txa.runId,
+        audit_chain_id: txa.chainId,
+        ...(fin.auditEventId ? { audit_event_id: fin.auditEventId } : {}),
+        policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+        status: 'failed',
+        retry_safe: false,
+        error_class: 'dispatch_pre_forward_failed',
+      };
+    }
+    // §22 — honest unknown. NEVER retried, NEVER classified as failed.
+    await markOutcomeUnknown(deps.pool, deps.kms, ctx, {
+      token: claim.token,
+      errorClass: unknownErrorClass(err),
+      forwardStarted: true,
+      invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
+    });
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+      status: 'outcome_unknown',
+      retry_safe: false,
+      error_class: 'dispatch_outcome_unknown',
+    };
+  }
+
+  if (result.kind === 'blocked') {
+    // §21.2 — known governed block before the forward: denied, NO invocation.
+    const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+      token: claim.token,
+      outcome: { kind: 'blocked', reason: result.reason, capturedV4: capture.captured() },
+    });
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      ...(fin.auditEventId ? { audit_event_id: fin.auditEventId } : {}),
+      policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+      status: 'denied',
+      retry_safe: false,
+      ...(fin.v4EventId ? { passthrough_invoked_event_id: fin.v4EventId } : {}),
+    };
+  }
+
+  if (result.kind === 'stream') {
+    // Unreachable with isStream:false. A fetch DID happen — conservative unknown.
+    await markOutcomeUnknown(deps.pool, deps.kms, ctx, {
+      token: claim.token,
+      errorClass: 'provider_io_unknown',
+      forwardStarted,
+      invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
+    });
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+      status: 'outcome_unknown',
+      retry_safe: false,
+      error_class: 'dispatch_outcome_unknown',
+    };
+  }
+
+  // §21.1 — known HTTP result (2xx → completed; non-2xx → failed).
+  const responseBodyParsed = parseResponseBody(result.response_body_raw);
+  const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+    token: claim.token,
+    outcome: {
+      kind: 'http',
+      statusCode: result.status_code,
+      nativeEndpoint: result.audit_event.native_endpoint,
+      nativeRequestHashHex: result.native_request_hash_hex,
+      nativeResponseHashHex: result.native_response_hash_hex,
+      latencyMs: result.latency_ms,
+      providerRequestId: result.provider_request_id,
+      usageJson: buildUsageJson(responseBodyParsed),
+      capturedV4: capture.captured(),
+    },
+  });
+  const ok = fin.finalStatus === 'completed';
+  return {
+    run_id: txa.runId,
+    audit_chain_id: txa.chainId,
+    ...(fin.auditEventId ? { audit_event_id: fin.auditEventId } : {}),
+    policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+    status: ok ? 'completed' : 'failed',
+    ...(ok ? { output: responseBodyParsed } : {}),
+    ...(fin.invocationId ? { provider_invocation_id: fin.invocationId } : {}),
+    ...(fin.v4EventId ? { passthrough_invoked_event_id: fin.v4EventId } : {}),
+    retry_safe: false,
+  };
+}
+
 // =============================================================================
-// Passthrough run execution path (issue #54).
-//
-// `executeGovernedRun` is the enforcement-active path. `executePassthroughRun`
-// is the observe-only counterpart: it performs the SAME provider call against
-// the SAME provider-native upstream, but via the raw passthrough forwarder
-// (`forwardRaw`) instead of the governed handler — no DLP redaction-mutation,
-// no policy deny/mutate, no tool-classification block. It reuses the existing
-// capability registry gating, credential resolver, body builders, and audit
-// chain; it does not fork provider execution (forwardRaw is the shared,
-// already-exported forwarder used by the `/passthrough/*` routes).
+// Passthrough execution (F3-phased; issue #54)
 // =============================================================================
 
 export type PassthroughRunResponse = {
   run_id: string;
   audit_chain_id: string;
-  audit_event_id: string;
+  /** Absent on `outcome_unknown` (minimal §23.1 contract). */
+  audit_event_id?: string;
   mode: 'passthrough';
-  status: 'completed' | 'failed';
-  provider_invocation_id: string;
+  status: 'completed' | 'failed' | 'outcome_unknown';
+  provider_invocation_id?: string;
   native_request_hash: string;
   native_response_hash?: string;
   provider_request_id?: string;
   output?: unknown;
+  retry_safe?: boolean;
+  error_class?: string;
 };
 
 type PassthroughPlan = {
@@ -1103,39 +1211,32 @@ function passthroughPlanFor(capability: string, model: string, input: string): P
   }
 }
 
-/**
- * Execute a standalone `/v1/runs` request in passthrough mode. Creates a real
- * `govai.runs` row with `mode='passthrough'`, forwards the provider-native call
- * raw (observe-only), persists a real `provider_invocations` row, and emits a
- * real `run.completed` / `run.failed` audit event on the existing `run` chain.
- * No governed enforcement/mutation is applied. No new audit chain.
- */
-export async function executePassthroughRun(
+type PassthroughTxAResult = {
+  runId: string;
+  chainId: string;
+  plan: PassthroughPlan;
+  nativeRequestHash: Buffer;
+  nativeRequestHashHex: string;
+};
+
+/** §14.2 — TX-A (passthrough): approval revalidated under FOR UPDATE and
+ *  CONSUMED with the durable preparation; the lock dies at COMMIT. */
+async function passthroughTxA(
   deps: OrchestratorDeps,
-  apiKey: string,
+  identity: AuthIdentity,
   body: RunRequest,
   workroomContext?: WorkroomRunContext,
   approval?: ApprovalConsumptionContext,
-): Promise<PassthroughRunResponse> {
+): Promise<PassthroughTxAResult> {
   const client = await deps.pool.connect();
   try {
-    const identity = await authenticateApiKey(client, apiKey);
-
     await client.query('BEGIN');
     try {
       await setLocalAppOrgId(client, identity.org_id);
 
-      // Re-validate the Workroom context inside the write transaction (TOCTOU):
-      // the participant/task must still be valid now, not just at route preflight.
       if (workroomContext) {
         await assertWorkroomRunContextStillValid(client, identity, workroomContext);
       }
-
-      // Workroom Phase 4: re-validate the authorizing approval under a row lock
-      // before any run work. An invalid approval throws here → ROLLBACK → no run
-      // row, no turn, and the approval is left unconsumed. The capability gate
-      // below likewise rejects a hard-denied capability before the run row, so
-      // an approval can never authorize a capability/policy bypass.
       if (approval && workroomContext) {
         await assertApprovalConsumable(client, identity, {
           workroomContext,
@@ -1143,52 +1244,23 @@ export async function executePassthroughRun(
           body,
         });
       }
-
-      // Same capability-registry gating the governed path applies — planned
-      // capabilities still cannot execute outside the hermetic environment.
       const overrides = await loadOrgOverrides(client, body.capability);
       const resolved = resolveCapability(body.capability, overrides);
       assertCapabilityExecutable(resolved, deps.env);
 
       const plan = passthroughPlanFor(body.capability, body.model, body.input);
       const chainId = chainIdFor(identity.org_id, 'run');
-
-      // The provider-native request body is known up front, so compute its
-      // sha256 once. Every record of this run — the provider_invocations row,
-      // the API response, and the run.failed audit metadata on the
-      // network/fetch failure path — carries this same real hash, never a
-      // placeholder. (forwardRaw computes the identical hash on the success
-      // path; using the precomputed value everywhere avoids future drift.)
       const nativeRequestHash = Buffer.from(sha256(plan.body));
       const nativeRequestHashHex = nativeRequestHash.toString('hex');
-
-      // Resolve the tenant provider key BEFORE inserting the run row: if no
-      // credential is available the provider call is never attempted, and no
-      // `govai.runs` row should be persisted for it.
-      // F1 adapter: this /v1/runs passthrough path uses the resolved key ONLY
-      // to build outbound headers (it emits no passthrough.invoked event of its
-      // own — its evidence is the run.* lifecycle), so `.source` is not carried
-      // to an event here. The resolver now returns { apiKey, source }; take .apiKey.
-      const resolvedCredential =
-        plan.provider === 'anthropic'
-          ? await resolveAnthropicProviderKey(
-              { env: deps.env, pool: deps.pool, kms: deps.kms },
-              { orgId: identity.org_id, operationalMode: identity.operational_mode },
-            )
-          : await resolveOpenAIProviderKey(
-              { env: deps.env, pool: deps.pool, kms: deps.kms },
-              { orgId: identity.org_id, operationalMode: identity.operational_mode },
-            );
-      const providerKey = resolvedCredential.apiKey;
 
       const runId = randomUUID();
       await client.query(
         `INSERT INTO govai.runs
            (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
             workroom_id, workroom_task_id, created_by_participant_id, approval_policy_id,
-            workroom_governance_mode)
+            workroom_governance_mode, dispatch_protocol_version, dispatch_prepared_at)
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text, 'passthrough', 'queued',
-            $7::jsonb, $8::uuid, $9::uuid, $10::uuid, $11::uuid, $12::text)`,
+            $7::jsonb, $8::uuid, $9::uuid, $10::uuid, $11::uuid, $12::text, 1, now())`,
         [
           runId,
           identity.org_id,
@@ -1205,223 +1277,39 @@ export async function executePassthroughRun(
         ],
       );
 
-      const envBaseUrl = deps.env.GOVAI_PROVIDER_BASE_URL ?? '';
-      const inboundHeaders: Record<string, string> = { 'content-type': 'application/json' };
-      // Hermetic loopback only: forward the test workspace discriminator so
-      // tests can inject per-workspace upstream errors. Mirrors the governed path.
-      if (deps.env.NODE_ENV === 'test' && isLoopbackUrl(envBaseUrl)) {
-        inboundHeaders['x-test-workspace-id'] = body.workspace_id;
-      }
-      const outboundHeaders =
-        plan.provider === 'anthropic'
-          ? rewriteAnthropicPassthroughHeaders(inboundHeaders, providerKey).outbound
-          : rewriteOpenaiPassthroughHeaders(inboundHeaders, providerKey).outbound;
-
-      await client.query(
-        `UPDATE govai.runs SET status = 'running', started_at = now() WHERE id = $1::uuid`,
-        [runId],
-      );
-
-      const forwardRaw = plan.provider === 'anthropic' ? forwardRawAnthropic : forwardRawOpenai;
-      let fwd: Awaited<ReturnType<typeof forwardRawAnthropic>>;
-      try {
-        fwd = await forwardRaw({
-          baseUrl: providerUpstreamBaseUrl(deps.env, plan.provider),
-          pathTemplate: plan.nativeEndpoint,
-          concretePath: plan.nativeEndpoint,
-          method: 'POST',
-          headers: outboundHeaders,
-          body: plan.body,
-        });
-      } catch (err) {
-        // Network / fetch failure → the provider call was attempted, so the
-        // run row persists with status='failed'.
-        const message = err instanceof Error ? err.message : String(err);
-        const failedInvocationId = randomUUID();
-        await client.query(
-          `INSERT INTO govai.provider_invocations (
-             id, run_id, org_id, provider, native_endpoint, native_method,
-             native_request_hash, native_response_hash, streaming, usage_json,
-             latency_ms, status_code, provider_request_id, error_class
-           ) VALUES (
-             $1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, 'POST',
-             $6::bytea, NULL, false, '{"source":"network_error"}'::jsonb,
-             NULL, 0, NULL, 'network_error'
-           )`,
-          [
-            failedInvocationId,
-            runId,
-            identity.org_id,
-            plan.provider,
-            plan.nativeEndpoint,
-            nativeRequestHash,
-          ],
-        );
-        await client.query(
-          `UPDATE govai.runs SET status = 'failed', completed_at = now() WHERE id = $1::uuid`,
-          [runId],
-        );
-        const failAudit = await auditAppend(client, deps.kms, {
-          orgId: identity.org_id,
-          chainId,
-          eventType: 'run.failed',
-          eventVersion: '1',
-          subjectType: 'run',
-          subjectId: runId,
-          occurredAt: new Date(),
-          payloadHash: sha256(Buffer.from(`passthrough_network_error:${message}`)),
-          ...AUDIT_CHAIN_KEY,
-          redactionMetadata: {
-            actor_user_id: identity.user_id,
-            run_mode: 'passthrough',
-            enforcement: 'observe',
-            provider: plan.provider,
-            capability: body.capability,
-            provider_invocation_id: failedInvocationId,
-            native_request_hash: nativeRequestHashHex,
-            error_class: 'network_error',
-            error_message: message.slice(0, 200),
-          },
-        });
-        if (workroomContext) {
-          await insertRunEventTurn(client, {
-            orgId: identity.org_id,
-            workroomContext,
-            runId,
-            auditEventId: failAudit.eventId,
-          });
-        }
-        // The provider call was attempted and a (failed) run row exists, so the
-        // authorizing approval is consumed — one-time-use, no replay.
-        if (approval) {
-          await consumeApproval(client, {
-            approvalRequestId: approval.approval_request_id,
-            runId,
-          });
-        }
-        await client.query('COMMIT');
-        return {
-          run_id: runId,
-          audit_chain_id: chainId,
-          audit_event_id: failAudit.eventId,
-          mode: 'passthrough',
-          status: 'failed',
-          provider_invocation_id: failedInvocationId,
-          native_request_hash: nativeRequestHashHex,
-        };
-      }
-
-      let responseBodyParsed: unknown = null;
-      if (fwd.responseBody.length > 0) {
-        try {
-          responseBodyParsed = JSON.parse(fwd.responseBody.toString('utf8'));
-        } catch {
-          responseBodyParsed = { raw: fwd.responseBody.toString('utf8') };
-        }
-      }
-      const ok = fwd.status >= 200 && fwd.status < 300;
-      const invocationId = randomUUID();
-      await client.query(
-        `INSERT INTO govai.provider_invocations (
-           id, run_id, org_id, provider, native_endpoint, native_method,
-           native_request_hash, native_response_hash, streaming, usage_json,
-           latency_ms, status_code, provider_request_id, error_class
-         ) VALUES (
-           $1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, 'POST',
-           $6::bytea, $7::bytea, false, $8::jsonb,
-           $9::integer, $10::integer, $11::text, $12::text
-         )`,
-        [
-          invocationId,
-          runId,
-          identity.org_id,
-          plan.provider,
-          plan.nativeEndpoint,
-          nativeRequestHash,
-          Buffer.from(fwd.native_response_hash, 'hex'),
-          JSON.stringify({
-            provider_native:
-              responseBodyParsed && typeof responseBodyParsed === 'object'
-                ? (responseBodyParsed as { usage?: unknown }).usage ?? null
-                : null,
-            normalized: null,
-            source: 'provider_direct',
-            pricing_table_version: 'v0',
-          }),
-          fwd.latency_ms,
-          fwd.status,
-          fwd.provider_request_id,
-          ok ? null : 'provider_error',
-        ],
-      );
-
-      await client.query(
-        `UPDATE govai.runs SET status = $2::text, completed_at = now() WHERE id = $1::uuid`,
-        [runId, ok ? 'completed' : 'failed'],
-      );
-
-      const runAudit = await auditAppend(client, deps.kms, {
-        orgId: identity.org_id,
-        chainId,
-        eventType: ok ? 'run.completed' : 'run.failed',
-        eventVersion: '1',
-        subjectType: 'run',
-        subjectId: runId,
-        occurredAt: new Date(),
-        payloadHash: sha256(
-          Buffer.from(
-            JSON.stringify({
-              run_id: runId,
-              provider_invocation_id: invocationId,
-              status_code: fwd.status,
-              native_request_hash: nativeRequestHashHex,
-              native_response_hash: fwd.native_response_hash,
-            }),
-          ),
-        ),
-        ...AUDIT_CHAIN_KEY,
-        redactionMetadata: {
-          actor_user_id: identity.user_id,
-          run_mode: 'passthrough',
-          enforcement: 'observe',
-          provider: plan.provider,
-          capability: body.capability,
-          provider_invocation_id: invocationId,
-          status_code: fwd.status,
-          native_request_hash: nativeRequestHashHex,
-          native_response_hash: fwd.native_response_hash,
-          ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
-        },
-      });
-
-      if (workroomContext) {
-        await insertRunEventTurn(client, {
-          orgId: identity.org_id,
-          workroomContext,
-          runId,
-          auditEventId: runAudit.eventId,
-        });
-      }
-      // The authorized run committed — consume the approval (one-time-use).
+      // Approval consumption is durable WITH the preparation (owner-adjudicated):
+      // TX-A committed but provider never called ⇒ approval remains consumed;
+      // a new execution requires a new authorization. No automatic replay.
       if (approval) {
         await consumeApproval(client, {
           approvalRequestId: approval.approval_request_id,
           runId,
         });
       }
+
+      await appendDispatchPreparedEvent(
+        client,
+        deps.kms,
+        {
+          orgId: identity.org_id,
+          runId,
+          chainId,
+          actorUserId: identity.user_id,
+          mode: 'passthrough',
+          provider: plan.provider,
+          capabilityId: body.capability,
+          model: body.model,
+          workroom: workroomCtxOf(workroomContext),
+        },
+        {
+          nativeRequestHashHex,
+          ...(approval ? { approvalRequestId: approval.approval_request_id } : {}),
+          occurredAt: new Date(),
+        },
+      );
+
       await client.query('COMMIT');
-      return {
-        run_id: runId,
-        audit_chain_id: chainId,
-        audit_event_id: runAudit.eventId,
-        mode: 'passthrough',
-        status: ok ? 'completed' : 'failed',
-        provider_invocation_id: invocationId,
-        native_request_hash: nativeRequestHashHex,
-        native_response_hash: fwd.native_response_hash,
-        ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
-        output: responseBodyParsed,
-      };
+      return { runId, chainId, plan, nativeRequestHash, nativeRequestHashHex };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
@@ -1431,12 +1319,187 @@ export async function executePassthroughRun(
   }
 }
 
+/**
+ * Execute a `/v1/runs` request in passthrough mode (observe-only). Same durable
+ * dispatch protocol as governed: prepared → claimed → provider I/O outside any
+ * transaction → TX-B / honest unknown. No governed enforcement is applied.
+ */
+export async function executePassthroughRun(
+  deps: OrchestratorDeps,
+  apiKey: string,
+  body: RunRequest,
+  workroomContext?: WorkroomRunContext,
+  approval?: ApprovalConsumptionContext,
+): Promise<PassthroughRunResponse> {
+  const config = runDispatchConfigFromEnv(deps.env);
+
+  // §12.1 — authenticate; client released.
+  const identity = await authenticateShortLived(deps.pool, apiKey);
+
+  // §12.2 — read-only preflight (workroom → approval shape → capability).
+  await runPreflight(deps, identity, body, workroomContext, approval);
+
+  // §12.3 — credential fully resolved BEFORE TX-A (lookup TX committed, then KMS).
+  const provider = providerForCapability(body.capability);
+  const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+
+  // §14.2 — TX-A: durable preparation + approval consumption.
+  const txa = await passthroughTxA(deps, identity, body, workroomContext, approval);
+
+  const ctx: RunDispatchContext = {
+    orgId: identity.org_id,
+    runId: txa.runId,
+    chainId: txa.chainId,
+    actorUserId: identity.user_id,
+    mode: 'passthrough',
+    provider,
+    capabilityId: body.capability,
+    model: body.model,
+    workroom: workroomCtxOf(workroomContext),
+  };
+
+  // §16 — deterministic validation before the claim (headers included).
+  let plan: DeterministicPlan;
+  let outboundHeaders: Record<string, string>;
+  try {
+    plan = buildDeterministicPlan(
+      deps.env,
+      provider,
+      txa.plan.nativeEndpoint,
+      txa.plan.body,
+      body.workspace_id,
+      config.timeoutMs,
+    );
+    outboundHeaders =
+      provider === 'anthropic'
+        ? rewriteAnthropicPassthroughHeaders(plan.inboundHeaders, resolvedCredential.apiKey)
+            .outbound
+        : rewriteOpenaiPassthroughHeaders(plan.inboundHeaders, resolvedCredential.apiKey).outbound;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await failPreclaim(deps.pool, deps.kms, ctx, {
+      errorClass: 'dispatch_preclaim_failed',
+      message,
+    });
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      mode: 'passthrough',
+      status: 'failed',
+      native_request_hash: txa.nativeRequestHashHex,
+      retry_safe: false,
+      error_class: 'dispatch_preclaim_failed',
+    };
+  }
+
+  // §17 — exclusive claim.
+  const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
+  if (!claim.claimed) {
+    const state = await readRunStateResponse(deps, ctx);
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      mode: 'passthrough',
+      status: state.status === 'denied' || state.status === 'completed' ? 'failed' : state.status,
+      native_request_hash: txa.nativeRequestHashHex,
+      retry_safe: false,
+      ...(state.error_class ? { error_class: state.error_class } : {}),
+    };
+  }
+
+  // §19 — raw forward with ZERO database clients held.
+  const forwardRaw = provider === 'anthropic' ? forwardRawAnthropic : forwardRawOpenai;
+  let forwardStarted = false;
+  let fwd: Awaited<ReturnType<typeof forwardRawAnthropic>>;
+  try {
+    fwd = await forwardRaw({
+      baseUrl: plan.upstreamBaseUrl,
+      pathTemplate: txa.plan.nativeEndpoint,
+      concretePath: txa.plan.nativeEndpoint,
+      method: 'POST',
+      headers: outboundHeaders,
+      body: txa.plan.body,
+      signal: AbortSignal.timeout(config.timeoutMs),
+      onDispatchStart: () => {
+        forwardStarted = true;
+      },
+    });
+  } catch (err) {
+    if (!forwardStarted) {
+      const message = err instanceof Error ? err.message : String(err);
+      const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+        token: claim.token,
+        outcome: { kind: 'local_error', message },
+      });
+      return {
+        run_id: txa.runId,
+        audit_chain_id: txa.chainId,
+        ...(fin.auditEventId ? { audit_event_id: fin.auditEventId } : {}),
+        mode: 'passthrough',
+        status: 'failed',
+        native_request_hash: txa.nativeRequestHashHex,
+        retry_safe: false,
+        error_class: 'dispatch_pre_forward_failed',
+      };
+    }
+    const unknown = await markOutcomeUnknown(deps.pool, deps.kms, ctx, {
+      token: claim.token,
+      errorClass: unknownErrorClass(err),
+      forwardStarted: true,
+      invocation: {
+        nativeEndpoint: txa.plan.nativeEndpoint,
+        nativeRequestHash: txa.nativeRequestHash,
+      },
+    });
+    return {
+      run_id: txa.runId,
+      audit_chain_id: txa.chainId,
+      mode: 'passthrough',
+      status: 'outcome_unknown',
+      native_request_hash: txa.nativeRequestHashHex,
+      ...(unknown.invocationId ? { provider_invocation_id: unknown.invocationId } : {}),
+      retry_safe: false,
+      error_class: 'dispatch_outcome_unknown',
+    };
+  }
+
+  // §21.1 — known HTTP result.
+  const responseBodyParsed = parseResponseBody(fwd.responseBody);
+  const fin = await finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
+    token: claim.token,
+    outcome: {
+      kind: 'http',
+      statusCode: fwd.status,
+      nativeEndpoint: txa.plan.nativeEndpoint,
+      nativeRequestHashHex: txa.nativeRequestHashHex,
+      nativeResponseHashHex: fwd.native_response_hash,
+      latencyMs: fwd.latency_ms,
+      providerRequestId: fwd.provider_request_id,
+      usageJson: buildUsageJson(responseBodyParsed),
+    },
+  });
+  const ok = fin.finalStatus === 'completed';
+  return {
+    run_id: txa.runId,
+    audit_chain_id: txa.chainId,
+    ...(fin.auditEventId ? { audit_event_id: fin.auditEventId } : {}),
+    mode: 'passthrough',
+    status: ok ? 'completed' : 'failed',
+    ...(fin.invocationId ? { provider_invocation_id: fin.invocationId } : {}),
+    native_request_hash: txa.nativeRequestHashHex,
+    native_response_hash: fwd.native_response_hash,
+    ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
+    output: responseBodyParsed,
+    retry_safe: false,
+  };
+}
+
 export {
   AuthError,
   CapabilityNotSupportedError,
   CapabilityNotRegisteredError,
 };
-export type { AuthIdentity };
+export type { AuthIdentity, KnownOutcome };
 
 // Internal helper exported for unit testing only (run-orchestrator.test.ts).
 // Not part of the public API; the double-underscore prefix marks it as

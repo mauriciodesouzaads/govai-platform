@@ -127,8 +127,12 @@ export type GovernedHandleInput = {
   isStream: boolean;
   /** Multipart hint (false for messages, true for files endpoints when added). */
   isMultipart?: boolean;
-  /** EP-008C: abort signal threaded to the upstream stream fetch (client-disconnect propagation). */
+  /** EP-008C: abort signal threaded to the upstream stream fetch (client-disconnect propagation).
+   *  EP-P03A-A (F3): also threaded to the NON-stream forward as the dispatch timeout bound. */
   signal?: AbortSignal;
+  /** EP-P03A-A (F3 §19.1): synchronous, non-throwing marker run immediately
+   *  before the non-stream `fetch` — see ForwardInput.onDispatchStart. */
+  onDispatchStart?: () => void;
 };
 
 const HOP_BY_HOP = new Set([
@@ -399,6 +403,8 @@ export async function handleAnthropicGovernedMessages(
     method: 'POST',
     headers: outHeaders,
     body: input.rawBody,
+    signal: input.signal,
+    onDispatchStart: input.onDispatchStart,
   });
 
   const ev = PassthroughInvokedSchema.parse({

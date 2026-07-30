@@ -11,6 +11,15 @@ export type ForwardInput = {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
   headers: Record<string, string>;
   body?: Buffer;
+  /** EP-P03A-A (F3): bounds the upstream fetch (dispatch timeout). */
+  signal?: AbortSignal;
+  /**
+   * EP-P03A-A (F3 §19.1): synchronous, non-throwing, I/O-free marker invoked
+   * immediately before `fetch`. Lets the caller distinguish a known local error
+   * (before any transmission attempt) from a post-invocation unknown outcome.
+   * It is NOT proof the provider received bytes.
+   */
+  onDispatchStart?: () => void;
 };
 
 export type ForwardResult = {
@@ -40,7 +49,11 @@ export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
   if (input.method !== 'GET' && requestBody.length > 0) {
     init.body = requestBody;
   }
+  if (input.signal) {
+    init.signal = input.signal;
+  }
 
+  input.onDispatchStart?.();
   const res = await fetch(url, init);
   const latency_ms = Date.now() - t0;
   const responseBuf = Buffer.from(await res.arrayBuffer());

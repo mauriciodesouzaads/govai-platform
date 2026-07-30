@@ -27,6 +27,11 @@ import { regulatoryRoute } from './routes/regulatory.js';
 import { registerRequestIdentityHook } from './pipeline/request-identity-hook.js';
 import { createEvidenceGaugeSource, enumerateAllOrgs } from './pipeline/evidence-operator.js';
 import { registerEvidenceGauges } from './pipeline/evidence-metrics.js';
+import { runDispatchConfigFromEnv } from './pipeline/run-dispatch-config.js';
+import {
+  startRunDispatchRecoveryWorker,
+  type RecoveryWorkerHandle,
+} from './pipeline/run-dispatch-recovery.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -175,7 +180,31 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(workroomApprovalsRoute);
   await app.register(regulatoryRoute);
 
+  // EP-P03A-A (F3 §25): run dispatch recovery worker — starts AFTER the app is
+  // ready (onReady), stops on close (interval cleared + in-flight sweep awaited,
+  // no floating promise, never blocks shutdown). Gated by RUN_DISPATCH_RECOVERY_
+  // ENABLED so deterministic tests can drive runDispatchRecoverySweepOnce directly.
+  const dispatchConfig = runDispatchConfigFromEnv(env);
+  let recoveryWorker: RecoveryWorkerHandle | null = null;
+  if (dispatchConfig.recoveryEnabled) {
+    app.addHook('onReady', async () => {
+      recoveryWorker = startRunDispatchRecoveryWorker({
+        pool,
+        kms,
+        config: dispatchConfig,
+        log: app.log,
+      });
+      app.log.info(
+        { interval_ms: dispatchConfig.recoveryIntervalMs },
+        'run dispatch recovery worker started',
+      );
+    });
+  } else {
+    app.log.info({ run_dispatch_recovery: 'disabled' });
+  }
+
   app.addHook('onClose', async () => {
+    await recoveryWorker?.stop().catch(() => undefined); // (0) stop sweeps before pools close
     evidenceGauges?.unregister(); // (1) remove the batch callback before provider shutdown (sync)
     await telemetry.shutdown().catch(() => undefined); // (2) existing, unchanged
     await enumeratorPool?.end().catch(() => undefined); // (3) created locally ⇒ no overrides guard

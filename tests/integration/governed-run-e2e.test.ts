@@ -60,9 +60,10 @@ describe('Governed Run E2E', () => {
       const chain = await verifyFullChain(c, kms, chainIdFor(org.org_id, 'run'));
       await c.query('COMMIT');
       expect(chain.valid).toBe(true);
-      // Batch G: completed governed run emits 2 events on the chain —
-      // `run.completed` (legacy lifecycle) + `passthrough.invoked v3` (canonical).
-      expect(chain.events).toBe(2);
+      // F3 (EP-P03A-A): a completed governed run emits 4 events on the chain —
+      // `run.dispatch_prepared` + `run.dispatch_claimed` (durable dispatch
+      // protocol v1) + `passthrough.invoked v4` (canonical) + `run.completed`.
+      expect(chain.events).toBe(4);
     } finally {
       c.release();
     }
@@ -283,9 +284,11 @@ describe('Governed Run E2E', () => {
     expect(ev.events).toEqual([]);
   });
 
-  it('E2E.5 — provider network failure → /v1/runs returns 502 with status=failed and audit run.failed', async () => {
-    // Run a fresh stack pointed at a closed loopback port so provider-invoke fails
-    // with a network error (mapped to ProviderInvokeError → orchestrator failure path).
+  it('E2E.5 — provider network failure → HTTP 202, honest outcome_unknown, no run.failed', async () => {
+    // F3 (EP-P03A-A §22): a transport failure AFTER the forward started (here:
+    // connection refused on a closed loopback port) is conservatively UNKNOWN —
+    // the process cannot prove the request was not transmitted. It is never
+    // classified as a known failure and never retried automatically.
     const failStack = await startStack({
       GOVAI_PROVIDER_BASE_URL: 'http://127.0.0.1:1' as unknown as string,
     });
@@ -297,33 +300,30 @@ describe('Governed Run E2E', () => {
         model: 'claude-fixture-1',
         input: 'test',
       });
-      expect(res.statusCode).toBe(502);
+      expect(res.statusCode).toBe(202);
       const body = res.body as {
         status: string;
         run_id: string;
-        audit_event_id: string;
-        provider_invocation_id?: string;
-        policy_decision: { kind: string };
+        retry_safe: boolean;
+        error_class: string;
       };
-      expect(body.status).toBe('failed');
-      expect(body.policy_decision.kind).toBe('allow');
-      expect(body.audit_event_id).toBeDefined();
-      expect(body.provider_invocation_id).toBeDefined();
+      expect(body.status).toBe('outcome_unknown');
+      expect(body.retry_safe).toBe(false);
+      expect(body.error_class).toBe('dispatch_outcome_unknown');
 
-      // Audit chain reflects run.failed event.
+      // Audit chain: run.outcome_unknown is on the chain; run.failed is NOT.
       const events = await inject(failStack, 'GET', '/v1/audit-events?chain_category=run', org.api_key);
       expect(events.statusCode).toBe(200);
       const ev = events.body as { events: Array<{ event_type: string }> };
-      expect(ev.events.map((e) => e.event_type)).toContain('run.failed');
+      const types = ev.events.map((e) => e.event_type);
+      expect(types).toContain('run.outcome_unknown');
+      expect(types).not.toContain('run.failed');
+      expect(types).not.toContain('run.completed');
 
-      // C-2 (representation twin): the network-failure INSERT persists the REAL
-      // 32-byte binary SHA-256 of the final native request body via $5::bytea —
-      // the IDENTICAL representation the governed_blocked branch now uses (both
-      // pass the `nativeRequestHash` Buffer, never '\x00' and never the 64-char
-      // hex string). Proven here on the reachable twin; the blocked branch is
-      // byte-identical by construction (see the execution report — the
-      // governed_blocked branch is not independently reachable via /v1/runs).
-      // The expected digest is computed INDEPENDENTLY from the known native body.
+      // C-2 (representation twin, preserved under F3): the unknown-outcome
+      // invocation trace persists the REAL 32-byte binary SHA-256 of the final
+      // native request body — never '\x00', never 64 ASCII hex chars — and NO
+      // invented response hash. The expected digest is computed INDEPENDENTLY.
       const expectedNativeBody = Buffer.from(
         JSON.stringify({
           model: 'claude-fixture-1',
@@ -337,9 +337,19 @@ describe('Governed Run E2E', () => {
       try {
         await c.query('BEGIN');
         await setLocalAppOrgId(c, org.org_id);
-        const inv = await c.query<{ hash: Buffer; len: number }>(
-          `SELECT native_request_hash AS hash, octet_length(native_request_hash) AS len
+        const inv = await c.query<{
+          hash: Buffer;
+          len: number;
+          native_response_hash: Buffer | null;
+          error_class: string | null;
+        }>(
+          `SELECT native_request_hash AS hash, octet_length(native_request_hash) AS len,
+                  native_response_hash, error_class
              FROM govai.provider_invocations WHERE run_id = $1::uuid`,
+          [body.run_id],
+        );
+        const run = await c.query<{ status: string; dispatch_error_class: string | null }>(
+          'SELECT status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid',
           [body.run_id],
         );
         await c.query('COMMIT');
@@ -347,6 +357,10 @@ describe('Governed Run E2E', () => {
         expect(inv.rows[0]!.len).toBe(32); // 32 binary bytes, NOT 64 ASCII hex chars
         expect(Buffer.compare(inv.rows[0]!.hash, expectedDigest)).toBe(0);
         expect(Buffer.compare(inv.rows[0]!.hash, Buffer.alloc(32))).not.toBe(0); // != \x00…
+        expect(inv.rows[0]!.native_response_hash).toBeNull();
+        expect(inv.rows[0]!.error_class).toBe('dispatch_outcome_unknown');
+        expect(run.rows[0]!.status).toBe('outcome_unknown');
+        expect(run.rows[0]!.dispatch_error_class).toBe('provider_io_unknown');
       } finally {
         c.release();
       }
