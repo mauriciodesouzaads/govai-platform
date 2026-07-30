@@ -599,14 +599,40 @@ export async function finalizeKnownOutcome(
           );
         }
         // A NULL persisted status_code/response_hash records the earlier UNKNOWN
-        // trace (the append-only invocation row is reused by reconciliation and
-        // never updated) — it is not divergence. Only a CONFLICTING persisted
-        // value is.
-        const persistedHash = inv.native_response_hash?.toString('hex') ?? null;
-        if (
-          (inv.status_code !== null && inv.status_code !== outcome.statusCode) ||
-          (persistedHash !== null && persistedHash !== outcome.nativeResponseHashHex)
-        ) {
+        // trace (the append-only evidence row is reused by reconciliation and
+        // never mutated — govai_app holds no UPDATE privilege on it, by design).
+        // NULL is therefore NOT a wildcard: the authoritative known result of a
+        // reconciled run lives on its terminal lifecycle event, and the duplicate
+        // must be verified against THAT. If nothing can verify the offered
+        // result, the duplicate is REFUSED (fail closed) — a divergent second
+        // result is never silently accepted (§29 T17).
+        let knownStatus: number | null = inv.status_code;
+        let knownHash: string | null = inv.native_response_hash?.toString('hex') ?? null;
+        if (knownStatus === null || knownHash === null) {
+          const ev = await client.query<{
+            redaction_metadata: {
+              status_code?: number;
+              error_status?: number;
+              native_response_hash?: string;
+            } | null;
+          }>(
+            `SELECT redaction_metadata FROM govai.audit_events
+              WHERE subject_type = 'run' AND subject_id = $1::uuid
+                AND event_type IN ('run.completed', 'run.failed')
+              ORDER BY sequence_number DESC
+              LIMIT 1`,
+            [ctx.runId],
+          );
+          const meta = ev.rows[0]?.redaction_metadata ?? null;
+          knownStatus = knownStatus ?? meta?.status_code ?? meta?.error_status ?? null;
+          knownHash = knownHash ?? meta?.native_response_hash ?? null;
+        }
+        if (knownStatus === null || knownHash === null) {
+          throw new DispatchOutcomeConflictError(
+            `run ${ctx.runId}: terminal provider result cannot be verified against the duplicate finalization`,
+          );
+        }
+        if (knownStatus !== outcome.statusCode || knownHash !== outcome.nativeResponseHashHex) {
           throw new DispatchOutcomeConflictError(
             `run ${ctx.runId}: duplicate finalization carries a divergent provider result`,
           );

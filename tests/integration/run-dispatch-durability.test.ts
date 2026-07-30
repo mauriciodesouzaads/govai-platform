@@ -671,6 +671,70 @@ describe('T17 — concurrent reconciliation', () => {
       finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: httpOutcome(500) }),
     ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
   });
+
+  it('divergence against a RECONCILED run is detected via the terminal event record (NULL invocation trace is not a wildcard)', async () => {
+    // The reconciled run's invocation row keeps the NULL unknown-trace fields
+    // (evidence rows are never mutated); the known result lives on the terminal
+    // lifecycle event. A same-terminal-class duplicate with a DIFFERENT status
+    // or response hash must be refused against THAT record.
+    const org = await seedOrg(stack);
+    const { runId, ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    expect(claim.claimed).toBe(true);
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+
+    await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
+      token,
+      errorClass: 'provider_io_unknown',
+      forwardStarted: true,
+      invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
+    });
+    const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: httpOutcome(200),
+    });
+    expect(first.reconciled).toBe(true);
+    expect(first.finalStatus).toBe('completed');
+
+    // The invocation row really is the NULL unknown trace (the precondition
+    // that made the old wildcard comparison unsound).
+    const inv = await queryAsOrg<{ status_code: number | null; native_response_hash: Buffer | null }>(
+      org.org_id,
+      'SELECT status_code, native_response_hash FROM govai.provider_invocations WHERE run_id = $1::uuid',
+      [runId],
+    );
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.status_code).toBeNull();
+    expect(inv[0]!.native_response_hash).toBeNull();
+
+    // Divergent response hash, same completed-class status → refused.
+    const divergentHash = {
+      ...httpOutcome(200),
+      nativeResponseHashHex: createHash('sha256').update('a-different-response-body').digest('hex'),
+    };
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: divergentHash }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+
+    // Divergent status inside the same terminal class (201 is also httpOk) → refused.
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, { token, outcome: httpOutcome(201) }),
+    ).rejects.toBeInstanceOf(DispatchOutcomeConflictError);
+
+    // The true duplicate (same status + same hash) stays idempotent.
+    const dup = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: httpOutcome(200),
+    });
+    expect(dup.duplicate).toBe(true);
+    expect(dup.finalStatus).toBe('completed');
+
+    // Nothing was double-written by the refused attempts.
+    const types = await auditEventTypes(org.org_id, runId);
+    expect(types.filter((t) => t === 'run.completed')).toHaveLength(1);
+    expect(types.filter((t) => t === 'run.outcome_reconciled')).toHaveLength(1);
+  });
 });
 
 // =============================================================================
