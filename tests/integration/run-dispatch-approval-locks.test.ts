@@ -128,9 +128,19 @@ describe('T5 — approval lock release + consumption at TX-A', () => {
       c.release();
     }
 
-    // No workroom-turn / audit-chain locks are held during the provider call
-    // either: the run_event turn + terminal audit append happen only in TX-B
-    // (T1 asserts zero advisory/row locks held by the API pool while parked).
+    // No workroom-turn / audit-chain / row locks are held during the provider
+    // call either — asserted HERE, on a WORKROOM-owned parked run (T1 proves
+    // the same for a standalone run): zero granted relation/tuple/txid/advisory
+    // locks by any govai-api backend while the fetch is in flight. The
+    // run_event turn + terminal audit append happen only in TX-B.
+    const locks = await stack.db.adminPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n
+         FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE a.application_name = 'govai-api' AND l.granted
+          AND l.locktype IN ('relation', 'tuple', 'transactionid', 'advisory')`,
+    );
+    expect(locks.rows[0]!.n).toBe(0);
+
     park.release();
     const res = await pending;
     expect(res.statusCode).toBe(201);

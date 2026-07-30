@@ -21,6 +21,8 @@ import {
 import {
   setParkOverride,
   clearParkOverrides,
+  setDestroyOverride,
+  clearDestroyOverrides,
 } from './fixtures/provider-protocol-server.js';
 
 let stack: Stack;
@@ -32,6 +34,7 @@ afterAll(async () => {
 });
 afterEach(() => {
   clearParkOverrides();
+  clearDestroyOverrides();
   clearProviderErrors();
 });
 
@@ -88,14 +91,17 @@ describe('T9 — dispatch timeout → outcome_unknown (standalone /v1/runs)', ()
     expect(body.retry_safe).toBe(false);
     expect(body.error_class).toBe('dispatch_outcome_unknown');
 
-    // Location header points at the status endpoint (§23.1).
+    // Location header points at the status endpoint (§23.1). The probe runs
+    // under its OWN org/workspace so the per-run upstream count below stays
+    // individually attributable (one workspace id ⇔ one run ⇔ one call).
+    const probeOrg = await seedOrg(stack);
+    setParkOverride(probeOrg.workspace_id);
     const raw = await stack.app.inject({
       method: 'POST',
       url: '/v1/runs',
-      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
-      payload: governedBody(org),
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': probeOrg.api_key },
+      payload: governedBody(probeOrg),
     });
-    // (Second parked request — used ONLY to read the Location header shape.)
     expect(raw.statusCode).toBe(202);
     expect(raw.headers['location']).toBe(`/v1/runs/${(JSON.parse(raw.body) as { run_id: string }).run_id}`);
 
@@ -137,17 +143,18 @@ describe('T9 — dispatch timeout → outcome_unknown (standalone /v1/runs)', ()
     expect(inv[0]!.error_class).toBe('dispatch_outcome_unknown');
     expect(inv[0]!.native_request_hash.length).toBe(32);
 
-    // Audit: run.outcome_unknown, NOT run.failed. No automatic retry: exactly
-    // one upstream request carried this workspace id per parked run (2 total —
-    // the Location-probe run above is the second).
+    // Audit: run.outcome_unknown, NOT run.failed. No automatic retry: each
+    // parked run's OWN workspace id appears exactly once at the upstream.
     const types = await auditEventTypes(org.org_id, body.run_id);
     expect(types).toContain('run.outcome_unknown');
     expect(types).not.toContain('run.failed');
     expect(types).not.toContain('run.completed');
-    const calls = stack.provider.recordedRequestHeaders.filter(
-      (h) => h['x-test-workspace-id'] === org.workspace_id,
-    );
-    expect(calls).toHaveLength(2);
+    const callsFor = (workspaceId: string) =>
+      stack.provider.recordedRequestHeaders.filter(
+        (h) => h['x-test-workspace-id'] === workspaceId,
+      );
+    expect(callsFor(org.workspace_id)).toHaveLength(1);
+    expect(callsFor(probeOrg.workspace_id)).toHaveLength(1);
   });
 
   it('GET /v1/runs/:run_id reports the unknown state with retry_safe=false', async () => {
@@ -165,6 +172,73 @@ describe('T9 — dispatch timeout → outcome_unknown (standalone /v1/runs)', ()
     expect(s['dispatch_error_class']).toBe('provider_timeout');
     expect(s['outcome_unknown_at']).not.toBeNull();
     expect(s['completed_at']).toBeNull();
+  });
+});
+
+describe('T9b — post-forward TRANSPORT error → outcome_unknown (§22, real socket destroy)', () => {
+  it('upstream destroys the socket after receiving the request → 202, provider_io_unknown, NULL response hash, exactly one upstream call', async () => {
+    const org = await seedOrg(stack);
+    stack.provider.clearRecordedRequestHeaders();
+    setDestroyOverride(org.workspace_id);
+
+    const res = await inject(stack, 'POST', '/v1/runs', org.api_key, governedBody(org));
+    expect(res.statusCode).toBe(202);
+    const body = res.body as {
+      run_id: string;
+      status: string;
+      retry_safe: boolean;
+      error_class: string;
+    };
+    expect(body.status).toBe('outcome_unknown');
+    expect(body.retry_safe).toBe(false);
+    expect(body.error_class).toBe('dispatch_outcome_unknown');
+
+    // The forward provably STARTED (the upstream recorded the request) and the
+    // failure is a transport error, not the dispatch timeout.
+    const rows = await queryAsOrg<{
+      status: string;
+      dispatch_error_class: string | null;
+      outcome_unknown_at: Date | null;
+      completed_at: Date | null;
+      dispatch_token: string | null;
+    }>(
+      org.org_id,
+      `SELECT status, dispatch_error_class, outcome_unknown_at, completed_at, dispatch_token
+         FROM govai.runs WHERE id = $1::uuid`,
+      [body.run_id],
+    );
+    expect(rows[0]!.status).toBe('outcome_unknown');
+    expect(rows[0]!.dispatch_error_class).toBe('provider_io_unknown');
+    expect(rows[0]!.outcome_unknown_at).not.toBeNull();
+    expect(rows[0]!.completed_at).toBeNull();
+
+    // Invocation trace: token-bound, NO invented response hash / status code.
+    const inv = await queryAsOrg<{
+      dispatch_token: string | null;
+      native_response_hash: Buffer | null;
+      status_code: number | null;
+      error_class: string | null;
+    }>(
+      org.org_id,
+      `SELECT dispatch_token, native_response_hash, status_code, error_class
+         FROM govai.provider_invocations WHERE run_id = $1::uuid`,
+      [body.run_id],
+    );
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.dispatch_token).toBe(rows[0]!.dispatch_token);
+    expect(inv[0]!.native_response_hash).toBeNull();
+    expect(inv[0]!.status_code).toBeNull();
+    expect(inv[0]!.error_class).toBe('dispatch_outcome_unknown');
+
+    // Honest unknown, zero automatic retries.
+    const types = await auditEventTypes(org.org_id, body.run_id);
+    expect(types).toContain('run.outcome_unknown');
+    expect(types).not.toContain('run.failed');
+    expect(types).not.toContain('run.completed');
+    const calls = stack.provider.recordedRequestHeaders.filter(
+      (h) => h['x-test-workspace-id'] === org.workspace_id,
+    );
+    expect(calls).toHaveLength(1);
   });
 });
 

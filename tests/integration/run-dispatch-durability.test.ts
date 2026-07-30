@@ -1,11 +1,13 @@
 // EP-P03A-A (F3) — durable provider dispatch outside run database transactions.
 //
 // Load-bearing suite (dispatch §29): T1 (F3 falsification), T2 (pool max=1),
-// T3 (credential/KMS ordering), T6 (claim race), T10 (known non-2xx), T11
-// (late reconciliation), T12 (governed v4 capture, TX-B half), T13 (crash
-// window B), T17 (concurrent reconciliation). Real Testcontainers Postgres +
-// the hermetic provider-protocol upstream with a deterministic PARK barrier —
-// no sleeps, no mocked transactions/locks/pools.
+// T3 (credential/KMS ordering), T6 (claim race), T6b (claim race observed at
+// the FORWARDING boundary), T10 (known non-2xx), T11 (late reconciliation),
+// T12 (governed v4 capture, TX-B half), T13 (crash window B), T17 (concurrent
+// reconciliation), T18 (pre-claim + pre-forward known failures), T19 (wrong
+// token + terminal re-entry). Real Testcontainers Postgres + the hermetic
+// provider-protocol upstream with a deterministic PARK barrier — no sleeps,
+// no mocked transactions/locks/pools.
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { randomUUID, createHash } from 'node:crypto';
@@ -19,14 +21,17 @@ import {
 } from '../../apps/api/src/pipeline/run-orchestrator.js';
 import {
   claimDispatch,
+  failPreclaim,
   finalizeKnownOutcome,
   markOutcomeUnknown,
   DispatchOutcomeConflictError,
+  DispatchTokenMismatchError,
   type RunDispatchContext,
 } from '../../apps/api/src/pipeline/run-dispatch-state.js';
 import { runDispatchRecoverySweepOnce } from '../../apps/api/src/pipeline/run-dispatch-recovery.js';
 import { runDispatchConfigFromEnv } from '../../apps/api/src/pipeline/run-dispatch-config.js';
 import { handleAnthropicGovernedMessages } from '../../packages/provider-anthropic/src/governed/handle-messages.js';
+import { forwardRaw } from '../../packages/provider-anthropic/src/passthrough/forward.js';
 import {
   startStack,
   stopStack,
@@ -385,6 +390,121 @@ describe('T6 — exclusive claim CAS', () => {
 });
 
 // =============================================================================
+// T6b — the claim race observed at the FORWARDING boundary (§15). T6 proves
+// the DB CAS; this test proves the guarantee that actually matters:
+// AT_MOST_ONE_LOCAL_FORWARD_INVOCATION_PER_RUN_ID. Two synthetic concurrent
+// executors run the orchestrator's exact gate — claim, and ONLY on a won claim
+// call the real forwarder (with its onDispatchStart hook) against the hermetic
+// upstream. Observed directly: one CAS winner, one forwarder invocation, one
+// onDispatchStart, one upstream HTTP request, and a recovery sweep afterwards
+// redispatches nothing. DB terminal-write uniqueness alone is NOT the proof.
+// =============================================================================
+
+describe('T6b — claim race at the forwarding boundary', () => {
+  it('two racing claim+forward executors → one forwarder invocation, one onDispatchStart, one upstream request, zero recovery redispatches', async () => {
+    const org = await seedOrg(stack);
+    const { runId, ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+    stack.provider.clearRecordedRequestHeaders();
+
+    const bodyBuf = Buffer.from(
+      JSON.stringify({
+        model: 'claude-fixture-1',
+        max_tokens: 1024,
+        messages: [{ role: 'user', content: 'forwarding boundary race probe' }],
+      }),
+      'utf8',
+    );
+    const reqHashHex = createHash('sha256').update(bodyBuf).digest('hex');
+
+    let forwarderInvocations = 0;
+    let dispatchStarts = 0;
+
+    // The orchestrator's gate, verbatim: only `claim.claimed === true` may
+    // reach the forwarder (run-orchestrator.ts §17→§19).
+    const executor = async () => {
+      const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+      if (!claim.claimed) return { claim, fwd: null };
+      forwarderInvocations += 1;
+      const fwd = await forwardRaw({
+        baseUrl: stack.provider.baseUrl,
+        pathTemplate: '/v1/messages',
+        concretePath: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-test-workspace-id': org.workspace_id,
+        },
+        body: bodyBuf,
+        signal: AbortSignal.timeout(60_000),
+        onDispatchStart: () => {
+          dispatchStarts += 1;
+        },
+      });
+      return { claim, fwd };
+    };
+
+    const [a, b] = await Promise.all([executor(), executor()]);
+    const winners = [a, b].filter((r) => r.claim.claimed);
+    expect(winners).toHaveLength(1);
+
+    // The forwarding boundary itself: exactly one local forward invocation,
+    // exactly one dispatch start, exactly one request at the hermetic upstream.
+    expect(forwarderInvocations).toBe(1);
+    expect(dispatchStarts).toBe(1);
+    const upstreamCalls = () =>
+      stack.provider.recordedRequestHeaders.filter(
+        (h) => h['x-test-workspace-id'] === org.workspace_id,
+      );
+    expect(upstreamCalls()).toHaveLength(1);
+
+    // Recovery never redispatches: a full sweep leaves the upstream count and
+    // the dispatch token untouched.
+    await runDispatchRecoverySweepOnce({
+      pool: stack.db.appPool,
+      kms,
+      config: runDispatchConfigFromEnv(stack.env),
+    });
+    expect(upstreamCalls()).toHaveLength(1);
+    const winner = winners[0]!;
+    const token = (winner.claim as Extract<typeof winner.claim, { claimed: true }>).token;
+    const rows = await queryAsOrg<{ status: string; dispatch_token: string }>(
+      org.org_id,
+      'SELECT status, dispatch_token FROM govai.runs WHERE id = $1::uuid',
+      [runId],
+    );
+    expect(rows[0]!.status).toBe('running');
+    expect(rows[0]!.dispatch_token).toBe(token);
+
+    // Close the protocol honestly: the winner's REAL forward result finalizes,
+    // and the single invocation row is bound to the single token.
+    const fwd = winner.fwd!;
+    const fin = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: {
+        kind: 'http',
+        statusCode: fwd.status,
+        nativeEndpoint: '/v1/messages',
+        nativeRequestHashHex: reqHashHex,
+        nativeResponseHashHex: fwd.native_response_hash,
+        latencyMs: fwd.latency_ms,
+        providerRequestId: fwd.provider_request_id,
+        usageJson: { source: 'provider_direct' },
+      },
+    });
+    expect(fin.finalStatus).toBe('completed');
+    const inv = await queryAsOrg<{ dispatch_token: string | null }>(
+      org.org_id,
+      'SELECT dispatch_token FROM govai.provider_invocations WHERE run_id = $1::uuid',
+      [runId],
+    );
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.dispatch_token).toBe(token);
+    expect(upstreamCalls()).toHaveLength(1);
+  });
+});
+
+// =============================================================================
 // T10 — known non-2xx: failed + real hashes + status_code + invocation +
 // run.failed, and the invocation is bound to the dispatch token.
 // =============================================================================
@@ -694,5 +814,222 @@ describe('T13 — crash after TX-A, before claim', () => {
     const types = await auditEventTypes(org.org_id, runId);
     expect(types.filter((t) => t === 'run.failed')).toHaveLength(1);
     expect(types).not.toContain('run.dispatch_claimed');
+  });
+});
+
+// =============================================================================
+// T18 — pre-claim and pre-forward KNOWN failures (§16 / §21.3): the two
+// known-failure transitions where the provider was provably never reached.
+// =============================================================================
+
+describe('T18 — failPreclaim and local pre-forward failure', () => {
+  it('failPreclaim: queued → failed with dispatch_preclaim_failed, no token, no invocation; repeat is a no-op; claimed runs are untouchable', async () => {
+    const org = await seedOrg(stack);
+    const { runId, ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+
+    const first = await failPreclaim(stack.db.appPool, kms, ctx, {
+      errorClass: 'dispatch_preclaim_failed',
+      message: 'deterministic validation failed (synthetic)',
+    });
+    expect(first).toBe(true);
+
+    const rows = await queryAsOrg<{
+      status: string;
+      dispatch_error_class: string | null;
+      dispatch_token: string | null;
+      completed_at: Date | null;
+    }>(
+      org.org_id,
+      `SELECT status, dispatch_error_class, dispatch_token, completed_at
+         FROM govai.runs WHERE id = $1::uuid`,
+      [runId],
+    );
+    expect(rows[0]!.status).toBe('failed');
+    expect(rows[0]!.dispatch_error_class).toBe('dispatch_preclaim_failed');
+    expect(rows[0]!.dispatch_token).toBeNull();
+    expect(rows[0]!.completed_at).not.toBeNull();
+
+    const inv = await queryAsOrg<{ id: string }>(
+      org.org_id,
+      'SELECT id FROM govai.provider_invocations WHERE run_id = $1::uuid',
+      [runId],
+    );
+    expect(inv).toHaveLength(0);
+    const types = await auditEventTypes(org.org_id, runId);
+    expect(types.filter((t) => t === 'run.failed')).toHaveLength(1);
+    expect(types).not.toContain('run.dispatch_claimed');
+
+    // Terminal re-entry: a second failPreclaim finds no 'queued' row → false,
+    // and no second run.failed event is appended.
+    const second = await failPreclaim(stack.db.appPool, kms, ctx, {
+      errorClass: 'dispatch_preclaim_failed',
+      message: 'repeat (must be a no-op)',
+    });
+    expect(second).toBe(false);
+    expect(
+      (await auditEventTypes(org.org_id, runId)).filter((t) => t === 'run.failed'),
+    ).toHaveLength(1);
+
+    // A CLAIMED run can never be preclaim-failed (guard: status='queued' AND
+    // dispatch_token IS NULL).
+    const other = await seedPreparedRun(org);
+    const claim = await claimDispatch(stack.db.appPool, kms, other.ctx, { timeoutMs: 60_000 });
+    expect(claim.claimed).toBe(true);
+    const onClaimed = await failPreclaim(stack.db.appPool, kms, other.ctx, {
+      errorClass: 'dispatch_preclaim_failed',
+      message: 'must not apply to a claimed run',
+    });
+    expect(onClaimed).toBe(false);
+    const claimedRow = await queryAsOrg<{ status: string }>(
+      org.org_id,
+      'SELECT status FROM govai.runs WHERE id = $1::uuid',
+      [other.runId],
+    );
+    expect(claimedRow[0]!.status).toBe('running');
+  });
+
+  it('local_error after claim: running → failed with dispatch_pre_forward_failed, token retained, zero invocations', async () => {
+    const org = await seedOrg(stack);
+    const { runId, ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    expect(claim.claimed).toBe(true);
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+
+    const fin = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: { kind: 'local_error', message: 'header rewrite failed (synthetic pre-forward)' },
+    });
+    expect(fin.finalStatus).toBe('failed');
+    expect(fin.invocationId).toBeNull();
+    expect(fin.duplicate).toBe(false);
+    expect(fin.reconciled).toBe(false);
+
+    const rows = await queryAsOrg<{
+      status: string;
+      dispatch_error_class: string | null;
+      dispatch_token: string | null;
+    }>(
+      org.org_id,
+      'SELECT status, dispatch_error_class, dispatch_token FROM govai.runs WHERE id = $1::uuid',
+      [runId],
+    );
+    expect(rows[0]!.status).toBe('failed');
+    expect(rows[0]!.dispatch_error_class).toBe('dispatch_pre_forward_failed');
+    expect(rows[0]!.dispatch_token).toBe(token);
+
+    const inv = await queryAsOrg<{ id: string }>(
+      org.org_id,
+      'SELECT id FROM govai.provider_invocations WHERE run_id = $1::uuid',
+      [runId],
+    );
+    expect(inv).toHaveLength(0);
+    const types = await auditEventTypes(org.org_id, runId);
+    expect(types.filter((t) => t === 'run.failed')).toHaveLength(1);
+    expect(types).not.toContain('run.outcome_unknown');
+  });
+});
+
+// =============================================================================
+// T19 — wrong token + terminal re-entry: a token that does not own the run's
+// dispatch can neither finalize nor mark unknown, and a terminal run rejects
+// every late transition attempt without emitting duplicate events.
+// =============================================================================
+
+describe('T19 — wrong token and terminal re-entry', () => {
+  it('a wrong token can neither finalize (DispatchTokenMismatchError) nor mark unknown', async () => {
+    const org = await seedOrg(stack);
+    const { runId, ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    expect(claim.claimed).toBe(true);
+    const realToken = (claim as Extract<typeof claim, { claimed: true }>).token;
+    const wrongToken = randomUUID();
+    expect(wrongToken).not.toBe(realToken);
+
+    await expect(
+      finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+        token: wrongToken,
+        outcome: httpOutcome(200),
+      }),
+    ).rejects.toBeInstanceOf(DispatchTokenMismatchError);
+
+    const unknown = await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
+      token: wrongToken,
+      errorClass: 'provider_io_unknown',
+      forwardStarted: true,
+      invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
+    });
+    expect(unknown.transitioned).toBe(false);
+    expect(unknown.status).toBe('running');
+    expect(unknown.eventId).toBeNull();
+    expect(unknown.invocationId).toBeNull();
+
+    // The run is untouched: still running, still owned by the real token,
+    // zero invocation rows, zero unknown/terminal events.
+    const rows = await queryAsOrg<{ status: string; dispatch_token: string }>(
+      org.org_id,
+      'SELECT status, dispatch_token FROM govai.runs WHERE id = $1::uuid',
+      [runId],
+    );
+    expect(rows[0]!.status).toBe('running');
+    expect(rows[0]!.dispatch_token).toBe(realToken);
+    const inv = await queryAsOrg<{ id: string }>(
+      org.org_id,
+      'SELECT id FROM govai.provider_invocations WHERE run_id = $1::uuid',
+      [runId],
+    );
+    expect(inv).toHaveLength(0);
+    const types = await auditEventTypes(org.org_id, runId);
+    expect(types).not.toContain('run.outcome_unknown');
+    expect(types).not.toContain('run.completed');
+    expect(types).not.toContain('run.failed');
+  });
+
+  it('terminal re-entry: neither claimDispatch nor markOutcomeUnknown moves a completed run', async () => {
+    const org = await seedOrg(stack);
+    const { runId, ctx } = await seedPreparedRun(org);
+    const kms = kmsOf();
+
+    const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    expect(claim.claimed).toBe(true);
+    const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    const fin = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
+      token,
+      outcome: httpOutcome(200),
+    });
+    expect(fin.finalStatus).toBe('completed');
+
+    // Claim re-entry on the terminal run loses the CAS and reads the state.
+    const reclaim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
+    expect(reclaim.claimed).toBe(false);
+    expect((reclaim as Extract<typeof reclaim, { claimed: false }>).status).toBe('completed');
+
+    // markOutcomeUnknown with the CORRECT token on a terminal run: refused,
+    // no event, no state change.
+    const unknown = await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
+      token,
+      errorClass: 'provider_io_unknown',
+      forwardStarted: true,
+      invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
+    });
+    expect(unknown.transitioned).toBe(false);
+    expect(unknown.status).toBe('completed');
+    expect(unknown.eventId).toBeNull();
+
+    const rows = await queryAsOrg<{ status: string; dispatch_token: string }>(
+      org.org_id,
+      'SELECT status, dispatch_token FROM govai.runs WHERE id = $1::uuid',
+      [runId],
+    );
+    expect(rows[0]!.status).toBe('completed');
+    expect(rows[0]!.dispatch_token).toBe(token);
+    const types = await auditEventTypes(org.org_id, runId);
+    expect(types.filter((t) => t === 'run.completed')).toHaveLength(1);
+    expect(types.filter((t) => t === 'run.dispatch_claimed')).toHaveLength(1);
+    expect(types).not.toContain('run.outcome_unknown');
   });
 });

@@ -91,6 +91,36 @@ async function maybePark(req: { headers: Record<string, string | string[] | unde
   await park.barrier;
 }
 
+// =============================================================================
+// EP-P03A-A (F3): per-workspace transport DESTROY. After the request reaches
+// the upstream handler (i.e. provably AFTER the client's forward started), the
+// raw socket is destroyed without writing any HTTP response — the client's
+// fetch rejects with a transport error, the §22 post-forward-transport-error
+// case. Distinct from the error overrides (which return well-formed HTTP).
+// =============================================================================
+
+const destroyOverrides = new Set<string>();
+
+export function setDestroyOverride(workspaceId: string): void {
+  destroyOverrides.add(workspaceId);
+}
+
+export function clearDestroyOverrides(): void {
+  destroyOverrides.clear();
+}
+
+function maybeDestroy(
+  req: { headers: Record<string, string | string[] | undefined>; raw: { socket: { destroy: () => void } } },
+  reply: { hijack: () => void },
+): boolean {
+  const wsId = req.headers['x-test-workspace-id'];
+  if (typeof wsId !== 'string' || !destroyOverrides.has(wsId)) return false;
+  // Hijack so Fastify never writes a response, then kill the connection.
+  reply.hijack();
+  req.raw.socket.destroy();
+  return true;
+}
+
 export function setErrorOverride(
   workspaceId: string,
   override: { status: number; body?: Record<string, unknown> },
@@ -164,6 +194,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       reply.header('anthropic-request-id', requestId);
 
       await maybePark(req);
+      if (maybeDestroy(req, reply)) return reply;
       const wsErr = workspaceErrorFor(req);
       if (wsErr) {
         reply.code(wsErr.status);
@@ -223,6 +254,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       reply.header('openai-request-id', requestId);
 
       await maybePark(req);
+      if (maybeDestroy(req, reply)) return reply;
       const wsErr = workspaceErrorFor(req);
       if (wsErr) {
         reply.code(wsErr.status);
@@ -277,6 +309,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       reply.header('x-request-id', requestId);
 
       await maybePark(req);
+      if (maybeDestroy(req, reply)) return reply;
       const wsErr = workspaceErrorFor(req);
       if (wsErr) {
         reply.code(wsErr.status);

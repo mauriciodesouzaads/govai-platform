@@ -352,6 +352,13 @@ describe('Governed Run E2E', () => {
           'SELECT status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid',
           [body.run_id],
         );
+        // The 202 body is deliberately minimal, so the "policy was evaluated
+        // and ALLOWED before dispatch" property is asserted at the DB level:
+        // exactly one persisted allow decision for the run.
+        const policy = await c.query<{ decision: string }>(
+          'SELECT decision FROM govai.policy_decisions WHERE run_id = $1::uuid',
+          [body.run_id],
+        );
         await c.query('COMMIT');
         expect(inv.rows).toHaveLength(1);
         expect(inv.rows[0]!.len).toBe(32); // 32 binary bytes, NOT 64 ASCII hex chars
@@ -361,6 +368,8 @@ describe('Governed Run E2E', () => {
         expect(inv.rows[0]!.error_class).toBe('dispatch_outcome_unknown');
         expect(run.rows[0]!.status).toBe('outcome_unknown');
         expect(run.rows[0]!.dispatch_error_class).toBe('provider_io_unknown');
+        expect(policy.rows).toHaveLength(1);
+        expect(policy.rows[0]!.decision).toBe('allow');
       } finally {
         c.release();
       }

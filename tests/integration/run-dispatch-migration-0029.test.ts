@@ -10,13 +10,12 @@
 // The migration chain itself stays idempotent: 0029 is applied twice.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { randomBytes } from 'node:crypto';
 import { applyEnumeratorLifecycle } from '../../apps/api/src/db/migrate.js';
 
 const __filename = fileURLToPath(import.meta.url);
