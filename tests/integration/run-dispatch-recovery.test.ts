@@ -55,7 +55,11 @@ async function auditEventTypes(orgId: string, runId: string): Promise<string[]> 
   return rows.map((r) => r.event_type);
 }
 
-async function seedStaleQueued(org: SeededOrg, ageMs = 600_000): Promise<string> {
+async function seedStaleQueued(
+  org: SeededOrg,
+  ageMs = 600_000,
+  opts: { createdAgoMs?: number } = {},
+): Promise<string> {
   const runId = randomUUID();
   const c = await stack.db.appPool.connect();
   try {
@@ -64,10 +68,11 @@ async function seedStaleQueued(org: SeededOrg, ageMs = 600_000): Promise<string>
     await c.query(
       `INSERT INTO govai.runs
          (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
-          dispatch_protocol_version, dispatch_prepared_at)
+          dispatch_protocol_version, dispatch_prepared_at, created_at)
        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'claude-fixture-1',
-          'governed', 'queued', '{}'::jsonb, 1, now() - make_interval(secs => $5::integer / 1000.0))`,
-      [runId, org.org_id, org.workspace_id, org.user_id, ageMs],
+          'governed', 'queued', '{}'::jsonb, 1, now() - make_interval(secs => $5::integer / 1000.0),
+          now() - make_interval(secs => $6::integer / 1000.0))`,
+      [runId, org.org_id, org.workspace_id, org.user_id, ageMs, opts.createdAgoMs ?? 0],
     );
     await c.query('COMMIT');
   } finally {
@@ -283,4 +288,60 @@ describe('recovery worker lifecycle (§25)', () => {
       await app2.close(); // must not hang: interval cleared, in-flight awaited
     }
   }, 60_000);
+});
+
+// =============================================================================
+// T21 — head-of-line liveness: a non-advancing oldest candidate (here: row-
+// locked by another session, the SKIP LOCKED path; a persistently-failing
+// transition behaves identically at the batch level) must not starve younger
+// stale runs. With recoveryBatchSize=1 the pre-cursor sweep re-selected ONLY
+// the oldest candidate forever; the keyset cursor pages past it.
+// =============================================================================
+
+describe('T21 — recovery sweep pages past a non-advancing head-of-line candidate', () => {
+  it('batch size 1: locked oldest is skipped, younger stale run is still recovered in the SAME sweep', async () => {
+    const org = await seedOrg(stack);
+    const oldest = await seedStaleQueued(org, 600_000, { createdAgoMs: 120_000 });
+    const younger = await seedStaleQueued(org, 600_000, { createdAgoMs: 60_000 });
+
+    const deps = sweepDeps();
+    const cfg = { ...deps.config, recoveryBatchSize: 1 };
+
+    const locker = await stack.db.appPool.connect();
+    try {
+      await locker.query('BEGIN');
+      await locker.query("SELECT set_config('app.org_id', $1, true)", [org.org_id]);
+      await locker.query('SELECT 1 FROM govai.runs WHERE id = $1::uuid FOR UPDATE', [oldest]);
+
+      const result = await runDispatchRecoverySweepOnce({ ...deps, config: cfg });
+      // The locked oldest consumed a page (skipped); the younger run was still
+      // reached and recovered within the SAME sweep.
+      expect(result.skipped).toBeGreaterThanOrEqual(1);
+      expect(result.queuedFailed).toBeGreaterThanOrEqual(1);
+      await locker.query('ROLLBACK');
+    } finally {
+      locker.release();
+    }
+
+    const rows = await queryAsOrg<{ id: string; status: string; dispatch_error_class: string | null }>(
+      org.org_id,
+      'SELECT id, status, dispatch_error_class FROM govai.runs WHERE id = ANY($1::uuid[]) ORDER BY created_at',
+      [[oldest, younger]],
+    );
+    expect(rows.find((r) => r.id === younger)!.status).toBe('failed');
+    expect(rows.find((r) => r.id === younger)!.dispatch_error_class).toBe('dispatch_never_claimed');
+    // The locked candidate was left untouched (never force-transitioned)…
+    expect(rows.find((r) => r.id === oldest)!.status).toBe('queued');
+
+    // …and is recovered normally on the NEXT sweep once the lock is gone.
+    const second = await runDispatchRecoverySweepOnce({ ...deps, config: cfg });
+    expect(second.queuedFailed).toBeGreaterThanOrEqual(1);
+    const after = await queryAsOrg<{ status: string; dispatch_error_class: string | null }>(
+      org.org_id,
+      'SELECT status, dispatch_error_class FROM govai.runs WHERE id = $1::uuid',
+      [oldest],
+    );
+    expect(after[0]!.status).toBe('failed');
+    expect(after[0]!.dispatch_error_class).toBe('dispatch_never_claimed');
+  });
 });

@@ -245,11 +245,23 @@ BEGIN
     USING (dispatch_protocol_version = 1 AND status IN ('queued', 'running'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- Keyset cursor (p_after_created_at, p_after_run_id): a fixed oldest-first
+-- LIMIT batch would re-select the same rows on every sweep whenever the oldest
+-- candidates repeatedly fail (or stay locked) — permanently starving every
+-- younger stale run behind them. The worker pages FORWARD through the stale
+-- set within one sweep; each new sweep restarts from the oldest (retry
+-- semantics) but still advances past non-progressing rows.
+-- Drop the pre-cursor 3-parameter overload so partially-migrated databases
+-- never keep an ambiguous pair (idempotent: absent on re-run).
+DROP FUNCTION IF EXISTS govai.run_dispatch_recovery_candidates(integer, integer, integer);
+
 CREATE OR REPLACE FUNCTION govai.run_dispatch_recovery_candidates(
   p_prepared_grace_ms integer,
   p_recovery_grace_ms integer,
-  p_limit             integer
-) RETURNS TABLE(org_id uuid, run_id uuid, reason text)
+  p_limit             integer,
+  p_after_created_at  timestamptz DEFAULT NULL,
+  p_after_run_id      uuid        DEFAULT NULL
+) RETURNS TABLE(org_id uuid, run_id uuid, reason text, run_created_at timestamptz)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
@@ -267,10 +279,15 @@ BEGIN
     RAISE EXCEPTION 'run_dispatch_recovery_candidates: p_limit out of bounds'
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
+  IF (p_after_created_at IS NULL) <> (p_after_run_id IS NULL) THEN
+    RAISE EXCEPTION 'run_dispatch_recovery_candidates: cursor parts must be both set or both NULL'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
   -- Staleness is decided on DATABASE time (now()), never application clocks.
   RETURN QUERY
     SELECT r.org_id, r.id,
-           CASE WHEN r.status = 'queued' THEN 'queued_stale' ELSE 'running_stale' END
+           CASE WHEN r.status = 'queued' THEN 'queued_stale' ELSE 'running_stale' END,
+           r.created_at
       FROM govai.runs r
      WHERE r.dispatch_protocol_version = 1
        AND (
@@ -281,12 +298,14 @@ BEGIN
          (r.status = 'running'
            AND r.dispatch_deadline_at + make_interval(secs => p_recovery_grace_ms / 1000.0) < now())
        )
-     ORDER BY r.created_at
+       AND (p_after_created_at IS NULL
+            OR (r.created_at, r.id) > (p_after_created_at, p_after_run_id))
+     ORDER BY r.created_at, r.id
      LIMIT p_limit;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION govai.run_dispatch_recovery_candidates(integer, integer, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION govai.run_dispatch_recovery_candidates(integer, integer, integer) TO govai_app;
+REVOKE ALL ON FUNCTION govai.run_dispatch_recovery_candidates(integer, integer, integer, timestamptz, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION govai.run_dispatch_recovery_candidates(integer, integer, integer, timestamptz, uuid) TO govai_app;
 
 RESET ROLE;
