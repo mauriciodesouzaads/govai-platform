@@ -1144,6 +1144,7 @@ export async function executeGovernedRun(
       providerRequestId: result.provider_request_id,
       usageJson: buildUsageJson(responseBodyParsed),
       capturedV4: capture.captured(),
+      dlpFindingCount: txa.dlpFindingCount,
     },
   });
   const ok = fin.finalStatus === 'completed';

@@ -80,6 +80,10 @@ export type KnownOutcome =
       providerRequestId: string | null;
       usageJson: Record<string, unknown>;
       capturedV4?: PassthroughInvoked | null;
+      /** Governed runs: merged DLP finding count from TX-A, preserved on the
+       *  terminal run.completed evidence (pre-F3 `finding_count` parity).
+       *  Absent for passthrough (no DLP scan on that path). */
+      dlpFindingCount?: number | null;
     }
   | { kind: 'blocked'; reason: string; capturedV4?: PassthroughInvoked | null }
   | { kind: 'local_error'; message: string };
@@ -720,6 +724,12 @@ export async function finalizeKnownOutcome(
     // 5. Terminal lifecycle event — mirrors the pre-F3 shapes.
     let auditEventId: string;
     if (outcome.kind === 'http' && httpOk) {
+      // Pre-F3 parity: the completed event carries the governed run's merged
+      // DLP finding count in BOTH the payload hash and the metadata.
+      const findingCount =
+        outcome.dlpFindingCount !== undefined && outcome.dlpFindingCount !== null
+          ? { finding_count: outcome.dlpFindingCount }
+          : {};
       auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.completed',
         payloadHash: sha256(
@@ -732,6 +742,7 @@ export async function finalizeKnownOutcome(
               status_code: outcome.statusCode,
               native_request_hash: outcome.nativeRequestHashHex,
               native_response_hash: outcome.nativeResponseHashHex,
+              ...findingCount,
             }),
           ),
         ),
@@ -747,6 +758,7 @@ export async function finalizeKnownOutcome(
           native_request_hash: outcome.nativeRequestHashHex,
           native_response_hash: outcome.nativeResponseHashHex,
           ...(outcome.providerRequestId ? { provider_request_id: outcome.providerRequestId } : {}),
+          ...findingCount,
         },
       });
     } else if (outcome.kind === 'http') {

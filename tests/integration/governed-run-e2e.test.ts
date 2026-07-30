@@ -58,12 +58,21 @@ describe('Governed Run E2E', () => {
       await c.query('BEGIN');
       await setLocalAppOrgId(c, org.org_id);
       const chain = await verifyFullChain(c, kms, chainIdFor(org.org_id, 'run'));
+      // Pre-F3 parity: run.completed preserves the DLP evidence count (0 here).
+      // Queried INSIDE the tx — the org context is transaction-local.
+      const completed = await c.query<{ redaction_metadata: { finding_count?: number } }>(
+        `SELECT redaction_metadata FROM govai.audit_events
+          WHERE subject_id = $1::uuid AND event_type = 'run.completed'`,
+        [body.run_id],
+      );
       await c.query('COMMIT');
       expect(chain.valid).toBe(true);
       // F3 (EP-P03A-A): a completed governed run emits 4 events on the chain —
       // `run.dispatch_prepared` + `run.dispatch_claimed` (durable dispatch
       // protocol v1) + `passthrough.invoked v4` (canonical) + `run.completed`.
       expect(chain.events).toBe(4);
+      expect(completed.rows).toHaveLength(1);
+      expect(completed.rows[0]!.redaction_metadata.finding_count).toBe(0);
     } finally {
       c.release();
     }
@@ -120,6 +129,25 @@ describe('Governed Run E2E', () => {
     const echo = JSON.stringify(body.output);
     expect(echo).not.toContain('teste@exemplo.com.br');
     expect(echo).toContain('REDACTED:email');
+
+    // Pre-F3 parity: the completed event carries the NONZERO merged DLP
+    // finding count for the redacted run.
+    const runId = (res.body as { run_id: string }).run_id;
+    const c = await stack.db.appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await setLocalAppOrgId(c, org.org_id);
+      const completed = await c.query<{ redaction_metadata: { finding_count?: number } }>(
+        `SELECT redaction_metadata FROM govai.audit_events
+          WHERE subject_id = $1::uuid AND event_type = 'run.completed'`,
+        [runId],
+      );
+      await c.query('COMMIT');
+      expect(completed.rows).toHaveLength(1);
+      expect(completed.rows[0]!.redaction_metadata.finding_count).toBe(1);
+    } finally {
+      c.release();
+    }
   });
 
   it('E2E.3b — F5/F6: CPF nu (casa cpf+phone_br, action=redact) → UM marcador, zero dígitos, 1 linha em dlp_findings', async () => {
