@@ -333,6 +333,11 @@ async function appendTerminalRunEvent(
   ctx: DispatchEventContext,
   input: {
     eventType: 'run.completed' | 'run.failed' | 'run.denied';
+    /** The DATABASE transition instant (the run row's completed_at as
+     *  RETURNED by the terminal UPDATE) — never an application-clock sample,
+     *  so the bound lifecycle chronology can never contradict the
+     *  database-timed claim/unknown/reconciled events (Codex P2 on 8aefa80). */
+    occurredAt: Date;
     payloadHash: Uint8Array;
     redactionMetadata: Record<string, unknown>;
   },
@@ -344,7 +349,7 @@ async function appendTerminalRunEvent(
     eventVersion: '1',
     subjectType: 'run',
     subjectId: ctx.runId,
-    occurredAt: new Date(),
+    occurredAt: input.occurredAt,
     payloadHash: input.payloadHash,
     ...AUDIT_CHAIN_KEY,
     redactionMetadata: input.redactionMetadata,
@@ -535,14 +540,15 @@ export async function failBoundaryNotEstablished(
   input: { token: string },
 ): Promise<{ transitioned: boolean; status: string | null; auditEventId: string | null }> {
   return withTenantTx(pool, ctx.orgId, async (client) => {
-    const r = await client.query(
+    const r = await client.query<{ completed_at: Date }>(
       `UPDATE govai.runs
           SET status = 'failed', completed_at = now(),
               dispatch_error_class = 'dispatch_boundary_persist_failed'
         WHERE id = $1::uuid
           AND dispatch_token = $2::uuid
           AND status = 'running'
-          AND dispatch_boundary_committed_at IS NULL`,
+          AND dispatch_boundary_committed_at IS NULL
+      RETURNING completed_at`,
       [ctx.runId, input.token],
     );
     if (r.rowCount !== 1) {
@@ -554,6 +560,7 @@ export async function failBoundaryNotEstablished(
     }
     const auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
       eventType: 'run.failed',
+      occurredAt: r.rows[0]!.completed_at,
       payloadHash: sha256(Buffer.from(`dispatch_boundary_persist_failed:${ctx.runId}`)),
       redactionMetadata: {
         actor_user_id: ctx.actorUserId,
@@ -578,18 +585,20 @@ export async function failPreclaim(
   input: { errorClass: Extract<DispatchErrorClass, 'dispatch_preclaim_failed'>; message: string },
 ): Promise<boolean> {
   return withTenantTx(pool, ctx.orgId, async (client) => {
-    const r = await client.query(
+    const r = await client.query<{ completed_at: Date }>(
       `UPDATE govai.runs
           SET status = 'failed', completed_at = now(), dispatch_error_class = $2::text
         WHERE id = $1::uuid
           AND status = 'queued'
           AND dispatch_protocol_version = 1
-          AND dispatch_token IS NULL`,
+          AND dispatch_token IS NULL
+      RETURNING completed_at`,
       [ctx.runId, input.errorClass],
     );
     if (r.rowCount !== 1) return false;
     const eventId = await appendTerminalRunEvent(client, kms, ctx, {
       eventType: 'run.failed',
+      occurredAt: r.rows[0]!.completed_at,
       payloadHash: sha256(Buffer.from(`${input.errorClass}:${input.message}`)),
       redactionMetadata: {
         actor_user_id: ctx.actorUserId,
@@ -978,6 +987,7 @@ export async function finalizeKnownOutcome(
           : {};
       auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.completed',
+        occurredAt: completedAt,
         payloadHash: sha256(
           Buffer.from(
             JSON.stringify({
@@ -1012,6 +1022,7 @@ export async function finalizeKnownOutcome(
     } else if (outcome.kind === 'http') {
       auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.failed',
+        occurredAt: completedAt,
         payloadHash: sha256(
           Buffer.from(
             JSON.stringify({
@@ -1042,6 +1053,7 @@ export async function finalizeKnownOutcome(
     } else if (outcome.kind === 'blocked') {
       auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.denied',
+        occurredAt: completedAt,
         payloadHash: sha256(Buffer.from(`governed_blocked:${outcome.reason}`)),
         redactionMetadata: {
           actor_user_id: ctx.actorUserId,
@@ -1054,6 +1066,7 @@ export async function finalizeKnownOutcome(
     } else {
       auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.failed',
+        occurredAt: completedAt,
         payloadHash: sha256(
           Buffer.from(
             JSON.stringify({
@@ -1140,15 +1153,17 @@ export async function recoverQueuedStale(
     );
     const run = r.rows[0];
     if (!run) return false;
-    await client.query(
+    const upd = await client.query<{ completed_at: Date }>(
       `UPDATE govai.runs
           SET status = 'failed', completed_at = now(), dispatch_error_class = 'dispatch_never_claimed'
-        WHERE id = $1::uuid`,
+        WHERE id = $1::uuid
+      RETURNING completed_at`,
       [input.runId],
     );
     const ctx = recoveryEventCtx(input.orgId, input.runId, run);
     const eventId = await appendTerminalRunEvent(client, kms, ctx, {
       eventType: 'run.failed',
+      occurredAt: upd.rows[0]!.completed_at,
       payloadHash: sha256(Buffer.from(`dispatch_never_claimed:${input.runId}`)),
       redactionMetadata: {
         actor_user_id: run.actor_user_id,
@@ -1202,15 +1217,17 @@ export async function recoverRunningStale(
       // §18.1 — boundary absent: a claim existed but the mandatory durable
       // gate never committed; under the structural protocol the provider was
       // provably not called. KNOWN failure, never an unknown, no invocation.
-      await client.query(
+      const upd = await client.query<{ completed_at: Date }>(
         `UPDATE govai.runs
             SET status = 'failed', completed_at = now(),
                 dispatch_error_class = 'dispatch_never_started'
-          WHERE id = $1::uuid`,
+          WHERE id = $1::uuid
+        RETURNING completed_at`,
         [input.runId],
       );
       const eventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.failed',
+        occurredAt: upd.rows[0]!.completed_at,
         payloadHash: sha256(Buffer.from(`dispatch_never_started:${input.runId}`)),
         redactionMetadata: {
           actor_user_id: run.actor_user_id,

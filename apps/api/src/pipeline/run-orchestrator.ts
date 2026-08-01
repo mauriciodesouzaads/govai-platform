@@ -936,9 +936,12 @@ async function governedTxA(
 
       if (decision.kind === 'deny') {
         // Policy deny commits WITHOUT protocol v1: no dispatch may ever be
-        // claimed for this run, and no provider call is possible.
-        await client.query(
-          `UPDATE govai.runs SET status = 'denied', completed_at = now() WHERE id = $1::uuid`,
+        // claimed for this run, and no provider call is possible. The deny
+        // event is stamped with the DATABASE transition instant (same
+        // single-clock discipline as the v1 terminal events).
+        const denyUpd = await client.query<{ completed_at: Date }>(
+          `UPDATE govai.runs SET status = 'denied', completed_at = now() WHERE id = $1::uuid
+          RETURNING completed_at`,
           [runId],
         );
         const denyAudit = await auditAppend(client, deps.kms, {
@@ -948,7 +951,7 @@ async function governedTxA(
           eventVersion: '1',
           subjectType: 'run',
           subjectId: runId,
-          occurredAt: new Date(),
+          occurredAt: denyUpd.rows[0]!.completed_at,
           payloadHash: sha256(Buffer.from(JSON.stringify(decision.reasons))),
           ...AUDIT_CHAIN_KEY,
           redactionMetadata: {

@@ -199,9 +199,11 @@ describe('CW-wiring — all protocol-v1 non-stream paths cross the durable bound
         dispatch_boundary_committed_at: Date | null;
         dispatch_claimed_at: Date | null;
         dispatch_prepared_at: Date | null;
+        completed_at: Date | null;
       }>(
         org.org_id,
-        `SELECT dispatch_boundary_committed_at, dispatch_claimed_at, dispatch_prepared_at
+        `SELECT dispatch_boundary_committed_at, dispatch_claimed_at, dispatch_prepared_at,
+                completed_at
            FROM govai.runs WHERE id = $1::uuid`,
         [body.run_id],
       );
@@ -221,6 +223,18 @@ describe('CW-wiring — all protocol-v1 non-stream paths cross the durable bound
       // that could disagree with (or postdate) the database-timed claim.
       const preparedMeta = await eventMetadata(org.org_id, body.run_id, 'run.dispatch_prepared');
       expect(preparedMeta?.['occurred_at']).toBe(rows[0]!.dispatch_prepared_at!.toISOString());
+
+      // …and the TERMINAL event envelope is stamped with the database
+      // transition instant (the row's completed_at), so the bound lifecycle
+      // chronology can never contradict the database-timed claim/boundary.
+      const evRow = await queryAsOrg<{ occurred_at: Date }>(
+        org.org_id,
+        `SELECT occurred_at FROM govai.audit_events
+          WHERE subject_id = $1::uuid AND event_type = 'run.completed'
+          ORDER BY sequence_number DESC LIMIT 1`,
+        [body.run_id],
+      );
+      expect(evRow[0]!.occurred_at.toISOString()).toBe(rows[0]!.completed_at!.toISOString());
     });
   }
 });
