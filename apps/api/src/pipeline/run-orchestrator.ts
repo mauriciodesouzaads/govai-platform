@@ -1101,12 +1101,19 @@ export async function executeGovernedRun(
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await persistTerminal(ctx, () =>
+    const preclaimed = await persistTerminal(ctx, () =>
       failPreclaim(deps.pool, deps.kms, ctx, {
         errorClass: 'dispatch_preclaim_failed',
         message,
       }),
     );
+    if (!preclaimed) {
+      // The queued→failed CAS lost (Codex P2 on 7f08ede): e.g. recovery
+      // already resolved the run (dispatch_never_claimed) while this process
+      // was paused after TX-A. Answer from the durable row — never assert a
+      // preclaim failure the audit record contradicts.
+      return readRunStateResponse(deps, ctx, txa.decision);
+    }
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
@@ -1590,12 +1597,27 @@ export async function executePassthroughRun(
         : rewriteOpenaiPassthroughHeaders(plan.inboundHeaders, resolvedCredential.apiKey).outbound;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await persistTerminal(ctx, () =>
+    const preclaimed = await persistTerminal(ctx, () =>
       failPreclaim(deps.pool, deps.kms, ctx, {
         errorClass: 'dispatch_preclaim_failed',
         message,
       }),
     );
+    if (!preclaimed) {
+      // CAS lost (Codex P2 on 7f08ede) — answer from the durable row, same
+      // honesty contract as the claim-loser path below.
+      const state = await readRunStateResponse(deps, ctx);
+      return {
+        run_id: txa.runId,
+        audit_chain_id: txa.chainId,
+        mode: 'passthrough',
+        status:
+          state.status === 'denied' || state.status === 'completed' ? 'failed' : state.status,
+        native_request_hash: txa.nativeRequestHashHex,
+        retry_safe: false,
+        ...(state.error_class ? { error_class: state.error_class } : {}),
+      };
+    }
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
