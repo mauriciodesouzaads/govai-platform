@@ -904,15 +904,18 @@ export async function finalizeKnownOutcome(
       v4EventId = await persistCapturedV4(client, kms, ctx, outcome.capturedV4);
     }
 
-    // 3. Run row transition (outcome_unknown_at is PRESERVED on reconciliation).
+    // 3. Run row transition. outcome_unknown_at is PRESERVED on
+    // reconciliation, but the stale dispatch error class is NOT (Codex P2 on
+    // e9d435e): a known http/blocked outcome CLEARS it — otherwise a
+    // reconciled run projects `status: completed` next to an obsolete
+    // `provider_timeout`/`stale_dispatch_claim` on GET /v1/runs/:run_id. The
+    // unknown period's history lives on outcome_unknown_at and the
+    // run.outcome_unknown event; only a known local error sets a new class.
     await client.query(
       `UPDATE govai.runs
           SET status = $2::text,
               completed_at = now(),
-              dispatch_error_class = CASE
-                WHEN $3::text IS NOT NULL THEN $3::text
-                ELSE dispatch_error_class
-              END
+              dispatch_error_class = $3::text
         WHERE id = $1::uuid`,
       [ctx.runId, terminal, outcome.kind === 'local_error' ? 'dispatch_pre_forward_failed' : null],
     );

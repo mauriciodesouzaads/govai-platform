@@ -616,15 +616,21 @@ describe('T11 — late reconciliation', () => {
       status: string;
       outcome_unknown_at: Date | null;
       completed_at: Date | null;
+      dispatch_error_class: string | null;
     }>(
       org.org_id,
-      'SELECT status, outcome_unknown_at, completed_at FROM govai.runs WHERE id = $1::uuid',
+      `SELECT status, outcome_unknown_at, completed_at, dispatch_error_class
+         FROM govai.runs WHERE id = $1::uuid`,
       [runId],
     );
     expect(rows[0]!.status).toBe('completed');
-    // §26: outcome_unknown_at is PRESERVED after reconciliation.
+    // §26: outcome_unknown_at is PRESERVED after reconciliation…
     expect(rows[0]!.outcome_unknown_at).not.toBeNull();
     expect(rows[0]!.completed_at).not.toBeNull();
+    // …but the STALE unknown error class is NOT: a reconciled completed run
+    // must never project provider_io_unknown/provider_timeout next to its
+    // terminal status (the unknown event keeps the history).
+    expect(rows[0]!.dispatch_error_class).toBeNull();
 
     const inv = await queryAsOrg<{ id: string }>(
       org.org_id,
