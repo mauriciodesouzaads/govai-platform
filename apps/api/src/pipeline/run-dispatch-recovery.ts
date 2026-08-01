@@ -60,6 +60,14 @@ export type RecoveryDeps = {
    *  past the bound the worker abandons the sweep (same idempotent-re-entry
    *  safety as above) and later ticks keep sweeping every other stale run. */
   sweepMaxRuntimeMs?: number;
+  /** Cap on ABANDONED sweeps still pending (default 2). pg operations cannot
+   *  be cancelled safely, so an abandoned sweep may keep a checked-out client
+   *  until its stalled call settles; without a cap, repeated timeouts would
+   *  stack zombie sweeps until they exhaust the SHARED pool and halt API
+   *  traffic too. At the cap the worker pauses new sweeps (loud log each
+   *  tick) and resumes automatically as soon as a zombie settles — recovery
+   *  can never consume more than this many pool clients. */
+  maxAbandonedSweeps?: number;
 };
 
 type CandidateRow = {
@@ -179,9 +187,25 @@ export function startRunDispatchRecoveryWorker(deps: RecoveryDeps): RecoveryWork
   // Carried across ticks: resume a cap-ended sweep instead of restarting at
   // the oldest candidates (which could be a permanently non-advancing group).
   let carry: SweepCursor | null = null;
+  // Abandoned-at-the-runtime-bound sweeps whose stalled operation has not
+  // settled yet — each may still hold ONE checked-out pool client.
+  let zombieSweeps = 0;
 
   const tick = (): void => {
     if (stopped || inFlight) return;
+    // Zombie cap (Codex P1 on 8f8da4c): pg work cannot be cancelled safely,
+    // so each abandoned sweep may keep a checked-out client until its stalled
+    // operation settles. Never let those stack unbounded — at the cap, pause
+    // new sweeps (loud, every tick) and resume as soon as one settles; the
+    // shared pool can lose at most `maxZombies` clients to recovery.
+    const maxZombies = deps.maxAbandonedSweeps ?? 2;
+    if (zombieSweeps >= maxZombies) {
+      deps.log?.error(
+        { zombie_sweeps: zombieSweeps, cap: maxZombies },
+        'run dispatch recovery paused: abandoned sweeps still hold clients; resuming when one settles',
+      );
+      return;
+    }
     // The sweep runs under a RUNTIME bound (Codex P2 on 8f700f7): a per-run
     // transition that stalls forever (partitioned database, hung audit/KMS
     // call) would otherwise pin `inFlight` and freeze recovery for every
@@ -207,14 +231,11 @@ export function startRunDispatchRecoveryWorker(deps: RecoveryDeps): RecoveryWork
         );
       });
     let sweepSettled = false;
-    void sweep.then(
-      () => {
-        sweepSettled = true;
-      },
-      () => {
-        sweepSettled = true;
-      },
-    );
+    const onSettle = (): void => {
+      sweepSettled = true;
+      if (abandoned) zombieSweeps -= 1; // a zombie finally settled — resume
+    };
+    void sweep.then(onSettle, onSettle);
     const runtimeBoundMs = deps.sweepMaxRuntimeMs ?? 120_000;
     inFlight = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -226,9 +247,10 @@ export function startRunDispatchRecoveryWorker(deps: RecoveryDeps): RecoveryWork
       clearTimeout(timer);
       if (!sweepSettled) {
         abandoned = true;
+        zombieSweeps += 1;
         carry = null; // restart from the oldest on the next sweep
         deps.log?.error(
-          { waited_ms: runtimeBoundMs },
+          { waited_ms: runtimeBoundMs, zombie_sweeps: zombieSweeps },
           'run dispatch recovery: sweep exceeded its runtime bound; abandoned so later ticks continue (idempotent re-entry)',
         );
       }

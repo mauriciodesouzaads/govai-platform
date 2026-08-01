@@ -380,10 +380,12 @@ describe('recovery worker lifecycle (§25)', () => {
     await handle.stop(); // must resolve at the bound, not hang
   }, 20_000);
 
-  it('a permanently STALLED sweep is abandoned at its runtime bound and recovery CONTINUES', async () => {
+  it('a permanently STALLED sweep is abandoned at its runtime bound; recovery CONTINUES, then PAUSES at the zombie cap', async () => {
     // Codex P2 on 8f700f7: without the runtime bound, the first stalled sweep
-    // pins inFlight forever, every later tick returns immediately, and this
-    // test fails by timeout because the second discovery call never happens.
+    // pins inFlight forever and the second discovery call never happens
+    // (timeout). Codex P1 on 8f8da4c: without the zombie cap, EVERY tick
+    // would launch another zombie holding a pool client — at the cap (2) the
+    // worker must pause loudly instead of stacking a third sweep.
     let calls = 0;
     let secondCall!: () => void;
     const second = new Promise<void>((resolve) => {
@@ -396,14 +398,26 @@ describe('recovery worker lifecycle (§25)', () => {
         return new Promise(() => undefined); // never settles
       },
     } as unknown as Pool;
+    let pausedResolve!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      pausedResolve = resolve;
+    });
     const handle = startRunDispatchRecoveryWorker({
       pool: stalledPool,
       kms: new DevKms(stack.seed),
       config: { ...runDispatchConfigFromEnv(stack.env), recoveryIntervalMs: 1_000 },
       sweepMaxRuntimeMs: 300,
       shutdownMaxWaitMs: 300,
+      log: {
+        info: () => undefined,
+        error: (_obj, msg) => {
+          if (typeof msg === 'string' && msg.includes('recovery paused')) pausedResolve();
+        },
+      },
     });
     await second; // a SECOND sweep began after the first was abandoned
+    await paused; // …and at the cap the worker paused instead of stacking more
+    expect(calls).toBe(2); // exactly cap-many zombie sweeps ever launched
     await handle.stop();
   }, 30_000);
 
