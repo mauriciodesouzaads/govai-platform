@@ -198,9 +198,10 @@ describe('CW-wiring — all protocol-v1 non-stream paths cross the durable bound
       const rows = await queryAsOrg<{
         dispatch_boundary_committed_at: Date | null;
         dispatch_claimed_at: Date | null;
+        dispatch_prepared_at: Date | null;
       }>(
         org.org_id,
-        `SELECT dispatch_boundary_committed_at, dispatch_claimed_at
+        `SELECT dispatch_boundary_committed_at, dispatch_claimed_at, dispatch_prepared_at
            FROM govai.runs WHERE id = $1::uuid`,
         [body.run_id],
       );
@@ -214,6 +215,12 @@ describe('CW-wiring — all protocol-v1 non-stream paths cross the durable bound
       expect(meta?.['dispatch_boundary_committed_at']).toBe(
         rows[0]!.dispatch_boundary_committed_at!.toISOString(),
       );
+
+      // Single-clock evidence: the prepared event's occurred_at IS the
+      // database instant the durable row recorded — never an app-clock value
+      // that could disagree with (or postdate) the database-timed claim.
+      const preparedMeta = await eventMetadata(org.org_id, body.run_id, 'run.dispatch_prepared');
+      expect(preparedMeta?.['occurred_at']).toBe(rows[0]!.dispatch_prepared_at!.toISOString());
     });
   }
 });

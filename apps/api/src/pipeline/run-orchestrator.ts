@@ -997,14 +997,19 @@ async function governedTxA(
       const nativeRequestHashHex = nativeRequestHash.toString('hex');
 
       // Durable preparation: protocol v1, still 'queued' — no claim, no
-      // started_at, no token. The provider CANNOT have been called yet.
-      const preparedAt = new Date();
-      await client.query(
+      // started_at, no token. The provider CANNOT have been called yet. The
+      // prepared event's occurred_at is the DATABASE-clock instant RETURNED
+      // by this write (Codex P2 on 97fa3e3): a split application clock must
+      // never make the bound lifecycle event disagree with the durable row
+      // or appear after its database-timed claim.
+      const upd = await client.query<{ dispatch_prepared_at: Date }>(
         `UPDATE govai.runs
             SET dispatch_protocol_version = 1, dispatch_prepared_at = now()
-          WHERE id = $1::uuid`,
+          WHERE id = $1::uuid
+        RETURNING dispatch_prepared_at`,
         [runId],
       );
+      const preparedAt = upd.rows[0]!.dispatch_prepared_at;
       await appendDispatchPreparedEvent(
         client,
         deps.kms,
@@ -1457,13 +1462,17 @@ async function passthroughTxA(
       const nativeRequestHashHex = nativeRequestHash.toString('hex');
 
       const runId = randomUUID();
-      await client.query(
+      // The prepared event's occurred_at is the DATABASE-clock instant this
+      // INSERT records (Codex P2 on 97fa3e3) — same split-clock rationale as
+      // the governed TX-A.
+      const ins = await client.query<{ dispatch_prepared_at: Date }>(
         `INSERT INTO govai.runs
            (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
             workroom_id, workroom_task_id, created_by_participant_id, approval_policy_id,
             workroom_governance_mode, dispatch_protocol_version, dispatch_prepared_at)
          VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::text, $6::text, 'passthrough', 'queued',
-            $7::jsonb, $8::uuid, $9::uuid, $10::uuid, $11::uuid, $12::text, 1, now())`,
+            $7::jsonb, $8::uuid, $9::uuid, $10::uuid, $11::uuid, $12::text, 1, now())
+        RETURNING dispatch_prepared_at`,
         [
           runId,
           identity.org_id,
@@ -1479,6 +1488,7 @@ async function passthroughTxA(
           workroomContext?.workroom_governance_mode ?? null,
         ],
       );
+      const preparedAt = ins.rows[0]!.dispatch_prepared_at;
 
       // Approval consumption is durable WITH the preparation (owner-adjudicated):
       // TX-A committed but provider never called ⇒ approval remains consumed;
@@ -1507,7 +1517,7 @@ async function passthroughTxA(
         {
           nativeRequestHashHex,
           ...(approval ? { approvalRequestId: approval.approval_request_id } : {}),
-          occurredAt: new Date(),
+          occurredAt: preparedAt,
         },
       );
 
