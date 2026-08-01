@@ -380,6 +380,33 @@ describe('recovery worker lifecycle (§25)', () => {
     await handle.stop(); // must resolve at the bound, not hang
   }, 20_000);
 
+  it('a permanently STALLED sweep is abandoned at its runtime bound and recovery CONTINUES', async () => {
+    // Codex P2 on 8f700f7: without the runtime bound, the first stalled sweep
+    // pins inFlight forever, every later tick returns immediately, and this
+    // test fails by timeout because the second discovery call never happens.
+    let calls = 0;
+    let secondCall!: () => void;
+    const second = new Promise<void>((resolve) => {
+      secondCall = resolve;
+    });
+    const stalledPool = {
+      query: () => {
+        calls += 1;
+        if (calls >= 2) secondCall();
+        return new Promise(() => undefined); // never settles
+      },
+    } as unknown as Pool;
+    const handle = startRunDispatchRecoveryWorker({
+      pool: stalledPool,
+      kms: new DevKms(stack.seed),
+      config: { ...runDispatchConfigFromEnv(stack.env), recoveryIntervalMs: 1_000 },
+      sweepMaxRuntimeMs: 300,
+      shutdownMaxWaitMs: 300,
+    });
+    await second; // a SECOND sweep began after the first was abandoned
+    await handle.stop();
+  }, 30_000);
+
   it('app close is BOUNDED even with a stalled borrowed client (owned-pool shutdown path)', async () => {
     // Codex P2 on 6362c47: pg pool.end() waits for borrowed clients, so a
     // client stalled on a partitioned database (the abandoned-sweep case)

@@ -55,6 +55,11 @@ export type RecoveryDeps = {
    *  UPDATE SKIP LOCKED, so an interrupted transition rolls back with its
    *  connection and the next worker run re-discovers the candidate. */
   shutdownMaxWaitMs?: number;
+  /** Bounded sweep RUNTIME during normal operation (default 120000ms). One
+   *  permanently stalled candidate must not freeze recovery platform-wide:
+   *  past the bound the worker abandons the sweep (same idempotent-re-entry
+   *  safety as above) and later ticks keep sweeping every other stale run. */
+  sweepMaxRuntimeMs?: number;
 };
 
 type CandidateRow = {
@@ -177,23 +182,59 @@ export function startRunDispatchRecoveryWorker(deps: RecoveryDeps): RecoveryWork
 
   const tick = (): void => {
     if (stopped || inFlight) return;
-    inFlight = runDispatchRecoverySweepOnce(deps, carry)
+    // The sweep runs under a RUNTIME bound (Codex P2 on 8f700f7): a per-run
+    // transition that stalls forever (partitioned database, hung audit/KMS
+    // call) would otherwise pin `inFlight` and freeze recovery for every
+    // organization until a restart. Past the bound the sweep is abandoned —
+    // idempotent re-entry makes that safe — and later ticks keep sweeping.
+    // `abandoned` guards the late completion of a zombie sweep so it can
+    // never clobber a newer sweep's cursor or log as if current.
+    let abandoned = false;
+    const sweep = runDispatchRecoverySweepOnce(deps, carry)
       .then((r) => {
+        if (abandoned) return;
         carry = r.nextCursor;
         if (r.candidates > 0) {
           deps.log?.info({ ...r }, 'run dispatch recovery sweep');
         }
       })
       .catch((err) => {
+        if (abandoned) return;
         carry = null;
         deps.log?.error(
           { error_name: err instanceof Error ? err.name : 'unknown' },
           'run dispatch recovery sweep failed',
         );
-      })
-      .finally(() => {
-        inFlight = null;
       });
+    let sweepSettled = false;
+    void sweep.then(
+      () => {
+        sweepSettled = true;
+      },
+      () => {
+        sweepSettled = true;
+      },
+    );
+    const runtimeBoundMs = deps.sweepMaxRuntimeMs ?? 120_000;
+    inFlight = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const bound = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, runtimeBoundMs);
+        timer.unref?.();
+      });
+      await Promise.race([sweep, bound]);
+      clearTimeout(timer);
+      if (!sweepSettled) {
+        abandoned = true;
+        carry = null; // restart from the oldest on the next sweep
+        deps.log?.error(
+          { waited_ms: runtimeBoundMs },
+          'run dispatch recovery: sweep exceeded its runtime bound; abandoned so later ticks continue (idempotent re-entry)',
+        );
+      }
+    })().finally(() => {
+      inFlight = null;
+    });
   };
 
   const interval = setInterval(tick, deps.config.recoveryIntervalMs);
