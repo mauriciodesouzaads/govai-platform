@@ -1,5 +1,5 @@
 -- Migration 0029 — Durable provider dispatch outside run database transactions
--- (EP-P03A-A / F3).
+-- (EP-P03A-A / F3, boundary-aware revision).
 --
 -- `govai.runs.status` stays the single canonical lifecycle source. This
 -- migration adds dispatch-ownership fields to `govai.runs` (no separate
@@ -10,19 +10,77 @@
 -- candidates function, following the 0005/0008/0025 pattern: FORCE RLS subjects
 -- the owner, so cross-org reads need an explicit writer policy).
 --
+-- BOUNDARY REVISION: adds `dispatch_boundary_committed_at` — the durable local
+-- dispatch boundary. Exact meaning: the protocol durably crossed the final
+-- mandatory local gate after which a provider invocation could begin. It does
+-- NOT prove fetch was invoked, that bytes crossed the network, or that the
+-- provider received/executed/answered anything.
+--
 -- Historical data: rows created before this migration keep
 -- dispatch_protocol_version = NULL and are exempt from every v1 constraint.
--- No semantic backfill is performed.
+-- No semantic backfill is performed — ever. A pre-boundary protocol-v1 row
+-- contains no evidence of whether the boundary was crossed, so this file
+-- FAILS LOUD (count only, no row content) when such rows exist, instead of
+-- inventing timestamps, reclassifying statuses or deleting runs. The operator
+-- decides: recreate only an explicitly disposable database; otherwise preserve
+-- it for manual owner adjudication.
 --
 -- DEPLOY_ORDER:
---   APPLY_MIGRATION
+--   APPLY_MIGRATION      (fails loud on pre-boundary protocol-v1 rows)
 --   → DRAIN_OLD_API_INSTANCES
 --   → DEPLOY_NEW_API
 --   → START_RECOVERY_WORKER
 --   → RESUME_RUN_TRAFFIC
 -- The old application does not recognize `outcome_unknown`; concurrent writes
 -- from old and new versions after the new flow is active are NOT claimed safe.
--- Rollback after v1 runs exist is an operational procedure, not a DROP COLUMN.
+-- The pre-boundary unmerged form of this file must be fully drained (zero
+-- protocol-v1 rows) before the boundary-aware form applies. Rollback after v1
+-- runs exist is an operational procedure, not a DROP COLUMN.
+
+-- ===========================================================================
+-- 0. Boundary-upgrade compatibility preflight (§8) — runs under the MIGRATION
+--    RUNNER identity, BEFORE any SET ROLE, so the protocol-v1 count is not
+--    subject to the writer role's org-scoped RLS visibility (same rationale as
+--    the section-G duplicate count). Cases:
+--      M-A fresh / pre-boundary with zero v1 rows → proceed
+--      M-B pre-boundary schema WITH v1 rows       → FAIL LOUD (count only)
+--      M-C boundary-aware schema already present  → proceed (idempotent rerun)
+--    No backfill, no deletion, no status mutation on any path.
+-- ===========================================================================
+
+DO $$
+DECLARE
+  v_boundary_exists boolean;
+  v_dispatch_cols_exist boolean;
+  v_v1_rows bigint;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'govai' AND table_name = 'runs'
+       AND column_name = 'dispatch_boundary_committed_at'
+  ) INTO v_boundary_exists;
+  IF v_boundary_exists THEN
+    RETURN; -- M-C: boundary-aware schema; idempotent rerun proceeds.
+  END IF;
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'govai' AND table_name = 'runs'
+       AND column_name = 'dispatch_protocol_version'
+  ) INTO v_dispatch_cols_exist;
+  IF NOT v_dispatch_cols_exist THEN
+    RETURN; -- M-A: fresh database (0029 never ran); nothing to audit.
+  END IF;
+  EXECUTE 'SELECT count(*) FROM govai.runs WHERE dispatch_protocol_version = 1'
+    INTO v_v1_rows;
+  IF v_v1_rows > 0 THEN
+    -- M-B. Safe message: migration identity + total count + operator
+    -- instructions ONLY — no run ids, org ids, hashes or row content.
+    RAISE EXCEPTION
+      'migration 0029 boundary upgrade blocked: % protocol-v1 run(s) created by the pre-boundary schema exist. No backfill, deletion or status mutation was performed. Recreate the database only if it is explicitly disposable; otherwise preserve it for manual owner adjudication.',
+      v_v1_rows;
+  END IF;
+  -- M-A: pre-boundary schema, zero v1 rows → safe to upgrade in place.
+END $$;
 
 SET ROLE govai_audit_writer;
 
@@ -38,6 +96,10 @@ ALTER TABLE govai.runs ADD COLUMN IF NOT EXISTS dispatch_deadline_at      timest
 ALTER TABLE govai.runs ADD COLUMN IF NOT EXISTS dispatch_timeout_ms       integer      NULL;
 ALTER TABLE govai.runs ADD COLUMN IF NOT EXISTS dispatch_error_class      text         NULL;
 ALTER TABLE govai.runs ADD COLUMN IF NOT EXISTS outcome_unknown_at        timestamptz  NULL;
+-- The durable local dispatch boundary (see header): committed by a short CAS
+-- transaction IMMEDIATELY before the local forward invocation; NULL means the
+-- protocol never crossed the final mandatory local gate. Never a receipt claim.
+ALTER TABLE govai.runs ADD COLUMN IF NOT EXISTS dispatch_boundary_committed_at timestamptz NULL;
 
 -- ===========================================================================
 -- B. Replace the runs.status CHECK to admit 'outcome_unknown'
@@ -90,33 +152,32 @@ ALTER TABLE govai.runs
   CHECK (dispatch_timeout_ms IS NULL OR dispatch_timeout_ms BETWEEN 1000 AND 900000);
 
 -- ===========================================================================
--- D. Protocol v1 state-consistency matrix
---
--- Legacy rows (dispatch_protocol_version IS NULL) short-circuit to valid.
--- Every v1 row has a durable dispatch_prepared_at. Arms:
---   queued           — prepared, never claimed (no token, no execution marks)
---   running          — claimed exactly once (token + claim + deadline + timeout)
---   completed        — known success (outcome_unknown_at MAY be set: late
---                      reconciliation preserves the unknown-period record)
---   outcome_unknown  — claimed, honest unknown (error class mandatory)
---   failed pre-claim — dispatch_never_claimed / dispatch_preclaim_failed
---   failed post-claim— known failure after a claim (reconciled rows keep
---                      outcome_unknown_at)
---   denied post-claim— the governed handler blocked before the forward, after
---                      the claim (policy denials in TX-A commit WITHOUT protocol
---                      v1, so a v1 denied row always carries the claim triplet)
+-- D0. Boundary-matrix compatibility audit (§9.2) — runs under the MIGRATION
+--     RUNNER (RESET ROLE) for full cross-org visibility, BEFORE the constraint
+--     below is replaced, so incompatible rows produce ONE safe count-only
+--     failure instead of a generic check-constraint violation mid-DDL (the
+--     constraint validation right after remains the role-independent
+--     backstop). The predicate here is the EXACT negation of the section-D
+--     matrix — keep the two in sync. No semantic data modification on any
+--     path: rows are counted, never mutated.
 -- ===========================================================================
 
-ALTER TABLE govai.runs DROP CONSTRAINT IF EXISTS runs_dispatch_v1_state_check;
-ALTER TABLE govai.runs
-  ADD CONSTRAINT runs_dispatch_v1_state_check
-  CHECK (
-    -- Legacy rows (protocol NULL) are exempt from the v1 matrix, but ONLY the
-    -- v1 machinery may ever produce `outcome_unknown` — a non-v1 unknown row
-    -- would be unrecoverable and unexplainable.
-    (dispatch_protocol_version IS NULL AND status <> 'outcome_unknown')
+RESET ROLE;
+
+DO $$
+DECLARE
+  v_bad bigint;
+BEGIN
+  SELECT count(*) INTO v_bad
+    FROM govai.runs
+   WHERE NOT (
+    (dispatch_protocol_version IS NULL AND status <> 'outcome_unknown'
+      AND dispatch_boundary_committed_at IS NULL)
     OR (
       dispatch_prepared_at IS NOT NULL
+      AND (dispatch_boundary_committed_at IS NULL
+           OR (dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+               AND dispatch_deadline_at IS NOT NULL AND dispatch_timeout_ms IS NOT NULL))
       AND (
         (status = 'queued'
           AND dispatch_token IS NULL AND dispatch_claimed_at IS NULL
@@ -129,15 +190,110 @@ ALTER TABLE govai.runs
           AND outcome_unknown_at IS NULL)
         OR (status = 'completed'
           AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
-          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL)
+          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL
+          AND dispatch_boundary_committed_at IS NOT NULL)
         OR (status = 'outcome_unknown'
           AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
           AND dispatch_deadline_at IS NOT NULL AND outcome_unknown_at IS NOT NULL
-          AND completed_at IS NULL AND dispatch_error_class IS NOT NULL)
+          AND completed_at IS NULL AND dispatch_error_class IS NOT NULL
+          AND dispatch_boundary_committed_at IS NOT NULL)
         OR (status = 'failed'
           AND dispatch_token IS NULL AND dispatch_claimed_at IS NULL
           AND dispatch_deadline_at IS NULL AND completed_at IS NOT NULL
-          AND dispatch_error_class IS NOT NULL)
+          AND dispatch_error_class IS NOT NULL
+          AND dispatch_boundary_committed_at IS NULL)
+        OR (status = 'failed'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL)
+        OR (status = 'denied'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL)
+      )
+    )
+   );
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION
+      'migration 0029: % run row(s) are incompatible with the boundary-aware v1 state matrix; no rows were modified — resolve manually before re-running (count only, no row content)',
+      v_bad;
+  END IF;
+END $$;
+
+SET ROLE govai_audit_writer;
+
+-- ===========================================================================
+-- D. Protocol v1 state-consistency matrix (boundary-aware)
+--
+-- Legacy rows (dispatch_protocol_version IS NULL) short-circuit to valid and
+-- never carry a boundary. Every v1 row has a durable dispatch_prepared_at,
+-- and a committed boundary implies the full claim quadruple (token + claim +
+-- deadline + timeout). Arms:
+--   queued           — prepared, never claimed (no token, no execution marks;
+--                      boundary NULL via the claim implication)
+--   running          — claimed exactly once; boundary MAY be NULL (claimed,
+--                      gate not yet crossed) or NOT NULL (gate crossed,
+--                      outcome pending)
+--   completed        — known success; boundary REQUIRED (a 2xx implies the
+--                      gate was crossed; outcome_unknown_at MAY be set: late
+--                      reconciliation preserves the unknown-period record)
+--   outcome_unknown  — claimed, honest unknown (error class mandatory);
+--                      boundary REQUIRED — a boundary-null stale claim is the
+--                      KNOWN failure dispatch_never_started instead
+--   failed pre-claim — dispatch_never_claimed / dispatch_preclaim_failed;
+--                      boundary NULL
+--   failed post-claim— known failure after a claim; boundary NULL (e.g.
+--                      dispatch_never_started, dispatch_boundary_persist_failed,
+--                      pre-boundary local errors) or NOT NULL (provider-known
+--                      error, post-boundary local failure, late reconciliation
+--                      to failed; reconciled rows keep outcome_unknown_at)
+--   denied post-claim— the governed handler blocked before the forward, after
+--                      the claim (policy denials in TX-A commit WITHOUT protocol
+--                      v1, so a v1 denied row always carries the claim triplet)
+--
+-- The replacement below is FULLY VALIDATED at ADD CONSTRAINT time (no NOT
+-- VALID left behind); the D0 audit above already reported any incompatible
+-- rows with a safe count-only message.
+-- ===========================================================================
+
+ALTER TABLE govai.runs DROP CONSTRAINT IF EXISTS runs_dispatch_v1_state_check;
+ALTER TABLE govai.runs
+  ADD CONSTRAINT runs_dispatch_v1_state_check
+  CHECK (
+    -- Legacy rows (protocol NULL) are exempt from the v1 matrix, but ONLY the
+    -- v1 machinery may ever produce `outcome_unknown` or commit a boundary —
+    -- a non-v1 unknown/boundary row would be unrecoverable and unexplainable.
+    (dispatch_protocol_version IS NULL AND status <> 'outcome_unknown'
+      AND dispatch_boundary_committed_at IS NULL)
+    OR (
+      dispatch_prepared_at IS NOT NULL
+      -- A committed boundary implies exclusive claim ownership: the boundary
+      -- CAS requires the exact token under status='running'.
+      AND (dispatch_boundary_committed_at IS NULL
+           OR (dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+               AND dispatch_deadline_at IS NOT NULL AND dispatch_timeout_ms IS NOT NULL))
+      AND (
+        (status = 'queued'
+          AND dispatch_token IS NULL AND dispatch_claimed_at IS NULL
+          AND dispatch_deadline_at IS NULL AND started_at IS NULL
+          AND completed_at IS NULL AND outcome_unknown_at IS NULL)
+        OR (status = 'running'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND dispatch_timeout_ms IS NOT NULL
+          AND started_at IS NOT NULL AND completed_at IS NULL
+          AND outcome_unknown_at IS NULL)
+        OR (status = 'completed'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL
+          AND dispatch_boundary_committed_at IS NOT NULL)
+        OR (status = 'outcome_unknown'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND outcome_unknown_at IS NOT NULL
+          AND completed_at IS NULL AND dispatch_error_class IS NOT NULL
+          AND dispatch_boundary_committed_at IS NOT NULL)
+        OR (status = 'failed'
+          AND dispatch_token IS NULL AND dispatch_claimed_at IS NULL
+          AND dispatch_deadline_at IS NULL AND completed_at IS NOT NULL
+          AND dispatch_error_class IS NOT NULL
+          AND dispatch_boundary_committed_at IS NULL)
         OR (status = 'failed'
           AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
           AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL)

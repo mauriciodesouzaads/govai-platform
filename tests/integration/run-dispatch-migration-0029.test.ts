@@ -139,6 +139,21 @@ describe('T14 — migration 0029 with legacy rows', () => {
     }
     await admin.query(sql0029);
     await admin.query(sql0029); // idempotent re-run (bootstrap-idempotent contract)
+
+    // M1 — the boundary-aware schema landed: column present, matrix constraint
+    // present AND fully validated (never left NOT VALID).
+    const col = await admin.query(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'govai' AND table_name = 'runs'
+          AND column_name = 'dispatch_boundary_committed_at'`,
+    );
+    expect(col.rowCount).toBe(1);
+    const con = await admin.query<{ convalidated: boolean }>(
+      `SELECT convalidated FROM pg_constraint
+        WHERE conrelid = 'govai.runs'::regclass AND conname = 'runs_dispatch_v1_state_check'`,
+    );
+    expect(con.rowCount).toBe(1);
+    expect(con.rows[0]!.convalidated).toBe(true);
   });
 
   it('legacy rows are untouched: same status, dispatch_protocol_version NULL', async () => {
@@ -160,16 +175,16 @@ describe('T14 — migration 0029 with legacy rows', () => {
     }
   });
 
-  it('admits outcome_unknown ONLY in a consistent v1 shape', async () => {
+  it('admits outcome_unknown ONLY in a consistent v1 shape (boundary REQUIRED)', async () => {
     const ok = await admin.query(
       `INSERT INTO govai.runs
          (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
           dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
           dispatch_timeout_ms, dispatch_deadline_at, started_at, outcome_unknown_at,
-          dispatch_error_class)
+          dispatch_error_class, dispatch_boundary_committed_at)
        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed',
           'outcome_unknown', '{}'::jsonb, 1, now(), $5::uuid, now(), 60000,
-          now() + interval '60 seconds', now(), now(), 'provider_timeout')
+          now() + interval '60 seconds', now(), now(), 'provider_timeout', now())
        RETURNING id`,
       [randomUUID(), ORG_ID, randomUUID(), randomUUID(), randomUUID()],
     );
@@ -185,6 +200,104 @@ describe('T14 — migration 0029 with legacy rows', () => {
         [randomUUID(), ORG_ID, randomUUID(), randomUUID()],
       ),
     ).rejects.toThrow(/runs_dispatch_v1_state_check|check constraint/);
+
+    // outcome_unknown WITHOUT a committed boundary → rejected: a boundary-null
+    // stale claim is the KNOWN failure dispatch_never_started, never unknown.
+    await expect(
+      admin.query(
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+            dispatch_timeout_ms, dispatch_deadline_at, started_at, outcome_unknown_at,
+            dispatch_error_class)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed',
+            'outcome_unknown', '{}'::jsonb, 1, now(), $5::uuid, now(), 60000,
+            now() + interval '60 seconds', now(), now(), 'stale_dispatch_claim')`,
+        [randomUUID(), ORG_ID, randomUUID(), randomUUID(), randomUUID()],
+      ),
+    ).rejects.toThrow(/runs_dispatch_v1_state_check/);
+  });
+
+  it('boundary-aware matrix: completed requires a boundary; a boundary implies the claim quadruple; legacy rows never carry one', async () => {
+    // v1 completed WITHOUT a boundary → invalid (a 2xx implies the gate).
+    await expect(
+      admin.query(
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+            dispatch_timeout_ms, dispatch_deadline_at, started_at, completed_at)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'completed',
+            '{}'::jsonb, 1, now(), $5::uuid, now(), 60000, now() + interval '60 seconds', now(), now())`,
+        [randomUUID(), ORG_ID, randomUUID(), randomUUID(), randomUUID()],
+      ),
+    ).rejects.toThrow(/runs_dispatch_v1_state_check/);
+
+    // A boundary on a queued row (no token) → invalid (boundary ⇒ claim).
+    await expect(
+      admin.query(
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            dispatch_protocol_version, dispatch_prepared_at, dispatch_boundary_committed_at)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'queued',
+            '{}'::jsonb, 1, now(), now())`,
+        [randomUUID(), ORG_ID, randomUUID(), randomUUID()],
+      ),
+    ).rejects.toThrow(/runs_dispatch_v1_state_check/);
+
+    // A boundary on a LEGACY row (protocol NULL) → invalid.
+    await expect(
+      admin.query(
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            dispatch_boundary_committed_at)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'queued',
+            '{}'::jsonb, now())`,
+        [randomUUID(), ORG_ID, randomUUID(), randomUUID()],
+      ),
+    ).rejects.toThrow(/runs_dispatch_v1_state_check/);
+
+    // v1 running with a committed boundary (gate crossed, outcome pending) → VALID.
+    const running = await admin.query(
+      `INSERT INTO govai.runs
+         (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+          dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+          dispatch_timeout_ms, dispatch_deadline_at, started_at, dispatch_boundary_committed_at)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'running',
+          '{}'::jsonb, 1, now(), $5::uuid, now(), 60000, now() + interval '60 seconds', now(), now())
+       RETURNING id`,
+      [randomUUID(), ORG_ID, randomUUID(), randomUUID(), randomUUID()],
+    );
+    expect(running.rowCount).toBe(1);
+
+    // v1 failed post-claim with a boundary (known post-boundary failure) → VALID.
+    const failedPost = await admin.query(
+      `INSERT INTO govai.runs
+         (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+          dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+          dispatch_timeout_ms, dispatch_deadline_at, started_at, completed_at,
+          dispatch_error_class, dispatch_boundary_committed_at)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'failed',
+          '{}'::jsonb, 1, now(), $5::uuid, now(), 60000, now() + interval '60 seconds', now(), now(),
+          'dispatch_pre_forward_failed', now())
+       RETURNING id`,
+      [randomUUID(), ORG_ID, randomUUID(), randomUUID(), randomUUID()],
+    );
+    expect(failedPost.rowCount).toBe(1);
+
+    // v1 failed post-claim WITHOUT a boundary (dispatch_never_started /
+    // dispatch_boundary_persist_failed) → VALID too.
+    const failedNoBoundary = await admin.query(
+      `INSERT INTO govai.runs
+         (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+          dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+          dispatch_timeout_ms, dispatch_deadline_at, started_at, completed_at, dispatch_error_class)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'failed',
+          '{}'::jsonb, 1, now(), $5::uuid, now(), 60000, now() + interval '60 seconds', now(), now(),
+          'dispatch_never_started')
+       RETURNING id`,
+      [randomUUID(), ORG_ID, randomUUID(), randomUUID(), randomUUID()],
+    );
+    expect(failedNoBoundary.rowCount).toBe(1);
   });
 
   it('rejects the adjudicated-invalid v1 combinations', async () => {
@@ -309,5 +422,271 @@ describe('T14 — migration 0029 with legacy rows', () => {
     const grantees = grants.rows.map((g) => g.grantee);
     expect(grantees).toContain('govai_app');
     expect(grantees).not.toContain('PUBLIC');
+  });
+
+  // ===========================================================================
+  // M5 — boundary-aware rerun with valid boundary-aware v1 rows present:
+  // idempotent success, no duplicate artifacts, no row mutation.
+  // ===========================================================================
+  it('M5 — rerun over valid boundary-aware rows is idempotent and mutates nothing', async () => {
+    const before = await admin.query<{ snapshot: string }>(
+      `SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id)::text AS snapshot FROM govai.runs r`,
+    );
+    await admin.query(sql0029);
+    const after = await admin.query<{ snapshot: string }>(
+      `SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id)::text AS snapshot FROM govai.runs r`,
+    );
+    expect(after.rows[0]!.snapshot).toBe(before.rows[0]!.snapshot);
+    const cons = await admin.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM pg_constraint
+        WHERE conrelid = 'govai.runs'::regclass AND conname = 'runs_dispatch_v1_state_check'`,
+    );
+    expect(Number(cons.rows[0]!.n)).toBe(1); // no duplicate constraint artifacts
+  });
+
+  // ===========================================================================
+  // M6 — boundary-aware schema whose ROWS are incompatible with the final
+  // matrix (constructible only by dropping the constraint — operator
+  // simulation): the compatibility audit fails with a COUNT ONLY, before the
+  // constraint is re-added, and the constraint is never falsely reported
+  // valid. No semantic mutation on the failure path.
+  // ===========================================================================
+  it('M6 — invalid boundary-aware rows: count-only audit failure, no mutation, constraint not falsely valid', async () => {
+    await admin.query(
+      `ALTER TABLE govai.runs DROP CONSTRAINT runs_dispatch_v1_state_check`,
+    );
+    const badId = randomUUID();
+    // completed v1 WITHOUT a boundary — invalid under the final matrix.
+    await admin.query(
+      `INSERT INTO govai.runs
+         (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+          dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+          dispatch_timeout_ms, dispatch_deadline_at, started_at, completed_at)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'completed',
+          '{}'::jsonb, 1, now(), $5::uuid, now(), 60000, now() + interval '60 seconds', now(), now())`,
+      [badId, ORG_ID, randomUUID(), randomUUID(), randomUUID()],
+    );
+    const before = await admin.query(`SELECT to_jsonb(r) AS row FROM govai.runs r WHERE id = $1::uuid`, [badId]);
+
+    const err = await admin.query(sql0029).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).not.toBeNull();
+    expect(err!.message).toMatch(/incompatible with the boundary-aware v1 state matrix/);
+    expect(err!.message).toMatch(/1 run row/);
+    expect(err!.message).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/); // no ids leaked
+
+    // No mutation; the constraint was NOT re-added (never falsely valid) —
+    // the whole file runs as one implicit transaction, and the audit fires
+    // before the ADD CONSTRAINT statement regardless.
+    const after = await admin.query(`SELECT to_jsonb(r) AS row FROM govai.runs r WHERE id = $1::uuid`, [badId]);
+    expect(JSON.stringify(after.rows[0])).toBe(JSON.stringify(before.rows[0]));
+    const cons = await admin.query(
+      `SELECT convalidated FROM pg_constraint
+        WHERE conrelid = 'govai.runs'::regclass AND conname = 'runs_dispatch_v1_state_check'`,
+    );
+    expect(cons.rowCount).toBe(0);
+
+    // Operator resolves (deletes the impossible row) → the migration heals and
+    // the constraint returns fully validated.
+    await admin.query(`DELETE FROM govai.runs WHERE id = $1::uuid`, [badId]);
+    await admin.query(sql0029);
+    const healed = await admin.query<{ convalidated: boolean }>(
+      `SELECT convalidated FROM pg_constraint
+        WHERE conrelid = 'govai.runs'::regclass AND conname = 'runs_dispatch_v1_state_check'`,
+    );
+    expect(healed.rowCount).toBe(1);
+    expect(healed.rows[0]!.convalidated).toBe(true);
+  });
+
+  // ===========================================================================
+  // M7 — the migration text performs no automatic database destruction: the
+  // static guarantee backing the dynamic byte-stability proofs above/below.
+  // ===========================================================================
+  it('M7 — no automatic DROP DATABASE / DROP SCHEMA / TRUNCATE / protocol-row DELETE in 0029', () => {
+    const sql = sql0029.toUpperCase();
+    expect(sql).not.toContain('DROP DATABASE');
+    expect(sql).not.toContain('DROP SCHEMA');
+    expect(sql).not.toContain('TRUNCATE');
+    expect(sql).not.toMatch(/DELETE\s+FROM\s+GOVAI\.(RUNS|PROVIDER_INVOCATIONS|AUDIT_EVENTS|WORKROOM_TURNS)/);
+  });
+});
+
+// =============================================================================
+// M2/M3/M4 — pre-boundary → boundary-aware upgrade simulation on a DEDICATED
+// container. The pre-boundary state is constructed deterministically per the
+// permitted strategy: apply the revised migration, then remove ONLY the
+// boundary-specific column + constraint and re-install the PRE-BOUNDARY
+// constraint (embedded verbatim below), preserving every other 0029 artifact.
+// =============================================================================
+
+const PRE_BOUNDARY_V1_CONSTRAINT = `
+ALTER TABLE govai.runs
+  ADD CONSTRAINT runs_dispatch_v1_state_check
+  CHECK (
+    (dispatch_protocol_version IS NULL AND status <> 'outcome_unknown')
+    OR (
+      dispatch_prepared_at IS NOT NULL
+      AND (
+        (status = 'queued'
+          AND dispatch_token IS NULL AND dispatch_claimed_at IS NULL
+          AND dispatch_deadline_at IS NULL AND started_at IS NULL
+          AND completed_at IS NULL AND outcome_unknown_at IS NULL)
+        OR (status = 'running'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND dispatch_timeout_ms IS NOT NULL
+          AND started_at IS NOT NULL AND completed_at IS NULL
+          AND outcome_unknown_at IS NULL)
+        OR (status = 'completed'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL)
+        OR (status = 'outcome_unknown'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND outcome_unknown_at IS NOT NULL
+          AND completed_at IS NULL AND dispatch_error_class IS NOT NULL)
+        OR (status = 'failed'
+          AND dispatch_token IS NULL AND dispatch_claimed_at IS NULL
+          AND dispatch_deadline_at IS NULL AND completed_at IS NOT NULL
+          AND dispatch_error_class IS NOT NULL)
+        OR (status = 'failed'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL)
+        OR (status = 'denied'
+          AND dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
+          AND dispatch_deadline_at IS NOT NULL AND completed_at IS NOT NULL)
+      )
+    )
+  )`;
+
+describe('M2/M3/M4 — pre-boundary schema upgrade compatibility', () => {
+  let container2: StartedPostgreSqlContainer;
+  let admin2: Pool;
+  const ORG2 = randomUUID();
+
+  async function simulatePreBoundarySchema(): Promise<void> {
+    await admin2.query(`ALTER TABLE govai.runs DROP CONSTRAINT runs_dispatch_v1_state_check`);
+    await admin2.query(`ALTER TABLE govai.runs DROP COLUMN dispatch_boundary_committed_at`);
+    await admin2.query(PRE_BOUNDARY_V1_CONSTRAINT);
+  }
+
+  async function boundaryColumnExists(): Promise<boolean> {
+    const r = await admin2.query(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'govai' AND table_name = 'runs'
+          AND column_name = 'dispatch_boundary_committed_at'`,
+    );
+    return (r.rowCount ?? 0) === 1;
+  }
+
+  beforeAll(async () => {
+    container2 = await new PostgreSqlContainer('postgres:16-alpine')
+      .withDatabase('govai')
+      .withUsername('postgres')
+      .withPassword('postgres')
+      .start();
+    admin2 = new Pool({ connectionString: container2.getConnectionUri() });
+    admin2.on('error', () => undefined);
+    await applyMigrationsUpTo(admin2, '0029'); // fresh, fully boundary-aware
+    await admin2.query(`INSERT INTO govai.orgs (id, name) VALUES ($1::uuid, 'preboundary-org')`, [
+      ORG2,
+    ]);
+  }, 240_000);
+
+  afterAll(async () => {
+    await admin2?.end().catch(() => undefined);
+    await container2?.stop().catch(() => undefined);
+  });
+
+  it('M2 — pre-boundary schema with ZERO protocol-v1 rows upgrades in place', async () => {
+    await simulatePreBoundarySchema();
+    expect(await boundaryColumnExists()).toBe(false);
+
+    await admin2.query(sql0029); // the revised migration performs the upgrade
+
+    expect(await boundaryColumnExists()).toBe(true);
+    const con = await admin2.query<{ convalidated: boolean }>(
+      `SELECT convalidated FROM pg_constraint
+        WHERE conrelid = 'govai.runs'::regclass AND conname = 'runs_dispatch_v1_state_check'`,
+    );
+    expect(con.rowCount).toBe(1);
+    expect(con.rows[0]!.convalidated).toBe(true);
+    // The upgraded matrix is the boundary-aware one: unknown w/o boundary rejects.
+    await expect(
+      admin2.query(
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+            dispatch_timeout_ms, dispatch_deadline_at, started_at, outcome_unknown_at,
+            dispatch_error_class)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed',
+            'outcome_unknown', '{}'::jsonb, 1, now(), $5::uuid, now(), 60000,
+            now() + interval '60 seconds', now(), now(), 'stale_dispatch_claim')`,
+        [randomUUID(), ORG2, randomUUID(), randomUUID(), randomUUID()],
+      ),
+    ).rejects.toThrow(/runs_dispatch_v1_state_check/);
+  });
+
+  it('M3+M4 — pre-boundary schema WITH protocol-v1 rows fails LOUD before any schema mutation; rows byte-stable', async () => {
+    await simulatePreBoundarySchema();
+    expect(await boundaryColumnExists()).toBe(false);
+
+    // A pre-boundary v1 row, valid under the PREVIOUS schema (completed,
+    // claim quadruple, no boundary column at all).
+    const v1Id = randomUUID();
+    await admin2.query(
+      `INSERT INTO govai.runs
+         (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+          dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+          dispatch_timeout_ms, dispatch_deadline_at, started_at, completed_at)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed', 'completed',
+          '{}'::jsonb, 1, now(), $5::uuid, now(), 60000, now() + interval '60 seconds', now(), now())`,
+      [v1Id, ORG2, randomUUID(), randomUUID(), randomUUID()],
+    );
+    const before = await admin2.query(
+      `SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id)::text AS snapshot FROM govai.runs r`,
+    );
+    const eventsBefore = await admin2.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.audit_events`,
+    );
+    const invBefore = await admin2.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.provider_invocations`,
+    );
+
+    // M3 — the boundary upgrade is BLOCKED, loudly, count-only.
+    const err = await admin2.query(sql0029).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err).not.toBeNull();
+    expect(err!.message).toMatch(/migration 0029 boundary upgrade blocked: 1 protocol-v1 run/);
+    expect(err!.message).toMatch(/No backfill, deletion or status mutation was performed/);
+    expect(err!.message).toMatch(/explicitly disposable/);
+    expect(err!.message).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/); // no ids
+
+    // The failure happened BEFORE any boundary schema mutation.
+    expect(await boundaryColumnExists()).toBe(false);
+
+    // M4 — byte stability: rows, statuses, timestamps, events, invocations.
+    const after = await admin2.query(
+      `SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id)::text AS snapshot FROM govai.runs r`,
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    const eventsAfter = await admin2.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.audit_events`,
+    );
+    const invAfter = await admin2.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.provider_invocations`,
+    );
+    expect(eventsAfter.rows[0]!.n).toBe(eventsBefore.rows[0]!.n);
+    expect(invAfter.rows[0]!.n).toBe(invBefore.rows[0]!.n);
+
+    // A second attempt fails identically (no creeping mutation between runs).
+    const err2 = await admin2.query(sql0029).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(err2!.message).toMatch(/boundary upgrade blocked: 1 protocol-v1 run/);
+    expect(await boundaryColumnExists()).toBe(false);
   });
 });
