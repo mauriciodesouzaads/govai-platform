@@ -555,6 +555,42 @@ describe('CW5 — deadline expiry defeats the boundary CAS on database time', ()
     expect(rows[0]!.dispatch_boundary_committed_at).toBeNull();
   });
 
+  it('the boundary gate reads the CURRENT database clock, not the transaction-start snapshot', async () => {
+    // Codex P2 on 52702cd: now() freezes at BEGIN, so a delay inside the
+    // boundary transaction would let a tx-start-clock predicate pass a
+    // deadline that has ALREADY expired in real time. The semantic pair below
+    // pins the exact predicate the production CAS uses: after a DB-side
+    // pg_sleep past the deadline, the clock_timestamp() predicate refuses
+    // while the now() predicate (the defect) would still have committed.
+    const org = await seedOrg(stack);
+    const { runId, token } = await seedClaimedRun(org, { deadlineInMs: 400 });
+    const c = await stack.db.appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query("SELECT set_config('app.org_id', $1, true)", [org.org_id]);
+      await c.query('SELECT pg_sleep(0.8)'); // real time passes the deadline; now() stays at BEGIN
+      const casClock = await c.query(
+        `UPDATE govai.runs SET dispatch_boundary_committed_at = clock_timestamp()
+          WHERE id = $1::uuid AND dispatch_token = $2::uuid AND status = 'running'
+            AND dispatch_boundary_committed_at IS NULL
+            AND dispatch_deadline_at > clock_timestamp()`,
+        [runId, token],
+      );
+      expect(casClock.rowCount).toBe(0); // the production predicate refuses
+      const casTxNow = await c.query(
+        `UPDATE govai.runs SET dispatch_boundary_committed_at = now()
+          WHERE id = $1::uuid AND dispatch_token = $2::uuid AND status = 'running'
+            AND dispatch_boundary_committed_at IS NULL
+            AND dispatch_deadline_at > now()`,
+        [runId, token],
+      );
+      expect(casTxNow.rowCount).toBe(1); // the tx-start snapshot would have let it through
+      await c.query('ROLLBACK');
+    } finally {
+      c.release();
+    }
+  });
+
   it('a second boundary commit NEVER re-authorizes a forward (closed already-committed result)', async () => {
     const org = await seedOrg(stack);
     const { token, ctx } = await seedClaimedRun(org);

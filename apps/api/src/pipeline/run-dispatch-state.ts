@@ -474,14 +474,19 @@ export async function commitDispatchBoundary(
   input: { token: string },
 ): Promise<BoundaryCommitResult> {
   return withTenantTx(pool, ctx.orgId, async (client) => {
+    // clock_timestamp(), NOT now() (Codex P2 on 52702cd): now() is frozen at
+    // transaction start, so a delay between BEGIN and this UPDATE would let
+    // the FINAL pre-forward gate pass against a stale clock and record an
+    // artificially early boundary in the cryptographically bound evidence.
+    // The gate must read the CURRENT database clock at the statement.
     const r = await client.query<{ dispatch_boundary_committed_at: Date }>(
       `UPDATE govai.runs
-          SET dispatch_boundary_committed_at = now()
+          SET dispatch_boundary_committed_at = clock_timestamp()
         WHERE id = $1::uuid
           AND dispatch_token = $2::uuid
           AND status = 'running'
           AND dispatch_boundary_committed_at IS NULL
-          AND dispatch_deadline_at > now()
+          AND dispatch_deadline_at > clock_timestamp()
         RETURNING dispatch_boundary_committed_at`,
       [ctx.runId, input.token],
     );
@@ -499,7 +504,7 @@ export async function commitDispatchBoundary(
       deadline_live: boolean | null;
     }>(
       `SELECT status, dispatch_token, dispatch_boundary_committed_at,
-              (dispatch_deadline_at > now()) AS deadline_live
+              (dispatch_deadline_at > clock_timestamp()) AS deadline_live
          FROM govai.runs WHERE id = $1::uuid`,
       [ctx.runId],
     );
