@@ -83,7 +83,7 @@ async function seedStaleQueued(
 
 async function seedStaleRunning(
   org: SeededOrg,
-  opts: { deadlineAgoMs?: number } = {},
+  opts: { deadlineAgoMs?: number; boundaryCommitted?: boolean } = {},
 ): Promise<{ runId: string; token: string }> {
   const runId = randomUUID();
   const token = randomUUID();
@@ -96,7 +96,7 @@ async function seedStaleRunning(
       `INSERT INTO govai.runs
          (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
           dispatch_protocol_version, dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
-          dispatch_timeout_ms, dispatch_deadline_at, started_at)
+          dispatch_timeout_ms, dispatch_deadline_at, started_at, dispatch_boundary_committed_at)
        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'claude-fixture-1',
           'governed', 'running', '{}'::jsonb, 1,
           now() - make_interval(secs => ($5::integer + 60000) / 1000.0),
@@ -104,14 +104,31 @@ async function seedStaleRunning(
           now() - make_interval(secs => ($5::integer + 30000) / 1000.0),
           60000,
           now() - make_interval(secs => $5::integer / 1000.0),
-          now() - make_interval(secs => ($5::integer + 30000) / 1000.0))`,
-      [runId, org.org_id, org.workspace_id, org.user_id, ago, token],
+          now() - make_interval(secs => ($5::integer + 30000) / 1000.0),
+          CASE WHEN $7::boolean
+               THEN now() - make_interval(secs => ($5::integer + 29000) / 1000.0)
+               ELSE NULL END)`,
+      [runId, org.org_id, org.workspace_id, org.user_id, ago, token, opts.boundaryCommitted === true],
     );
     await c.query('COMMIT');
   } finally {
     c.release();
   }
   return { runId, token };
+}
+
+async function eventMetadata(
+  orgId: string,
+  runId: string,
+  eventType: string,
+): Promise<Record<string, unknown> | null> {
+  const rows = await queryAsOrg<{ redaction_metadata: Record<string, unknown> | null }>(
+    orgId,
+    `SELECT redaction_metadata FROM govai.audit_events
+      WHERE subject_id = $1::uuid AND event_type = $2 ORDER BY sequence_number DESC LIMIT 1`,
+    [runId, eventType],
+  );
+  return rows[0]?.redaction_metadata ?? null;
 }
 
 function sweepDeps() {
@@ -178,10 +195,67 @@ describe('T7 — stale queued recovery', () => {
   });
 });
 
-describe('T8 — stale running recovery', () => {
-  it('running past deadline+grace → outcome_unknown stale_dispatch_claim; NO redispatch', async () => {
+describe('T8 — stale running recovery (boundary-branched, REV4 §18)', () => {
+  // CONTRACT CHANGE (REV4): pre-boundary, EVERY stale running claim went to
+  // outcome_unknown ("nothing provable"). The durable boundary makes the
+  // boundary-null case PROVABLE: the mandatory gate never committed, so the
+  // provider was structurally never called → KNOWN failed
+  // dispatch_never_started (CW1). Only a boundary-committed stale claim stays
+  // an honest unknown (CW2). Independent property test: CW crash-window suite.
+  it('§18.1 boundary ABSENT: running past deadline+grace → KNOWN failed dispatch_never_started; zero provider calls; NO unknown event', async () => {
     const org = await seedOrg(stack);
-    const { runId, token } = await seedStaleRunning(org);
+    const { runId, token } = await seedStaleRunning(org); // no boundary
+    stack.provider.clearRecordedRequestHeaders();
+
+    const r = await runDispatchRecoverySweepOnce(sweepDeps());
+    expect(r.runningNeverStarted).toBeGreaterThanOrEqual(1);
+
+    const rows = await queryAsOrg<{
+      status: string;
+      dispatch_error_class: string | null;
+      outcome_unknown_at: Date | null;
+      completed_at: Date | null;
+      dispatch_token: string | null;
+      dispatch_boundary_committed_at: Date | null;
+    }>(
+      org.org_id,
+      `SELECT status, dispatch_error_class, outcome_unknown_at, completed_at, dispatch_token,
+              dispatch_boundary_committed_at
+         FROM govai.runs WHERE id = $1::uuid`,
+      [runId],
+    );
+    expect(rows[0]!.status).toBe('failed');
+    expect(rows[0]!.dispatch_error_class).toBe('dispatch_never_started');
+    expect(rows[0]!.completed_at).not.toBeNull();
+    expect(rows[0]!.outcome_unknown_at).toBeNull();
+    expect(rows[0]!.dispatch_token).toBe(token); // the claim token is preserved
+    expect(rows[0]!.dispatch_boundary_committed_at).toBeNull(); // never invented
+
+    const types = await auditEventTypes(org.org_id, runId);
+    expect(types.filter((t) => t === 'run.failed')).toHaveLength(1);
+    expect(types).not.toContain('run.outcome_unknown');
+    const meta = await eventMetadata(org.org_id, runId, 'run.failed');
+    expect(meta?.['error_class']).toBe('dispatch_never_started');
+    expect(meta?.['provider_call_count']).toBe(0);
+    expect(meta?.['recovered_by']).toBe('run_dispatch_recovery');
+
+    // Recovery NEVER calls a provider; no invocation row was invented.
+    expect(
+      stack.provider.recordedRequestHeaders.filter(
+        (h) => h['x-test-workspace-id'] === org.workspace_id,
+      ),
+    ).toHaveLength(0);
+    const inv = await queryAsOrg<{ id: string }>(
+      org.org_id,
+      'SELECT id FROM govai.provider_invocations WHERE run_id = $1::uuid',
+      [runId],
+    );
+    expect(inv).toHaveLength(0);
+  });
+
+  it('§18.2 boundary PRESENT: running past deadline+grace → outcome_unknown stale_dispatch_claim, forward_observation=not_observed; NO redispatch', async () => {
+    const org = await seedOrg(stack);
+    const { runId, token } = await seedStaleRunning(org, { boundaryCommitted: true });
     stack.provider.clearRecordedRequestHeaders();
 
     const r = await runDispatchRecoverySweepOnce(sweepDeps());
@@ -193,9 +267,11 @@ describe('T8 — stale running recovery', () => {
       outcome_unknown_at: Date | null;
       completed_at: Date | null;
       dispatch_token: string | null;
+      dispatch_boundary_committed_at: Date | null;
     }>(
       org.org_id,
-      `SELECT status, dispatch_error_class, outcome_unknown_at, completed_at, dispatch_token
+      `SELECT status, dispatch_error_class, outcome_unknown_at, completed_at, dispatch_token,
+              dispatch_boundary_committed_at
          FROM govai.runs WHERE id = $1::uuid`,
       [runId],
     );
@@ -204,10 +280,18 @@ describe('T8 — stale running recovery', () => {
     expect(rows[0]!.outcome_unknown_at).not.toBeNull();
     expect(rows[0]!.completed_at).toBeNull();
     expect(rows[0]!.dispatch_token).toBe(token); // the claim token is preserved
+    expect(rows[0]!.dispatch_boundary_committed_at).not.toBeNull();
 
     const types = await auditEventTypes(org.org_id, runId);
     expect(types.filter((t) => t === 'run.outcome_unknown')).toHaveLength(1);
     expect(types).not.toContain('run.failed');
+    // §14/§15 — the unknown evidence records the honest observation semantics
+    // and is bound to the durable boundary commit it derives from.
+    const meta = await eventMetadata(org.org_id, runId, 'run.outcome_unknown');
+    expect(meta?.['forward_observation']).toBe('not_observed');
+    expect(meta?.['dispatch_boundary_committed_at']).toBe(
+      rows[0]!.dispatch_boundary_committed_at!.toISOString(),
+    );
 
     // Recovery NEVER calls a provider.
     expect(
@@ -231,11 +315,12 @@ describe('T8 — stale running recovery', () => {
   });
 });
 
-describe('T16 — recovery idempotency', () => {
+describe('T16 — recovery idempotency (CW8: both stale-running branches)', () => {
   it('repeated sweeps: single transition, single lifecycle event, zero provider calls', async () => {
     const org = await seedOrg(stack);
     const queuedId = await seedStaleQueued(org);
-    const { runId: runningId } = await seedStaleRunning(org);
+    const { runId: neverStartedId } = await seedStaleRunning(org); // boundary absent
+    const { runId: unknownId } = await seedStaleRunning(org, { boundaryCommitted: true });
     stack.provider.clearRecordedRequestHeaders();
 
     await runDispatchRecoverySweepOnce(sweepDeps());
@@ -244,11 +329,18 @@ describe('T16 — recovery idempotency', () => {
     // After convergence nothing else transitions.
     expect(third.queuedFailed).toBe(0);
     expect(third.runningUnknown).toBe(0);
+    expect(third.runningNeverStarted).toBe(0);
 
     const queuedTypes = await auditEventTypes(org.org_id, queuedId);
     expect(queuedTypes.filter((t) => t === 'run.failed')).toHaveLength(1);
-    const runningTypes = await auditEventTypes(org.org_id, runningId);
-    expect(runningTypes.filter((t) => t === 'run.outcome_unknown')).toHaveLength(1);
+    // §18.1 branch: exactly one run.failed, never an unknown event.
+    const neverStartedTypes = await auditEventTypes(org.org_id, neverStartedId);
+    expect(neverStartedTypes.filter((t) => t === 'run.failed')).toHaveLength(1);
+    expect(neverStartedTypes).not.toContain('run.outcome_unknown');
+    // §18.2 branch: exactly one run.outcome_unknown, never a terminal event.
+    const unknownTypes = await auditEventTypes(org.org_id, unknownId);
+    expect(unknownTypes.filter((t) => t === 'run.outcome_unknown')).toHaveLength(1);
+    expect(unknownTypes).not.toContain('run.failed');
 
     expect(
       stack.provider.recordedRequestHeaders.filter(

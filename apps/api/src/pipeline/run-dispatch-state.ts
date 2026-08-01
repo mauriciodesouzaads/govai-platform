@@ -22,6 +22,7 @@ import {
   RunOutcomeUnknownSchema,
   RunOutcomeReconciledSchema,
   type DispatchErrorClass,
+  type ForwardObservation,
   type PassthroughInvoked,
   type RunDispatchPrepared,
 } from '@govai/core-events';
@@ -66,6 +67,24 @@ export class DispatchTokenMismatchError extends Error {
   constructor(runId: string) {
     super(`dispatch token does not own run ${runId}`);
     this.name = 'DispatchTokenMismatchError';
+  }
+}
+
+/**
+ * The durable local dispatch gate could not be established (§12/§17): either
+ * the boundary CAS matched zero rows (closed reason) or the boundary
+ * transaction itself failed (`commit_error` + the error NAME only — never raw
+ * PostgreSQL/KMS text). Thrown by the orchestrator's `beforeDispatch` callback
+ * so the provider forward is structurally impossible past a failed gate.
+ */
+export class DispatchBoundaryGateError extends Error {
+  constructor(
+    public readonly runId: string,
+    public readonly reason: BoundaryCommitFailureReason | 'commit_error',
+    public readonly causeName?: string,
+  ) {
+    super(`dispatch boundary gate not established for run ${runId} (${reason})`);
+    this.name = 'DispatchBoundaryGateError';
   }
 }
 
@@ -428,6 +447,122 @@ export async function claimDispatch(
 }
 
 // =============================================================================
+// Durable dispatch boundary (REV4 §11) — the final mandatory local gate.
+//
+// The boundary CAS commits `dispatch_boundary_committed_at` on DATABASE time
+// for exactly one (run, token) pair, only while the claim is live. Its exact
+// meaning: the protocol durably crossed the final mandatory local gate after
+// which a provider invocation could begin. It proves NOTHING about fetch,
+// the network, or the provider. A zero-row CAS is a CLOSED result — the
+// caller must never forward past it (fail closed, §2.3).
+// =============================================================================
+
+export type BoundaryCommitFailureReason =
+  | 'wrong_token'
+  | 'not_running'
+  | 'deadline_expired'
+  | 'boundary_already_committed'
+  | 'run_missing';
+
+export type BoundaryCommitResult =
+  | { committed: true; committedAt: Date }
+  | { committed: false; reason: BoundaryCommitFailureReason };
+
+export async function commitDispatchBoundary(
+  pool: Pool,
+  ctx: { orgId: string; runId: string },
+  input: { token: string },
+): Promise<BoundaryCommitResult> {
+  return withTenantTx(pool, ctx.orgId, async (client) => {
+    const r = await client.query<{ dispatch_boundary_committed_at: Date }>(
+      `UPDATE govai.runs
+          SET dispatch_boundary_committed_at = now()
+        WHERE id = $1::uuid
+          AND dispatch_token = $2::uuid
+          AND status = 'running'
+          AND dispatch_boundary_committed_at IS NULL
+          AND dispatch_deadline_at > now()
+        RETURNING dispatch_boundary_committed_at`,
+      [ctx.runId, input.token],
+    );
+    if (r.rowCount === 1) {
+      return { committed: true, committedAt: r.rows[0]!.dispatch_boundary_committed_at };
+    }
+    // Closed diagnosis of the zero-row CAS. Read-only; regardless of the
+    // reason the caller's contract is identical: PROVIDER_FORWARD=NO. A
+    // second call NEVER re-authorizes a forward (boundary_already_committed
+    // is a failure, not a reusable success).
+    const state = await client.query<{
+      status: string;
+      dispatch_token: string | null;
+      dispatch_boundary_committed_at: Date | null;
+      deadline_live: boolean | null;
+    }>(
+      `SELECT status, dispatch_token, dispatch_boundary_committed_at,
+              (dispatch_deadline_at > now()) AS deadline_live
+         FROM govai.runs WHERE id = $1::uuid`,
+      [ctx.runId],
+    );
+    const row = state.rows[0];
+    if (!row) return { committed: false, reason: 'run_missing' };
+    if (row.dispatch_token !== input.token) return { committed: false, reason: 'wrong_token' };
+    if (row.dispatch_boundary_committed_at !== null) {
+      return { committed: false, reason: 'boundary_already_committed' };
+    }
+    if (row.status !== 'running') return { committed: false, reason: 'not_running' };
+    return { committed: false, reason: 'deadline_expired' };
+  });
+}
+
+/**
+ * §17 — the boundary gate failed (zero-row CAS or boundary-transaction error):
+ * persist the KNOWN failure `dispatch_boundary_persist_failed`. The CAS below
+ * requires the boundary to still be NULL under the caller's token, so a race
+ * with recovery (or a late boundary success in another process — impossible
+ * for one request, defensive anyway) makes this a clean no-transition; the
+ * caller then answers from the durable state instead. Provider call count is
+ * zero by construction.
+ */
+export async function failBoundaryNotEstablished(
+  pool: Pool,
+  kms: Kms,
+  ctx: RunDispatchContext,
+  input: { token: string },
+): Promise<{ transitioned: boolean; status: string | null; auditEventId: string | null }> {
+  return withTenantTx(pool, ctx.orgId, async (client) => {
+    const r = await client.query(
+      `UPDATE govai.runs
+          SET status = 'failed', completed_at = now(),
+              dispatch_error_class = 'dispatch_boundary_persist_failed'
+        WHERE id = $1::uuid
+          AND dispatch_token = $2::uuid
+          AND status = 'running'
+          AND dispatch_boundary_committed_at IS NULL`,
+      [ctx.runId, input.token],
+    );
+    if (r.rowCount !== 1) {
+      const state = await client.query<{ status: string }>(
+        'SELECT status FROM govai.runs WHERE id = $1::uuid',
+        [ctx.runId],
+      );
+      return { transitioned: false, status: state.rows[0]?.status ?? null, auditEventId: null };
+    }
+    const auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
+      eventType: 'run.failed',
+      payloadHash: sha256(Buffer.from(`dispatch_boundary_persist_failed:${ctx.runId}`)),
+      redactionMetadata: {
+        actor_user_id: ctx.actorUserId,
+        run_mode: ctx.mode,
+        error_class: 'dispatch_boundary_persist_failed',
+        provider_call_count: 0,
+      },
+    });
+    await maybeEnsureTurn(client, ctx, auditEventId);
+    return { transitioned: true, status: 'failed', auditEventId };
+  });
+}
+
+// =============================================================================
 // Pre-claim known failure (§16) — queued → failed, provider provably not called
 // =============================================================================
 
@@ -475,7 +610,10 @@ export async function markOutcomeUnknown(
   input: {
     token: string;
     errorClass: Extract<DispatchErrorClass, 'provider_timeout' | 'provider_io_unknown'>;
-    forwardStarted: boolean;
+    /** Closed process observation (§14): the live executor passes
+     *  'observed_local_forward_invocation' only when its in-memory marker ran
+     *  immediately before `fetch`. Never a provider-side claim. */
+    forwardObservation: ForwardObservation;
     /** Present when the process knows it invoked the forwarder (§22). */
     invocation?: { nativeEndpoint: string; nativeRequestHash: Buffer } | null;
   },
@@ -486,7 +624,14 @@ export async function markOutcomeUnknown(
   invocationId: string | null;
 }> {
   return withTenantTx(pool, ctx.orgId, async (client) => {
-    const r = await client.query<{ outcome_unknown_at: Date }>(
+    // The boundary guard makes the state matrix's outcome_unknown arm hold by
+    // construction: an unknown is only reachable PAST the durable gate. A
+    // boundary-null row (unreachable live — the gate precedes the fetch)
+    // falls through to the honest no-transition read below.
+    const r = await client.query<{
+      outcome_unknown_at: Date;
+      dispatch_boundary_committed_at: Date;
+    }>(
       `UPDATE govai.runs
           SET status = 'outcome_unknown',
               outcome_unknown_at = now(),
@@ -494,11 +639,14 @@ export async function markOutcomeUnknown(
         WHERE id = $1::uuid
           AND dispatch_token = $2::uuid
           AND status = 'running'
-        RETURNING outcome_unknown_at`,
+          AND dispatch_boundary_committed_at IS NOT NULL
+        RETURNING outcome_unknown_at, dispatch_boundary_committed_at`,
       [ctx.runId, input.token, input.errorClass],
     );
     const ensureInvocation = async (): Promise<string | null> => {
-      if (!input.invocation || !input.forwardStarted) return null;
+      if (!input.invocation || input.forwardObservation !== 'observed_local_forward_invocation') {
+        return null;
+      }
       const inv = await insertOrReuseInvocation(client, ctx, {
         nativeEndpoint: input.invocation.nativeEndpoint,
         nativeRequestHash: input.invocation.nativeRequestHash,
@@ -535,7 +683,9 @@ export async function markOutcomeUnknown(
       run_id: ctx.runId,
       dispatch_token: input.token,
       dispatch_error_class: input.errorClass,
-      forward_started: input.forwardStarted,
+      forward_observation: input.forwardObservation,
+      dispatch_boundary_committed_at:
+        r.rows[0]!.dispatch_boundary_committed_at.toISOString(),
       outcome_unknown_at: r.rows[0]!.outcome_unknown_at.toISOString(),
       occurred_at: r.rows[0]!.outcome_unknown_at.toISOString(),
       chain_category: 'run',
@@ -599,8 +749,9 @@ export async function finalizeKnownOutcome(
       status: string;
       dispatch_token: string | null;
       outcome_unknown_at: Date | null;
+      dispatch_boundary_committed_at: Date | null;
     }>(
-      `SELECT status, dispatch_token, outcome_unknown_at
+      `SELECT status, dispatch_token, outcome_unknown_at, dispatch_boundary_committed_at
          FROM govai.runs
         WHERE id = $1::uuid
         FOR UPDATE`,
@@ -792,7 +943,17 @@ export async function finalizeKnownOutcome(
       await appendLifecycleEvent(client, kms, ctx, reconciled);
     }
 
-    // 5. Terminal lifecycle event — mirrors the pre-F3 shapes.
+    // 5. Terminal lifecycle event — mirrors the pre-F3 shapes. §15: when the
+    // durable boundary was crossed, the terminal evidence is cryptographically
+    // bound to it — the boundary timestamp enters BOTH the payload hash and
+    // the safe metadata. Safe protocol metadata only; never a receipt claim.
+    const boundaryBinding =
+      row.dispatch_boundary_committed_at !== null
+        ? {
+            dispatch_boundary_committed_at:
+              row.dispatch_boundary_committed_at.toISOString(),
+          }
+        : {};
     let auditEventId: string;
     if (outcome.kind === 'http' && httpOk) {
       // Pre-F3 parity: the completed event carries the governed run's merged
@@ -814,6 +975,7 @@ export async function finalizeKnownOutcome(
               native_request_hash: outcome.nativeRequestHashHex,
               native_response_hash: outcome.nativeResponseHashHex,
               ...findingCount,
+              ...boundaryBinding,
             }),
           ),
         ),
@@ -830,12 +992,24 @@ export async function finalizeKnownOutcome(
           native_response_hash: outcome.nativeResponseHashHex,
           ...(outcome.providerRequestId ? { provider_request_id: outcome.providerRequestId } : {}),
           ...findingCount,
+          ...boundaryBinding,
         },
       });
     } else if (outcome.kind === 'http') {
       auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.failed',
-        payloadHash: sha256(Buffer.from(`${outcome.statusCode}:provider_error`)),
+        payloadHash: sha256(
+          Buffer.from(
+            JSON.stringify({
+              run_id: ctx.runId,
+              error_status: outcome.statusCode,
+              error_class: 'provider_error',
+              native_request_hash: outcome.nativeRequestHashHex,
+              native_response_hash: outcome.nativeResponseHashHex,
+              ...boundaryBinding,
+            }),
+          ),
+        ),
         redactionMetadata: {
           actor_user_id: ctx.actorUserId,
           run_mode: ctx.mode,
@@ -848,6 +1022,7 @@ export async function finalizeKnownOutcome(
           error_class: 'provider_error',
           native_request_hash: outcome.nativeRequestHashHex,
           native_response_hash: outcome.nativeResponseHashHex,
+          ...boundaryBinding,
         },
       });
     } else if (outcome.kind === 'blocked') {
@@ -865,7 +1040,16 @@ export async function finalizeKnownOutcome(
     } else {
       auditEventId = await appendTerminalRunEvent(client, kms, ctx, {
         eventType: 'run.failed',
-        payloadHash: sha256(Buffer.from(`dispatch_pre_forward_failed:${outcome.message}`)),
+        payloadHash: sha256(
+          Buffer.from(
+            JSON.stringify({
+              run_id: ctx.runId,
+              error_class: 'dispatch_pre_forward_failed',
+              error_message: outcome.message.slice(0, 200),
+              ...boundaryBinding,
+            }),
+          ),
+        ),
         redactionMetadata: {
           actor_user_id: ctx.actorUserId,
           run_mode: ctx.mode,
@@ -873,6 +1057,7 @@ export async function finalizeKnownOutcome(
           error_class: 'dispatch_pre_forward_failed',
           error_message: outcome.message.slice(0, 200),
           provider_call_count: 0,
+          ...boundaryBinding,
         },
       });
     }
@@ -902,6 +1087,7 @@ type RecoveredRunRow = {
   actor_user_id: string;
   mode: string;
   dispatch_token: string | null;
+  dispatch_boundary_committed_at: Date | null;
   workroom_id: string | null;
   created_by_participant_id: string | null;
 };
@@ -927,7 +1113,8 @@ export async function recoverQueuedStale(
 ): Promise<boolean> {
   return withTenantTx(pool, input.orgId, async (client) => {
     const r = await client.query<RecoveredRunRow>(
-      `SELECT actor_user_id, mode, dispatch_token, workroom_id, created_by_participant_id
+      `SELECT actor_user_id, mode, dispatch_token, dispatch_boundary_committed_at,
+              workroom_id, created_by_participant_id
          FROM govai.runs
         WHERE id = $1::uuid
           AND dispatch_protocol_version = 1
@@ -962,16 +1149,29 @@ export async function recoverQueuedStale(
   });
 }
 
-/** §25.3 — v1 running past deadline + grace: nothing about the provider call is
- *  provable → honest `outcome_unknown` with `stale_dispatch_claim`. */
+/** The two honest resolutions of a stale running claim (§18): the durable
+ *  boundary decides which one is provable. */
+export type RunningStaleRecovery = 'not_recovered' | 'failed_never_started' | 'outcome_unknown';
+
+/** §25.3/§18 — v1 running past deadline + grace. The branch is decided
+ *  ATOMICALLY under the same per-run lock and tenant context:
+ *    boundary ABSENT  → the mandatory durable gate was never committed, so
+ *                       provider invocation was structurally impossible →
+ *                       KNOWN failed `dispatch_never_started` (zero calls).
+ *    boundary PRESENT → the gate was crossed but recovery did not observe the
+ *                       original process — nothing past the gate is provable →
+ *                       honest `outcome_unknown` with `stale_dispatch_claim`,
+ *                       forward_observation='not_observed'.
+ *  Recovery still NEVER calls a provider and NEVER generates a token. */
 export async function recoverRunningStale(
   pool: Pool,
   kms: Kms,
   input: { orgId: string; runId: string; recoveryGraceMs: number },
-): Promise<boolean> {
+): Promise<RunningStaleRecovery> {
   return withTenantTx(pool, input.orgId, async (client) => {
     const r = await client.query<RecoveredRunRow>(
-      `SELECT actor_user_id, mode, dispatch_token, workroom_id, created_by_participant_id
+      `SELECT actor_user_id, mode, dispatch_token, dispatch_boundary_committed_at,
+              workroom_id, created_by_participant_id
          FROM govai.runs
         WHERE id = $1::uuid
           AND dispatch_protocol_version = 1
@@ -981,7 +1181,36 @@ export async function recoverRunningStale(
       [input.runId, input.recoveryGraceMs],
     );
     const run = r.rows[0];
-    if (!run || !run.dispatch_token) return false;
+    if (!run || !run.dispatch_token) return 'not_recovered';
+    const ctx = recoveryEventCtx(input.orgId, input.runId, run);
+
+    if (run.dispatch_boundary_committed_at === null) {
+      // §18.1 — boundary absent: a claim existed but the mandatory durable
+      // gate never committed; under the structural protocol the provider was
+      // provably not called. KNOWN failure, never an unknown, no invocation.
+      await client.query(
+        `UPDATE govai.runs
+            SET status = 'failed', completed_at = now(),
+                dispatch_error_class = 'dispatch_never_started'
+          WHERE id = $1::uuid`,
+        [input.runId],
+      );
+      const eventId = await appendTerminalRunEvent(client, kms, ctx, {
+        eventType: 'run.failed',
+        payloadHash: sha256(Buffer.from(`dispatch_never_started:${input.runId}`)),
+        redactionMetadata: {
+          actor_user_id: run.actor_user_id,
+          run_mode: run.mode,
+          error_class: 'dispatch_never_started',
+          provider_call_count: 0,
+          recovered_by: 'run_dispatch_recovery',
+        },
+      });
+      await maybeEnsureTurn(client, ctx, eventId);
+      return 'failed_never_started';
+    }
+
+    // §18.2 — boundary present: honest unknown, conservative by design.
     const upd = await client.query<{ outcome_unknown_at: Date }>(
       `UPDATE govai.runs
           SET status = 'outcome_unknown',
@@ -991,7 +1220,6 @@ export async function recoverRunningStale(
         RETURNING outcome_unknown_at`,
       [input.runId],
     );
-    const ctx = recoveryEventCtx(input.orgId, input.runId, run);
     const event = RunOutcomeUnknownSchema.parse({
       event_type: 'run.outcome_unknown',
       schema_version: 1,
@@ -999,13 +1227,14 @@ export async function recoverRunningStale(
       run_id: input.runId,
       dispatch_token: run.dispatch_token,
       dispatch_error_class: 'stale_dispatch_claim',
-      forward_started: false,
+      forward_observation: 'not_observed',
+      dispatch_boundary_committed_at: run.dispatch_boundary_committed_at.toISOString(),
       outcome_unknown_at: upd.rows[0]!.outcome_unknown_at.toISOString(),
       occurred_at: upd.rows[0]!.outcome_unknown_at.toISOString(),
       chain_category: 'run',
     });
     const eventId = await appendLifecycleEvent(client, kms, ctx, event);
     await maybeEnsureTurn(client, ctx, eventId);
-    return true;
+    return 'outcome_unknown';
   });
 }

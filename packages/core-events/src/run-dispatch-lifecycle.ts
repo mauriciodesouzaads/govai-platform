@@ -29,10 +29,21 @@ export const DispatchErrorClass = z.enum([
   'dispatch_preclaim_failed',
   // Recovery: a prepared run was never claimed — provider provably not called.
   'dispatch_never_claimed',
-  // Recovery: a claimed run exceeded its deadline + grace with no terminal state.
+  // Recovery: a claimed run whose durable dispatch boundary was never
+  // committed exceeded its deadline + grace. Under the structural protocol the
+  // boundary MUST commit before any provider I/O, so the provider was
+  // provably not called — a KNOWN failure, not an unknown.
+  'dispatch_never_started',
+  // Recovery: a claimed run that HAD committed its durable boundary exceeded
+  // its deadline + grace with no terminal state — nothing past the boundary
+  // is provable.
   'stale_dispatch_claim',
   // Known local error after claim but provably before the forward started.
   'dispatch_pre_forward_failed',
+  // The durable local dispatch gate could not be established (zero-row
+  // boundary CAS or a boundary-transaction failure); provider invocation was
+  // prohibited — a KNOWN failure with zero provider calls.
+  'dispatch_boundary_persist_failed',
   // The dispatch timeout (AbortSignal) fired after the forward started.
   'provider_timeout',
   // Any other transport-layer failure after the forward started (DNS, TLS,
@@ -81,6 +92,23 @@ export const RunDispatchClaimedSchema = z.object({
 });
 export type RunDispatchClaimed = z.infer<typeof RunDispatchClaimedSchema>;
 
+/**
+ * Closed process-observation semantics for `run.outcome_unknown` — a boolean
+ * cannot distinguish "observed no invocation" from "not observed because the
+ * original process crashed", so the observation is a semantic enum:
+ *
+ *   observed_local_forward_invocation — the local process reached the point at
+ *     which it invoked `fetch`. NOT provider receipt, NOT provider execution.
+ *   not_observed — the component producing the event (e.g. the recovery
+ *     worker) did not observe the original process invoke the local
+ *     forwarding boundary. It does NOT mean the provider was not called.
+ */
+export const ForwardObservation = z.enum([
+  'observed_local_forward_invocation',
+  'not_observed',
+]);
+export type ForwardObservation = z.infer<typeof ForwardObservation>;
+
 export const RunOutcomeUnknownSchema = z.object({
   event_type: z.literal('run.outcome_unknown'),
   schema_version: z.literal(1),
@@ -89,9 +117,13 @@ export const RunOutcomeUnknownSchema = z.object({
   run_id: z.string().uuid(),
   dispatch_token: z.string().uuid(),
   dispatch_error_class: DispatchErrorClass,
-  /** Whether the process knows the forward was started (onDispatchStart ran).
-   *  False for recovery-marked stale claims, where nothing is provable. */
-  forward_started: z.boolean(),
+  /** Process observation of the local forward invocation — see
+   *  ForwardObservation. Never a provider-side fact. */
+  forward_observation: ForwardObservation,
+  /** The durable local dispatch boundary commit (database time). Every
+   *  outcome_unknown is post-boundary by construction: a boundary-null stale
+   *  claim recovers to the KNOWN failure `dispatch_never_started` instead. */
+  dispatch_boundary_committed_at: z.string().datetime(),
   outcome_unknown_at: z.string().datetime(),
   occurred_at: z.string().datetime(),
 

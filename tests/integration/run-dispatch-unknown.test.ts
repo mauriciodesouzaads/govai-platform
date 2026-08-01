@@ -64,6 +64,20 @@ async function auditEventTypes(orgId: string, runId: string): Promise<string[]> 
   return rows.map((r) => r.event_type);
 }
 
+async function eventMetadata(
+  orgId: string,
+  runId: string,
+  eventType: string,
+): Promise<Record<string, unknown> | null> {
+  const rows = await queryAsOrg<{ redaction_metadata: Record<string, unknown> | null }>(
+    orgId,
+    `SELECT redaction_metadata FROM govai.audit_events
+      WHERE subject_id = $1::uuid AND event_type = $2 ORDER BY sequence_number DESC LIMIT 1`,
+    [runId, eventType],
+  );
+  return rows[0]?.redaction_metadata ?? null;
+}
+
 function governedBody(org: SeededOrg) {
   return {
     workspace_id: org.workspace_id,
@@ -105,16 +119,19 @@ describe('T9 — dispatch timeout → outcome_unknown (standalone /v1/runs)', ()
     expect(raw.statusCode).toBe(202);
     expect(raw.headers['location']).toBe(`/v1/runs/${(JSON.parse(raw.body) as { run_id: string }).run_id}`);
 
-    // Run row: honest unknown, never failed, never completed.
+    // Run row: honest unknown, never failed, never completed. REV4: the
+    // durable boundary was crossed before the fetch (production wiring).
     const rows = await queryAsOrg<{
       status: string;
       dispatch_error_class: string | null;
       outcome_unknown_at: Date | null;
       completed_at: Date | null;
       dispatch_token: string | null;
+      dispatch_boundary_committed_at: Date | null;
     }>(
       org.org_id,
-      `SELECT status, dispatch_error_class, outcome_unknown_at, completed_at, dispatch_token
+      `SELECT status, dispatch_error_class, outcome_unknown_at, completed_at, dispatch_token,
+              dispatch_boundary_committed_at
          FROM govai.runs WHERE id = $1::uuid`,
       [body.run_id],
     );
@@ -122,6 +139,7 @@ describe('T9 — dispatch timeout → outcome_unknown (standalone /v1/runs)', ()
     expect(rows[0]!.dispatch_error_class).toBe('provider_timeout');
     expect(rows[0]!.outcome_unknown_at).not.toBeNull();
     expect(rows[0]!.completed_at).toBeNull();
+    expect(rows[0]!.dispatch_boundary_committed_at).not.toBeNull();
 
     // Invocation trace (§22): token-bound, NO invented response hash.
     const inv = await queryAsOrg<{
@@ -149,6 +167,14 @@ describe('T9 — dispatch timeout → outcome_unknown (standalone /v1/runs)', ()
     expect(types).toContain('run.outcome_unknown');
     expect(types).not.toContain('run.failed');
     expect(types).not.toContain('run.completed');
+    // CW3 §14/§15 — the live unknown records the honest process observation
+    // ("the local process invoked fetch"; never a receipt claim) and is bound
+    // to the durable boundary commit.
+    const meta = await eventMetadata(org.org_id, body.run_id, 'run.outcome_unknown');
+    expect(meta?.['forward_observation']).toBe('observed_local_forward_invocation');
+    expect(meta?.['dispatch_boundary_committed_at']).toBe(
+      rows[0]!.dispatch_boundary_committed_at!.toISOString(),
+    );
     const callsFor = (workspaceId: string) =>
       stack.provider.recordedRequestHeaders.filter(
         (h) => h['x-test-workspace-id'] === workspaceId,
@@ -239,11 +265,16 @@ describe('T9b — post-forward TRANSPORT error → outcome_unknown (§22, real s
     expect(inv[0]!.status_code).toBeNull();
     expect(inv[0]!.error_class).toBe('dispatch_outcome_unknown');
 
-    // Honest unknown, zero automatic retries.
+    // Honest unknown, zero automatic retries. CW3: the transport failure came
+    // AFTER the local invocation — observed_local_forward_invocation, bound to
+    // the durable boundary the wiring committed before the fetch.
     const types = await auditEventTypes(org.org_id, body.run_id);
     expect(types).toContain('run.outcome_unknown');
     expect(types).not.toContain('run.failed');
     expect(types).not.toContain('run.completed');
+    const meta = await eventMetadata(org.org_id, body.run_id, 'run.outcome_unknown');
+    expect(meta?.['forward_observation']).toBe('observed_local_forward_invocation');
+    expect(typeof meta?.['dispatch_boundary_committed_at']).toBe('string');
     const calls = stack.provider.recordedRequestHeaders.filter(
       (h) => h['x-test-workspace-id'] === org.workspace_id,
     );

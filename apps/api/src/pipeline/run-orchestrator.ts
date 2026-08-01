@@ -14,6 +14,12 @@
 //   → deterministic pre-claim validation (known failure ⇒ queued→failed CAS)
 //   → exclusive claim: CAS queued→running with a fresh dispatch_token
 //     (run.dispatch_claimed v1) — ONLY the CAS winner may call the provider
+//   → durable dispatch boundary (REV4): a second short CAS transaction commits
+//     dispatch_boundary_committed_at IMMEDIATELY before the local fetch
+//     invocation (awaited inside the forwarder via beforeDispatch, after a
+//     governed block has been ruled out). Fail closed: no committed boundary
+//     ⇒ no provider I/O, ever. The boundary is a durable LOCAL gate — never
+//     proof of provider receipt or execution.
 //   → provider I/O with ZERO database clients held, bounded by AbortSignal
 //   → TX-B: new connection/transaction persisting the known result, or an
 //     honest `outcome_unknown` when nothing is provable (§22), with late
@@ -78,6 +84,9 @@ import { runDispatchConfigFromEnv, type RunDispatchConfig } from './run-dispatch
 import {
   appendDispatchPreparedEvent,
   claimDispatch,
+  commitDispatchBoundary,
+  DispatchBoundaryGateError,
+  failBoundaryNotEstablished,
   failPreclaim,
   finalizeKnownOutcome,
   markOutcomeUnknown,
@@ -633,6 +642,39 @@ function unknownErrorClass(err: unknown): 'provider_timeout' | 'provider_io_unkn
 }
 
 /**
+ * REV4 §16 — the database-backed durable gate, constructed ONLY for the
+ * protocol-v1 forward paths (direct-provider routes never receive it). Closes
+ * over the pool, run context and claim token; commits the boundary in its own
+ * short tenant transaction (client released before returning) at the latest
+ * practical local point before `fetch` — inside the forwarder, after a
+ * governed block has been ruled out. ANY non-success (zero-row CAS or a
+ * boundary-transaction error) surfaces as DispatchBoundaryGateError, making a
+ * provider forward past a failed gate structurally impossible (fail closed).
+ */
+function makeBoundaryGate(
+  deps: OrchestratorDeps,
+  ctx: RunDispatchContext,
+  token: string,
+): () => Promise<void> {
+  return async (): Promise<void> => {
+    let result: Awaited<ReturnType<typeof commitDispatchBoundary>>;
+    try {
+      result = await commitDispatchBoundary(deps.pool, ctx, { token });
+    } catch (err) {
+      // Error NAME only — never raw PostgreSQL text into the closed error.
+      throw new DispatchBoundaryGateError(
+        ctx.runId,
+        'commit_error',
+        err instanceof Error ? err.name : 'unknown',
+      );
+    }
+    if (!result.committed) {
+      throw new DispatchBoundaryGateError(ctx.runId, result.reason);
+    }
+  };
+}
+
+/**
  * Post-claim terminal persistence (TX-B / honest-unknown marking) failed —
  * e.g. PostgreSQL or audit signing temporarily unavailable AFTER the provider
  * may already have executed the action. The run row stays durably 'running'
@@ -1086,7 +1128,10 @@ export async function executeGovernedRun(
   }
 
   // §19/§20 — provider I/O: ZERO database clients held; credential in memory;
-  // v4 captured in memory; bounded by the dispatch AbortSignal.
+  // v4 captured in memory; bounded by the dispatch AbortSignal. The durable
+  // boundary gate is awaited INSIDE the forwarder immediately before `fetch`
+  // (§12.3 ordering) — its short transaction commits and releases before any
+  // network I/O begins, so no client is ever held across the fetch.
   const capture = createGovernedV4Capture();
   let forwardStarted = false;
   const signal = AbortSignal.timeout(budgetMs);
@@ -1095,6 +1140,7 @@ export async function executeGovernedRun(
     inboundHeaders: plan.inboundHeaders,
     isStream: false as const,
     signal,
+    beforeDispatch: makeBoundaryGate(deps, ctx, claim.token),
     onDispatchStart: () => {
       forwardStarted = true;
     },
@@ -1143,8 +1189,29 @@ export async function executeGovernedRun(
       );
     }
   } catch (err) {
+    if (err instanceof DispatchBoundaryGateError) {
+      // §17 — the durable gate could not be established: the provider was
+      // provably not called (the fetch is unreachable past a failed gate).
+      // Persist the KNOWN failure; when the run moved concurrently (e.g.
+      // recovery already resolved it) answer honestly from durable state.
+      const fb = await persistTerminal(ctx, () =>
+        failBoundaryNotEstablished(deps.pool, deps.kms, ctx, { token: claim.token }),
+      );
+      if (!fb.transitioned) return readRunStateResponse(deps, ctx, txa.decision);
+      return {
+        run_id: txa.runId,
+        audit_chain_id: txa.chainId,
+        ...(fb.auditEventId ? { audit_event_id: fb.auditEventId } : {}),
+        policy_decision: { kind: txa.decision.kind, reasons: [...txa.decision.reasons] },
+        status: 'failed',
+        retry_safe: false,
+        error_class: 'dispatch_boundary_persist_failed',
+      };
+    }
     if (!forwardStarted) {
-      // §21.3 — known local error provably before the forward started.
+      // §21.3 — known local error provably before the forward started
+      // (includes §19.2: signal expired AFTER the boundary committed but
+      // before fetch — the live process KNOWS no fetch happened).
       const message = err instanceof Error ? err.message : String(err);
       const fin = await persistTerminal(ctx, () =>
         finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
@@ -1167,7 +1234,7 @@ export async function executeGovernedRun(
       markOutcomeUnknown(deps.pool, deps.kms, ctx, {
         token: claim.token,
         errorClass: unknownErrorClass(err),
-        forwardStarted: true,
+        forwardObservation: 'observed_local_forward_invocation',
         invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
       }),
     );
@@ -1206,7 +1273,9 @@ export async function executeGovernedRun(
       markOutcomeUnknown(deps.pool, deps.kms, ctx, {
         token: claim.token,
         errorClass: 'provider_io_unknown',
-        forwardStarted,
+        forwardObservation: forwardStarted
+          ? 'observed_local_forward_invocation'
+          : 'not_observed',
         invocation: { nativeEndpoint, nativeRequestHash: txa.nativeRequestHash },
       }),
     );
@@ -1524,7 +1593,9 @@ export async function executePassthroughRun(
     };
   }
 
-  // §19 — raw forward with ZERO database clients held.
+  // §19 — raw forward with ZERO database clients held. The durable boundary
+  // gate is awaited inside the forwarder immediately before `fetch` (§12.3);
+  // its short transaction commits and releases before any network I/O.
   const forwardRaw = provider === 'anthropic' ? forwardRawAnthropic : forwardRawOpenai;
   let forwardStarted = false;
   let fwd: Awaited<ReturnType<typeof forwardRawAnthropic>>;
@@ -1537,11 +1608,42 @@ export async function executePassthroughRun(
       headers: outboundHeaders,
       body: txa.plan.body,
       signal: AbortSignal.timeout(budgetMs),
+      beforeDispatch: makeBoundaryGate(deps, ctx, claim.token),
       onDispatchStart: () => {
         forwardStarted = true;
       },
     });
   } catch (err) {
+    if (err instanceof DispatchBoundaryGateError) {
+      // §17 — gate not established: provider provably not called; persist the
+      // KNOWN failure or answer from durable state on a concurrent move.
+      const fb = await persistTerminal(ctx, () =>
+        failBoundaryNotEstablished(deps.pool, deps.kms, ctx, { token: claim.token }),
+      );
+      if (!fb.transitioned) {
+        const state = await readRunStateResponse(deps, ctx);
+        return {
+          run_id: txa.runId,
+          audit_chain_id: txa.chainId,
+          mode: 'passthrough',
+          status:
+            state.status === 'denied' || state.status === 'completed' ? 'failed' : state.status,
+          native_request_hash: txa.nativeRequestHashHex,
+          retry_safe: false,
+          ...(state.error_class ? { error_class: state.error_class } : {}),
+        };
+      }
+      return {
+        run_id: txa.runId,
+        audit_chain_id: txa.chainId,
+        ...(fb.auditEventId ? { audit_event_id: fb.auditEventId } : {}),
+        mode: 'passthrough',
+        status: 'failed',
+        native_request_hash: txa.nativeRequestHashHex,
+        retry_safe: false,
+        error_class: 'dispatch_boundary_persist_failed',
+      };
+    }
     if (!forwardStarted) {
       const message = err instanceof Error ? err.message : String(err);
       const fin = await persistTerminal(ctx, () =>
@@ -1565,7 +1667,7 @@ export async function executePassthroughRun(
       markOutcomeUnknown(deps.pool, deps.kms, ctx, {
         token: claim.token,
         errorClass: unknownErrorClass(err),
-        forwardStarted: true,
+        forwardObservation: 'observed_local_forward_invocation',
         invocation: {
           nativeEndpoint: txa.plan.nativeEndpoint,
           nativeRequestHash: txa.nativeRequestHash,

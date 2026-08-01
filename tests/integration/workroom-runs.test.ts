@@ -95,16 +95,20 @@ describe('workroom-runs / governed creation', () => {
     expect(typeof body['audit_event_id']).toBe('string');
     expect(body['policy_decision']).toBeDefined();
 
-    // govai.runs row carries the Workroom linkage.
+    // govai.runs row carries the Workroom linkage — and (REV4) the completed
+    // Workroom-owned run crossed the durable dispatch boundary: the Workroom
+    // path runs the SAME protocol-v1 executors, so the gate wiring holds here.
     const runRows = await queryAsOrg<{
       mode: string;
       workroom_id: string;
       created_by_participant_id: string;
       workroom_governance_mode: string;
       status: string;
+      dispatch_boundary_committed_at: Date | null;
     }>(
       org.org_id,
-      `SELECT mode, workroom_id, created_by_participant_id, workroom_governance_mode, status
+      `SELECT mode, workroom_id, created_by_participant_id, workroom_governance_mode, status,
+              dispatch_boundary_committed_at
          FROM govai.runs WHERE id = $1::uuid`,
       [body['run_id'] as string],
     );
@@ -113,6 +117,7 @@ describe('workroom-runs / governed creation', () => {
     expect(runRows[0]!.created_by_participant_id).toBe(body['created_by_participant_id']);
     expect(runRows[0]!.workroom_governance_mode).toBe('governance_active');
     expect(runRows[0]!.status).toBe(body['status']);
+    expect(runRows[0]!.dispatch_boundary_committed_at).not.toBeNull();
 
     // Exactly one run_event turn anchored to the run's real audit event.
     const turns = await queryAsOrg<{

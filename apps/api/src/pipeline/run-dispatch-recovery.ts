@@ -23,6 +23,10 @@ export type RecoverySweepResult = {
   candidates: number;
   queuedFailed: number;
   runningUnknown: number;
+  /** §18.1 — stale running claims whose durable boundary was NEVER committed:
+   *  recovered to the KNOWN failure `dispatch_never_started` (provider
+   *  provably not called), not to outcome_unknown. */
+  runningNeverStarted: number;
   /** Candidates skipped because another replica held the row lock or the row
    *  was no longer stale at re-validation time. */
   skipped: number;
@@ -75,6 +79,7 @@ export async function runDispatchRecoverySweepOnce(
     candidates: 0,
     queuedFailed: 0,
     runningUnknown: 0,
+    runningNeverStarted: 0,
     skipped: 0,
     errors: 0,
     nextCursor: null,
@@ -116,7 +121,8 @@ export async function runDispatchRecoverySweepOnce(
             runId: c.run_id,
             recoveryGraceMs: config.recoveryGraceMs,
           });
-          if (done) result.runningUnknown += 1;
+          if (done === 'outcome_unknown') result.runningUnknown += 1;
+          else if (done === 'failed_never_started') result.runningNeverStarted += 1;
           else result.skipped += 1;
         }
       } catch (err) {

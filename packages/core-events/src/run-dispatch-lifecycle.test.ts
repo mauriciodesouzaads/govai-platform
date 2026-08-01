@@ -54,7 +54,8 @@ function unknown(overrides: Partial<Record<string, unknown>> = {}) {
     run_id: randomUUID(),
     dispatch_token: randomUUID(),
     dispatch_error_class: 'provider_timeout',
-    forward_started: true,
+    forward_observation: 'observed_local_forward_invocation',
+    dispatch_boundary_committed_at: new Date().toISOString(),
     outcome_unknown_at: new Date().toISOString(),
     occurred_at: new Date().toISOString(),
     chain_category: 'run',
@@ -129,10 +130,10 @@ describe('RunOutcomeUnknownSchema v1', () => {
   it('canonical event accepts', () => {
     expect(RunOutcomeUnknownSchema.safeParse(unknown()).success).toBe(true);
   });
-  it('recovery stale claim (forward_started=false) accepts', () => {
+  it('recovery stale claim (forward_observation=not_observed) accepts', () => {
     expect(
       RunOutcomeUnknownSchema.safeParse(
-        unknown({ dispatch_error_class: 'stale_dispatch_claim', forward_started: false }),
+        unknown({ dispatch_error_class: 'stale_dispatch_claim', forward_observation: 'not_observed' }),
       ).success,
     ).toBe(true);
   });
@@ -141,6 +142,25 @@ describe('RunOutcomeUnknownSchema v1', () => {
       RunOutcomeUnknownSchema.safeParse(unknown({ dispatch_error_class: 'ECONNRESET: raw' }))
         .success,
     ).toBe(false);
+  });
+  it('forward_observation outside the closed enum → rejects (a boolean is an over-claim)', () => {
+    expect(
+      RunOutcomeUnknownSchema.safeParse(unknown({ forward_observation: true })).success,
+    ).toBe(false);
+    expect(
+      RunOutcomeUnknownSchema.safeParse(unknown({ forward_observation: 'provider_received' }))
+        .success,
+    ).toBe(false);
+  });
+  it('missing forward_observation (legacy forward_started shape) → rejects', () => {
+    const e = unknown({ forward_started: true });
+    delete (e as Record<string, unknown>)['forward_observation'];
+    expect(RunOutcomeUnknownSchema.safeParse(e).success).toBe(false);
+  });
+  it('missing dispatch_boundary_committed_at → rejects (every unknown is post-boundary)', () => {
+    const e = unknown();
+    delete (e as Record<string, unknown>)['dispatch_boundary_committed_at'];
+    expect(RunOutcomeUnknownSchema.safeParse(e).success).toBe(false);
   });
 });
 
@@ -170,8 +190,10 @@ describe('DispatchErrorClass', () => {
     expect(DispatchErrorClass.options).toEqual([
       'dispatch_preclaim_failed',
       'dispatch_never_claimed',
+      'dispatch_never_started',
       'stale_dispatch_claim',
       'dispatch_pre_forward_failed',
+      'dispatch_boundary_persist_failed',
       'provider_timeout',
       'provider_io_unknown',
     ]);

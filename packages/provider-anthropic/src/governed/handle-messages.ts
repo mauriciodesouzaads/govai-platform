@@ -138,7 +138,13 @@ export type GovernedHandleInput = {
   /** EP-008C: abort signal threaded to the upstream stream fetch (client-disconnect propagation).
    *  EP-P03A-A (F3): also threaded to the NON-stream forward as the dispatch timeout bound. */
   signal?: AbortSignal;
-  /** EP-P03A-A (F3 §19.1): synchronous, non-throwing marker run immediately
+  /** EP-P03A-A (REV4 §12.1): optional asynchronous durable dispatch gate,
+   *  threaded to the NON-stream forward and awaited immediately before its
+   *  `fetch` — i.e. only after tool/enforcement validation ruled out a
+   *  governed block. Supplied ONLY by protocol-v1 run execution; direct
+   *  routes omit it. Fail-closed — see ForwardInput.beforeDispatch. */
+  beforeDispatch?: () => Promise<void>;
+  /** EP-P03A-A (F3 §19.1): synchronous in-memory marker run immediately
    *  before the non-stream `fetch` — see ForwardInput.onDispatchStart. */
   onDispatchStart?: () => void;
 };
@@ -414,6 +420,7 @@ export async function handleAnthropicGovernedMessages(
     headers: outHeaders,
     body: input.rawBody,
     signal: input.signal,
+    beforeDispatch: input.beforeDispatch,
     onDispatchStart: input.onDispatchStart,
   });
 

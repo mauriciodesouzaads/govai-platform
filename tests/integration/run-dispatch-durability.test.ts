@@ -23,6 +23,7 @@ import {
 } from '../../apps/api/src/pipeline/run-orchestrator.js';
 import {
   claimDispatch,
+  commitDispatchBoundary,
   failPreclaim,
   finalizeKnownOutcome,
   markOutcomeUnknown,
@@ -139,6 +140,16 @@ function kmsOf(): Kms {
   return new DevKms(stack.seed);
 }
 
+/** REV4: cross the durable dispatch boundary for a claimed run — the exact
+ *  production ordering (claim → boundary → forward). Function-level tests
+ *  that offer an http outcome or mark an honest unknown must cross the gate
+ *  first, exactly as production does (the boundary-aware state matrix and the
+ *  markOutcomeUnknown guard both require it). */
+async function commitBoundaryOf(ctx: RunDispatchContext, token: string): Promise<void> {
+  const r = await commitDispatchBoundary(stack.db.appPool, ctx, { token });
+  expect(r.committed).toBe(true);
+}
+
 const REQ_HASH = createHash('sha256').update('seeded-request-body').digest();
 const REQ_HASH_HEX = REQ_HASH.toString('hex');
 const RES_HASH_HEX = createHash('sha256').update('seeded-response-body').digest('hex');
@@ -172,18 +183,24 @@ describe('T1 — F3 falsification (governed, parked upstream)', () => {
 
     await park.parked; // the upstream HAS the request; the fetch is in flight
 
-    // (a) durable + claimed run visible from a SECOND connection.
+    // (a) durable + claimed run visible from a SECOND connection. REV4: the
+    // durable boundary is ALREADY committed while the fetch is in flight —
+    // the gate transaction commits (and releases its client) strictly before
+    // any provider I/O begins. This is the production-wiring proof (§CW6b):
+    // the real orchestrator supplied the database-backed beforeDispatch.
     const rows = await queryAsOrg<{
       status: string;
       dispatch_protocol_version: number;
       dispatch_token: string | null;
       dispatch_prepared_at: Date | null;
       dispatch_claimed_at: Date | null;
+      dispatch_boundary_committed_at: Date | null;
       started_at: Date | null;
     }>(
       org.org_id,
       `SELECT status, dispatch_protocol_version, dispatch_token,
-              dispatch_prepared_at, dispatch_claimed_at, started_at
+              dispatch_prepared_at, dispatch_claimed_at,
+              dispatch_boundary_committed_at, started_at
          FROM govai.runs WHERE workspace_id = $1::uuid`,
       [org.workspace_id],
     );
@@ -193,6 +210,7 @@ describe('T1 — F3 falsification (governed, parked upstream)', () => {
     expect(rows[0]!.dispatch_token).not.toBeNull();
     expect(rows[0]!.dispatch_prepared_at).not.toBeNull();
     expect(rows[0]!.dispatch_claimed_at).not.toBeNull();
+    expect(rows[0]!.dispatch_boundary_committed_at).not.toBeNull();
     expect(rows[0]!.started_at).not.toBeNull();
 
     // (b) the API's pool holds NO open transaction while the fetch is in flight.
@@ -423,7 +441,9 @@ describe('T6b — claim race at the forwarding boundary', () => {
     let dispatchStarts = 0;
 
     // The orchestrator's gate, verbatim: only `claim.claimed === true` may
-    // reach the forwarder (run-orchestrator.ts §17→§19).
+    // reach the forwarder, and the forwarder crosses the REAL durable
+    // boundary via beforeDispatch immediately before its fetch (REV4 §12.3 —
+    // the exact production ordering: claim → boundary → forward).
     const executor = async () => {
       const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
       if (!claim.claimed) return { claim, fwd: null };
@@ -439,6 +459,10 @@ describe('T6b — claim race at the forwarding boundary', () => {
         },
         body: bodyBuf,
         signal: AbortSignal.timeout(60_000),
+        beforeDispatch: async () => {
+          const b = await commitDispatchBoundary(stack.db.appPool, ctx, { token: claim.token });
+          if (!b.committed) throw new Error(`boundary gate lost: ${b.reason}`);
+        },
         onDispatchStart: () => {
           dispatchStarts += 1;
         },
@@ -570,11 +594,12 @@ describe('T11 — late reconciliation', () => {
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     expect(claim.claimed).toBe(true);
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
 
     const unknown = await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
       token,
       errorClass: 'provider_io_unknown',
-      forwardStarted: true,
+      forwardObservation: 'observed_local_forward_invocation',
       invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
     });
     expect(unknown.transitioned).toBe(true);
@@ -628,10 +653,11 @@ describe('T17 — concurrent reconciliation', () => {
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     expect(claim.claimed).toBe(true);
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
     await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
       token,
       errorClass: 'provider_io_unknown',
-      forwardStarted: true,
+      forwardObservation: 'observed_local_forward_invocation',
       invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
     });
 
@@ -662,6 +688,7 @@ describe('T17 — concurrent reconciliation', () => {
     const kms = kmsOf();
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
 
     const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
       token,
@@ -685,11 +712,12 @@ describe('T17 — concurrent reconciliation', () => {
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     expect(claim.claimed).toBe(true);
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
 
     await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
       token,
       errorClass: 'provider_io_unknown',
-      forwardStarted: true,
+      forwardObservation: 'observed_local_forward_invocation',
       invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
     });
     const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
@@ -749,11 +777,12 @@ describe('T17 — concurrent reconciliation', () => {
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     expect(claim.claimed).toBe(true);
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
 
     await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
       token,
       errorClass: 'provider_io_unknown',
-      forwardStarted: true,
+      forwardObservation: 'observed_local_forward_invocation',
       invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
     });
 
@@ -798,6 +827,7 @@ describe('T17 — concurrent reconciliation', () => {
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     expect(claim.claimed).toBe(true);
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
 
     const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
       token,
@@ -841,6 +871,7 @@ describe('T23 — blocked / local_error duplicate finalizations are verified, ne
     const kms = kmsOf();
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
     const first = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
       token,
       outcome: httpOutcome(500),
@@ -1318,7 +1349,7 @@ describe('T19 — wrong token and terminal re-entry', () => {
     const unknown = await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
       token: wrongToken,
       errorClass: 'provider_io_unknown',
-      forwardStarted: true,
+      forwardObservation: 'observed_local_forward_invocation',
       invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
     });
     expect(unknown.transitioned).toBe(false);
@@ -1355,6 +1386,7 @@ describe('T19 — wrong token and terminal re-entry', () => {
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     expect(claim.claimed).toBe(true);
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
+    await commitBoundaryOf(ctx, token);
     const fin = await finalizeKnownOutcome(stack.db.appPool, kms, ctx, {
       token,
       outcome: httpOutcome(200),
@@ -1371,7 +1403,7 @@ describe('T19 — wrong token and terminal re-entry', () => {
     const unknown = await markOutcomeUnknown(stack.db.appPool, kms, ctx, {
       token,
       errorClass: 'provider_io_unknown',
-      forwardStarted: true,
+      forwardObservation: 'observed_local_forward_invocation',
       invocation: { nativeEndpoint: '/v1/messages', nativeRequestHash: REQ_HASH },
     });
     expect(unknown.transitioned).toBe(false);
