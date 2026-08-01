@@ -101,13 +101,14 @@ describe('run-orchestrator / providerUpstreamBaseUrl', () => {
 
 // =============================================================================
 // remainingDispatchBudgetMs — the AbortSignal budget is anchored to the
-// DURABLE claim deadline via a SAME-CLOCK local elapsed delta (Codex P2 on
-// 633e10b): the database fixes deadline = db_now + timeout at claim COMMIT,
-// and the budget is timeout minus the application time already spent since
-// just before the claim call. No cross-clock subtraction exists, so an app
-// clock offset from PostgreSQL can shorten but never extend the budget past
-// the durable deadline; a stalled executor must not start provider I/O the
-// protocol already gave up on.
+// DURABLE claim deadline via a MONOTONIC same-clock elapsed delta (Codex P2
+// on 633e10b + P2 on 3774a79): the database fixes deadline = db_now +
+// timeout at claim COMMIT, and the budget is timeout minus the
+// performance.now() time already spent since just before the claim call. No
+// cross-clock subtraction and no wall clock exist in the delta, so neither
+// an app clock offset from PostgreSQL nor a backward wall-clock step can
+// extend the budget past the durable deadline; a stalled executor must not
+// start provider I/O the protocol already gave up on.
 // =============================================================================
 
 describe('remainingDispatchBudgetMs', () => {
@@ -120,6 +121,11 @@ describe('remainingDispatchBudgetMs', () => {
   it('a post-claim stall consumes the budget one-for-one (conservative: includes the claim round trip)', () => {
     expect(__test_remainingDispatchBudgetMs(300_000, 295_000)).toBe(5_000);
     expect(__test_remainingDispatchBudgetMs(300_000, 1)).toBe(299_999);
+  });
+
+  it('a fractional monotonic elapsed floors to an INTEGER budget (AbortSignal.timeout contract; floor is the conservative direction)', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 0.4)).toBe(299_999);
+    expect(Number.isInteger(__test_remainingDispatchBudgetMs(300_000, 123.456))).toBe(true);
   });
 
   it('never exceeds the configured budget, even for a non-positive elapsed input', () => {

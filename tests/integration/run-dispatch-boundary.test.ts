@@ -229,18 +229,45 @@ describe('CW-wiring — all protocol-v1 non-stream paths cross the durable bound
 // permanently (both persistences fail ⇒ DispatchPersistenceError).
 // =============================================================================
 
-type PoisonedPool = { pool: Pool; state: { armed: boolean; failuresLeft: number } };
+type PoisonedPool = {
+  pool: Pool;
+  state: { armed: boolean; failuresLeft: number; mode: 'reject' | 'commit-ack-loss' };
+};
 
-function makeClaimArmedPoisonPool(connectionString: string): PoisonedPool {
+function makeClaimArmedPoisonPool(
+  connectionString: string,
+  mode: 'reject' | 'commit-ack-loss' = 'reject',
+): PoisonedPool {
   const base = new Pool({ connectionString });
   base.on('error', () => undefined);
-  const state = { armed: false, failuresLeft: 0 };
+  const state = { armed: false, failuresLeft: 0, mode };
   const realConnect = base.connect.bind(base);
   const wrapped = {
     connect: async (): Promise<PoolClient> => {
-      if (state.armed && state.failuresLeft !== 0) {
+      if (state.armed && state.failuresLeft !== 0 && state.mode === 'reject') {
         if (state.failuresLeft > 0) state.failuresLeft -= 1;
         throw new Error('injected boundary-transaction outage (CW4)');
+      }
+      if (state.armed && state.failuresLeft !== 0 && state.mode === 'commit-ack-loss') {
+        // Deliver a REAL client whose next COMMIT executes server-side and
+        // then surfaces as a lost acknowledgement: the database keeps the
+        // committed boundary while the application sees a transaction error.
+        if (state.failuresLeft > 0) state.failuresLeft -= 1;
+        const victim = (await realConnect()) as PoolClient;
+        const origQuery = victim.query.bind(victim) as PoolClient['query'];
+        let fired = false;
+        (victim as { query: unknown }).query = (async (...args: unknown[]) => {
+          const first = args[0];
+          const sql =
+            typeof first === 'string' ? first : (first as { text?: string } | null)?.text;
+          const res = await (origQuery as (...a: unknown[]) => Promise<unknown>)(...args);
+          if (!fired && sql === 'COMMIT') {
+            fired = true;
+            throw new Error('injected commit acknowledgement loss (CW4)');
+          }
+          return res;
+        }) as PoolClient['query'];
+        return victim;
       }
       const c = (await realConnect()) as PoolClient & { __wrapped?: boolean };
       if (!c.__wrapped) {
@@ -323,6 +350,57 @@ describe('CW4 — boundary persistence failure fails closed with zero provider c
         [result.run_id],
       );
       expect(inv).toHaveLength(0);
+    } finally {
+      await poisoned.pool.end();
+    }
+  });
+
+  it('boundary COMMIT wins server-side but its ACK is lost → run-aware polling response, row stays running WITH the boundary, upstream untouched', async () => {
+    // Codex P2 on 3774a79: the CAS in failBoundaryNotEstablished refuses a
+    // boundary-bearing row, so a lost COMMIT acknowledgement must surface as
+    // the run-aware polling contract (DispatchPersistenceError → 500 with
+    // run_id + Location + retry_safe:false), NEVER a false terminal `failed`
+    // — recovery later resolves the boundary-bearing row to an honest
+    // unknown (T8 §18.2 proves that branch).
+    const org = await seedOrg(stack);
+    const poisoned = makeClaimArmedPoisonPool(stack.db.appUrl, 'commit-ack-loss');
+    poisoned.state.failuresLeft = 1; // exactly the boundary transaction's client
+    stack.provider.clearRecordedRequestHeaders();
+    try {
+      const err = await executeGovernedRun(
+        { pool: poisoned.pool, kms: kmsOf(), env: stack.env, policyCommitSha: 'test-cw4c' },
+        org.api_key,
+        GOVERNED_BODY(org),
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(DispatchPersistenceError);
+      const runId = (err as DispatchPersistenceError).runId;
+      expect((err as DispatchPersistenceError).causeName).toBe('boundary_gate_unconfirmed');
+
+      // Fail closed: the fetch was never invoked (the gate error preceded it).
+      expect(upstreamCallsFor(org.workspace_id)).toHaveLength(0);
+
+      // Durable truth: running, token retained, boundary COMMITTED (the ack
+      // was lost, not the commit); no terminal or unknown event was invented.
+      const rows = await queryAsOrg<{
+        status: string;
+        dispatch_token: string | null;
+        dispatch_boundary_committed_at: Date | null;
+      }>(
+        org.org_id,
+        `SELECT status, dispatch_token, dispatch_boundary_committed_at
+           FROM govai.runs WHERE id = $1::uuid`,
+        [runId],
+      );
+      expect(rows[0]!.status).toBe('running');
+      expect(rows[0]!.dispatch_token).not.toBeNull();
+      expect(rows[0]!.dispatch_boundary_committed_at).not.toBeNull();
+      const types = await auditEventTypes(org.org_id, runId);
+      expect(types).not.toContain('run.failed');
+      expect(types).not.toContain('run.outcome_unknown');
+      expect(types).not.toContain('run.completed');
     } finally {
       await poisoned.pool.end();
     }

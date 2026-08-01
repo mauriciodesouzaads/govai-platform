@@ -201,6 +201,25 @@ describe('T14 — migration 0029 with legacy rows', () => {
       ),
     ).rejects.toThrow(/runs_dispatch_v1_state_check|check constraint/);
 
+    // A fully dispatch-SHAPED row with dispatch_protocol_version NULL →
+    // rejected: the v1 arm requires protocol = 1, so a protocol-NULL row is
+    // judged by the LEGACY arm (which forbids outcome_unknown and a boundary)
+    // instead of slipping through the v1 arm while invisible to v1 recovery
+    // discovery (Codex P2 on 3774a79).
+    await expect(
+      admin.query(
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            dispatch_prepared_at, dispatch_token, dispatch_claimed_at,
+            dispatch_timeout_ms, dispatch_deadline_at, started_at, outcome_unknown_at,
+            dispatch_error_class, dispatch_boundary_committed_at)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'm', 'governed',
+            'outcome_unknown', '{}'::jsonb, now(), $5::uuid, now(), 60000,
+            now() + interval '60 seconds', now(), now(), 'provider_timeout', now())`,
+        [randomUUID(), ORG_ID, randomUUID(), randomUUID(), randomUUID()],
+      ),
+    ).rejects.toThrow(/runs_dispatch_v1_state_check/);
+
     // outcome_unknown WITHOUT a committed boundary → rejected: a boundary-null
     // stale claim is the KNOWN failure dispatch_never_started, never unknown.
     await expect(

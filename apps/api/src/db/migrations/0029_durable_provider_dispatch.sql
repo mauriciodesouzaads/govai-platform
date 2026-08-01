@@ -174,7 +174,8 @@ BEGIN
     (dispatch_protocol_version IS NULL AND status <> 'outcome_unknown'
       AND dispatch_boundary_committed_at IS NULL)
     OR (
-      dispatch_prepared_at IS NOT NULL
+      dispatch_protocol_version IS NOT DISTINCT FROM 1
+      AND dispatch_prepared_at IS NOT NULL
       AND (dispatch_boundary_committed_at IS NULL
            OR (dispatch_token IS NOT NULL AND dispatch_claimed_at IS NOT NULL
                AND dispatch_deadline_at IS NOT NULL AND dispatch_timeout_ms IS NOT NULL))
@@ -261,10 +262,14 @@ ALTER TABLE govai.runs
     -- Legacy rows (protocol NULL) are exempt from the v1 matrix, but ONLY the
     -- v1 machinery may ever produce `outcome_unknown` or commit a boundary —
     -- a non-v1 unknown/boundary row would be unrecoverable and unexplainable.
+    -- The second arm REQUIRES protocol v1: a dispatch-shaped row with a NULL
+    -- protocol must fall through to (and be constrained by) the legacy arm,
+    -- never satisfy the v1 arm while invisible to v1 recovery discovery.
     (dispatch_protocol_version IS NULL AND status <> 'outcome_unknown'
       AND dispatch_boundary_committed_at IS NULL)
     OR (
-      dispatch_prepared_at IS NOT NULL
+      dispatch_protocol_version IS NOT DISTINCT FROM 1
+      AND dispatch_prepared_at IS NOT NULL
       -- A committed boundary implies exclusive claim ownership: the boundary
       -- CAS requires the exact token under status='running'.
       AND (dispatch_boundary_committed_at IS NULL

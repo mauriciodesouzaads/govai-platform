@@ -717,18 +717,21 @@ const MAX_NATIVE_BODY_BYTES = 5_000_000;
  * Remaining forward budget anchored to the DURABLE claim deadline WITHOUT
  * ever differencing two clocks (Codex P2 on 633e10b): the database sets
  * `dispatch_deadline_at = db_now + timeout` at claim COMMIT, so the time
- * already spent against that deadline is measured as a SAME-CLOCK local
- * delta — application time elapsed since just before the claim call. This
- * over-counts by the pre-commit half of the claim round trip, which is
- * strictly CONSERVATIVE: the AbortSignal can only fire at or before the
- * database deadline, never live past it (an app clock offset from PostgreSQL
- * can no longer extend the budget). The boundary CAS additionally re-checks
- * `dispatch_deadline_at > now()` on DATABASE time at the last local point
- * before the fetch. Non-positive ⇒ refuse to forward (known local
- * pre-forward failure).
+ * already spent against that deadline is measured as a MONOTONIC same-clock
+ * local delta — performance.now() elapsed since just before the claim call
+ * (Codex P2 on 3774a79: the wall clock can step backward under NTP/VM
+ * corrections and would restore consumed budget; the monotonic clock cannot).
+ * The delta over-counts by the pre-commit half of the claim round trip,
+ * which is strictly CONSERVATIVE: the AbortSignal can only fire at or before
+ * the database deadline, never live past it. The boundary CAS additionally
+ * re-checks `dispatch_deadline_at > now()` on DATABASE time at the last
+ * local point before the fetch. Non-positive ⇒ refuse to forward (known
+ * local pre-forward failure).
  */
 function remainingDispatchBudgetMs(configuredMs: number, elapsedSinceBeforeClaimMs: number): number {
-  return Math.min(configuredMs, configuredMs - elapsedSinceBeforeClaimMs);
+  // Floor to an integer: AbortSignal.timeout requires one, and rounding DOWN
+  // is the conservative direction (the budget never exceeds true remaining).
+  return Math.min(configuredMs, Math.floor(configuredMs - elapsedSinceBeforeClaimMs));
 }
 
 type DeterministicPlan = {
@@ -1103,7 +1106,7 @@ export async function executeGovernedRun(
   }
 
   // §17 — exclusive claim. Only the CAS winner may call the provider.
-  const claimStartedAtMs = Date.now();
+  const claimStartedAtMs = performance.now();
   const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
   if (!claim.claimed) {
     return readRunStateResponse(deps, ctx, txa.decision);
@@ -1111,8 +1114,12 @@ export async function executeGovernedRun(
 
   // The abort budget is anchored to the DURABLE deadline fixed at claim time —
   // a stalled process must not start I/O the protocol already gave up on. The
-  // elapsed time is a SAME-CLOCK local delta (never a cross-clock difference).
-  const budgetMs = remainingDispatchBudgetMs(config.timeoutMs, Date.now() - claimStartedAtMs);
+  // elapsed time is a MONOTONIC same-clock delta (performance.now): a wall
+  // clock stepping backward mid-claim must never restore consumed budget.
+  const budgetMs = remainingDispatchBudgetMs(
+    config.timeoutMs,
+    performance.now() - claimStartedAtMs,
+  );
   if (budgetMs <= 0) {
     const fin = await persistTerminal(ctx, () =>
       finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
@@ -1209,7 +1216,17 @@ export async function executeGovernedRun(
       const fb = await persistTerminal(ctx, () =>
         failBoundaryNotEstablished(deps.pool, deps.kms, ctx, { token: claim.token }),
       );
-      if (!fb.transitioned) return readRunStateResponse(deps, ctx, txa.decision);
+      if (!fb.transitioned) {
+        // A durably ACTIVE row here means the boundary COMMIT may have
+        // succeeded server-side with its acknowledgement lost (the CAS above
+        // refuses boundary-bearing rows). A terminal answer would be a false
+        // claim — return the run-aware polling contract instead; recovery
+        // owns the row from here (boundary present ⇒ honest unknown later).
+        if (fb.status === 'running' || fb.status === 'queued' || fb.status === null) {
+          throw new DispatchPersistenceError(txa.runId, txa.chainId, 'boundary_gate_unconfirmed');
+        }
+        return readRunStateResponse(deps, ctx, txa.decision);
+      }
       return {
         run_id: txa.runId,
         audit_chain_id: txa.chainId,
@@ -1567,7 +1584,7 @@ export async function executePassthroughRun(
   }
 
   // §17 — exclusive claim.
-  const claimStartedAtMs = Date.now();
+  const claimStartedAtMs = performance.now();
   const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
   if (!claim.claimed) {
     const state = await readRunStateResponse(deps, ctx);
@@ -1583,8 +1600,11 @@ export async function executePassthroughRun(
   }
 
   // The abort budget is anchored to the DURABLE deadline fixed at claim time;
-  // the elapsed time is a SAME-CLOCK local delta (never cross-clock).
-  const budgetMs = remainingDispatchBudgetMs(config.timeoutMs, Date.now() - claimStartedAtMs);
+  // the elapsed time is a MONOTONIC same-clock delta (performance.now).
+  const budgetMs = remainingDispatchBudgetMs(
+    config.timeoutMs,
+    performance.now() - claimStartedAtMs,
+  );
   if (budgetMs <= 0) {
     const fin = await persistTerminal(ctx, () =>
       finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
@@ -1635,6 +1655,11 @@ export async function executePassthroughRun(
         failBoundaryNotEstablished(deps.pool, deps.kms, ctx, { token: claim.token }),
       );
       if (!fb.transitioned) {
+        // Durably active row ⇒ the boundary COMMIT may have succeeded with a
+        // lost acknowledgement — never a terminal answer; run-aware polling.
+        if (fb.status === 'running' || fb.status === 'queued' || fb.status === null) {
+          throw new DispatchPersistenceError(txa.runId, txa.chainId, 'boundary_gate_unconfirmed');
+        }
         const state = await readRunStateResponse(deps, ctx);
         return {
           run_id: txa.runId,
