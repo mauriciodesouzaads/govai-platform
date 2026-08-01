@@ -8,9 +8,13 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import type { Pool } from 'pg';
 import { DevKms } from '@govai/core-identity';
 import { buildServer } from '../../apps/api/src/server.js';
-import { runDispatchRecoverySweepOnce } from '../../apps/api/src/pipeline/run-dispatch-recovery.js';
+import {
+  runDispatchRecoverySweepOnce,
+  startRunDispatchRecoveryWorker,
+} from '../../apps/api/src/pipeline/run-dispatch-recovery.js';
 import { runDispatchConfigFromEnv } from '../../apps/api/src/pipeline/run-dispatch-config.js';
 import type { GovAIEnv } from '@govai/config';
 import {
@@ -351,6 +355,31 @@ describe('T16 — recovery idempotency (CW8: both stale-running branches)', () =
 });
 
 describe('recovery worker lifecycle (§25)', () => {
+  it('stop() is BOUNDED: a permanently STALLED in-flight sweep cannot hold shutdown hostage', async () => {
+    // Codex P2 on 35953a6: without the bound, stop() awaits the stalled sweep
+    // forever and this test fails by timeout. The stalled pool's discovery
+    // query never settles (a partition hangs, it does not reject); the worker
+    // must still shut down at the bound, with new ticks already prevented.
+    let sweepStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      sweepStarted = resolve;
+    });
+    const stalledPool = {
+      query: () => {
+        sweepStarted();
+        return new Promise(() => undefined); // never settles
+      },
+    } as unknown as Pool;
+    const handle = startRunDispatchRecoveryWorker({
+      pool: stalledPool,
+      kms: new DevKms(stack.seed),
+      config: { ...runDispatchConfigFromEnv(stack.env), recoveryIntervalMs: 1_000 },
+      shutdownMaxWaitMs: 300,
+    });
+    await started; // the sweep is in flight and permanently stalled
+    await handle.stop(); // must resolve at the bound, not hang
+  }, 20_000);
+
   it('starts onReady, recovers a stale run on its own, and stops cleanly on close', async () => {
     const org = await seedOrg(stack);
     const runId = await seedStaleQueued(org);

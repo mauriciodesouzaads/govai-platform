@@ -47,6 +47,14 @@ export type RecoveryDeps = {
     info: (obj: Record<string, unknown>, msg?: string) => void;
     error: (obj: Record<string, unknown>, msg?: string) => void;
   };
+  /** Bounded shutdown wait for an in-flight sweep (default 5000ms). A sweep
+   *  whose PostgreSQL/audit operation STALLS (rather than rejects) must not
+   *  hold the whole API in shutdown past its termination grace: past the
+   *  bound the sweep is abandoned. Abandonment is safe by construction —
+   *  every recovery transition is one short idempotent transaction under FOR
+   *  UPDATE SKIP LOCKED, so an interrupted transition rolls back with its
+   *  connection and the next worker run re-discovers the candidate. */
+  shutdownMaxWaitMs?: number;
 };
 
 type CandidateRow = {
@@ -196,7 +204,40 @@ export function startRunDispatchRecoveryWorker(deps: RecoveryDeps): RecoveryWork
     stop: async () => {
       stopped = true;
       clearInterval(interval);
-      if (inFlight) await inFlight;
+      if (inFlight) {
+        // BOUNDED wait (Codex P2 on 35953a6): a stalled sweep — a database
+        // partition or blocked audit/KMS call that hangs instead of rejecting
+        // — must not keep the API in shutdown past its termination grace.
+        // New ticks are already prevented (stopped + cleared interval); past
+        // the bound the in-flight sweep is abandoned, which is safe because
+        // every transition is idempotent and re-entrant (see RecoveryDeps.
+        // shutdownMaxWaitMs). The tick chain owns its own .catch/.finally, so
+        // an abandoned promise can never surface as an unhandled rejection.
+        const waitMs = deps.shutdownMaxWaitMs ?? 5_000;
+        const current = inFlight;
+        let sweepFinished = false;
+        void current.then(
+          () => {
+            sweepFinished = true;
+          },
+          () => {
+            sweepFinished = true;
+          },
+        );
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const bound = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, waitMs);
+          timer.unref?.();
+        });
+        await Promise.race([current, bound]);
+        clearTimeout(timer);
+        if (!sweepFinished) {
+          deps.log?.error(
+            { waited_ms: waitMs },
+            'run dispatch recovery: in-flight sweep still running at the shutdown bound; abandoned (idempotent re-entry on next start)',
+          );
+        }
+      }
     },
   };
 }
