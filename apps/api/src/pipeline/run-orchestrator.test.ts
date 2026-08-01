@@ -101,24 +101,31 @@ describe('run-orchestrator / providerUpstreamBaseUrl', () => {
 
 // =============================================================================
 // remainingDispatchBudgetMs — the AbortSignal budget is anchored to the
-// DURABLE claim deadline: a stalled executor must not start provider I/O the
-// protocol already gave up on, and clock skew can shorten but never extend
-// the budget past the configured cap.
+// DURABLE claim deadline via a SAME-CLOCK local elapsed delta (Codex P2 on
+// 633e10b): the database fixes deadline = db_now + timeout at claim COMMIT,
+// and the budget is timeout minus the application time already spent since
+// just before the claim call. No cross-clock subtraction exists, so an app
+// clock offset from PostgreSQL can shorten but never extend the budget past
+// the durable deadline; a stalled executor must not start provider I/O the
+// protocol already gave up on.
 // =============================================================================
 
 describe('remainingDispatchBudgetMs', () => {
-  const T0 = 1_700_000_000_000;
-
-  it('deadline in the past → non-positive (the forward must be refused)', () => {
-    expect(__test_remainingDispatchBudgetMs(new Date(T0 - 1), T0, 300_000)).toBeLessThanOrEqual(0);
-    expect(__test_remainingDispatchBudgetMs(new Date(T0), T0, 300_000)).toBe(0);
+  it('elapsed at least the configured budget → non-positive (the forward must be refused)', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 300_000)).toBe(0);
+    expect(__test_remainingDispatchBudgetMs(300_000, 300_001)).toBeLessThanOrEqual(0);
+    expect(__test_remainingDispatchBudgetMs(300_000, 999_000)).toBeLessThanOrEqual(0);
   });
 
-  it('deadline sooner than the configured budget → the remaining time wins', () => {
-    expect(__test_remainingDispatchBudgetMs(new Date(T0 + 5_000), T0, 300_000)).toBe(5_000);
+  it('a post-claim stall consumes the budget one-for-one (conservative: includes the claim round trip)', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 295_000)).toBe(5_000);
+    expect(__test_remainingDispatchBudgetMs(300_000, 1)).toBe(299_999);
   });
 
-  it('deadline later than the configured budget (skew) → clamped to the configured budget', () => {
-    expect(__test_remainingDispatchBudgetMs(new Date(T0 + 999_000), T0, 300_000)).toBe(300_000);
+  it('never exceeds the configured budget, even for a non-positive elapsed input', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 0)).toBe(300_000);
+    // Defensive: a negative elapsed (impossible from a same-clock delta save
+    // for a local clock step) must not extend past the configured cap.
+    expect(__test_remainingDispatchBudgetMs(300_000, -60_000)).toBe(300_000);
   });
 });

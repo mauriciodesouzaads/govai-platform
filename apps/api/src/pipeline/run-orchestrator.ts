@@ -714,16 +714,21 @@ async function persistTerminal<T>(ctx: RunDispatchContext, fn: () => Promise<T>)
 const MAX_NATIVE_BODY_BYTES = 5_000_000;
 
 /**
- * Remaining forward budget anchored to the DURABLE claim deadline. A process
- * that stalls between the claim COMMIT and the forward must not start provider
- * I/O the protocol has already given up on (recovery may have marked the run
- * unknown, and clients may already observe it): the AbortSignal budget is the
- * time left until `dispatch_deadline_at`, clamped to the configured budget
- * (clock skew can only shorten it, never extend past the durable deadline).
- * Non-positive ⇒ refuse to forward (known local pre-forward failure).
+ * Remaining forward budget anchored to the DURABLE claim deadline WITHOUT
+ * ever differencing two clocks (Codex P2 on 633e10b): the database sets
+ * `dispatch_deadline_at = db_now + timeout` at claim COMMIT, so the time
+ * already spent against that deadline is measured as a SAME-CLOCK local
+ * delta — application time elapsed since just before the claim call. This
+ * over-counts by the pre-commit half of the claim round trip, which is
+ * strictly CONSERVATIVE: the AbortSignal can only fire at or before the
+ * database deadline, never live past it (an app clock offset from PostgreSQL
+ * can no longer extend the budget). The boundary CAS additionally re-checks
+ * `dispatch_deadline_at > now()` on DATABASE time at the last local point
+ * before the fetch. Non-positive ⇒ refuse to forward (known local
+ * pre-forward failure).
  */
-function remainingDispatchBudgetMs(deadlineAt: Date, nowMs: number, configuredMs: number): number {
-  return Math.min(configuredMs, deadlineAt.getTime() - nowMs);
+function remainingDispatchBudgetMs(configuredMs: number, elapsedSinceBeforeClaimMs: number): number {
+  return Math.min(configuredMs, configuredMs - elapsedSinceBeforeClaimMs);
 }
 
 type DeterministicPlan = {
@@ -1098,14 +1103,16 @@ export async function executeGovernedRun(
   }
 
   // §17 — exclusive claim. Only the CAS winner may call the provider.
+  const claimStartedAtMs = Date.now();
   const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
   if (!claim.claimed) {
     return readRunStateResponse(deps, ctx, txa.decision);
   }
 
   // The abort budget is anchored to the DURABLE deadline fixed at claim time —
-  // a stalled process must not start I/O the protocol already gave up on.
-  const budgetMs = remainingDispatchBudgetMs(claim.deadlineAt, Date.now(), config.timeoutMs);
+  // a stalled process must not start I/O the protocol already gave up on. The
+  // elapsed time is a SAME-CLOCK local delta (never a cross-clock difference).
+  const budgetMs = remainingDispatchBudgetMs(config.timeoutMs, Date.now() - claimStartedAtMs);
   if (budgetMs <= 0) {
     const fin = await persistTerminal(ctx, () =>
       finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
@@ -1560,6 +1567,7 @@ export async function executePassthroughRun(
   }
 
   // §17 — exclusive claim.
+  const claimStartedAtMs = Date.now();
   const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
   if (!claim.claimed) {
     const state = await readRunStateResponse(deps, ctx);
@@ -1574,8 +1582,9 @@ export async function executePassthroughRun(
     };
   }
 
-  // The abort budget is anchored to the DURABLE deadline fixed at claim time.
-  const budgetMs = remainingDispatchBudgetMs(claim.deadlineAt, Date.now(), config.timeoutMs);
+  // The abort budget is anchored to the DURABLE deadline fixed at claim time;
+  // the elapsed time is a SAME-CLOCK local delta (never cross-clock).
+  const budgetMs = remainingDispatchBudgetMs(config.timeoutMs, Date.now() - claimStartedAtMs);
   if (budgetMs <= 0) {
     const fin = await persistTerminal(ctx, () =>
       finalizeKnownOutcome(deps.pool, deps.kms, ctx, {
