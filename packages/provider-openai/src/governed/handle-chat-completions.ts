@@ -279,6 +279,9 @@ export async function handleOpenAIGovernedChatCompletions(
     };
   }
 
+  // Non-stream raw forward. Bounded ONLY by the caller's dispatch signal —
+  // never by the client-disconnect signal (evidence preservation, see
+  // GovernedHandleInput.signal in handle-responses.ts).
   const fwd = await forwardRaw({
     baseUrl: deps.upstreamBaseUrl,
     pathTemplate: '/v1/chat/completions',
@@ -286,7 +289,7 @@ export async function handleOpenAIGovernedChatCompletions(
     method: 'POST',
     headers: outHeaders,
     body: input.rawBody,
-    signal: input.signal,
+    signal: input.dispatchSignal,
     beforeDispatch: input.beforeDispatch,
     onDispatchStart: input.onDispatchStart,
   });

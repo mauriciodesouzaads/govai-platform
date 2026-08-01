@@ -117,9 +117,18 @@ export type GovernedHandleInput = {
   inboundHeaders: Record<string, string>;
   isStream: boolean;
   isMultipart?: boolean;
-  /** EP-008C: abort signal threaded to the upstream stream fetch (client-disconnect propagation).
-   *  EP-P03A-A (F3): also threaded to the NON-stream forward as the dispatch timeout bound. */
+  /** EP-008C: abort signal threaded to the upstream STREAM fetch only
+   *  (client-disconnect propagation). NEVER reaches the non-stream forward:
+   *  a disconnect must not cancel a non-stream provider call whose evidence
+   *  this surface could then no longer emit (Codex P1 on a3d2103) — the
+   *  non-stream direct behavior stays evidence-preserving, as before F3. */
   signal?: AbortSignal;
+  /** EP-P03A-A (REV4): the protocol-v1 dispatch bound for the NON-stream
+   *  forward. Supplied ONLY by the run orchestrator (its AbortSignal.timeout
+   *  budget — never a client-disconnect signal): that caller CAN persist an
+   *  honest outcome_unknown when the bound fires mid-flight. Direct routes
+   *  omit it. */
+  dispatchSignal?: AbortSignal;
   /** EP-P03A-A (REV4 §12.1): optional asynchronous durable dispatch gate,
    *  threaded to the NON-stream forward and awaited immediately before its
    *  `fetch` — i.e. only after tool/enforcement validation ruled out a
@@ -369,6 +378,9 @@ export async function handleOpenAIGovernedResponses(
     };
   }
 
+  // Non-stream raw forward. Bounded ONLY by the caller's dispatch signal —
+  // never by the client-disconnect signal (evidence preservation, see
+  // GovernedHandleInput.signal).
   const fwd = await forwardRaw({
     baseUrl: deps.upstreamBaseUrl,
     pathTemplate: '/v1/responses',
@@ -376,7 +388,7 @@ export async function handleOpenAIGovernedResponses(
     method: 'POST',
     headers: outHeaders,
     body: input.rawBody,
-    signal: input.signal,
+    signal: input.dispatchSignal,
     beforeDispatch: input.beforeDispatch,
     onDispatchStart: input.onDispatchStart,
   });

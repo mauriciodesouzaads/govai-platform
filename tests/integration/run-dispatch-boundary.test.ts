@@ -28,6 +28,9 @@ import {
   type RunDispatchContext,
 } from '../../apps/api/src/pipeline/run-dispatch-state.js';
 import { forwardRaw } from '../../packages/provider-anthropic/src/passthrough/forward.js';
+import { handleAnthropicGovernedMessages } from '../../packages/provider-anthropic/src/governed/handle-messages.js';
+import { handleOpenAIGovernedResponses } from '../../packages/provider-openai/src/governed/handle-responses.js';
+import { handleOpenAIGovernedChatCompletions } from '../../packages/provider-openai/src/governed/handle-chat-completions.js';
 import {
   startStack,
   stopStack,
@@ -681,5 +684,118 @@ describe('CW11 — direct-provider routes remain outside protocol v1', () => {
       [org.org_id],
     );
     expect(runs).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// CW11b — client-disconnect signals never cancel the non-stream direct
+// forward (Codex P1 on a3d2103): the direct routes' EP-008C disconnect
+// AbortController is threaded into the governed handlers as `signal`, which
+// is STREAM-ONLY; the non-stream forward is bounded only by `dispatchSignal`
+// (protocol-v1 orchestrator). An already-aborted disconnect signal therefore
+// must NOT abort the non-stream provider call — the call completes and its
+// passthrough.invoked evidence is emitted, exactly as before F3 threaded any
+// signal into the non-stream forward. All three governed handlers proven.
+// =============================================================================
+
+describe('CW11b — a disconnect signal does not cancel the non-stream direct forward', () => {
+  const tenantOf = (org: SeededOrg) => ({
+    org_id: org.org_id,
+    user_id: org.user_id,
+    tier: 'starter' as const,
+    operational_mode: 'test' as const,
+  });
+  const depsOf = (events: unknown[]) => ({
+    upstreamBaseUrl: stack.provider.baseUrl,
+    resolveProviderKey: async () => ({
+      apiKey: 'hermetic-placeholder-key',
+      source: 'hermetic_test_placeholder' as const,
+    }),
+    dlpScan: async () => ({ findings: [] }),
+    emitAuditEvent: (e: unknown) => {
+      events.push(e);
+    },
+  });
+
+  it('anthropic messages: aborted disconnect signal → provider call completes, evidence emitted', async () => {
+    const org = await seedOrg(stack);
+    const gone = new AbortController();
+    gone.abort(); // the client is already gone (worst case of the race)
+    const events: unknown[] = [];
+    stack.provider.clearRecordedRequestHeaders();
+    const result = await handleAnthropicGovernedMessages(
+      {
+        tenant: tenantOf(org),
+        rawBody: Buffer.from(
+          JSON.stringify({
+            model: 'claude-fixture-1',
+            max_tokens: 16,
+            messages: [{ role: 'user', content: 'cw11b anthropic' }],
+          }),
+          'utf8',
+        ),
+        inboundHeaders: { 'content-type': 'application/json' },
+        isStream: false,
+        signal: gone.signal,
+      },
+      depsOf(events),
+    );
+    expect(result.kind).toBe('non_stream');
+    expect((result as { status_code: number }).status_code).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(stack.provider.recordedRequestHeaders.length).toBe(1);
+  });
+
+  it('openai responses: aborted disconnect signal → provider call completes, evidence emitted', async () => {
+    const org = await seedOrg(stack);
+    const gone = new AbortController();
+    gone.abort();
+    const events: unknown[] = [];
+    stack.provider.clearRecordedRequestHeaders();
+    const result = await handleOpenAIGovernedResponses(
+      {
+        tenant: tenantOf(org),
+        rawBody: Buffer.from(
+          JSON.stringify({ model: 'gpt-fixture-1', input: 'cw11b responses' }),
+          'utf8',
+        ),
+        inboundHeaders: { 'content-type': 'application/json' },
+        isStream: false,
+        signal: gone.signal,
+      },
+      depsOf(events),
+    );
+    expect(result.kind).toBe('non_stream');
+    expect((result as { status_code: number }).status_code).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(stack.provider.recordedRequestHeaders.length).toBe(1);
+  });
+
+  it('openai chat completions: aborted disconnect signal → provider call completes, evidence emitted', async () => {
+    const org = await seedOrg(stack);
+    const gone = new AbortController();
+    gone.abort();
+    const events: unknown[] = [];
+    stack.provider.clearRecordedRequestHeaders();
+    const result = await handleOpenAIGovernedChatCompletions(
+      {
+        tenant: tenantOf(org),
+        rawBody: Buffer.from(
+          JSON.stringify({
+            model: 'gpt-fixture-1',
+            messages: [{ role: 'user', content: 'cw11b chat' }],
+          }),
+          'utf8',
+        ),
+        inboundHeaders: { 'content-type': 'application/json' },
+        isStream: false,
+        signal: gone.signal,
+      },
+      depsOf(events),
+    );
+    expect(result.kind).toBe('non_stream');
+    expect((result as { status_code: number }).status_code).toBe(200);
+    expect(events).toHaveLength(1);
+    expect(stack.provider.recordedRequestHeaders.length).toBe(1);
   });
 });

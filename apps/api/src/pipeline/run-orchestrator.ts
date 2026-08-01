@@ -1134,12 +1134,17 @@ export async function executeGovernedRun(
   // network I/O begins, so no client is ever held across the fetch.
   const capture = createGovernedV4Capture();
   let forwardStarted = false;
-  const signal = AbortSignal.timeout(budgetMs);
+  // dispatchSignal (NOT `signal`): the protocol-v1 timeout budget. The
+  // handler threads it into the non-stream forward; the client-disconnect
+  // `signal` channel stays stream-only so a direct-route disconnect can never
+  // cancel a non-stream provider call whose evidence would then be lost —
+  // THIS caller persists an honest outcome_unknown when the bound fires.
+  const dispatchSignal = AbortSignal.timeout(budgetMs);
   const handlerInput = {
     rawBody: txa.nativeRequestBody,
     inboundHeaders: plan.inboundHeaders,
     isStream: false as const,
-    signal,
+    dispatchSignal,
     beforeDispatch: makeBoundaryGate(deps, ctx, claim.token),
     onDispatchStart: () => {
       forwardStarted = true;
