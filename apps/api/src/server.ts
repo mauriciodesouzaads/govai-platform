@@ -209,7 +209,34 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
     await telemetry.shutdown().catch(() => undefined); // (2) existing, unchanged
     await enumeratorPool?.end().catch(() => undefined); // (3) created locally ⇒ no overrides guard
     if (!overrides.pool) {
-      await pool.end().catch(() => undefined); // (4) existing guarded close, unchanged
+      // (4) BOUNDED owned-pool close (Codex P2 on 6362c47): pg's pool.end()
+      // waits for borrowed clients to return, so a client stalled on a
+      // partitioned database — e.g. an abandoned recovery sweep past its own
+      // shutdown bound — would hold close() past the API's termination grace
+      // even after (0) returned. Past the bound the pool teardown is
+      // abandoned: the process is exiting and the platform reaps the sockets.
+      let ended = false;
+      const ending = pool.end().then(
+        () => {
+          ended = true;
+        },
+        () => {
+          ended = true;
+        },
+      );
+      await Promise.race([
+        ending,
+        new Promise<void>((resolve) => {
+          const t = setTimeout(resolve, 5_000);
+          t.unref?.();
+        }),
+      ]);
+      if (!ended) {
+        app.log.error(
+          { waited_ms: 5_000, pool: 'app' },
+          'app pool close still waiting on borrowed clients at the shutdown bound; abandoned',
+        );
+      }
     }
   });
 

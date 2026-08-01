@@ -380,6 +380,22 @@ describe('recovery worker lifecycle (§25)', () => {
     await handle.stop(); // must resolve at the bound, not hang
   }, 20_000);
 
+  it('app close is BOUNDED even with a stalled borrowed client (owned-pool shutdown path)', async () => {
+    // Codex P2 on 6362c47: pg pool.end() waits for borrowed clients, so a
+    // client stalled on a partitioned database (the abandoned-sweep case)
+    // used to move the hang from stop() to close(). Without the server-side
+    // bound this close() never resolves and the test fails by timeout.
+    const app2 = await buildServer({ env: stack.env }); // owns its pool (DATABASE_URL)
+    await app2.ready();
+    const hostage = await app2.govai.pool.connect(); // never released before close
+    try {
+      await app2.close(); // must complete at the bound, not hang on pool.end()
+    } finally {
+      hostage.release(); // lets the abandoned pool.end() settle for teardown hygiene
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }, 30_000);
+
   it('starts onReady, recovers a stale run on its own, and stops cleanly on close', async () => {
     const org = await seedOrg(stack);
     const runId = await seedStaleQueued(org);
