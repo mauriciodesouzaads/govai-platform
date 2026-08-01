@@ -234,9 +234,14 @@ type PoisonedPool = {
   state: { armed: boolean; failuresLeft: number; mode: 'reject' | 'commit-ack-loss' };
 };
 
+/** Arm the poison on the COMMIT of a chosen protocol transaction:
+ *  'claim-cas' arms after the claim CAS commits (the NEXT connect is the
+ *  boundary tx); 'txa-insert' arms after TX-A's run INSERT commits (the NEXT
+ *  connect is the claim tx). */
 function makeClaimArmedPoisonPool(
   connectionString: string,
   mode: 'reject' | 'commit-ack-loss' = 'reject',
+  armOn: 'claim-cas' | 'txa-insert' = 'claim-cas',
 ): PoisonedPool {
   const base = new Pool({ connectionString });
   base.on('error', () => undefined);
@@ -273,19 +278,26 @@ function makeClaimArmedPoisonPool(
       if (!c.__wrapped) {
         c.__wrapped = true;
         const origQuery = c.query.bind(c) as PoolClient['query'];
-        let sawClaimCas = false;
+        let sawTrigger = false;
         (c as { query: unknown }).query = ((...args: unknown[]) => {
           const first = args[0];
           const sql =
             typeof first === 'string' ? first : (first as { text?: string } | null)?.text;
           if (typeof sql === 'string') {
             const flat = sql.replace(/\s+/g, ' ');
-            if (flat.includes("SET status = 'running'") && flat.includes('dispatch_token = $2')) {
-              sawClaimCas = true;
+            if (
+              armOn === 'claim-cas' &&
+              flat.includes("SET status = 'running'") &&
+              flat.includes('dispatch_token = $2')
+            ) {
+              sawTrigger = true;
             }
-            if (sawClaimCas && flat === 'COMMIT') {
-              state.armed = true; // the NEXT pool.connect() is the boundary tx
-              sawClaimCas = false;
+            if (armOn === 'txa-insert' && flat.includes('INSERT INTO govai.runs')) {
+              sawTrigger = true;
+            }
+            if (sawTrigger && flat === 'COMMIT') {
+              state.armed = true; // the NEXT pool.connect() is the target tx
+              sawTrigger = false;
             }
           }
           return (origQuery as (...a: unknown[]) => unknown)(...args);
@@ -401,6 +413,49 @@ describe('CW4 — boundary persistence failure fails closed with zero provider c
       expect(types).not.toContain('run.failed');
       expect(types).not.toContain('run.outcome_unknown');
       expect(types).not.toContain('run.completed');
+    } finally {
+      await poisoned.pool.end();
+    }
+  });
+
+  it('claim COMMIT wins server-side but its ACK is lost → run-aware response with the durable run id; claim stands; upstream untouched', async () => {
+    // Codex P2 on 502b8b3: an ambiguous CLAIM outcome used to escape
+    // persistTerminal and surface as a bare 500 without the durable run id —
+    // even though TX-A had committed the run (and, on the Workroom
+    // passthrough path, consumed the one-time approval).
+    const org = await seedOrg(stack);
+    const poisoned = makeClaimArmedPoisonPool(stack.db.appUrl, 'commit-ack-loss', 'txa-insert');
+    poisoned.state.failuresLeft = 1; // exactly the claim transaction's client
+    stack.provider.clearRecordedRequestHeaders();
+    try {
+      const err = await executeGovernedRun(
+        { pool: poisoned.pool, kms: kmsOf(), env: stack.env, policyCommitSha: 'test-cw-claim' },
+        org.api_key,
+        GOVERNED_BODY(org),
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(DispatchPersistenceError);
+      const runId = (err as DispatchPersistenceError).runId;
+      expect(typeof runId).toBe('string');
+      expect(upstreamCallsFor(org.workspace_id)).toHaveLength(0);
+
+      // The claim stands server-side (the ack was lost, not the commit):
+      // running, token present, boundary never reached. Recovery owns it.
+      const rows = await queryAsOrg<{
+        status: string;
+        dispatch_token: string | null;
+        dispatch_boundary_committed_at: Date | null;
+      }>(
+        org.org_id,
+        `SELECT status, dispatch_token, dispatch_boundary_committed_at
+           FROM govai.runs WHERE id = $1::uuid`,
+        [runId],
+      );
+      expect(rows[0]!.status).toBe('running');
+      expect(rows[0]!.dispatch_token).not.toBeNull();
+      expect(rows[0]!.dispatch_boundary_committed_at).toBeNull();
     } finally {
       await poisoned.pool.end();
     }

@@ -695,8 +695,13 @@ export class DispatchPersistenceError extends Error {
   }
 }
 
-/** Wrap a post-claim persistence call so an infrastructure failure surfaces
- *  as DispatchPersistenceError (with the run id) instead of a bare 500. */
+/** Wrap a post-TX-A protocol write (claim, pre-claim failure, boundary
+ *  failure, terminal/unknown persistence) so an infrastructure failure —
+ *  including a COMMIT whose acknowledgement is lost while the write stands
+ *  server-side — surfaces as DispatchPersistenceError carrying the DURABLE
+ *  run id instead of a bare 500 (Codex P2 on 502b8b3: the claim CAS had the
+ *  same ambiguous-outcome exposure as TX-B; a durable run exists from TX-A
+ *  on, so the caller must always receive the run-aware polling contract). */
 async function persistTerminal<T>(ctx: RunDispatchContext, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
@@ -1091,10 +1096,12 @@ export async function executeGovernedRun(
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await failPreclaim(deps.pool, deps.kms, ctx, {
-      errorClass: 'dispatch_preclaim_failed',
-      message,
-    });
+    await persistTerminal(ctx, () =>
+      failPreclaim(deps.pool, deps.kms, ctx, {
+        errorClass: 'dispatch_preclaim_failed',
+        message,
+      }),
+    );
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
@@ -1105,9 +1112,14 @@ export async function executeGovernedRun(
     };
   }
 
-  // §17 — exclusive claim. Only the CAS winner may call the provider.
+  // §17 — exclusive claim. Only the CAS winner may call the provider. The
+  // claim is a post-TX-A protocol write: an ambiguous outcome (e.g. a lost
+  // COMMIT acknowledgement with the claim standing server-side) must surface
+  // run-aware, never as a bare 500 without the durable run id.
   const claimStartedAtMs = performance.now();
-  const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
+  const claim = await persistTerminal(ctx, () =>
+    claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs }),
+  );
   if (!claim.claimed) {
     return readRunStateResponse(deps, ctx, txa.decision);
   }
@@ -1568,10 +1580,12 @@ export async function executePassthroughRun(
         : rewriteOpenaiPassthroughHeaders(plan.inboundHeaders, resolvedCredential.apiKey).outbound;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await failPreclaim(deps.pool, deps.kms, ctx, {
-      errorClass: 'dispatch_preclaim_failed',
-      message,
-    });
+    await persistTerminal(ctx, () =>
+      failPreclaim(deps.pool, deps.kms, ctx, {
+        errorClass: 'dispatch_preclaim_failed',
+        message,
+      }),
+    );
     return {
       run_id: txa.runId,
       audit_chain_id: txa.chainId,
@@ -1583,9 +1597,11 @@ export async function executePassthroughRun(
     };
   }
 
-  // §17 — exclusive claim.
+  // §17 — exclusive claim (run-aware on ambiguous outcomes, as in governed).
   const claimStartedAtMs = performance.now();
-  const claim = await claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs });
+  const claim = await persistTerminal(ctx, () =>
+    claimDispatch(deps.pool, deps.kms, ctx, { timeoutMs: config.timeoutMs }),
+  );
   if (!claim.claimed) {
     const state = await readRunStateResponse(deps, ctx);
     return {
