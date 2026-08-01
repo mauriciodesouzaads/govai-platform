@@ -291,6 +291,7 @@ export async function handleOpenAIGovernedChatCompletions(
     body: input.rawBody,
     signal: input.dispatchSignal,
     beforeDispatch: input.beforeDispatch,
+    monotonicDeadlineMs: input.monotonicDeadlineMs,
     onDispatchStart: input.onDispatchStart,
   });
 

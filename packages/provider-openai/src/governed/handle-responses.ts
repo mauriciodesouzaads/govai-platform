@@ -135,6 +135,11 @@ export type GovernedHandleInput = {
    *  governed block. Supplied ONLY by protocol-v1 run execution; direct
    *  routes omit it. Fail-closed — see ForwardInput.beforeDispatch. */
   beforeDispatch?: () => Promise<void>;
+  /** EP-P03A-A (REV4): monotonic dispatch deadline for the NON-stream
+   *  forward's synchronous post-gate recheck — see
+   *  ForwardInput.monotonicDeadlineMs. Supplied only by the run
+   *  orchestrator; direct routes omit it. */
+  monotonicDeadlineMs?: number;
   /** EP-P03A-A (F3 §19.1): synchronous in-memory marker run immediately
    *  before the non-stream `fetch` — see ForwardInput.onDispatchStart. */
   onDispatchStart?: () => void;
@@ -390,6 +395,7 @@ export async function handleOpenAIGovernedResponses(
     body: input.rawBody,
     signal: input.dispatchSignal,
     beforeDispatch: input.beforeDispatch,
+    monotonicDeadlineMs: input.monotonicDeadlineMs,
     onDispatchStart: input.onDispatchStart,
   });
 

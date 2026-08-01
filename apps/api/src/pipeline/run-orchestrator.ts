@@ -1187,6 +1187,10 @@ export async function executeGovernedRun(
     isStream: false as const,
     dispatchSignal,
     beforeDispatch: makeBoundaryGate(deps, ctx, claim.token),
+    // The same deadline on the MONOTONIC clock, rechecked synchronously by
+    // the forwarder after the gate await — the abort timer's callback may
+    // not have run yet under an event-loop stall (Codex P2 on b80a457).
+    monotonicDeadlineMs: claimStartedAtMs + config.timeoutMs,
     onDispatchStart: () => {
       forwardStarted = true;
     },
@@ -1694,6 +1698,8 @@ export async function executePassthroughRun(
       body: txa.plan.body,
       signal: AbortSignal.timeout(budgetMs),
       beforeDispatch: makeBoundaryGate(deps, ctx, claim.token),
+      // Synchronous post-gate recheck on the monotonic clock (see governed).
+      monotonicDeadlineMs: claimStartedAtMs + config.timeoutMs,
       onDispatchStart: () => {
         forwardStarted = true;
       },

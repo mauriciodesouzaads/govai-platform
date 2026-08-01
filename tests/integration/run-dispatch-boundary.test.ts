@@ -714,6 +714,42 @@ describe('CW6 — signal expires between the boundary commit and the fetch', () 
   });
 });
 
+describe('CW6b — the monotonic deadline is rechecked SYNCHRONOUSLY after the gate', () => {
+  it('an elapsed monotonic deadline refuses the fetch even with a LIVE abort signal (no timer dependency)', async () => {
+    // Codex P2 on b80a457: AbortSignal.timeout is timer-callback-driven, so
+    // under an event-loop stall the continuation after beforeDispatch can
+    // reach the fetch before the overdue timer marks the signal aborted. The
+    // synchronous performance.now() recheck must refuse regardless: here the
+    // signal is LIVE (never aborted) and only the monotonic deadline has
+    // passed — the forward must throw TimeoutError without invoking fetch.
+    const org = await seedOrg(stack);
+    const { token, ctx } = await seedClaimedRun(org);
+    stack.provider.clearRecordedRequestHeaders();
+    let dispatchStarts = 0;
+    const live = new AbortController(); // never aborted
+    const attempt = forwardRaw({
+      baseUrl: stack.provider.baseUrl,
+      pathTemplate: '/v1/messages',
+      concretePath: '/v1/messages',
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-test-workspace-id': org.workspace_id },
+      body: Buffer.from('{"model":"claude-fixture-1"}', 'utf8'),
+      signal: live.signal,
+      beforeDispatch: async () => {
+        const b = await commitDispatchBoundary(stack.db.appPool, ctx, { token });
+        if (!b.committed) throw new Error(`boundary gate refused: ${b.reason}`);
+      },
+      monotonicDeadlineMs: performance.now() - 1, // already elapsed
+      onDispatchStart: () => {
+        dispatchStarts += 1;
+      },
+    });
+    await expect(attempt).rejects.toMatchObject({ name: 'TimeoutError' });
+    expect(dispatchStarts).toBe(0);
+    expect(upstreamCallsFor(org.workspace_id)).toHaveLength(0);
+  });
+});
+
 // =============================================================================
 // CW7 — competing boundary commits: two concurrent gated forwards on the SAME
 // (run, token). Exactly one boundary CAS winner, at most one local forward

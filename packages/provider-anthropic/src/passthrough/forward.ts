@@ -25,6 +25,16 @@ export type ForwardInput = {
    */
   beforeDispatch?: () => Promise<void>;
   /**
+   * EP-P03A-A (REV4): the caller's dispatch deadline on the performance.now()
+   * monotonic clock, checked SYNCHRONOUSLY after the durable-gate await —
+   * AbortSignal.timeout is timer-callback-driven, so under an event-loop
+   * stall a continuation can reach the fetch before the overdue timer marks
+   * the signal aborted (Codex P2 on b80a457). Past the deadline the forward
+   * throws a TimeoutError DOMException without invoking fetch. Supplied by
+   * protocol-v1 run execution; direct routes omit it.
+   */
+  monotonicDeadlineMs?: number;
+  /**
    * EP-P03A-A (F3 §19.1): synchronous, in-memory-only marker invoked
    * immediately before `fetch` (after `beforeDispatch` and after the abort
    * recheck). Lets the caller distinguish a known local error (before any
@@ -67,10 +77,16 @@ export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
 
   // REV4 §12.3 exact production ordering at the fetch boundary:
   //   request fully built → await the durable gate → recheck the abort
-  //   signal → in-memory forward marker → fetch. A gate rejection or an
-  //   already-expired signal makes the fetch structurally unreachable.
+  //   signal → SYNCHRONOUS monotonic-deadline recheck → in-memory forward
+  //   marker → fetch. A gate rejection, an already-expired signal, or an
+  //   elapsed monotonic deadline makes the fetch structurally unreachable —
+  //   the deadline recheck does not depend on the abort timer's callback
+  //   having run (Codex P2 on b80a457).
   if (input.beforeDispatch) await input.beforeDispatch();
   input.signal?.throwIfAborted();
+  if (input.monotonicDeadlineMs !== undefined && performance.now() >= input.monotonicDeadlineMs) {
+    throw new DOMException('dispatch deadline elapsed before fetch', 'TimeoutError');
+  }
   input.onDispatchStart?.();
   const t0 = Date.now();
   const res = await fetch(url, init);
