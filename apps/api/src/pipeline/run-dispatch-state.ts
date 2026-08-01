@@ -916,14 +916,20 @@ export async function finalizeKnownOutcome(
     // `provider_timeout`/`stale_dispatch_claim` on GET /v1/runs/:run_id. The
     // unknown period's history lives on outcome_unknown_at and the
     // run.outcome_unknown event; only a known local error sets a new class.
-    await client.query(
+    // completed_at is RETURNED so the reconciliation event below is stamped
+    // with the DATABASE instant (Codex P2 on dd4abea): an app clock trailing
+    // PostgreSQL must never make run.outcome_reconciled predate the
+    // database-derived outcome_unknown_at it declares reconciling.
+    const upd = await client.query<{ completed_at: Date }>(
       `UPDATE govai.runs
           SET status = $2::text,
               completed_at = now(),
               dispatch_error_class = $3::text
-        WHERE id = $1::uuid`,
+        WHERE id = $1::uuid
+      RETURNING completed_at`,
       [ctx.runId, terminal, outcome.kind === 'local_error' ? 'dispatch_pre_forward_failed' : null],
     );
+    const completedAt = upd.rows[0]!.completed_at;
 
     // 4. Reconciliation event (§26) — before the terminal event, on the same
     // chain. Emitted ONLY for a known PROVIDER result (http): its mandated
@@ -945,7 +951,7 @@ export async function finalizeKnownOutcome(
         provider_invocation_id: invocationId,
         native_request_hash: outcome.nativeRequestHashHex,
         native_response_hash: outcome.nativeResponseHashHex,
-        occurred_at: new Date().toISOString(),
+        occurred_at: completedAt.toISOString(),
         chain_category: 'run',
       });
       await appendLifecycleEvent(client, kms, ctx, reconciled);

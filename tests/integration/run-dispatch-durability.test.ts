@@ -644,6 +644,23 @@ describe('T11 — late reconciliation', () => {
     expect(types.filter((t) => t === 'run.outcome_reconciled')).toHaveLength(1);
     expect(types.filter((t) => t === 'run.completed')).toHaveLength(1);
     expect(types.filter((t) => t === 'run.failed')).toHaveLength(0);
+
+    // Single-clock forensic timeline: the reconciliation event is stamped
+    // with the DATABASE instant of the terminal transition — it equals the
+    // row's completed_at and never predates the outcome_unknown_at it
+    // declares reconciling.
+    const recMeta = await queryAsOrg<{ redaction_metadata: Record<string, unknown> | null }>(
+      org.org_id,
+      `SELECT redaction_metadata FROM govai.audit_events
+        WHERE subject_id = $1::uuid AND event_type = 'run.outcome_reconciled'
+        ORDER BY sequence_number DESC LIMIT 1`,
+      [runId],
+    );
+    const recOccurredAt = recMeta[0]!.redaction_metadata!['occurred_at'] as string;
+    expect(recOccurredAt).toBe(rows[0]!.completed_at!.toISOString());
+    expect(new Date(recOccurredAt).getTime()).toBeGreaterThanOrEqual(
+      rows[0]!.outcome_unknown_at!.getTime(),
+    );
   });
 });
 
