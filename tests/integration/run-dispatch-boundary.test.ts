@@ -236,6 +236,19 @@ describe('CW-wiring — all protocol-v1 non-stream paths cross the durable bound
         [body.run_id],
       );
       expect(evRow[0]!.occurred_at.toISOString()).toBe(rows[0]!.completed_at!.toISOString());
+
+      // The governed v4 capture's ENVELOPE rides the same database instant
+      // (its typed payload keeps the handler-captured occurred_at anchor).
+      if (!p.mode) {
+        const v4Row = await queryAsOrg<{ occurred_at: Date }>(
+          org.org_id,
+          `SELECT occurred_at FROM govai.audit_events
+            WHERE subject_id = $1::uuid AND event_type = 'passthrough.invoked'
+            ORDER BY sequence_number DESC LIMIT 1`,
+          [body.run_id],
+        );
+        expect(v4Row[0]!.occurred_at.toISOString()).toBe(rows[0]!.completed_at!.toISOString());
+      }
     });
   }
 });

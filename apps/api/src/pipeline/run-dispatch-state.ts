@@ -168,6 +168,11 @@ async function persistCapturedV4(
   kms: Kms,
   ctx: DispatchEventContext,
   event: PassthroughInvoked,
+  /** The DATABASE transition instant (completed_at) for the audit ENVELOPE —
+   *  the typed v4 payload keeps its handler-captured occurred_at (ADR-028
+   *  invocation-start anchor); only the envelope rides the database timeline
+   *  so the bound chain chronology never zigzags (Codex P2 on aa49b54). */
+  occurredAt: Date,
 ): Promise<string> {
   const json = JSON.stringify(event);
   const r = await auditAppend(client, kms, {
@@ -177,7 +182,7 @@ async function persistCapturedV4(
     eventVersion: '4',
     subjectType: 'run',
     subjectId: ctx.runId,
-    occurredAt: new Date(),
+    occurredAt,
     payloadHash: sha256(Buffer.from(json, 'utf8')),
     ...AUDIT_CHAIN_KEY,
     redactionMetadata: {
@@ -912,13 +917,7 @@ export async function finalizeKnownOutcome(
       invocationId = inv.id;
     }
 
-    // 2. Captured governed v4 (§20) — persisted here, never during the fetch.
-    let v4EventId: string | undefined;
-    if ((outcome.kind === 'http' || outcome.kind === 'blocked') && outcome.capturedV4) {
-      v4EventId = await persistCapturedV4(client, kms, ctx, outcome.capturedV4);
-    }
-
-    // 3. Run row transition. outcome_unknown_at is PRESERVED on
+    // 2. Run row transition. outcome_unknown_at is PRESERVED on
     // reconciliation, but the stale dispatch error class is NOT (Codex P2 on
     // e9d435e): a known http/blocked outcome CLEARS it — otherwise a
     // reconciled run projects `status: completed` next to an obsolete
@@ -939,6 +938,13 @@ export async function finalizeKnownOutcome(
       [ctx.runId, terminal, outcome.kind === 'local_error' ? 'dispatch_pre_forward_failed' : null],
     );
     const completedAt = upd.rows[0]!.completed_at;
+
+    // 3. Captured governed v4 (§20) — persisted here, never during the fetch;
+    // its envelope rides the database transition instant.
+    let v4EventId: string | undefined;
+    if ((outcome.kind === 'http' || outcome.kind === 'blocked') && outcome.capturedV4) {
+      v4EventId = await persistCapturedV4(client, kms, ctx, outcome.capturedV4, completedAt);
+    }
 
     // 4. Reconciliation event (§26) — before the terminal event, on the same
     // chain. Emitted ONLY for a known PROVIDER result (http): its mandated
