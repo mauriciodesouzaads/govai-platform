@@ -75,6 +75,18 @@ export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
     init.signal = input.signal;
   }
 
+  // Build + VALIDATE the Request object as part of request construction
+  // (§12.3 step 1): Node validates the URL and header values HERE, so an
+  // invalid header (e.g. a decrypted credential containing a newline)
+  // rejects BEFORE the dispatch marker and classifies as a known local
+  // pre-forward failure, never an unknown — Request construction opens no
+  // connection (Codex P2 on cba2eec). duplex is required by undici when a
+  // Request carries a body.
+  if (input.method !== 'GET' && requestBody.length > 0) {
+    (init as { duplex?: string }).duplex = 'half';
+  }
+  const request = new Request(url, init);
+
   // REV4 §12.3 exact production ordering at the fetch boundary:
   //   request fully built → await the durable gate → recheck the abort
   //   signal → SYNCHRONOUS monotonic-deadline recheck → in-memory forward
@@ -89,7 +101,7 @@ export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
   }
   input.onDispatchStart?.();
   const t0 = Date.now();
-  const res = await fetch(url, init);
+  const res = await fetch(request);
   const latency_ms = Date.now() - t0;
   const responseBuf = Buffer.from(await res.arrayBuffer());
   const native_response_hash = sha256Hex(responseBuf);

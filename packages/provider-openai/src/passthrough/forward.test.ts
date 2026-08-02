@@ -34,15 +34,17 @@ describe('forwardRaw', () => {
     expect(r.native_response_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(r.responseBody.toString('utf8')).toBe('{"ok":true}');
     expect(typeof r.latency_ms).toBe('number');
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe(
-      'https://api.openai.example/v1/chat/completions',
-    );
-    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
-    expect(init.method).toBe('POST');
-    expect(init.body).toBeDefined();
+    // REV4 (Codex P2 on cba2eec): the forward constructs and VALIDATES a
+    // Request object at build time (URL + header validation happens there,
+    // before the dispatch marker) and passes THAT to fetch.
+    const req = fetchSpy.mock.calls[0]?.[0] as Request;
+    expect(req.url).toBe('https://api.openai.example/v1/chat/completions');
+    expect(req.method).toBe('POST');
+    expect(req.body).not.toBeNull();
+    expect(await req.text()).toBe('{"model":"gpt-5"}');
   });
 
-  it('omits init.body on GET requests (and when input.body is empty)', async () => {
+  it('omits the body on GET requests (and when input.body is empty)', async () => {
     fetchSpy.mockResolvedValueOnce(new Response('{}', { status: 200, headers: {} }));
     await forwardRaw({
       baseUrl: 'https://x',
@@ -51,9 +53,28 @@ describe('forwardRaw', () => {
       method: 'GET',
       headers: {},
     });
-    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
-    expect(init.method).toBe('GET');
-    expect(init.body).toBeUndefined();
+    const req = fetchSpy.mock.calls[0]?.[0] as Request;
+    expect(req.method).toBe('GET');
+    expect(req.body).toBeNull();
+  });
+
+  it('an invalid header value rejects during Request construction — before any dispatch marker', async () => {
+    let dispatchStarts = 0;
+    await expect(
+      forwardRaw({
+        baseUrl: 'https://x',
+        pathTemplate: '/v1/models',
+        concretePath: '/v1/models',
+        method: 'POST',
+        headers: { authorization: 'Bearer broken\nvalue' },
+        body: Buffer.from('{}', 'utf8'),
+        onDispatchStart: () => {
+          dispatchStarts += 1;
+        },
+      }),
+    ).rejects.toThrow();
+    expect(dispatchStarts).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled(); // no connection was ever attempted
   });
 
   it('falls back to x-request-id when openai-request-id is absent, and to null when neither is present', async () => {

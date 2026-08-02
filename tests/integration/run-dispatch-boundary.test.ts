@@ -28,6 +28,7 @@ import {
   type RunDispatchContext,
 } from '../../apps/api/src/pipeline/run-dispatch-state.js';
 import { forwardRaw } from '../../packages/provider-anthropic/src/passthrough/forward.js';
+import { forwardRaw as forwardRawOpenai } from '../../packages/provider-openai/src/passthrough/forward.js';
 import { handleAnthropicGovernedMessages } from '../../packages/provider-anthropic/src/governed/handle-messages.js';
 import { handleOpenAIGovernedResponses } from '../../packages/provider-openai/src/governed/handle-responses.js';
 import { handleOpenAIGovernedChatCompletions } from '../../packages/provider-openai/src/governed/handle-chat-completions.js';
@@ -755,6 +756,39 @@ describe('CW6b — the monotonic deadline is rechecked SYNCHRONOUSLY after the g
 // (run, token). Exactly one boundary CAS winner, at most one local forward
 // invocation, at most one upstream request; the loser fails closed.
 // =============================================================================
+
+describe('CW6c — fetch-input validation precedes the dispatch marker', () => {
+  it('an invalid header value (credential with a newline) rejects BEFORE onDispatchStart — a known local failure, never an unknown (both forwarders)', async () => {
+    // Codex P2 on cba2eec: Node rejects invalid header values during local
+    // Request validation without opening a connection; the marker must not
+    // have run, so the executors classify it as a known local pre-forward
+    // failure instead of persisting outcome_unknown for a call that was
+    // provably never transmitted.
+    const org = await seedOrg(stack);
+    stack.provider.clearRecordedRequestHeaders();
+    for (const fwd of [forwardRaw, forwardRawOpenai]) {
+      let dispatchStarts = 0;
+      const attempt = fwd({
+        baseUrl: stack.provider.baseUrl,
+        pathTemplate: '/v1/messages',
+        concretePath: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-test-workspace-id': org.workspace_id,
+          'x-api-key': 'broken\nkey-with-newline',
+        },
+        body: Buffer.from('{"model":"claude-fixture-1"}', 'utf8'),
+        onDispatchStart: () => {
+          dispatchStarts += 1;
+        },
+      });
+      await expect(attempt).rejects.toThrow();
+      expect(dispatchStarts).toBe(0); // the marker never ran
+    }
+    expect(upstreamCallsFor(org.workspace_id)).toHaveLength(0); // no connection
+  });
+});
 
 describe('CW7 — competing boundary commits', () => {
   it('two concurrent gated forwards → one CAS winner, one fetch, one upstream request; loser fails closed', async () => {
