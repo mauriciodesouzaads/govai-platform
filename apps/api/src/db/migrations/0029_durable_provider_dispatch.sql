@@ -38,14 +38,34 @@
 -- runs exist is an operational procedure, not a DROP COLUMN.
 
 -- ===========================================================================
--- 0. Boundary-upgrade compatibility preflight (§8) — runs under the MIGRATION
---    RUNNER identity, BEFORE any SET ROLE, so the protocol-v1 count is not
---    subject to the writer role's org-scoped RLS visibility (same rationale as
---    the section-G duplicate count). Cases:
+-- 0. Boundary-upgrade compatibility preflight (§8). Cases:
 --      M-A fresh / pre-boundary with zero v1 rows → proceed
 --      M-B pre-boundary schema WITH v1 rows       → FAIL LOUD (count only)
 --      M-C boundary-aware schema already present  → proceed (idempotent rerun)
 --    No backfill, no deletion, no status mutation on any path.
+--
+--    The M-B decision count must be truthful across ALL organizations under
+--    EVERY supported migrator identity: a true superuser, or a non-superuser
+--    login that can SET ROLE govai_audit_writer (bootstrap.sql's documented
+--    migrator contract). govai.runs is FORCE RLS with org-scoped policies, so
+--    a plain count under a non-superuser identity is silently filtered to a
+--    subset — a pre-boundary v1 row invisible to the runner would be ADOPTED
+--    without this guard firing. Mechanism, all inside this ONE atomic DO
+--    statement: become the table owner (govai_audit_writer), verify the RLS
+--    posture, suspend FORCE (owner-only visibility exemption — ENABLE stays
+--    on, no policy is touched, other roles are unaffected), count with
+--    row_security=off armed as a fail-closed ASSERTION (if any policy would
+--    still filter the owner, the count ERRORS instead of undercounting; it is
+--    NOT the visibility mechanism — suspending FORCE for the owner is), then
+--    restore FORCE and re-verify BEFORE any decision is taken. A RAISE on any
+--    path aborts the whole file's transaction, so no committed state ever has
+--    FORCE disabled, and the ACCESS EXCLUSIVE lock taken by the ALTER means
+--    no other session can observe the window.
+--
+--    Schema-shape detection reads pg_catalog directly, NOT information_schema:
+--    information_schema is privilege-filtered, so a low-privilege runner would
+--    see no govai.runs columns, misdetect M-B as M-A "fresh", and skip this
+--    guard entirely.
 -- ===========================================================================
 
 DO $$
@@ -53,25 +73,54 @@ DECLARE
   v_boundary_exists boolean;
   v_dispatch_cols_exist boolean;
   v_v1_rows bigint;
+  v_rls boolean;
+  v_force boolean;
 BEGIN
   SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-     WHERE table_schema = 'govai' AND table_name = 'runs'
-       AND column_name = 'dispatch_boundary_committed_at'
+    SELECT 1 FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'govai' AND c.relname = 'runs'
+       AND a.attname = 'dispatch_boundary_committed_at'
+       AND NOT a.attisdropped
   ) INTO v_boundary_exists;
   IF v_boundary_exists THEN
     RETURN; -- M-C: boundary-aware schema; idempotent rerun proceeds.
   END IF;
   SELECT EXISTS (
-    SELECT 1 FROM information_schema.columns
-     WHERE table_schema = 'govai' AND table_name = 'runs'
-       AND column_name = 'dispatch_protocol_version'
+    SELECT 1 FROM pg_attribute a
+      JOIN pg_class c ON c.oid = a.attrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'govai' AND c.relname = 'runs'
+       AND a.attname = 'dispatch_protocol_version'
+       AND NOT a.attisdropped
   ) INTO v_dispatch_cols_exist;
   IF NOT v_dispatch_cols_exist THEN
     RETURN; -- M-A: fresh database (0029 never ran); nothing to audit.
   END IF;
+  -- M-B candidate: pre-boundary schema with dispatch columns present.
+  EXECUTE 'SET ROLE govai_audit_writer';
+  SELECT relrowsecurity, relforcerowsecurity INTO v_rls, v_force
+    FROM pg_class WHERE oid = 'govai.runs'::regclass;
+  IF v_rls IS DISTINCT FROM true OR v_force IS DISTINCT FROM true THEN
+    RAISE EXCEPTION
+      'migration 0029: unexpected RLS posture on govai.runs before the preflight count (rls=%, force=%); refusing to continue',
+      v_rls, v_force;
+  END IF;
+  EXECUTE 'ALTER TABLE govai.runs NO FORCE ROW LEVEL SECURITY';
+  PERFORM set_config('row_security', 'off', true);
   EXECUTE 'SELECT count(*) FROM govai.runs WHERE dispatch_protocol_version = 1'
     INTO v_v1_rows;
+  PERFORM set_config('row_security', 'on', true);
+  EXECUTE 'ALTER TABLE govai.runs FORCE ROW LEVEL SECURITY';
+  SELECT relrowsecurity, relforcerowsecurity INTO v_rls, v_force
+    FROM pg_class WHERE oid = 'govai.runs'::regclass;
+  IF v_rls IS DISTINCT FROM true OR v_force IS DISTINCT FROM true THEN
+    RAISE EXCEPTION
+      'migration 0029: RLS posture on govai.runs not restored after the preflight count (rls=%, force=%)',
+      v_rls, v_force;
+  END IF;
+  EXECUTE 'RESET ROLE';
   IF v_v1_rows > 0 THEN
     -- M-B. Safe message: migration identity + total count + operator
     -- instructions ONLY — no run ids, org ids, hashes or row content.
@@ -152,14 +201,20 @@ ALTER TABLE govai.runs
   CHECK (dispatch_timeout_ms IS NULL OR dispatch_timeout_ms BETWEEN 1000 AND 900000);
 
 -- ===========================================================================
--- D0. Boundary-matrix compatibility audit (§9.2) — runs under the MIGRATION
---     RUNNER (RESET ROLE) for full cross-org visibility, BEFORE the constraint
---     below is replaced, so incompatible rows produce ONE safe count-only
---     failure instead of a generic check-constraint violation mid-DDL (the
---     constraint validation right after remains the role-independent
---     backstop). The predicate here is the EXACT negation of the section-D
---     matrix — keep the two in sync. No semantic data modification on any
---     path: rows are counted, never mutated.
+-- D0. Boundary-matrix compatibility audit (§9.2) — a best-effort EARLY
+--     DIAGNOSTIC under the MIGRATION RUNNER (RESET ROLE), BEFORE the
+--     constraint below is replaced, so incompatible rows the runner can see
+--     produce ONE safe count-only failure instead of a generic
+--     check-constraint violation mid-DDL. Under a non-superuser runner the
+--     count may be RLS-filtered to a subset, or raise insufficient_privilege
+--     (caught below → diagnostic skipped): the ADD CONSTRAINT validation
+--     right after is the role-independent, cross-org backstop that scans
+--     every row and rolls back the whole file on the first incompatible one.
+--     FORCE RLS is deliberately NOT suspended here — this guard's only value
+--     over the backstop is a nicer message, and a security posture is not
+--     spent on message quality. The predicate here is the EXACT negation of
+--     the section-D matrix — keep the two in sync. No semantic data
+--     modification on any path: rows are counted, never mutated.
 -- ===========================================================================
 
 RESET ROLE;
@@ -168,6 +223,7 @@ DO $$
 DECLARE
   v_bad bigint;
 BEGIN
+  BEGIN
   SELECT count(*) INTO v_bad
     FROM govai.runs
    WHERE NOT (
@@ -212,6 +268,11 @@ BEGIN
       )
     )
    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE
+      'migration 0029: D0 diagnostic count skipped (runner identity cannot read govai.runs); the ADD CONSTRAINT validation below remains the role-independent backstop';
+    RETURN;
+  END;
   IF v_bad > 0 THEN
     RAISE EXCEPTION
       'migration 0029: % run row(s) are incompatible with the boundary-aware v1 state matrix; no rows were modified — resolve manually before re-running (count only, no row content)',
@@ -346,11 +407,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS provider_invocations_run_dispatch_token_uniq
 -- Pre-existing duplicates make the invariant unenforceable: fail LOUD with a
 -- count only (no row content, no automatic merge/delete — operator decides).
 --
--- The duplicate COUNT runs under the MIGRATION RUNNER (RESET ROLE): the table
--- is FORCE RLS and the writer role has only org-scoped visibility, so a check
--- under SET ROLE would silently see zero rows. The guarded index build below
--- is the role-independent backstop — an index-build unique violation re-raises
--- the same safe message (index builds are never subject to RLS).
+-- The duplicate COUNT is a best-effort diagnostic under the MIGRATION RUNNER
+-- (RESET ROLE): the table is FORCE RLS, so under a non-superuser runner the
+-- count may see an RLS-filtered subset (a check under SET ROLE would see only
+-- org-scoped rows), or raise insufficient_privilege (caught below →
+-- diagnostic skipped). The guarded index build below is the role-independent
+-- backstop — an index-build unique violation re-raises the same safe message
+-- (index builds are never subject to RLS). The build itself runs under the
+-- table owner so a minimal SET-ROLE-capable migrator can execute it.
 -- ===========================================================================
 
 RESET ROLE;
@@ -359,6 +423,7 @@ DO $$
 DECLARE
   v_dupes bigint;
 BEGIN
+  BEGIN
   SELECT count(*) INTO v_dupes
     FROM (
       SELECT payload_ref
@@ -367,12 +432,19 @@ BEGIN
        GROUP BY payload_ref
       HAVING count(*) > 1
     ) d;
+  EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE
+      'migration 0029: duplicate-turn diagnostic count skipped (runner identity cannot read govai.workroom_turns); the guarded unique index build below remains the role-independent backstop';
+    RETURN;
+  END;
   IF v_dupes > 0 THEN
     RAISE EXCEPTION
       'migration 0029: % run_id value(s) have duplicate run_event workroom_turns rows; resolve manually before enforcing uniqueness (no rows were merged or deleted)',
       v_dupes;
   END IF;
 END $$;
+
+SET ROLE govai_audit_writer;
 
 DO $$
 BEGIN
@@ -383,8 +455,6 @@ EXCEPTION WHEN unique_violation THEN
   RAISE EXCEPTION
     'migration 0029: duplicate run_event workroom_turns rows exist; resolve manually before enforcing uniqueness (no rows were merged or deleted)';
 END $$;
-
-SET ROLE govai_audit_writer;
 
 -- ===========================================================================
 -- H. Recovery discovery — narrow writer policy + SECURITY DEFINER candidates

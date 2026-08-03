@@ -9,6 +9,45 @@
 - **`govai_app`** (NOINHERIT, LOGIN, sem BYPASSRLS, sem SUPERUSER): role da
   conexão usada pelo API server em runtime.
 
+## Identidade do migrador × RLS (migrations com guardas de dados, ex. 0029)
+
+Quatro identidades distintas — não confundir:
+
+1. **Superusuário PostgreSQL verdadeiro** (`postgres` em dev/Testcontainers):
+   bypassa RLS integralmente; todos os diagnósticos count-only das migrations
+   enxergam todas as linhas.
+2. **Login administrativo gerenciado** (a identidade de `DATABASE_ADMIN_URL`):
+   requisito PROVADO para rodar as migrations — `LOGIN` + membro de
+   `govai_audit_writer` com opção `SET` (`GRANT govai_audit_writer TO <role>`),
+   sem necessidade de `SUPERUSER` ou `BYPASSRLS`. `INHERIT` é opcional: sem ele
+   os diagnósticos best-effort são pulados (ver abaixo), nunca a decisão de
+   segurança.
+3. **`govai_audit_writer`** (owner das tabelas, NOLOGIN): as migrations fazem
+   `SET ROLE` para ele; tabelas com FORCE RLS sujeitam até o owner.
+4. **`govai_app`** (runtime): sempre org-scoped via `app.org_id`; nunca roda
+   migrations.
+
+Propriedades provadas (PostgreSQL 16, testes RLS-M1..M9):
+
+- A **decisão de segurança M-B** da migration 0029 (bloquear upgrade sobre
+  linhas protocolo-v1 pré-boundary) conta com visibilidade TOTAL cross-org sob
+  QUALQUER identidade suportada: a contagem roda como owner dentro de uma
+  janela transacional `NO FORCE ROW LEVEL SECURITY` confinada a um único
+  statement `DO` atômico. `ENABLE ROW LEVEL SECURITY` permanece ativo, nenhuma
+  policy é alterada, e nenhum estado commitado jamais contém FORCE
+  desabilitado (qualquer falha aborta o arquivo inteiro).
+- Os **diagnósticos count-only** (D0 e a contagem de duplicatas da seção G)
+  são best-effort sob identidade não-superusuário: podem ver um subconjunto
+  filtrado por RLS ou ser pulados por `insufficient_privilege`. Os backstops
+  estruturais independentes de role (validação do `ADD CONSTRAINT` e o unique
+  index build) continuam bloqueando qualquer linha incompatível, com rollback
+  completo do arquivo.
+
+Limites honestos: nada aqui certifica provedores gerenciados específicos (AWS
+RDS, Cloud SQL etc.) — o que está provado é o contrato de role acima em
+PostgreSQL 16. O runtime do API server **nunca** recebe `DATABASE_ADMIN_URL`
+(ver seção "Em production").
+
 ## Senha do `govai_app`
 
 A senha **não** é hardcoded em `bootstrap.sql`. O script exige que o GUC
