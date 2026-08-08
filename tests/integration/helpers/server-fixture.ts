@@ -80,6 +80,16 @@ export async function startStack(envOverrides: Partial<GovAIEnv> = {}): Promise<
     GOVAI_LIVE_TESTS: false,
     GOVAI_PROVIDER_BASE_URL: provider.baseUrl,
     GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION: false,
+    // EP-P03A-A (F3): durable dispatch knobs. The periodic recovery worker is
+    // OFF by default in the hermetic stack so recovery tests can drive
+    // runDispatchRecoverySweepOnce deterministically; a dedicated lifecycle
+    // test opts in via envOverrides.
+    GOVAI_PROVIDER_DISPATCH_TIMEOUT_MS: 300_000,
+    RUN_DISPATCH_RECOVERY_ENABLED: false,
+    RUN_DISPATCH_RECOVERY_INTERVAL_MS: 30_000,
+    RUN_DISPATCH_PREPARED_GRACE_MS: 60_000,
+    RUN_DISPATCH_RECOVERY_GRACE_MS: 30_000,
+    RUN_DISPATCH_RECOVERY_BATCH_SIZE: 50,
     ...envOverrides,
   } as GovAIEnv;
 

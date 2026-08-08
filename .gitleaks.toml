@@ -31,4 +31,6 @@ regexes = [
   '''sk-ant-env-matrix-test-EEEE''',
   '''sk-ant-tenant-A-isolation-test-AAAA''',
   '''sk-ant-tenant-B-isolation-test-BBBB''',
+  '''sk-ant-tenant-t2-key-000000''',
+  '''sk-ant-tenant-t3-key-000000''',
 ]

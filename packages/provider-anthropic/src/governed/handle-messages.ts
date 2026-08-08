@@ -59,6 +59,14 @@ export type GovernedHandleDeps = {
   emitAuditEvent: (event: PassthroughInvoked) => Promise<void> | void;
   /** Optional clock for deterministic tests. */
   now?: () => Date;
+  /**
+   * F3/F1: set by callers that resolve the credential EAGERLY (before the
+   * handler runs — the durable-dispatch orchestrator resolves + KMS-decrypts
+   * ahead of TX-A). On a governed block the evidence must then record the
+   * source that WAS resolved, not the lazy-resolution sentinel. Callers that
+   * resolve lazily (the direct routes) omit this and keep the honest sentinel.
+   */
+  preResolvedCredentialSource?: ResolvedProviderCredential['source'];
 };
 
 export type GovernedNonStreamResult = {
@@ -127,8 +135,32 @@ export type GovernedHandleInput = {
   isStream: boolean;
   /** Multipart hint (false for messages, true for files endpoints when added). */
   isMultipart?: boolean;
-  /** EP-008C: abort signal threaded to the upstream stream fetch (client-disconnect propagation). */
+  /** EP-008C: abort signal threaded to the upstream STREAM fetch only
+   *  (client-disconnect propagation). NEVER reaches the non-stream forward:
+   *  a disconnect must not cancel a non-stream provider call whose evidence
+   *  this surface could then no longer emit (Codex P1 on a3d2103) — the
+   *  non-stream direct behavior stays evidence-preserving, as before F3. */
   signal?: AbortSignal;
+  /** EP-P03A-A (REV4): the protocol-v1 dispatch bound for the NON-stream
+   *  forward. Supplied ONLY by the run orchestrator (its AbortSignal.timeout
+   *  budget — never a client-disconnect signal): that caller CAN persist an
+   *  honest outcome_unknown when the bound fires mid-flight. Direct routes
+   *  omit it. */
+  dispatchSignal?: AbortSignal;
+  /** EP-P03A-A (REV4 §12.1): optional asynchronous durable dispatch gate,
+   *  threaded to the NON-stream forward and awaited immediately before its
+   *  `fetch` — i.e. only after tool/enforcement validation ruled out a
+   *  governed block. Supplied ONLY by protocol-v1 run execution; direct
+   *  routes omit it. Fail-closed — see ForwardInput.beforeDispatch. */
+  beforeDispatch?: () => Promise<void>;
+  /** EP-P03A-A (REV4): monotonic dispatch deadline for the NON-stream
+   *  forward's synchronous post-gate recheck — see
+   *  ForwardInput.monotonicDeadlineMs. Supplied only by the run
+   *  orchestrator; direct routes omit it. */
+  monotonicDeadlineMs?: number;
+  /** EP-P03A-A (F3 §19.1): synchronous in-memory marker run immediately
+   *  before the non-stream `fetch` — see ForwardInput.onDispatchStart. */
+  onDispatchStart?: () => void;
 };
 
 const HOP_BY_HOP = new Set([
@@ -284,9 +316,11 @@ export async function handleAnthropicGovernedMessages(
       latency_ms: 0,
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
-      // F1: the request blocked BEFORE the provider — no credential was
-      // resolved (the resolver is not called on this path).
-      credential_source: 'not_resolved_pre_provider_block',
+      // F1: the request blocked BEFORE the provider — the resolver is not
+      // called on this path. An EAGER caller (F3 orchestrator) already
+      // resolved, so evidence records that source; lazy callers keep the
+      // honest sentinel.
+      credential_source: deps.preResolvedCredentialSource ?? 'not_resolved_pre_provider_block',
       allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
       dlp_decisions: dlpDecisions,
@@ -391,7 +425,9 @@ export async function handleAnthropicGovernedMessages(
     };
   }
 
-  // Non-stream raw forward.
+  // Non-stream raw forward. Bounded ONLY by the caller's dispatch signal —
+  // never by the client-disconnect signal (evidence preservation, see
+  // GovernedHandleInput.signal).
   const fwd = await forwardRaw({
     baseUrl: deps.upstreamBaseUrl,
     pathTemplate: '/v1/messages',
@@ -399,6 +435,10 @@ export async function handleAnthropicGovernedMessages(
     method: 'POST',
     headers: outHeaders,
     body: input.rawBody,
+    signal: input.dispatchSignal,
+    beforeDispatch: input.beforeDispatch,
+    monotonicDeadlineMs: input.monotonicDeadlineMs,
+    onDispatchStart: input.onDispatchStart,
   });
 
   const ev = PassthroughInvokedSchema.parse({

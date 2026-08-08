@@ -16,9 +16,10 @@ afterAll(async () => {
 describe('GET /v1/audit-events pagination', () => {
   it('limit caps result count and before_seq paginates older entries', async () => {
     const org = await seedOrg(stack);
-    // Each completed governed run emits 2 audit events: `run.completed` (legacy)
-    // + `passthrough.invoked v3` (Batch G canonical fact). Three runs yield 6
-    // total events (sequences 1..6) on the org's run chain.
+    // F3 (EP-P03A-A): each completed governed run emits 4 audit events —
+    // `run.dispatch_prepared` + `run.dispatch_claimed` (durable dispatch
+    // lifecycle) + `passthrough.invoked v4` (canonical fact) + `run.completed`.
+    // Three runs yield 12 total events (sequences 1..12) on the org's run chain.
     for (let i = 0; i < 3; i++) {
       const r = await inject(stack, 'POST', '/v1/runs', org.api_key, {
         workspace_id: org.workspace_id,
@@ -34,10 +35,10 @@ describe('GET /v1/audit-events pagination', () => {
     expect(p1.statusCode).toBe(200);
     const b1 = p1.body as { events: Array<{ sequence_number: number }> };
     expect(b1.events.length).toBe(2);
-    expect(b1.events[0]!.sequence_number).toBe(6);
-    expect(b1.events[1]!.sequence_number).toBe(5);
+    expect(b1.events[0]!.sequence_number).toBe(12);
+    expect(b1.events[1]!.sequence_number).toBe(11);
 
-    // Page 2: before_seq=5 → next two.
+    // Page 2: before_seq=11 → next two.
     const p2 = await inject(
       stack,
       'GET',
@@ -47,10 +48,10 @@ describe('GET /v1/audit-events pagination', () => {
     expect(p2.statusCode).toBe(200);
     const b2 = p2.body as { events: Array<{ sequence_number: number }> };
     expect(b2.events.length).toBe(2);
-    expect(b2.events[0]!.sequence_number).toBe(4);
-    expect(b2.events[1]!.sequence_number).toBe(3);
+    expect(b2.events[0]!.sequence_number).toBe(10);
+    expect(b2.events[1]!.sequence_number).toBe(9);
 
-    // Page 3: last two.
+    // Page 3: next two.
     const p3 = await inject(
       stack,
       'GET',
@@ -60,7 +61,7 @@ describe('GET /v1/audit-events pagination', () => {
     expect(p3.statusCode).toBe(200);
     const b3 = p3.body as { events: Array<{ sequence_number: number }> };
     expect(b3.events.length).toBe(2);
-    expect(b3.events[0]!.sequence_number).toBe(2);
-    expect(b3.events[1]!.sequence_number).toBe(1);
+    expect(b3.events[0]!.sequence_number).toBe(8);
+    expect(b3.events[1]!.sequence_number).toBe(7);
   });
 });

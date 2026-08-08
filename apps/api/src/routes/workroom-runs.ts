@@ -26,12 +26,14 @@ import { z } from 'zod';
 import { setLocalAppOrgId } from '@govai/core-tenant';
 import { hasAnyRole } from '@govai/core-identity';
 import { authenticateApiKey, AuthError, type AuthIdentity } from '../pipeline/auth.js';
+import { MissingProviderKeyError } from '../pipeline/provider-credentials.js';
 import {
   executeGovernedRun,
   executePassthroughRun,
   validateApprovalForRun,
   CapabilityNotSupportedError,
   CapabilityNotRegisteredError,
+  DispatchPersistenceError,
   WorkroomRunContextInvalidError,
   WorkroomApprovalInvalidError,
   type RunRequest,
@@ -44,7 +46,15 @@ import {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const RunStatus = z.enum(['queued', 'running', 'completed', 'failed', 'denied', 'awaiting_approval']);
+const RunStatus = z.enum([
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'denied',
+  'outcome_unknown',
+  'awaiting_approval',
+]);
 
 const CreateRunBody = z.object({
   capability: z.string().min(1).max(200),
@@ -411,8 +421,13 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
         workroom_governance_mode: workroom.governance_mode,
         workroom_turn_id: turnId,
         turn_number: turnNumber,
-        audit_event_id: result.audit_event_id,
+        // F3: absent on outcome_unknown (minimal contract) — the turn anchors
+        // the run.outcome_unknown lifecycle event in that case.
+        ...(result.audit_event_id ? { audit_event_id: result.audit_event_id } : {}),
         audit_chain_id: result.audit_chain_id,
+        ...(result.status === 'outcome_unknown'
+          ? { retry_safe: false, error_class: 'dispatch_outcome_unknown' }
+          : {}),
         ...(approvalContext
           ? { approval_request_id: approvalContext.approval_request_id }
           : {}),
@@ -451,6 +466,35 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
           mode_relation: 'override_denied' satisfies ModeRelation,
           workroom_id: workroomId,
           workroom_governance_mode: workroom.governance_mode,
+        };
+      }
+      // F3: the credential resolves BEFORE TX-A, so a missing/undecryptable
+      // credential is a clean pre-run 502 — no run row, no turn, no provider call.
+      if (err instanceof MissingProviderKeyError) {
+        reply.code(502);
+        return {
+          error: 'provider_credential_unresolvable',
+          provider: err.provider,
+          reason: err.reason,
+        };
+      }
+      // Post-claim terminal persistence failed: the provider action MAY have
+      // executed but could not be durably recorded. Return the durable run id
+      // + retry_safe=false + a Location to poll — never a bare 500 that
+      // invites re-executing the action under a new run.
+      if (err instanceof DispatchPersistenceError) {
+        req.log.error(
+          { run_id: err.runId, cause_name: err.causeName, org_id: identity.org_id },
+          'workroom-owned run: dispatch terminal persistence failed',
+        );
+        reply.code(500);
+        reply.header('location', `/v1/runs/${err.runId}`);
+        reply.header('retry-after', '5');
+        return {
+          error: 'dispatch_persistence_failed',
+          run_id: err.runId,
+          audit_chain_id: err.chainId,
+          retry_safe: false,
         };
       }
       req.log.error(

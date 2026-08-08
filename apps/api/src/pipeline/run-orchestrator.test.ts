@@ -15,7 +15,10 @@
 // `__test` namespace marked with a JSDoc comment explaining its purpose.
 
 import { describe, it, expect } from 'vitest';
-import { __test_providerUpstreamBaseUrl } from './run-orchestrator.js';
+import {
+  __test_providerUpstreamBaseUrl,
+  __test_remainingDispatchBudgetMs,
+} from './run-orchestrator.js';
 import type { GovAIEnv } from '@govai/config';
 
 function envWith(overrides: Partial<GovAIEnv>): GovAIEnv {
@@ -93,5 +96,42 @@ describe('run-orchestrator / providerUpstreamBaseUrl', () => {
       expect(__test_providerUpstreamBaseUrl(env, 'anthropic').length).toBeGreaterThan(0);
       expect(__test_providerUpstreamBaseUrl(env, 'openai').length).toBeGreaterThan(0);
     }
+  });
+});
+
+// =============================================================================
+// remainingDispatchBudgetMs — the AbortSignal budget is anchored to the
+// DURABLE claim deadline via a MONOTONIC same-clock elapsed delta (Codex P2
+// on 633e10b + P2 on 3774a79): the database fixes deadline = db_now +
+// timeout at claim COMMIT, and the budget is timeout minus the
+// performance.now() time already spent since just before the claim call. No
+// cross-clock subtraction and no wall clock exist in the delta, so neither
+// an app clock offset from PostgreSQL nor a backward wall-clock step can
+// extend the budget past the durable deadline; a stalled executor must not
+// start provider I/O the protocol already gave up on.
+// =============================================================================
+
+describe('remainingDispatchBudgetMs', () => {
+  it('elapsed at least the configured budget → non-positive (the forward must be refused)', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 300_000)).toBe(0);
+    expect(__test_remainingDispatchBudgetMs(300_000, 300_001)).toBeLessThanOrEqual(0);
+    expect(__test_remainingDispatchBudgetMs(300_000, 999_000)).toBeLessThanOrEqual(0);
+  });
+
+  it('a post-claim stall consumes the budget one-for-one (conservative: includes the claim round trip)', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 295_000)).toBe(5_000);
+    expect(__test_remainingDispatchBudgetMs(300_000, 1)).toBe(299_999);
+  });
+
+  it('a fractional monotonic elapsed floors to an INTEGER budget (AbortSignal.timeout contract; floor is the conservative direction)', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 0.4)).toBe(299_999);
+    expect(Number.isInteger(__test_remainingDispatchBudgetMs(300_000, 123.456))).toBe(true);
+  });
+
+  it('never exceeds the configured budget, even for a non-positive elapsed input', () => {
+    expect(__test_remainingDispatchBudgetMs(300_000, 0)).toBe(300_000);
+    // Defensive: a negative elapsed (impossible from a same-clock delta save
+    // for a local clock step) must not extend past the configured cap.
+    expect(__test_remainingDispatchBudgetMs(300_000, -60_000)).toBe(300_000);
   });
 });

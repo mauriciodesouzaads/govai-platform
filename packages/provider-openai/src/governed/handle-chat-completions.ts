@@ -183,7 +183,7 @@ export async function handleOpenAIGovernedChatCompletions(
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
       // F1: blocked before the provider — no credential was resolved.
-      credential_source: 'not_resolved_pre_provider_block',
+      credential_source: deps.preResolvedCredentialSource ?? 'not_resolved_pre_provider_block',
       allowlist_version: OPENAI_BETA_POLICY_VERSION,
       body_forward_mode: 'blocked',
       dlp_decisions: dlpDecisions,
@@ -279,6 +279,9 @@ export async function handleOpenAIGovernedChatCompletions(
     };
   }
 
+  // Non-stream raw forward. Bounded ONLY by the caller's dispatch signal —
+  // never by the client-disconnect signal (evidence preservation, see
+  // GovernedHandleInput.signal in handle-responses.ts).
   const fwd = await forwardRaw({
     baseUrl: deps.upstreamBaseUrl,
     pathTemplate: '/v1/chat/completions',
@@ -286,6 +289,10 @@ export async function handleOpenAIGovernedChatCompletions(
     method: 'POST',
     headers: outHeaders,
     body: input.rawBody,
+    signal: input.dispatchSignal,
+    beforeDispatch: input.beforeDispatch,
+    monotonicDeadlineMs: input.monotonicDeadlineMs,
+    onDispatchStart: input.onDispatchStart,
   });
 
   const ev = PassthroughInvokedSchema.parse({
