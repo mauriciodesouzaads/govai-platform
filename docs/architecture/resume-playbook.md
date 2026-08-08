@@ -23,29 +23,33 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ## 2. Current known-good main
 
-- main after PR #93: `d037e3309977dbc721c5404dac63c52375211db3` (#88–#91 docs-only; **#92 first code merge — ADR-023 Option A(b) implemented/tested** in `packages/core-audit/`; **#93 docs-only — ADR-028 Accepted**). ADR-027 (Phase 2.5 AuditBridge) is **accepted but not implemented/tested**. **ADR-028 (Accepted, docs-only, merged)** decides direct-route request identity (`govai_request_id` at ingress + optional `X-GovAI-Idempotency-Key`; `captureId` MUST NOT be `audit_event_id`; `payloadHash` is a stable `AuditBridgeCapturePayloadV1` projection, not the full envelope). Next step: the AuditBridge implementation PR (ADR-027 + ADR-028). B3 still not authorized.
+- main after PR #123: `165291d90b144d3063ed87b8eaeac73e9a506e41` — **P0.3-A / F3 durable provider dispatch** (squash of PR #123; single parent `4d6eab72` = the EP-DOCS-05 roll; post-merge main CI run `31282331366` SUCCESS). [current-state.md](./current-state.md) is the evidence-first source of truth — resume from it, not from this line alone.
 - Toolchain: Node v24.15.0 (modules 137), pnpm 10.33.2.
 
 ---
 
 ## 3. Closed gates (confirmed)
 
-- H1 v2 provider-native compatibility coverage (mandatory invariants mapped to executing tests).
-- PR #87: valid-tools pass-through positive byte-for-byte.
-- Coverage map uses stable `RB-OAI[alias]`/`RB-ANT[alias]` anchors.
-- Audit B0 (capture outbox) + B1 (capture adapter, tested as a primitive) + B2 (sealer library) merged.
+- H1 v2 provider-native compatibility coverage (mandatory invariants mapped to executing tests); coverage map uses stable `RB-OAI[alias]`/`RB-ANT[alias]` anchors.
+- Audit B0 (capture outbox) + B1 (capture adapter) + B2 (sealer library) merged; ADR-023 Option A(b) implemented/tested (PR #92).
+- **AuditBridge runtime-to-evidence wiring (ADR-027/028) — IMPLEMENTED (PR-B / EP-004):** all four direct governed/passthrough routes dispatch into the B0/B1 capture outbox behind the ingress identity hook (I3/I4 proven).
+- **B3 AuditSealer runner — AUTHORIZED + IMPLEMENTED (EP-006, `apps/audit-sealer`)**, S0–S11 integration-tested; deployable packaging shipped (EP-SEALER-DEPLOY, PR #117).
+- Evidence completeness layer (EP-008A/B/C/D + EP-OBS-*): views, drop/capture counters, stream terminal completeness, EC reports + RLS-scoped `/v1/evidence` read API, gauges behind `govai_evidence_enumerator` (INV-1), OTLP collector stack.
+- CI as an enforced two-job gate (unit + integration; PR #116 `GOVAI_INTEGRATION` config gate).
+- P0 packages: P0.1 F5+F6 (PR #118), P0.2 F1+C-2 (PR #119), F4 preventive hardening (PR #120), **P0.3-A F3 durable dispatch (PR #123)** — F3 `DEMONSTRATED → CORRECTED`.
 
 ---
 
 ## 4. Open gates
 
-- **B3 decision pack accepted (architecture decisions only)** — ADR-022/024/025/026 Accepted as design constraints; **ADR-023 decision made: Option A(b)** — deterministic `audit_event_id` derived from `org_id + capture_id`; accepted as a design constraint and **implemented/tested in PR #92** (`sealer-event-id.ts`, `sealer.ts`, `append.ts`; `sealer-deterministic-append.test.ts`); **still does not authorize B3**. B3 Technical Plan written (`specs/audit-sealer-b3-technical-plan.md`). ADR-020 Superseded-in-part.
-- **Append→mark_sealed partial-failure idempotency** — **mechanism DECIDED (Option A(b)) and implemented/tested in PR #92**; the §8.3 append-succeeded / `mark_sealed`-failed no-duplicate-retry case is covered by `sealer-deterministic-append.test.ts`. **Capture idempotency and append→mark_sealed idempotency are distinct layers — both are now implemented.** B3 remains blocked on the **runner + Phase 2.5 wiring + explicit authorization**, not on Option A(b) (technical plan §8.3/§11).
-- **B3 Technical Plan** — written as a draft / decision-pack candidate in `docs/architecture/specs/audit-sealer-b3-technical-plan.md`; it does **not** authorize implementation. It records ADR-023 Option A(b) as the design decision (now implemented/tested in PR #92), while B3 remains blocked by the **Phase 2.5 runtime-to-evidence dispatch** implementation/tests and **explicit authorization**.
-- **Runtime-to-evidence wiring (Phase 2.5 / ADR-027): decision ACCEPTED as a design constraint, but NOT implemented / NOT tested.** Direct governed-native + passthrough routes are still logger-only in source (`governed-openai.ts:69-70`, `governed-anthropic.ts:71-72`; `passthrough-*.ts`); **zero `captureAuditEvent` call-sites in `apps/`**. The route hooks receive `event: unknown`, so the future **AuditBridge** must validate/narrow via `PassthroughInvokedSchema` before `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" intent for direct routes; `/v1/runs` stays distinct/chain-authoritative via `auditAppend`. B3 still blocked until AuditBridge is implemented/tested (or an accepted deferral names another path).
-- **`/v1/runs` orchestrator writes run-lifecycle audit to the chain via `auditAppend`** (`run-orchestrator.ts`), **not** to the capture outbox — distinct path.
-- **Runtime hard-deny enforcement** not source/test-verified as complete (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only).
-- **Evidence completeness / cockpit** not complete (no captured/sealed/failed counts, no provider-without-audit detection).
+- **ADR-032 repository promulgation — NEXT movement.** The owner adjudication is complete but the accepted decision remains staged outside the repository. **EP-11 runtime implementation must not begin until ADR-032 is promulgated in the repository.**
+- **EP-11** — OpenAI Files-purpose provider-truth correction (after promulgation).
+- **Remaining P0.3 slices — P0.3-C OPEN.**
+- **F2** — `OPEN_PENDING_SOURCE_CLASSIFICATION`: separate source adjudication + sealed-schema decision; do not classify it (or assert an aggregate findings count) before that.
+- **Real EC-5** — deferred to a separate Option-A EP.
+- **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** — separate P1 evidence-integrity class; remediation is a separate EP.
+- **PR-0 / D9** — source corpus **LOCATED** (11/11 required paths, owner-supplied v0.9 package, hash-inventoried); **repository promulgation PENDING** (`PR0_STATUS=DOCUMENTARY_BLOCKED_PENDING_PROMULGATION`). In-repo references to the D9 artifacts (migration 0025, `capture.ts`, `beta-policy.ts`) remain broken in-tree until promotion.
+- **Runtime hard-deny enforcement** not source/test-verified as complete (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only; Phase 5).
 
 ---
 
@@ -56,8 +60,8 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 3. Read `stale-docs-register.md` (do not trust a doc it flags).
 4. Read the latest merged PR + its merge commit; confirm `main`.
 5. `gh pr list` open PRs; for each, `gh pr checks` + review threads.
-6. **Never start B3** without an explicitly accepted decision pack.
-7. **Never claim evidence completeness** unless runtime-to-evidence wiring is verified.
+6. **Never start/run the B3 runner-loop against live infrastructure** without explicit owner authorization (the code is implemented; live operation is a separate authorization).
+7. **Never claim evidence-plane completeness beyond what current-state.md §3 verifies** (real EC-5 is deferred; the local-deny evidence-incompleteness class is open).
 
 ---
 
@@ -69,12 +73,13 @@ Stop and report (no push/merge) if:
 - CI failing or pending;
 - an unresolved, **non-outdated** Codex review thread;
 - a docs-only PR contains a production/test/migration/package/lock change;
-- any text would overclaim B3 ("B3 authorized", "ready for B3") or compliance/certification;
-- **any prompt that treats the ADR-023 Option A(b) decision (or its PR #92 implementation) as B3 runner authorization** (Option A(b) is implemented/tested, but the B3 runner remains unauthorized);
+- any text would overclaim compliance/certification, or claim evidence-plane completeness beyond what current-state.md §3 verifies (real EC-5 deferred; the local-deny evidence-incompleteness class open);
+- **any prompt that treats the implemented B3 code as authorization to RUN the sealer loop against live infrastructure** (implementation and live operation are separate authorizations);
+- any prompt that would start EP-11 runtime work **before ADR-032 is promulgated in the repository**, or that promotes D9 artifacts outside the dedicated PR-0/D9 V2 movement;
 - a provider-native parity claim without tests;
 - a status marked IMPLEMENTED_RUNTIME without source evidence;
-- an **evidence-plane completeness claim while direct governed-native audit is logger-only**;
-- **runtime route existence used as proof of sealed evidence capture**.
+- **runtime route existence used as proof of sealed evidence capture**;
+- **any text that claims exactly-once provider dispatch** (the P0.3-A contract is a durable boundary + honest `run.outcome_unknown`, not exactly-once; a durable boundary is not a provider receipt).
 
 ---
 
@@ -98,7 +103,7 @@ End every task with:
 
 - No `--admin` merge; no force push; no branch deletion.
 - No AWS/KMS use without explicit scope; no reading `.env`/secrets; no live provider tests unless requested.
-- No B3 implementation until the decision pack is accepted.
+- No live B3 sealer-loop operation without explicit owner authorization.
 - No editing production/tests/migrations in a docs-only task.
-- No marking ADR-022..026 Accepted outside the dedicated B3 decision-pack PR.
-- **No evidence-completeness claim before runtime-to-evidence dispatch is verified.**
+- No ADR status changes (and no ADR-032 promulgation, no D9 artifact promotion) outside the dedicated, owner-authorized PR for that movement.
+- **No evidence-plane completeness claim beyond what current-state.md §3 verifies.**
