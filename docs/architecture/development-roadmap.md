@@ -1,6 +1,6 @@
 # GovAI Development Roadmap
 
-Anchored on [current-state.md](./current-state.md) (main `e422280d`, evidence-first). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
+Anchored on [current-state.md](./current-state.md) (main `165291d9`, evidence-first). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
 
 ---
 
@@ -18,27 +18,40 @@ P0
 
 **P0** is an *operational priority* lane inside the macro-phase "Phase 0 — Truth and Integrity" (a truth-and-integrity program over already-shipped evidence surfaces). A P0-priority item does **not** thereby belong to the product-phase numbering below (in particular, it is not part of "Phase 0 — Built and source-verified", which is a product phase that happens to share the label). The canonical F1–F6 + C-2 matrix and the F4 canonical state live in current-state.md §8.
 
-Current P0 sequence at main `e422280d`:
+Current P0 sequence at main `165291d9`:
 
 1. **EP-DOCS-04 / PR #121 — COMPLETE.** Squash-merged as
    `e422280d`, tree `196701d8`, and independently dual
-   merge-verified. The PR reconciled the three hand-maintained
-   architecture documents and corrected one comment-only ALS
-   description; it changed no executable behavior.
-2. **P0.3-A / F3 — NEXT.** Transaction and dispatch-state
-   integrity program. F3 remains demonstrated and open.
-3. **EP-11 — OpenAI Files-purpose provider-truth correction.**
-   ADR-032 owner adjudication is complete, but the accepted decision
-   remains staged outside the repository. Repository promulgation is
-   pending, and this roadmap is not the constraint text. EP-11 runtime
-   implementation must not begin until ADR-032 is promulgated in the
-   repository. After promulgation, remove the false local deny and
-   warning while preserving forwarding and evidence of the provider's
-   actual result. This decision and its priority are not date-dependent.
-4. **Remaining P0.3 slices.**
-5. **F2** source adjudication and sealed-schema decision.
-6. **PR-0 / D9 documentary closure** when the missing mirror is
-   located.
+   merge-verified; EP-DOCS-05 / PR #122 (squash `4d6eab72`)
+   subsequently rolled the canonical anchor. Docs-only; no
+   executable behavior changed.
+2. **P0.3-A / F3 — COMPLETE.** PR #123 squash-merged as
+   `165291d9` (tree byte-identical to the audited head
+   `08b59930`; single parent `4d6eab72`; post-merge main CI run
+   `31282331366` SUCCESS). Provider network I/O moved outside
+   database transactions and checked-out clients; durable dispatch
+   boundary, honest `run.outcome_unknown` semantics, bounded
+   recovery, forensic lifecycle evidence, tenant-isolated status
+   polling, migration 0029 (see current-state.md §3/§8).
+   **F3: DEMONSTRATED → CORRECTED.**
+3. **ADR-032 repository promulgation — NEXT.** The owner
+   adjudication is complete, but the accepted decision remains
+   staged outside the repository; promulgation is the next
+   movement.
+4. **EP-11 — OpenAI Files-purpose provider-truth correction.**
+   Repository promulgation of ADR-032 is pending, and this roadmap
+   is not the constraint text. EP-11 runtime implementation must
+   not begin until ADR-032 is promulgated in the repository. After
+   promulgation, remove the false local deny and warning while
+   preserving forwarding and evidence of the provider's actual
+   result. This decision and its priority are not date-dependent.
+5. **Remaining P0.3 slices (P0.3-C — OPEN).**
+6. **F2** source adjudication and sealed-schema decision
+   (OPEN_PENDING_SOURCE_CLASSIFICATION).
+7. **PR-0 / D9 V2 — final rebase and repository promulgation**,
+   after its required inputs and rebaseline are available (see the
+   D9 state below: the source corpus is located; promulgation into
+   main is what remains).
 
 Separate P1 evidence-integrity follow-up:
 
@@ -48,13 +61,34 @@ Separate P1 evidence-integrity follow-up:
   local-deny branches that emit no audit event. Class-wide
   remediation requires a separate EP.
 
-D9 state:
+D9 state (supersedes the former `D9_LOCATION=UNRESOLVED`, which WAS
+the recorded state until 2026-08-08 and is now HISTORICAL — the D9
+source corpus has been located and integrity-inventoried in the
+owner-supplied v0.9/PR-0 package, per
+`EP-PR0-D9-RECONCILIATION-V2_MANIFEST_v0.2`):
 
 ```text
-D9_LOCATION=UNRESOLVED
-PR0_STATUS=DOCUMENTARY_BLOCKED
+D9_SOURCE_CORPUS_LOCATED=YES
+D9_REQUIRED_PATHS_PRESENT_IN_SOURCE=11_OF_11
+D9_CONTENT_HASHED=YES
+D9_SOURCE_PROVENANCE=USER_SUPPLIED_V09_PACKAGE
+D9_PRIOR_CANONICAL_HASH_LEDGER=NOT_AVAILABLE
+
+D9_PRESENT_IN_REPOSITORY_MAIN=NO
+D9_REPOSITORY_PROMULGATION=PENDING
+
+PR0_STATUS=DOCUMENTARY_BLOCKED_PENDING_PROMULGATION
 TECHNICAL_P0_3_STATUS=NOT_BLOCKED_BY_D9
 ```
+
+`D9_PRESENT_IN_REPOSITORY_MAIN=NO` does **not** mean the source
+corpus was not found — those are distinct statements. The corpus
+exists and is hash-inventoried outside the repository; what remains
+is its promulgation into main (a future PR-0/D9 V2 movement, after
+its required inputs and rebaseline). Until that promotion, in-repo
+references to the D9 artifacts remain broken (see
+stale-docs-register.md — repository reference targets missing while
+the source artifacts are available externally).
 
 ---
 
