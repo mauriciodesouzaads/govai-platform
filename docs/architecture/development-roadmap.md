@@ -34,17 +34,18 @@ Current P0 sequence at main `165291d9`:
    recovery, forensic lifecycle evidence, tenant-isolated status
    polling, migration 0029 (see current-state.md §3/§8).
    **F3: DEMONSTRATED → CORRECTED.**
-3. **ADR-032 repository promulgation — NEXT.** The owner
-   adjudication is complete, but the accepted decision remains
-   staged outside the repository; promulgation is the next
-   movement.
-4. **EP-11 — OpenAI Files-purpose provider-truth correction.**
-   Repository promulgation of ADR-032 is pending, and this roadmap
-   is not the constraint text. EP-11 runtime implementation must
-   not begin until ADR-032 is promulgated in the repository. After
-   promulgation, remove the false local deny and warning while
-   preserving forwarding and evidence of the provider's actual
-   result. This decision and its priority are not date-dependent.
+3. **ADR-032 — ACCEPTED; repository-promulgation artifact defined.**
+   The owner adjudication is complete. The controlling provider-truth
+   constraint is
+   `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`.
+   Only the version present on `main` is canonical. This documentary
+   movement changes no runtime behavior. **EP-11 must not begin unless that
+   ADR artifact is present on `main`.**
+4. **EP-11 — OpenAI Files-purpose provider-truth correction; NEXT after
+   ADR-032 is present on `main`.** Implement the narrow runtime correction
+   defined by ADR-032: remove the false local deny and warning while
+   preserving forwarding and evidence of the provider's actual result.
+   This decision and its priority are not date-dependent.
 5. **Remaining P0.3 slices (P0.3-C — OPEN).**
 6. **F2** source adjudication and sealed-schema decision
    (OPEN_PENDING_SOURCE_CLASSIFICATION).

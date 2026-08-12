@@ -37,13 +37,20 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 - Evidence completeness layer (EP-008A/B/C/D + EP-OBS-*): views, drop/capture counters, stream terminal completeness, EC reports + RLS-scoped `/v1/evidence` read API, gauges behind `govai_evidence_enumerator` (INV-1), OTLP collector stack.
 - CI as an enforced two-job gate (unit + integration; PR #116 `GOVAI_INTEGRATION` config gate).
 - P0 packages: P0.1 F5+F6 (PR #118), P0.2 F1+C-2 (PR #119), F4 preventive hardening (PR #120), **P0.3-A F3 durable dispatch (PR #123)** — F3 `DEMONSTRATED → CORRECTED`.
+- **ADR-032 owner adjudication — COMPLETE.** The controlling provider-truth
+  decision is Accepted. Its repository-promulgation artifact is
+  `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`.
+  Only the version present on `main` is canonical; this docs-only movement
+  does not implement EP-11.
 
 ---
 
 ## 4. Open gates
 
-- **ADR-032 repository promulgation — NEXT movement.** The owner adjudication is complete but the accepted decision remains staged outside the repository. **EP-11 runtime implementation must not begin until ADR-032 is promulgated in the repository.**
-- **EP-11** — OpenAI Files-purpose provider-truth correction (after promulgation).
+- **EP-11 — OpenAI Files-purpose provider-truth correction.** May begin only
+  after
+  `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`
+  is present on `main`; implementation remains a separate runtime movement.
 - **Remaining P0.3 slices — P0.3-C OPEN.**
 - **F2** — `OPEN_PENDING_SOURCE_CLASSIFICATION`: separate source adjudication + sealed-schema decision; do not classify it (or assert an aggregate findings count) before that.
 - **Real EC-5** — deferred to a separate Option-A EP.
