@@ -151,13 +151,6 @@ export {
   type StreamForwardResult,
 } from './passthrough/stream-forward.js';
 export {
-  validateFilesPurpose,
-  extractMultipartPurpose,
-  OPENAI_ASSISTANTS_SUNSET_AT,
-  OPENAI_ASSISTANTS_MIGRATION_TARGET,
-  type FilesPurposeValidationResult,
-} from './passthrough/files-purpose-validator.js';
-export {
   registerOpenAIPassthrough,
   type OpenAIPassthroughDeps,
 } from './routes/register-passthrough.js';

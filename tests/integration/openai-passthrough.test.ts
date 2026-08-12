@@ -10,7 +10,10 @@
 //   - tool classifier blocks computer_use_preview → 403 + `tool.validation_blocked`
 //     with reason=capability_blocked_via_token.
 //   - Chat Completions with web_search tool → 403 (Chat only accepts function).
-//   - Files purpose=assistants pre-sunset → 200 + warning header + audit fields.
+//   - Files purpose=assistants → provider truth (ADR-032): forwarded normally,
+//     provider accept AND provider reject both recorded as-is, no local warning,
+//     no synthetic local 403, no runtime deprecation fields on new events.
+//   - Files purpose=fine-tune → normal forwarding regression.
 //   - vector_stores DELETE Starter tier path resolved.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -206,7 +209,7 @@ describe('Batch C — /passthrough/openai/*', () => {
     expect(blocked[0]!['reason']).toBe('typed_unknown');
   });
 
-  it('POST /v1/files purpose=assistants pre-sunset → 200 + warning header + audit deprecation fields', async () => {
+  it('POST /v1/files purpose=assistants, provider accepts → provider 200 recorded, no local warning, no runtime deprecation fields (ADR-032)', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
     const res = await stack.app.inject({
@@ -219,15 +222,81 @@ describe('Batch C — /passthrough/openai/*', () => {
       payload: JSON.stringify({ purpose: 'assistants' }),
     });
     expect(res.statusCode).toBe(200);
-    expect(res.headers['x-govai-deprecation-warning']).toContain('assistants_sunset=2026-08-26');
+    expect(res.headers['x-govai-deprecation-warning']).toBeUndefined();
+
+    const invoked = takeInvoked();
+    expect(invoked.length).toBe(1);
+    const ev = invoked[0]!;
+    expect(ev['provider']).toBe('openai');
+    expect(ev['capability_id']).toBe('openai.files');
+    expect(ev['status_code']).toBe(200);
+    expect(ev['body_forward_mode']).toBe('raw');
+    expect(ev['enforcement_decision']).toBe('observe');
+    expect(ev['native_request_hash']).toMatch(/^[0-9a-f]{64}$/);
+    expect(ev['native_response_hash']).toMatch(/^[0-9a-f]{64}$/);
+    // The fixture supplies openai-request-id on /v1/files.
+    expect(typeof ev['provider_request_id']).toBe('string');
+    // ADR-032: new events carry NO runtime deprecation signal.
+    expect(ev['purpose_deprecated']).toBeUndefined();
+    expect(ev['purpose_deprecation_sunset_at']).toBeUndefined();
+    expect(ev['purpose_deprecation_migration_target']).toBeUndefined();
+  });
+
+  it('POST /v1/files purpose=assistants, provider rejects (429) → provider 429 recorded as-is, no synthetic local 403 (ADR-032)', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/openai/v1/files',
+      headers: {
+        'content-type': 'application/json',
+        'x-govai-api-key': org.api_key,
+        'x-test-error': '429',
+      },
+      payload: JSON.stringify({ purpose: 'assistants' }),
+    });
+    // The provider's actual rejection is the result truth — never a local 403.
+    expect(res.statusCode).toBe(429);
+    expect(res.body).not.toContain('purpose_deprecated_post_sunset');
+    expect(res.headers['x-govai-deprecation-warning']).toBeUndefined();
+
+    const invoked = takeInvoked();
+    expect(invoked.length).toBe(1);
+    const ev = invoked[0]!;
+    expect(ev['provider']).toBe('openai');
+    expect(ev['capability_id']).toBe('openai.files');
+    expect(ev['status_code']).toBe(429);
+    expect(ev['body_forward_mode']).toBe('raw');
+    expect(ev['enforcement_decision']).toBe('observe');
+    expect(ev['native_request_hash']).toMatch(/^[0-9a-f]{64}$/);
+    expect(ev['native_response_hash']).toMatch(/^[0-9a-f]{64}$/);
+    expect(typeof ev['provider_request_id']).toBe('string');
+    expect(ev['purpose_deprecated']).toBeUndefined();
+    expect(ev['purpose_deprecation_sunset_at']).toBeUndefined();
+    expect(ev['purpose_deprecation_migration_target']).toBeUndefined();
+  });
+
+  it('POST /v1/files purpose=fine-tune → normal forwarding regression', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/openai/v1/files',
+      headers: {
+        'content-type': 'application/json',
+        'x-govai-api-key': org.api_key,
+      },
+      payload: JSON.stringify({ purpose: 'fine-tune' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-govai-deprecation-warning']).toBeUndefined();
 
     const invoked = takeInvoked();
     expect(invoked.length).toBe(1);
     const ev = invoked[0]!;
     expect(ev['capability_id']).toBe('openai.files');
-    expect(ev['purpose_deprecated']).toBe(true);
-    expect(ev['purpose_deprecation_sunset_at']).toBe('2026-08-26T00:00:00.000Z');
-    expect(ev['purpose_deprecation_migration_target']).toBe('responses_api+conversations_api');
+    expect(ev['status_code']).toBe(200);
+    expect(ev['body_forward_mode']).toBe('raw');
   });
 
   it('DELETE /v1/vector_stores/{id} → 200, canonical_id=openai.vector_stores.delete (starter tier resolves)', async () => {

@@ -421,6 +421,12 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
   // /v1/files — POST accepts multipart but we don't fully parse here; we just echo.
   app.post('/v1/files', async (req, reply) => {
     reply.header('openai-request-id', randomUUID());
+    const errCode = req.headers['x-test-error'] as string | undefined;
+    const err = errorFor(errCode);
+    if (err) {
+      reply.code(err.status);
+      return err.body;
+    }
     return {
       id: `file-${randomUUID()}`,
       object: 'file',
