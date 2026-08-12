@@ -1,9 +1,8 @@
 // Register Fastify routes for /passthrough/openai/* under a parent app.
 // Decisão 4: capability_canonical_level (registry value) ≠ capability_level (operational mode).
-// HAE-003: purpose=assistants pre-sunset emits passthrough.invoked v3 with the
-// 3-field deprecation marker; post-sunset returns 403 + structured body and
-// intentionally does NOT emit a passthrough.invoked or tool.validation_blocked
-// event — Issue [PR3/pre-sunset] tracks final audit semantics for that case.
+// ADR-032: Files uploads carry NO local purpose policy — every request follows
+// the normal passthrough path and the provider's actual accept/reject is the
+// recorded result truth.
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { BetaTokenPolicyEntry, Capability, ResolvedProviderCredential } from '@govai/core-types';
@@ -25,12 +24,6 @@ import {
   buildToolValidationBlocked,
   type TenantContext,
 } from '../passthrough/audit-emit.js';
-import {
-  extractMultipartPurpose,
-  validateFilesPurpose,
-  OPENAI_ASSISTANTS_SUNSET_AT,
-  OPENAI_ASSISTANTS_MIGRATION_TARGET,
-} from '../passthrough/files-purpose-validator.js';
 
 export type OpenAIPassthroughDeps = {
   /** Upstream base URL (https://api.openai.com in production; loopback in tests). */
@@ -50,7 +43,7 @@ export type OpenAIPassthroughDeps = {
   policyTable?: ReadonlyArray<BetaTokenPolicyEntry>;
   /** Audit sink — caller decides where events go (DB chain, queue, in-memory list...). */
   emitAuditEvent: (event: unknown) => Promise<void> | void;
-  /** Optional clock for purpose=assistants sunset branching (default: new Date()). */
+  /** Optional clock for invocation timing (`occurred_at`) (default: new Date()). */
   now?: () => Date;
 };
 
@@ -314,55 +307,6 @@ export async function registerOpenAIPassthrough(
         }
       }
 
-      // Files purpose policy (Matrix §18.8.1 / HAE-003).
-      // Pre-sunset: allow + warning header + audit flags.
-      // Post-sunset: 403 structured. NO improvised audit event (Issue [PR3/pre-sunset]).
-      let purposeWarning: { sunset_at: string; migration_target: string } | null = null;
-      const isFilesUpload =
-        matched.pathTemplate === '/v1/files' && req.method.toUpperCase() === 'POST';
-      if (isFilesUpload) {
-        const ct =
-          typeof req.headers['content-type'] === 'string'
-            ? (req.headers['content-type'] as string)
-            : '';
-        let purpose: string | undefined;
-        if (ct.toLowerCase().startsWith('multipart/form-data') && Buffer.isBuffer(req.body)) {
-          purpose = extractMultipartPurpose(req.body);
-        } else if (Buffer.isBuffer(req.body)) {
-          try {
-            const j = JSON.parse(req.body.toString('utf8')) as { purpose?: unknown };
-            if (typeof j.purpose === 'string') purpose = j.purpose;
-          } catch {
-            // ignore
-          }
-        } else if (typeof req.body === 'object' && req.body !== null) {
-          // Fallback when body was parsed by a non-buffer parser earlier in the chain.
-          const j = req.body as { purpose?: unknown };
-          if (typeof j.purpose === 'string') purpose = j.purpose;
-        }
-        const validation = validateFilesPurpose(purpose, now());
-        if (validation.kind === 'block_post_sunset') {
-          reply.code(403);
-          reply.header('content-type', 'application/json');
-          return {
-            error: validation.error_code,
-            reason: validation.reason,
-            sunset_at: validation.sunset_at,
-            migration_target: validation.migration_target,
-          };
-        }
-        if (validation.kind === 'allow_with_warning') {
-          purposeWarning = {
-            sunset_at: validation.sunset_at,
-            migration_target: validation.migration_target,
-          };
-          reply.header(
-            'x-govai-deprecation-warning',
-            validation.warning_header_value,
-          );
-        }
-      }
-
       // Forward.
       // F1: .apiKey builds headers (memory only); .source flows to credential_source.
       const resolvedCredential = await deps.resolveProviderKey(req);
@@ -547,13 +491,6 @@ export async function registerOpenAIPassthrough(
           body_forward_mode: 'raw',
           beta_allowlist_sources: betaResult.sources,
           detected_tool_classifications: toolClassifications,
-          ...(purposeWarning
-            ? {
-                purpose_deprecated: true,
-                purpose_deprecation_sunset_at: purposeWarning.sunset_at,
-                purpose_deprecation_migration_target: purposeWarning.migration_target,
-              }
-            : {}),
         }),
       );
 
@@ -565,4 +502,3 @@ export async function registerOpenAIPassthrough(
 
 // Re-export for convenience used by `apps/api/src/routes/passthrough-openai.ts`.
 export type { FastifyInstance, FastifyRequest, FastifyReply };
-export { OPENAI_ASSISTANTS_SUNSET_AT, OPENAI_ASSISTANTS_MIGRATION_TARGET };
