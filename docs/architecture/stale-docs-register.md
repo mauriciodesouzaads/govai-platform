@@ -1,6 +1,6 @@
 # GovAI Stale Docs Register
 
-Documents whose statements no longer match source ([current-state.md](./current-state.md), main `165291d9`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
+Documents whose statements no longer match source ([current-state.md](./current-state.md), main `01c05fd6`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
 
 | Document | Stale statement | Current source evidence | Confidence | Severity | Action | Blocks B3? |
 |---|---|---|---|---|---|---|
@@ -13,8 +13,10 @@ Documents whose statements no longer match source ([current-state.md](./current-
 | Regulatory roadmap (`regulatory/20`, `regulatory/23`, sector mappings) | Not stale, but dense; foundational controls not summarized in one place and are evidence-only | PR-R1..R9 live as foundational controls (migrations 0016–0024 + tests) | MEDIUM (navigability) | MEDIUM | current-state.md §5 cross-links + labels evidence-only | no |
 | `docs/architecture/specs/h1v2-coverage-map.md` + H1 v2 specs | Current and versioned after PR #87 (stable aliases) | matches code at `8be5cfc` | HIGH | — (not stale) | none | no |
 | `current-state.md`, `development-roadmap.md`, `stale-docs-register.md`, `resume-playbook.md` | Canonical anchor remained `main@e422280d` after PRs #122/#123 merged; `resume-playbook.md` §2/§4 still described the PR #93-era state ("AuditBridge accepted but not implemented", "zero `captureAuditEvent` call-sites", "B3 still not authorized" — all long-false) | `main=165291d9` (PR #123 squash; parent `4d6eab72` = the PR #122 EP-DOCS-05 roll); post-merge main CI run `31282331366` SUCCESS | HIGH | HIGH | Re-anchored + resume-playbook reconciled in the P0.3-A Movement 5 documentary roll (this PR) | no |
-| `development-roadmap.md` P0 register | EP-11 still required owner/ADR adjudication and was framed as deadline protection | ADR-032 owner adjudication is complete; this movement adds the repository-promulgation artifact (`docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`); EP-11 remains a separate runtime movement and is gated on the ADR artifact being present on `main`; the decision is provider-truth based and date-independent | HIGH | HIGH | Promulgate ADR-032 and replace the staged/pending pointer with the explicit main-presence implementation gate; no runtime change | no |
-| `current-state.md` §"Separate P1 evidence-integrity register" | "The owner-adjudicated decision remains staged outside the repository as ADR-032; once promulgated, it requires removal of that specific branch" — accurate at anchor `165291d9`; the "staged outside the repository" clause becomes historical the moment the ADR-032 promulgation movement lands on `main` | The repository-promulgation artifact is `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md` (added by the promulgation movement; only the version present on `main` is canonical). The EP-11 removal requirement quoted in that sentence remains accurate and pending — the staleness is confined to the "staged outside the repository" locational clause | HIGH | MEDIUM | Reconcile in the next `current-state.md` state-roll movement; `current-state.md` edits and re-anchoring are out of scope for the docs-only promulgation movement, so this register row is the interim correction | no |
+| `development-roadmap.md` P0 register | EP-11 still required owner/ADR adjudication and was framed as deadline protection | ADR-032 owner adjudication is complete; PR #125 added the repository-promulgation artifact (`docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`); the decision is provider-truth based and date-independent | HIGH | HIGH | **RESOLVED** — ADR-032 promulgated (PR #125, `629b6e9f`), EP-11 implemented (PR #126, `01c05fd6`), roadmap reconciled by the post-EP11 canonical state roll (this PR) | no |
+| `current-state.md` §"Separate P1 evidence-integrity register" | "The owner-adjudicated decision remains staged outside the repository as ADR-032; once promulgated, it requires removal of that specific branch" — accurate at anchor `165291d9`; the "staged outside the repository" clause becomes historical the moment the ADR-032 promulgation movement lands on `main` | The repository-promulgation artifact is on `main` (PR #125); EP-11 (PR #126) removed the specific `purpose_deprecated_post_sunset` branch | HIGH | MEDIUM | **RESOLVED by the post-EP11 canonical state roll (this PR)** — the §"Separate P1 evidence-integrity register" text is reconciled (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`; the class stays `OPEN_SEPARATE_P1`); this row is retained as history | no |
+| `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md` | Promulgation-era wording: `IMPLEMENTATION_STATUS=PENDING` ("EP-11 is a subsequent, separate implementation movement") and the "Until EP-11 merges, every passthrough Files request … continues to follow the current validator behavior" consequences framing — historical after PR #126 | EP-11 is implemented: PR #126 squash-merged as `01c05fd61428a76d300b73fb335021f598519d2f` (post-merge main CI run `31649394857` SUCCESS); `files-purpose-validator.ts` and its local deny/warning paths no longer exist in the tree | HIGH (source-verified) | LOW (localized) | **LOCALIZED_DOCUMENTARY_STALENESS** — the Accepted decision and its D1–D5 content are **not** stale; only the implementation-status pointer and interim-runtime framing are. Action: a separate, future ADR-maintenance normalization, non-blocking to runtime development. Deliberately **not** edited by the post-EP11 four-canonical state roll (the ADR is outside that movement's file set) | no |
+| `resume-playbook.md` §3 (pre-roll wording) | "CI as an enforced two-job gate (unit + integration; PR #116 `GOVAI_INTEGRATION` config gate)" — conflated workflow existence with GitHub enforcement | The CI workflow executes the unit and integration jobs and successful exact-head CI is mandatory under the GovAI development/merge protocol, but workflow existence is not itself proof of GitHub branch-protection enforcement (`CI_EVIDENCE=REAL`; `MERGE_PROTOCOL=PROCESS_ENFORCED`; `GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`; `REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING`) | HIGH | MEDIUM | **Corrected by the post-EP11 canonical state roll (this PR)** — resume-playbook §3 rewritten source-honestly | no |
 
 ### Files referenced by prior session memory but **not present in repository manifest**
 
@@ -180,3 +182,59 @@ Notes (NOT corrections):
 
 - The Movement-4 record "corrigir a afirmação incorreta sobre inexistência de issue-comments do bot" targets a claim made in **out-of-repo session reports**; a search at `165291d9` found no such claim in the repository docs, so there was nothing in-tree to correct. The out-of-repo record is corrected in the Movement 5 execution report.
 - Movement 5 changes no runtime source, no tests, no migrations, no schemas/routes/events, no dependencies, no lockfile — documentation only. It does **not** promulgate ADR-032, does not implement EP-11, and does not promote any D9 artifact into the tree.
+
+## Post-EP11 canonical state roll reconciliation (2026-08-12) — EP-11 recorded COMPLETE; Standing Owner Authorization v1 promulgated
+
+Since the Movement 5 documentary roll (PR #124, merge `ee984f2`, single
+parent `165291d9` = the PR #123 runtime merge that the roll anchored the four
+canonicals at), two merges landed: PR #125 promulgated ADR-032 (`629b6e9f`)
+and PR #126 implemented EP-11
+(`01c05fd61428a76d300b73fb335021f598519d2f`, tree `20ccd433`, single parent
+`629b6e9f`, 6 files, post-merge main CI run `31649394857` SUCCESS — unit +
+integration). This roll brings the four canonicals to `01c05fd6`.
+Corrections applied:
+
+| Document | Was (stale) | Now (corrected, this roll) |
+|---|---|---|
+| `current-state.md` anchor + manifests | anchor `165291d9`; architecture docs **66**; ADRs **23** (highest ADR-028); tests **192** on disk (113 unit / 74 integration / 5 live); default `pnpm test` 113 files / 1296 tests | anchor **`01c05fd6`**; architecture docs **67**; ADRs **24** (ADR-032 added by PR #125; missing ADR-015..019 and ADR-029..031); tests **191** on disk (**112** unit / 74 integration / 5 live — EP-11 deleted `files-purpose-validator.test.ts`, adding no replacement file and expanding `tests/integration/openai-passthrough.test.ts` instead); default `pnpm test` = 112 files / **1286** tests, reproduced locally at this anchor; routes (18) and migrations (28) unchanged by #124/#125/#126 |
+| `current-state.md` §8 P1 register | Subfamily B "includes the **current** `purpose_deprecated_post_sunset` branch"; "the owner-adjudicated decision remains **staged outside the repository** as ADR-032" | EP-11 (PR #126) **removed that specific branch** (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`); ADR-032 was promulgated in PR #125; the class remains `OPEN_SEPARATE_P1` (EP-11 did not remediate the family) |
+| `development-roadmap.md` P0 register | ADR-032 "repository-promulgation artifact defined … EP-11 must not begin unless that ADR artifact is present on `main`"; "EP-11 — NEXT" | ADR-032 promulgation **COMPLETE** (PR #125); EP-11 **COMPLETE** (PR #126); `NEXT_DEVELOPMENT_MOVEMENT=P0.3-C`, then F2, then PR-0/D9 V2 |
+| `resume-playbook.md` §2–§4 | known-good main `165291d9`; EP-11 an open gate; "CI as an enforced two-job gate" | known-good main **`01c05fd6`** (post-EP11); EP-11 moved to closed gates; CI wording corrected (workflow evidence ≠ GitHub branch enforcement; merge protocol is process-enforced) |
+
+Process-control reconciliation — routine development authorization model:
+
+The former external dispatch protocol used a per-merge human G17 handshake
+before every squash merge. Current owner policy, promulgated by this roll in
+resume-playbook.md §9:
+
+```text
+G17_ROUTINE_DEVELOPMENT=RETIRED
+STANDING_OWNER_AUTHORIZATION_V1=ACTIVE
+ROUTINE_SQUASH_MERGE_PREAUTHORIZED=YES
+ONE_MISSION_ONE_PR_ONE_MERGE=REQUIRED
+```
+
+Reason: routine scoped development uses risk-proportional friction while
+retaining every technical gate (exact-head CI, bounded review, frozen-head
+merge, scope and A2 gates) and explicit human STOPs for material/high-risk
+exceptions (admin bypass, force, scope expansion, destructive/irreversible
+actions, secrets, production/paid infrastructure, visibility, branch
+protection/rulesets, event-schema/evidence-semantic changes, live B3,
+owner-reserved actions — the full list is resume-playbook.md §9). This is
+**not** a weakening of the substantive CI/review gates, and branch
+protection was **not** enabled as a replacement
+(`REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING`; do not write
+"GitHub-enforced" unless independently proven by current repository
+settings).
+
+Notes (NOT corrections):
+
+- The ADR-032 file itself is deliberately unchanged by this roll (its
+  localized `IMPLEMENTATION_STATUS=PENDING` staleness is registered in the
+  table above for separate maintenance). D1–D5 and the Accepted decision are
+  not stale; do not reopen the decision.
+- Historical reconciliation sections in this register remain historical and
+  are not rewritten.
+- This roll changes exactly four documentation files (the four canonicals);
+  no runtime, tests, migrations, workflows, dependencies, ADRs, or
+  repository settings.

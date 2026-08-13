@@ -4,10 +4,11 @@
 
 - **Evidence-first source of truth** for the current implementation state of GovAI.
 - **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner; it consumes no provider traffic and runs outside the request hot path (see §3 and §7).
-- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `165291d90b144d3063ed87b8eaeac73e9a506e41`, not from memory.
+- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `01c05fd61428a76d300b73fb335021f598519d2f`, not from memory.
 - **Four P0 "Truth and Integrity" packages have landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`), the F4 preventive hardening (PR #120, merge `719fefc2`) and **P0.3-A (F3 durable provider dispatch, PR #123, squash `165291d9`)**. F2 remains open (pending source classification); the remaining P0.3 slices (P0.3-C) remain open. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state and the narrow follow-up register.
 - **EP-DOCS-04 / PR #121 is merged and dual-verified:** squash `e422280d`, tree `196701d8`, single parent `719fefc2`. It reconciles the canonical P0 record and changes no executable behavior. EP-DOCS-05 / PR #122 (squash `4d6eab72`) rolled the canonical anchor to `e422280d`.
 - **P0.3-A / PR #123 is merged:** squash `165291d9`, tree `93613383`, single parent `4d6eab72`, 38 files, one commit added to main; the squash tree is byte-identical to the audited PR head tree (`08b59930`). Post-merge main CI run `31282331366` SUCCESS (unit + integration). It moves provider network I/O outside database transactions and checked-out clients (§3 *Durable provider dispatch*). **F3: DEMONSTRATED → CORRECTED.**
+- **EP-11 / ADR-032 provider-truth runtime correction is merged:** PR #126 squash `01c05fd6`, tree `20ccd433` (byte-identical to the audited PR head tree), single parent `629b6e9f` (the PR #125 ADR-032 promulgation), 6 files; post-merge main CI run `31649394857` SUCCESS (unit + integration). `ADR032_DECISION_STATUS=ACCEPTED`; `ADR032_REPOSITORY_PROMULGATION=COMPLETE` (PR #125); `ADR032_RUNTIME_IMPLEMENTATION=IMPLEMENTED` (PR #126). The ADR file's own promulgation-era `IMPLEMENTATION_STATUS=PENDING` pointer is registered as **localized documentary staleness** ([stale-docs-register.md](./stale-docs-register.md)) — deliberately not edited by this state roll; the accepted decision itself is not stale. See §8 *EP-11 / PR #126 canonical state*.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
@@ -27,12 +28,12 @@
 
 Counts from `find` at the source commit (not from docs):
 
-- architecture docs (`docs/architecture/**.md`): **66**
+- architecture docs (`docs/architecture/**.md`): **67**
 - regulatory docs (`docs/architecture/regulatory/*.md`): **20** (18–25 series present; **no** 26–30 files exist)
-- ADR docs (`docs/architecture/adr/*.md`): **23** (ADR-001..014 + ADR-020..028; **missing** ADR-015..019; ADR-028 is the most recent — `Accepted` and in main)
+- ADR docs (`docs/architecture/adr/*.md`): **24** (ADR-001..014 + ADR-020..028 + ADR-032; **missing** ADR-015..019 and ADR-029..031; ADR-032 is the most recent — `Accepted` and in main, added by PR #125)
 - API route files (`apps/api/src/routes/*`): **18** (17 routes + `_not-implemented.ts`; `evidence.ts` added by EP-008D)
 - DB migrations (`apps/api/src/db/migrations/*`): **28** (0001..0029, **missing** 0006; highest `0029_durable_provider_dispatch.sql`)
-- test files (`*.test.ts`/`*.spec.ts`): **192** on disk — **113** unit (under `apps/`+`packages/`), **74** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate (`vitest.config.ts`), the default `pnpm test` is **unit-only** (113 files, **1296** tests, reproduced locally at this anchor); `pnpm test:integration` adds the integration files (CI runs both jobs)
+- test files (`*.test.ts`/`*.spec.ts`): **191** on disk — **112** unit (under `apps/`+`packages/`; EP-11 / PR #126 deleted `files-purpose-validator.test.ts` and added no replacement file, expanding the existing `tests/integration/openai-passthrough.test.ts` instead), **74** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate (`vitest.config.ts`), the default `pnpm test` is **unit-only** (112 files, **1286** tests, reproduced locally at this anchor); `pnpm test:integration` adds the integration files (CI runs both jobs)
 
 ---
 
@@ -49,7 +50,7 @@ All surfaces registered in `apps/api/src/server.ts:161-181` (the direct-route id
 | Admin audit crypto-shred | PLANNED | `routes/admin-audit-shred.ts:41` (`sendNotImplemented … 'PR3'`) | stub | n/a | not-implemented stub; `crypto_shredded` state + ADR-011 exist in schema | implement later |
 | Admin DLP detector CRUD | PLANNED | `routes/admin-dlp.ts:40` (`sendNotImplemented … 'PR3'`) | stub | n/a | admin CRUD stub; DLP pre-scan itself runs in governed surfaces | implement later |
 | Passthrough Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-anthropic.ts` (`:168`) | `@govai/provider-anthropic` | `tests/integration/anthropic-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Passthrough OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-openai.ts` (`:169`) | `@govai/provider-openai` | `tests/integration/openai-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
+| Passthrough OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-openai.ts` (`:169`) | `@govai/provider-openai` | `tests/integration/openai-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3); the retired GovAI-local Files `purpose=assistants` date policy (local deny/warning) was removed by EP-11 (PR #126) — Files requests follow the normal provider-forwarding/result-evidence path (a narrow claim; not a broader OpenAI compatibility guarantee) | — |
 | Governed Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-anthropic.ts` (`:170`) | `@govai/provider-anthropic/governed` | `tests/integration/governed-anthropic.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
 | Governed OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-openai.ts` (`:171`) | `@govai/provider-openai/governed` | `tests/integration/governed-openai.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
 | Admin provider credentials | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/admin-provider-credentials.ts` (`:176`) | KMS envelope; `auditAppend` (`:165,289`) | `admin-provider-credentials-*.test.ts` (6 files) | SET/GET/REVOKE; no rotation policy | — |
@@ -177,7 +178,7 @@ The README and regulatory docs explicitly disclaim LGPD/judicial/legal/medical/f
 
 ## 6. Known stale docs
 
-Summarized in [stale-docs-register.md](./stale-docs-register.md): README status block, `workroom-governance-room.md` status, and ADR-020 role-model wording. ADR-022..026 are Accepted and B3 (EP-006) is implemented; see the PR-B / EP-004 and EP-006 reconciliation sections in stale-docs-register.md.
+Summarized in [stale-docs-register.md](./stale-docs-register.md): README status block, `workroom-governance-room.md` status, ADR-020 role-model wording, and the ADR-032 file's promulgation-era `IMPLEMENTATION_STATUS=PENDING` pointer (localized documentary staleness — the accepted decision is not stale; EP-11 is implemented). ADR-022..026 are Accepted and B3 (EP-006) is implemented; see the PR-B / EP-004 and EP-006 reconciliation sections in stale-docs-register.md.
 
 ---
 
@@ -195,7 +196,7 @@ Summarized in [stale-docs-register.md](./stale-docs-register.md): README status 
 
 ## 8. P0 findings register (F1–F6, C-2) and F4 canonical state
 
-The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `165291d9` is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it.
+The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `01c05fd6` is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it. EP-11 (PR #126) is a **subsequent provider-truth correction outside this matrix** — it is not an F-finding and must not be conflated with F2, which remains `OPEN_PENDING_SOURCE_CLASSIFICATION`.
 
 | Finding | Classification | Implementation status | Landed by / next | Subject |
 |---|---|---|---|---|
@@ -266,6 +267,50 @@ visibility mechanism is the owner `NO FORCE ROW LEVEL SECURITY` window
 recovery-discovery candidates primitive (`0029:460,497`). A generic
 "0029 does not use SECURITY DEFINER" claim would be false.
 
+### EP-11 / PR #126 canonical state (ADR-032 provider-truth runtime correction)
+
+```text
+PR126_STATUS=MERGED
+PR126_MERGE_SHA=01c05fd61428a76d300b73fb335021f598519d2f
+PR126_MERGE_TREE=20ccd433b27b53a645962ebd51a807bc76d0398c
+PR126_MERGE_PARENT=629b6e9f36a0b39baf320658e53ee5c4c60bdcef
+PR126_PARENT_COUNT=1
+PR126_AUDITED_HEAD=acc740fd327322d9f36fbf7eb1e95a6cb6fadf18
+PR126_TREE_EQUALS_AUDITED_HEAD_TREE=PASS
+PR126_CHANGED_FILES=6
+PR126_POST_MERGE_MAIN_CI_RUN=31649394857
+PR126_POST_MERGE_MAIN_CI=SUCCESS
+PR126_SOURCE_BRANCH_PRESERVED=YES
+
+EP11_IMPLEMENTATION=COMPLETE
+EP11_PR=126
+EP11_MERGE_SHA=01c05fd61428a76d300b73fb335021f598519d2f
+ADR032_DECISION_STATUS=ACCEPTED
+ADR032_REPOSITORY_PROMULGATION=COMPLETE
+ADR032_RUNTIME_IMPLEMENTATION=IMPLEMENTED
+ADR032_ADR_FILE_IMPLEMENTATION_POINTER=STALE_PENDING_SEPARATE_MAINTENANCE
+
+LOCAL_DATE_TRIGGERED_DENY_REMOVED=YES
+LOCAL_DEPRECATION_WARNING_REMOVED=YES
+PROVIDER_FORWARD_PRESERVED=YES
+PROVIDER_RESULT_EVIDENCE_PRESERVED=YES
+```
+
+The landed runtime deleted
+`packages/provider-openai/src/passthrough/files-purpose-validator.ts` and its
+dedicated unit test; removed the date-triggered `block_post_sunset` branch,
+the local synthetic purpose-deprecation 403, the
+`x-govai-deprecation-warning` header, the route-side supply of the three
+legacy purpose-deprecation fields, and the obsolete public exports; preserved
+provider forwarding and actual provider-result evidence; and retained the
+historical event/emitter/capture compatibility machinery
+(`packages/provider-openai/src/passthrough/audit-emit.ts`,
+`packages/core-events/src/passthrough-invoked.ts`,
+`packages/core-events/src/audit-bridge-capture-payload.ts`). "Runtime
+implementation" (complete, PR #126) and the ADR file's own "documentary
+pointer" (`IMPLEMENTATION_STATUS=PENDING` — localized staleness, separate
+maintenance) are distinct statements; see the register.
+
 ### F4 canonical state
 
 ```text
@@ -295,11 +340,17 @@ F4 is **preventive hardening** — it is NOT a proven cross-request contaminatio
   outside the narrow EP-11 implementation scope. Subfamily A,
   `LOCAL_DENY_EVENT_EMITTED_THEN_DROPPED`, currently includes
   `passthrough.beta_denied` and `tool.validation_blocked`.
-  Subfamily B, `LOCAL_DENY_NO_AUDIT_EVENT_EMITTED`, includes the
-  current `purpose_deprecated_post_sunset` branch. The
-  owner-adjudicated decision remains staged outside the repository
-  as ADR-032; once promulgated, it requires removal of that specific
-  branch. Class-wide evidence remediation remains a separate EP.
+  Subfamily B, `LOCAL_DENY_NO_AUDIT_EVENT_EMITTED`, historically
+  included the `purpose_deprecated_post_sunset` branch; **EP-11
+  (PR #126) removed that specific branch**
+  (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`). The
+  owner-adjudicated decision was promulgated to the repository as
+  ADR-032 in PR #125 and its runtime correction merged in PR #126
+  (superseding the earlier "staged outside the repository" state).
+  EP-11 did **not** remediate the entire P1 family — other
+  local-deny evidence gaps remain; class-wide evidence remediation
+  remains a separate EP
+  (`LOCAL_DENY_EVIDENCE_INCOMPLETENESS=OPEN_SEPARATE_P1`).
 
 ### F4 follow-up register (narrow, non-blocking)
 
