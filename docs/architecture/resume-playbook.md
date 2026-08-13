@@ -79,10 +79,14 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 3. Read `stale-docs-register.md` (do not trust a doc it flags).
 4. Read the latest merged PR + its merge commit; confirm `main`.
 5. `gh pr list` open PRs; for each, `gh pr checks` + review threads.
-6. Read §9 *Routine development authorization model* below — **do not
-   recreate a per-merge G17 handshake for routine scoped development**
-   (`G17_ROUTINE_DEVELOPMENT=RETIRED`); apply the §9 STOP exceptions
-   instead.
+6. Read §9 *Routine development authorization model* below. The per-merge
+   G17 handshake is retired as the routine-development **model**
+   (`G17_ROUTINE_DEVELOPMENT=RETIRED`) — do not reintroduce it as a routine
+   step for a mission whose dispatch incorporates Standing Owner
+   Authorization v1. Authorization remains **per dispatch**: a dispatch
+   that does not explicitly incorporate Standing Owner Authorization v1
+   conveys no pre-authorized merge (§9 scope) — obtain owner merge
+   authorization in that case; and the §9 STOP exceptions always apply.
 7. **Never start/run the B3 runner-loop against live infrastructure** without explicit owner authorization (the code is implemented; live operation is a separate authorization).
 8. **Never claim evidence-plane completeness beyond what current-state.md §3 verifies** (real EC-5 is deferred; the local-deny evidence-incompleteness class is open).
 
@@ -145,9 +149,10 @@ NO_ROUTINE_G17_STOP=YES
 
 The former external dispatch protocol required a per-merge human G17
 handshake before every squash merge. That handshake is **retired for routine
-scoped development**. For a normal scoped development mission, the issued
-dispatch itself authorizes the entire lifecycle without a second owner
-message:
+scoped development**. For a normal scoped development mission **whose
+dispatch explicitly incorporates Standing Owner Authorization v1**, the
+issued dispatch itself authorizes the entire lifecycle without a second
+owner message:
 
 branch → edit → tests → commit → normal push → one PR → CI → bounded Codex
 review → in-scope correction → final head/tree freeze → normal squash merge
