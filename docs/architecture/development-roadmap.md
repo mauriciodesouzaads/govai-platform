@@ -1,6 +1,6 @@
 # GovAI Development Roadmap
 
-Anchored on [current-state.md](./current-state.md) (main `165291d9`, evidence-first). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
+Anchored on [current-state.md](./current-state.md) (main `01c05fd6`, evidence-first, post-EP11). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
 
 ---
 
@@ -18,13 +18,12 @@ P0
 
 **P0** is an *operational priority* lane inside the macro-phase "Phase 0 — Truth and Integrity" (a truth-and-integrity program over already-shipped evidence surfaces). A P0-priority item does **not** thereby belong to the product-phase numbering below (in particular, it is not part of "Phase 0 — Built and source-verified", which is a product phase that happens to share the label). The canonical F1–F6 + C-2 matrix and the F4 canonical state live in current-state.md §8.
 
-Current P0 sequence at main `165291d9`:
+Current P0 sequence at main `01c05fd6`:
 
-1. **EP-DOCS-04 / PR #121 — COMPLETE.** Squash-merged as
-   `e422280d`, tree `196701d8`, and independently dual
-   merge-verified; EP-DOCS-05 / PR #122 (squash `4d6eab72`)
-   subsequently rolled the canonical anchor. Docs-only; no
-   executable behavior changed.
+1. **Prior documentary reconciliation — COMPLETE.** EP-DOCS-04 / PR #121
+   (squash `e422280d`, dual merge-verified), the EP-DOCS-05 anchor roll
+   (PR #122, `4d6eab72`) and the post-P0.3-A canonical roll (PR #124,
+   `ee984f2`). Docs-only; no executable behavior changed.
 2. **P0.3-A / F3 — COMPLETE.** PR #123 squash-merged as
    `165291d9` (tree byte-identical to the audited head
    `08b59930`; single parent `4d6eab72`; post-merge main CI run
@@ -34,19 +33,25 @@ Current P0 sequence at main `165291d9`:
    recovery, forensic lifecycle evidence, tenant-isolated status
    polling, migration 0029 (see current-state.md §3/§8).
    **F3: DEMONSTRATED → CORRECTED.**
-3. **ADR-032 — ACCEPTED; repository-promulgation artifact defined.**
-   The owner adjudication is complete. The controlling provider-truth
-   constraint is
-   `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`.
-   Only the version present on `main` is canonical. This documentary
-   movement changes no runtime behavior. **EP-11 must not begin unless that
-   ADR artifact is present on `main`.**
-4. **EP-11 — OpenAI Files-purpose provider-truth correction; NEXT after
-   ADR-032 is present on `main`.** Implement the narrow runtime correction
-   defined by ADR-032: remove the false local deny and warning while
-   preserving forwarding and evidence of the provider's actual result.
-   This decision and its priority are not date-dependent.
-5. **Remaining P0.3 slices (P0.3-C — OPEN).**
+3. **ADR-032 promulgation — COMPLETE (PR #125).** Decision **Accepted**;
+   the controlling provider-truth constraint
+   `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`
+   is present on `main` (added by PR #125, merge `629b6e9f`). Runtime
+   implemented by PR #126. The ADR file itself was **not** textually
+   updated from its promulgation-era `IMPLEMENTATION_STATUS=PENDING`
+   wording — that localized documentary staleness is registered in
+   [stale-docs-register.md](./stale-docs-register.md) for separate,
+   non-blocking ADR maintenance.
+4. **EP-11 — OpenAI Files-purpose provider-truth runtime correction —
+   COMPLETE.** PR #126 squash-merged as `01c05fd6` (tree `20ccd433`
+   byte-identical to the audited head `acc740fd`; single parent
+   `629b6e9f`; 6 files; post-merge main CI run `31649394857` SUCCESS).
+   The false local deny and warning are removed (validator + its unit
+   test deleted; `block_post_sunset`, the synthetic local 403 and
+   `x-govai-deprecation-warning` removed) while provider forwarding and
+   provider-result evidence are preserved (current-state.md §8).
+5. **Remaining P0.3 slices (P0.3-C — OPEN).** The next runtime-development
+   lane.
 6. **F2** source adjudication and sealed-schema decision
    (OPEN_PENDING_SOURCE_CLASSIFICATION).
 7. **PR-0 / D9 V2 — final rebase and repository promulgation**,
@@ -54,13 +59,34 @@ Current P0 sequence at main `165291d9`:
    D9 state below: the source corpus is located; promulgation into
    main is what remains).
 
+Sequencing after the post-EP11 canonical state roll (this movement):
+
+```text
+POST_EP11_CANONICAL_STATE_ROLL=THIS_MOVEMENT
+NEXT_DEVELOPMENT_MOVEMENT=P0.3-C
+THEN=F2
+THEN=PR-0/D9_V2
+```
+
+Operational note (not a blocker, not sequenced ahead of P0.3-C):
+`REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` — repository
+branch-protection/ruleset hardening remains a deferred, non-blocking
+assessment. Repository enforcement is **not claimed enabled**; the CI
+workflow executing unit + integration jobs is real evidence, and the merge
+protocol is process-enforced (see resume-playbook.md).
+
 Separate P1 evidence-integrity follow-up:
 
 - **LOCAL_DENY_EVIDENCE_INCOMPLETENESS.** This is not part of
-  EP-11's narrow implementation scope. It contains both local-deny
-  events emitted and dropped at the AuditBridge schema boundary and
-  local-deny branches that emit no audit event. Class-wide
-  remediation requires a separate EP.
+  EP-11's narrow implementation scope. Subfamily A (local-deny
+  events emitted and dropped at the AuditBridge schema boundary)
+  remains open. Subfamily B's known member — the
+  `purpose_deprecated_post_sunset` no-audit-event branch — was
+  **removed by EP-11 (PR #126)**
+  (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`); EP-11 did
+  **not** remediate the entire family. Class-wide remediation
+  requires a separate EP
+  (`LOCAL_DENY_EVIDENCE_INCOMPLETENESS=OPEN_SEPARATE_P1`).
 
 D9 state (supersedes the former `D9_LOCATION=UNRESOLVED`, which WAS
 the recorded state until 2026-08-08 and is now HISTORICAL — the D9
