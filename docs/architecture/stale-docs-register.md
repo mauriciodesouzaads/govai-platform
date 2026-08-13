@@ -185,12 +185,14 @@ Notes (NOT corrections):
 
 ## Post-EP11 canonical state roll reconciliation (2026-08-12) — EP-11 recorded COMPLETE; Standing Owner Authorization v1 promulgated
 
-Since the Movement 5 roll (`165291d9`, PR #124), three merges landed: PR #124
-itself rolled the canonicals, PR #125 promulgated ADR-032 (`629b6e9f`), and
-PR #126 implemented EP-11 (`01c05fd61428a76d300b73fb335021f598519d2f`, tree
-`20ccd433`, single parent `629b6e9f`, 6 files, post-merge main CI run
-`31649394857` SUCCESS — unit + integration). This roll brings the four
-canonicals to `01c05fd6`. Corrections applied:
+Since the Movement 5 documentary roll (PR #124, merge `ee984f2`, single
+parent `165291d9` = the PR #123 runtime merge that the roll anchored the four
+canonicals at), two merges landed: PR #125 promulgated ADR-032 (`629b6e9f`)
+and PR #126 implemented EP-11
+(`01c05fd61428a76d300b73fb335021f598519d2f`, tree `20ccd433`, single parent
+`629b6e9f`, 6 files, post-merge main CI run `31649394857` SUCCESS — unit +
+integration). This roll brings the four canonicals to `01c05fd6`.
+Corrections applied:
 
 | Document | Was (stale) | Now (corrected, this roll) |
 |---|---|---|
