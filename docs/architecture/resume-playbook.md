@@ -23,7 +23,7 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ## 2. Current known-good main
 
-- main after PR #126 (post-EP11): `01c05fd61428a76d300b73fb335021f598519d2f` — **EP-11 / ADR-032 provider-truth runtime correction** (squash of PR #126, "fix(openai): preserve provider truth for files assistants"; single parent `629b6e9f` = the PR #125 ADR-032 promulgation; post-merge main CI run `31649394857` SUCCESS, unit + integration). [current-state.md](./current-state.md) is the evidence-first source of truth — resume from it, not from this line alone.
+- main after PR #129 (post-P0.3-C): `f381d3fac24d5938aed91b6618ef511b66ddc878` — **P0.3-C cross-request run execution idempotency** (squash of PR #129, "feat(runs): add cross-request execution idempotency"; single parent `21afa116` = the PR #128 authorization-semantics merge; tree `a64e7178` byte-identical to the audited head `bfa05c5b`; post-merge main CI run `31802636887` SUCCESS, unit + integration). [current-state.md](./current-state.md) is the evidence-first source of truth — resume from it, not from this line alone.
 - Toolchain: Node v24.15.0 (modules 137), pnpm 10.33.2.
 
 ---
@@ -44,6 +44,15 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
   protection/ruleset status unless independently verified against current
   repository settings (`REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING`).
 - P0 packages: P0.1 F5+F6 (PR #118), P0.2 F1+C-2 (PR #119), F4 preventive hardening (PR #120), **P0.3-A F3 durable dispatch (PR #123)** — F3 `DEMONSTRATED → CORRECTED`.
+- **P0.3-C — COMPLETE (PR #129, squash `f381d3fa`).** Cross-request run
+  execution idempotency on both run-creation surfaces (standalone `/v1/runs`
+  + Workroom): optional `X-GovAI-Run-Idempotency-Key`, the immutable
+  tenant-scoped `govai.run_idempotency` binding (migration 0030), the
+  canonical `govai.run_execution_intent.v1` semantic intent — one durable
+  logical run per matching keyed intent, **no intentional second local
+  provider execution**, a matching replay consumes no approval twice, and
+  **no provider-side exactly-once claim**. `P03_RUNTIME_LANE=COMPLETE`
+  (the P0 Truth-and-Integrity **program** stays open — F2 + PR-0/D9 remain).
 - **ADR-032 — ACCEPTED + PROMULGATED (PR #125).** The controlling
   provider-truth decision is Accepted and its repository-promulgation
   artifact
@@ -62,9 +71,7 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ## 4. Open gates
 
-- **Remaining P0.3 slices — P0.3-C OPEN** (the next runtime-development
-  movement; EP-11 is closed — see §3).
-- **F2** — `OPEN_PENDING_SOURCE_CLASSIFICATION`: separate source adjudication + sealed-schema decision; do not classify it (or assert an aggregate findings count) before that.
+- **F2** — `OPEN_PENDING_SOURCE_CLASSIFICATION`: separate source adjudication + sealed-schema decision; do not classify it (or assert an aggregate findings count) before that. **`NEXT_DEVELOPMENT_MOVEMENT=F2_SOURCE_ADJUDICATION`** (P0.3-C is closed — see §3).
 - **Real EC-5** — deferred to a separate Option-A EP.
 - **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** — separate P1 evidence-integrity class; remediation is a separate EP. EP-11 removed only the specific `purpose_deprecated_post_sunset` no-audit-event branch (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`); other local-deny evidence gaps remain open.
 - **PR-0 / D9** — source corpus **LOCATED** (11/11 required paths, owner-supplied v0.9 package, hash-inventoried); **repository promulgation PENDING** (`PR0_STATUS=DOCUMENTARY_BLOCKED_PENDING_PROMULGATION`). The 2 genuine in-repo references to the D9 artifacts (migration `0025:36-37` and `core-audit/capture.ts:54` — see the register's precise classification) remain broken in-tree until promotion.
@@ -91,6 +98,22 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
    dispatch explicitly requires it. The §9 STOP exceptions always apply.
 7. **Never start/run the B3 runner-loop against live infrastructure** without explicit owner authorization (the code is implemented; live operation is a separate authorization).
 8. **Never claim evidence-plane completeness beyond what current-state.md §3 verifies** (real EC-5 is deferred; the local-deny evidence-incompleteness class is open).
+9. **Codex clean-signal handling:** do not wait indefinitely for only a
+   `pull_request_review` object or a reaction — an explicit Codex
+   clean/finding result may arrive as an **issue comment**. The gate is
+   three-part, ALL required: (a) **author provenance** — the signal must come
+   from the trusted Codex bot/App identity (the installed Codex GitHub App's
+   bot login, e.g. `chatgpt-codex-connector[bot]`), never merely any account
+   with comment permission; (b) extract the reviewed SHA and verify
+   `reviewed SHA == exact current PR head`; (c) classify the content as
+   explicitly clean vs. containing findings. Never treat "a comment exists"
+   alone as clean; a missing/ambiguous/mismatched reviewed SHA — or an
+   untrusted/unverifiable author — stays fail-closed.
+10. **Automated probe discipline:** a literal/regex probe hit or miss is
+    **not** an automatic semantic finding or absence proof — inspect the
+    source before adjudicating (`PROBE → READ_SOURCE → UNDERSTAND_SEMANTICS
+    → ONLY_THEN_REPORT`). This does not weaken fail-closed gates: a defined
+    semantic requirement that genuinely fails still blocks.
 
 ---
 
@@ -221,3 +244,24 @@ reinterpret an exception as routine authority.
 - **Before squash:** the exact squash title/body must be locally
   pattern-checked clean against the forbidden authorship/tool-attribution
   strings — this is the compensating control for the push-time skip.
+
+---
+
+## 11. Known limits / do not overclaim (P0.3-C)
+
+- **Pre-reservation concurrent-winner window (v1):** when two matching keyed
+  requests overlap and the winner's TX-A is still uncommitted at both of the
+  loser's committed reads (probe + the bounded post-failure recheck), a
+  pre-reservation failure (e.g. credential/KMS) may surface its original
+  error even though the winner commits immediately afterward.
+  Classification: `KNOWN_V1_LIMITATION` /
+  `DEFERRED_LIVENESS_ENHANCEMENT_BY_FROZEN_CONSTRAINT`; `SAFETY_DEFECT=NO`.
+  **No duplicate execution, no key burn, no second approval consumption** —
+  a subsequent retry of the same key converges to the winner's committed
+  run; v1 deliberately does **no polling** and no automatic retry. This is
+  not an open runtime gate and not an exactly-once gap (see
+  current-state.md §8 *P0.3-C known v1 boundary*).
+- **Never claim provider-side exactly-once** (receipt, execution or
+  transmission). P0.3-C's strongest statement: GovAI will not intentionally
+  launch a second local provider execution for a matching tenant-scoped
+  keyed execution intent.

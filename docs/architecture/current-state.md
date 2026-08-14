@@ -4,11 +4,12 @@
 
 - **Evidence-first source of truth** for the current implementation state of GovAI.
 - **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner; it consumes no provider traffic and runs outside the request hot path (see §3 and §7).
-- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `01c05fd61428a76d300b73fb335021f598519d2f`, not from memory.
-- **Four P0 "Truth and Integrity" packages have landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`), the F4 preventive hardening (PR #120, merge `719fefc2`) and **P0.3-A (F3 durable provider dispatch, PR #123, squash `165291d9`)**. F2 remains open (pending source classification); the remaining P0.3 slices (P0.3-C) remain open. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state and the narrow follow-up register.
+- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `f381d3fac24d5938aed91b6618ef511b66ddc878` (post-P0.3-C / PR #129), not from memory.
+- **Five P0 "Truth and Integrity" packages have landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`), the F4 preventive hardening (PR #120, merge `719fefc2`), **P0.3-A (F3 durable provider dispatch, PR #123, squash `165291d9`)** and **P0.3-C (cross-request run execution idempotency, PR #129, squash `f381d3fa`)**. The **P0.3 runtime lane is COMPLETE**; F2 remains open (pending source classification), so the P0 Truth and Integrity **program** as a whole remains open. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state and the narrow follow-up register.
 - **EP-DOCS-04 / PR #121 is merged and dual-verified:** squash `e422280d`, tree `196701d8`, single parent `719fefc2`. It reconciles the canonical P0 record and changes no executable behavior. EP-DOCS-05 / PR #122 (squash `4d6eab72`) rolled the canonical anchor to `e422280d`.
 - **P0.3-A / PR #123 is merged:** squash `165291d9`, tree `93613383`, single parent `4d6eab72`, 38 files, one commit added to main; the squash tree is byte-identical to the audited PR head tree (`08b59930`). Post-merge main CI run `31282331366` SUCCESS (unit + integration). It moves provider network I/O outside database transactions and checked-out clients (§3 *Durable provider dispatch*). **F3: DEMONSTRATED → CORRECTED.**
 - **EP-11 / ADR-032 provider-truth runtime correction is merged:** PR #126 squash `01c05fd6`, tree `20ccd433` (byte-identical to the audited PR head tree), single parent `629b6e9f` (the PR #125 ADR-032 promulgation), 6 files; post-merge main CI run `31649394857` SUCCESS (unit + integration). `ADR032_DECISION_STATUS=ACCEPTED`; `ADR032_REPOSITORY_PROMULGATION=COMPLETE` (PR #125); `ADR032_RUNTIME_IMPLEMENTATION=IMPLEMENTED` (PR #126). The ADR file's own promulgation-era `IMPLEMENTATION_STATUS=PENDING` pointer is registered as **localized documentary staleness** ([stale-docs-register.md](./stale-docs-register.md)) — deliberately not edited by this state roll; the accepted decision itself is not stale. See §8 *EP-11 / PR #126 canonical state*.
+- **P0.3-C / PR #129 cross-request execution idempotency is merged:** squash `f381d3fac24d5938aed91b6618ef511b66ddc878`, tree `a64e7178` (byte-identical to the audited PR head `bfa05c5b`), single parent `21afa116` (the PR #128 authorization-semantics merge), 8 files; post-merge main CI run `31802636887` SUCCESS (unit + integration). P0.3-C implements **cross-request execution idempotency for the two governed run-creation surfaces** (`POST /v1/runs`, `POST /v1/workrooms/:id/runs`) via the optional `X-GovAI-Run-Idempotency-Key` header, the immutable tenant-scoped `govai.run_idempotency` binding (migration 0030) and the canonical `govai.run_execution_intent.v1` semantic-intent correspondence. It does **not** claim provider-side exactly-once (§3).
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
@@ -32,8 +33,8 @@ Counts from `find` at the source commit (not from docs):
 - regulatory docs (`docs/architecture/regulatory/*.md`): **20** (18–25 series present; **no** 26–30 files exist)
 - ADR docs (`docs/architecture/adr/*.md`): **24** (ADR-001..014 + ADR-020..028 + ADR-032; **missing** ADR-015..019 and ADR-029..031; ADR-032 is the most recent — `Accepted` and in main, added by PR #125)
 - API route files (`apps/api/src/routes/*`): **18** (17 routes + `_not-implemented.ts`; `evidence.ts` added by EP-008D)
-- DB migrations (`apps/api/src/db/migrations/*`): **28** (0001..0029, **missing** 0006; highest `0029_durable_provider_dispatch.sql`)
-- test files (`*.test.ts`/`*.spec.ts`): **191** on disk — **112** unit (under `apps/`+`packages/`; EP-11 / PR #126 deleted `files-purpose-validator.test.ts` and added no replacement file, expanding the existing `tests/integration/openai-passthrough.test.ts` instead), **74** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate (`vitest.config.ts`), the default `pnpm test` is **unit-only** (112 files, **1286** tests, reproduced locally at this anchor); `pnpm test:integration` adds the integration files (CI runs both jobs)
+- DB migrations (`apps/api/src/db/migrations/*`): **29** (0001..0030, **missing** 0006; highest `0030_run_idempotency.sql` — the P0.3-C immutable execution-idempotency binding)
+- test files (`*.test.ts`/`*.spec.ts`): **194** on disk — **113** unit (under `apps/`+`packages/`; P0.3-C added `apps/api/src/pipeline/run-idempotency.test.ts`), **76** under `tests/integration/` (P0.3-C added `run-idempotency.test.ts` + `workroom-run-idempotency.test.ts`), **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate (`vitest.config.ts`), the default `pnpm test` is **unit-only** (113 files, **1316** tests, reproduced locally at this anchor); `pnpm test:integration` adds the integration files (CI runs both jobs)
 
 ---
 
@@ -45,7 +46,7 @@ All surfaces registered in `apps/api/src/server.ts:161-181` (the direct-route id
 |---|---|---|---|---|---|---|
 | Health | IMPLEMENTED_RUNTIME_SOURCE_VERIFIED_TESTS_NOT_LOCATED | `routes/health.ts` (`server.ts:161`) | inline | dedicated route test not located in this review | liveness/readiness | — |
 | Capabilities | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/capabilities.ts` (`:162`) | `@govai/core-governance` | `tests/integration/capabilities-by-org.test.ts` | per-org view; default-deny | — |
-| `/v1/runs` | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/runs.ts` (`:163`) | `pipeline/run-orchestrator.ts` + the P0.3-A durable dispatch layer (`run-dispatch-config.ts`, `run-dispatch-state.ts`, `run-dispatch-recovery.ts`) | `tests/integration/governed-run-e2e.test.ts`, `runs-passthrough-mode.test.ts`, the `run-dispatch-*.test.ts` suites, `runs-status-endpoint.test.ts` | governed+passthrough; run-lifecycle chain evidence via the durable dispatch layer (§3); tenant-isolated status polling `GET /v1/runs/:run_id` (`routes/runs.ts:165`) | — |
+| `/v1/runs` | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/runs.ts` (`:163`) | `pipeline/run-orchestrator.ts` + the P0.3-A durable dispatch layer (`run-dispatch-config.ts`, `run-dispatch-state.ts`, `run-dispatch-recovery.ts`) + the P0.3-C execution-idempotency layer (`pipeline/run-idempotency.ts`) | `tests/integration/governed-run-e2e.test.ts`, `runs-passthrough-mode.test.ts`, the `run-dispatch-*.test.ts` suites, `runs-status-endpoint.test.ts`, `run-idempotency.test.ts` (P0.3-C) | governed+passthrough; run-lifecycle chain evidence via the durable dispatch layer (§3); tenant-isolated status polling `GET /v1/runs/:run_id` (`routes/runs.ts:224`); optional `X-GovAI-Run-Idempotency-Key` — tenant-scoped execution-idempotency binding with canonical semantic-intent correspondence: a matching replay returns the current durable run (200 + `X-GovAI-Run-Idempotent-Replay`), a divergent same-key intent is 409 `idempotency_key_conflict` (distinct from the AuditBridge `X-GovAI-Idempotency-Key`, which stays direct-route evidence identity) | — |
 | Audit events | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/audit-events.ts` (`:164`) | reads HMAC chain | `audit-events-rls.test.ts`, `audit-events-pagination.test.ts` | read-only | — |
 | Admin audit crypto-shred | PLANNED | `routes/admin-audit-shred.ts:41` (`sendNotImplemented … 'PR3'`) | stub | n/a | not-implemented stub; `crypto_shredded` state + ADR-011 exist in schema | implement later |
 | Admin DLP detector CRUD | PLANNED | `routes/admin-dlp.ts:40` (`sendNotImplemented … 'PR3'`) | stub | n/a | admin CRUD stub; DLP pre-scan itself runs in governed surfaces | implement later |
@@ -56,7 +57,7 @@ All surfaces registered in `apps/api/src/server.ts:161-181` (the direct-route id
 | Admin provider credentials | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/admin-provider-credentials.ts` (`:176`) | KMS envelope; `auditAppend` (`:165,289`) | `admin-provider-credentials-*.test.ts` (6 files) | SET/GET/REVOKE; no rotation policy | — |
 | Workrooms (Phase 1) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workrooms.ts` (`:177`) | inline; migration 0012 | `tests/integration/workroom-participants.test.ts` (+ ~20 workroom tests) | partial runtime (Phase 1) | — |
 | Workroom transcript (Phase 2) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-transcript.ts` (`:178`) | migration 0013 | `workroom-messages.test.ts`, `workroom-audit-subview.test.ts` | partial runtime (Phase 2) | — |
-| Workroom runs (Phase 3) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-runs.ts` (`:179`) | `run-orchestrator.ts` `WorkroomRunContext`; migration 0014 | `workroom-runs.test.ts`, `workroom-runs-mode.test.ts` | partial runtime (Phase 3) | — |
+| Workroom runs (Phase 3) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-runs.ts` (`:179`) | `run-orchestrator.ts` `WorkroomRunContext`; migration 0014 | `workroom-runs.test.ts`, `workroom-runs-mode.test.ts`, `workroom-run-idempotency.test.ts` (P0.3-C) | partial runtime (Phase 3); P0.3-C covers `POST /v1/workrooms/:id/runs` — current membership authorization stays mandatory (key knowledge is never an authorization capability), a matching replay does not consume the approval twice, approval provenance participates in the semantic-intent correspondence, and an in-progress replay does not fabricate a `run_event` turn | — |
 | Workroom approvals (Phase 4) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-approvals.ts` (`:180`) | migration 0015 | `workroom-approvals.test.ts`, `workroom-approvals-runs.test.ts` | partial runtime (Phase 4); SoD/TOCTOU | — |
 | Regulatory | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/regulatory.ts` (`:181`) | `regulatory/service.ts`; migrations 0016–0024 | `regulatory-*.test.ts` (11 files) | **evidence only, not runtime enforcement** (§4/§5) | — |
 | Evidence read API (`/v1/evidence`) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-008D) | `routes/evidence.ts` (`:165`) | `pipeline/evidence-reports.ts` (EC summary + gap lists) | `tests/integration/evidence-reports.test.ts`, `evidence-cockpit.test.ts` | read-only, RLS-scoped (the auditor IS the tenant — per-org view, no cross-tenant operator role); `/gaps` enum `ec1\|ec2\|ec3seal\|ec3drop\|ec4`; EC-5 deferred | real EC-5 (separate Option-A EP) |
@@ -112,7 +113,7 @@ This was the loose thread between runtime and the evidence plane; **PR-B (EP-004
 5. **B3 seals captures already in the outbox.** With the four direct routes now feeding the outbox (PR-B #98) and the B3 runner implemented (EP-006, `apps/audit-sealer`), the runtime → capture → seal arc is closed: direct-route runtime events are captured to the outbox and the dedicated sealer advances them into the HMAC chain.
 
 Separately documented (not the same path):
-- **`/v1/runs` run-lifecycle chain writes flow through the P0.3-A durable dispatch layer** (`pipeline/run-dispatch-state.ts` — `auditAppend` call sites at `:149`, `:178`, `:350` — for the dispatch lifecycle events `run.dispatch_prepared`/`run.dispatch_claimed`/`run.outcome_unknown`/`run.outcome_reconciled`, the terminal `run.completed`/`run.failed`/`run.denied`, and the governed `passthrough.invoked` v4 capture). The orchestrator retains one direct `auditAppend` at `run-orchestrator.ts:947` (the in-transaction governed `run.denied` path). This is the HMAC append chain, **not** the capture outbox.
+- **`/v1/runs` run-lifecycle chain writes flow through the P0.3-A durable dispatch layer** (`pipeline/run-dispatch-state.ts` — `auditAppend` call sites at `:149`, `:178`, `:350` — for the dispatch lifecycle events `run.dispatch_prepared`/`run.dispatch_claimed`/`run.outcome_unknown`/`run.outcome_reconciled`, the terminal `run.completed`/`run.failed`/`run.denied`, and the governed `passthrough.invoked` v4 capture). The orchestrator retains one direct `auditAppend` at `run-orchestrator.ts:1132` (the in-transaction governed `run.denied` path). This is the HMAC append chain, **not** the capture outbox.
 - **Regulatory** (`regulatory/service.ts:249`) and **admin provider credentials** (`admin-provider-credentials.ts:165,289`) also write via `auditAppend` directly.
 
 ### Durable provider dispatch (P0.3-A / F3 — PR #123, squash `165291d9`)
@@ -122,10 +123,20 @@ F3 (DEMONSTRATED: provider network I/O inside database transactions / checked-ou
 - **Dispatch boundary:** the run is prepared and committed in TX-A (`run.dispatch_prepared` — run row + real `native_request_hash` durable **before** any provider I/O), exactly one executor wins the `queued→running` CAS (`run.dispatch_claimed`), the provider forward happens **outside** any database transaction and outside checked-out clients, and the outcome is finalized in a separate transaction (`pipeline/run-dispatch-config.ts`, `run-dispatch-state.ts`, `run-orchestrator.ts`).
 - **Honest unknown semantics:** when the system cannot prove whether the provider received the request, the run terminates as `run.outcome_unknown` (closed `ForwardObservation` semantics, `packages/core-events/src/run-dispatch-lifecycle.ts`) — **never retried, never classified as failed**. A later reconciliation to a known **HTTP provider result** (with a persisted invocation) appends `run.outcome_reconciled` idempotently — the only reconciliation marker the state machine emits (`run-dispatch-state.ts:955-957`). There is **no exactly-once claim**.
 - **Bounded recovery:** a periodic worker (`pipeline/run-dispatch-recovery.ts`, started in `server.ts:191`) recovers stale claims within explicit bounds, deciding the branch atomically on the durable boundary (`run-dispatch-state.ts:1191-1247`): boundary **absent** → the mandatory durable gate never committed, so provider invocation was structurally impossible → KNOWN `run.failed` with `dispatch_never_started` (never an unknown); boundary **present** → the gate was crossed but nothing past it is provable → honest `run.outcome_unknown` (`stale_dispatch_claim`, `forward_observation='not_observed'`). Every `run.outcome_unknown` is therefore post-boundary by construction; recovery never calls a provider and never generates a token.
-- **Forensic lifecycle evidence:** the lifecycle/status transitions (`run.dispatch_prepared`/`run.dispatch_claimed`, the terminals, `run.outcome_unknown`/`run.outcome_reconciled`) append chain events with deterministic payload hashes; the bound lifecycle chronology rides the database clock so it can never contradict the transition order. The durable boundary commit itself is the deliberate exception: `commitDispatchBoundary()` (`run-dispatch-state.ts:481-505`) only records `dispatch_boundary_committed_at` (a `clock_timestamp()` CAS) and appends **no chain event of its own** — its timestamp is deferred-bound into the later evidence: `run.outcome_unknown` requires it by schema, and the `run.completed`/`run.failed` terminals (including `dispatch_pre_forward_failed`) bind it into both the payload hash and the safe metadata whenever the boundary was crossed. A governed block is decided **pre-forward and therefore pre-boundary** — the handler returns `blocked` at tool/enforcement validation before any `forwardRaw` call, and `beforeDispatch` commits the boundary inside `forwardRaw` immediately before `fetch` (`handle-responses.ts:265-303`, `packages/provider-*/src/passthrough/forward.ts:97-104`, `run-orchestrator.ts:1311-1317`) — so a blocked run has no committed boundary to bind, and its `run.denied` (`run-dispatch-state.ts:1059-1071`) hashing only `governed_blocked:${reason}` is consistent with that, **not** an evidence gap.
-- **Tenant-isolated status polling:** `GET /v1/runs/:run_id` (`routes/runs.ts:165`), RLS-scoped.
+- **Forensic lifecycle evidence:** the lifecycle/status transitions (`run.dispatch_prepared`/`run.dispatch_claimed`, the terminals, `run.outcome_unknown`/`run.outcome_reconciled`) append chain events with deterministic payload hashes; the bound lifecycle chronology rides the database clock so it can never contradict the transition order. The durable boundary commit itself is the deliberate exception: `commitDispatchBoundary()` (`run-dispatch-state.ts:481-505`) only records `dispatch_boundary_committed_at` (a `clock_timestamp()` CAS) and appends **no chain event of its own** — its timestamp is deferred-bound into the later evidence: `run.outcome_unknown` requires it by schema, and the `run.completed`/`run.failed` terminals (including `dispatch_pre_forward_failed`) bind it into both the payload hash and the safe metadata whenever the boundary was crossed. A governed block is decided **pre-forward and therefore pre-boundary** — the handler returns `blocked` at tool/enforcement validation before any `forwardRaw` call, and `beforeDispatch` commits the boundary inside `forwardRaw` immediately before `fetch` (`handle-responses.ts:265-303`, `packages/provider-*/src/passthrough/forward.ts:97-104`, `run-orchestrator.ts:1415` governed / `:2004` passthrough) — so a blocked run has no committed boundary to bind, and its `run.denied` (`run-dispatch-state.ts:1059-1071`) hashing only `governed_blocked:${reason}` is consistent with that, **not** an evidence gap.
+- **Tenant-isolated status polling:** `GET /v1/runs/:run_id` (`routes/runs.ts:224`), RLS-scoped.
 - **Migration `0029_durable_provider_dispatch.sql`** adds the durable dispatch schema and the hardened M-B guard. **RLS process description (canonical):** `RLS_FORCE_SUSPENSION_USED=YES`, `RLS_DEFINER_FUNCTION_USED=NO` for the M-B decision count, `RLS_VISIBILITY_MECHANISM=OWNER_FORCE_SUSPENSION` (owner `NO FORCE ROW LEVEL SECURITY` window, `0029:110-115`), `RLS_ROW_SECURITY_OFF_ROLE=FAIL_CLOSED_ASSERTION` (`row_security=off` is armed so that any policy interference fails loudly, not to bypass). Stated precisely: the M-B decision count does **not** use a `SECURITY DEFINER` function; `SECURITY DEFINER` **remains in use elsewhere in 0029** — the recovery-discovery candidates primitive (`0029:460,497`).
 - **Scope guard:** the shared provider handlers gained optional, orchestrator-only dispatch hooks (`beforeDispatch`/`dispatchSignal`/`monotonicDeadlineMs`/`onDispatchStart`/`preResolvedCredentialSource`); the direct governed/passthrough routes do not supply them, and their behavior and AuditBridge → outbox path are unchanged; `/v1/runs` stays chain-authoritative. Tests: `tests/integration/run-dispatch-{boundary,durability,unknown,recovery,approval-locks,migration-0029}.test.ts`, `runs-status-endpoint.test.ts`, plus the unit suites `run-dispatch-config.test.ts`, `run-dispatch-lifecycle.test.ts`, `dlp-dispatch-contract.test.ts`, `governed-v4-capture.test.ts`.
+
+### Cross-request execution idempotency (P0.3-C — PR #129, squash `f381d3fa`)
+
+P0.3-C adds the keyed-intent layer on top of F3 for both run-creation surfaces (`POST /v1/runs`, `POST /v1/workrooms/:id/runs`), composing with — never replacing — the F3 guarantees (`AT_MOST_ONE_LOCAL_FORWARD_INVOCATION_PER_RUN_ID`, honest `run.outcome_unknown`, recovery that never redispatches, late known-result reconciliation):
+
+- **Identity:** optional `X-GovAI-Run-Idempotency-Key` header (distinct from the AuditBridge `X-GovAI-Idempotency-Key`); only the SHA-256 of the normalized key is ever persisted — the raw key is never stored, logged or forwarded upstream. Binding table `govai.run_idempotency` (migration `0030`): immutable, tenant-scoped (RLS ENABLE+FORCE), app-role grants SELECT+INSERT only; the composite PK `(org_id, idempotency_key_hash)` is the single PostgreSQL concurrency arbiter (`INSERT … ON CONFLICT DO NOTHING` reservation inside TX-A, before any duplicate-sensitive durable work).
+- **Correspondence:** the canonical `govai.run_execution_intent.v1` semantic projection (actor, route scope, workspace, capability, model, input, resolved mode, metadata; the Workroom variant adds participant, workroom, task, governance mode and `effective_approval_request_id`), SHA-256 over a frozen canonical JSON. `provider_invocations.native_request_hash` is explicitly NOT the idempotency identity (it cannot encode the full logical intent — test-proven via metadata divergence and DLP-redaction convergence).
+- **Semantics:** same tenant + same key + same canonical intent ⇒ ONE durable logical run — a matching replay returns the current durable state (200 + `X-GovAI-Run-Idempotent-Replay: true` + `Location`), with no second policy/DLP persistence, no approval consumption, no dispatch claim and **no intentional second local provider execution**. Divergent same-key intent ⇒ 409 `idempotency_key_conflict` (static body). No header ⇒ prior behavior unchanged (no auto-generated dedupe key). Workroom: a keyed approval is validated ONLY inside TX-A after the reservation winner is known; a matching replay after consumption mutates no approval state; current membership authorization is always required.
+- **Explicit non-guarantees:** no attempts table, no TTL (v1), no automatic provider retry, no provider fallback, and **no provider-side exactly-once** (receipt, execution or transmission) — the strongest claim is that GovAI will not intentionally launch a second local provider execution for a matching tenant-scoped keyed intent.
+- Tests: `apps/api/src/pipeline/run-idempotency.test.ts` (unit), `tests/integration/run-idempotency.test.ts` + `tests/integration/workroom-run-idempotency.test.ts` (real-Postgres winner arbitration, RLS/immutability, replay/conflict/authorization matrix, actual upstream-request counting).
 
 **Status lines:**
 - Runtime-to-evidence dispatch for **direct governed-native / passthrough** routes: **IMPLEMENTED & INTEGRATION-TESTED (PR-B / EP-004)** — the AuditBridge (ADR-027) is wired into all four routes; `event: unknown` is validated/narrowed via `PassthroughInvokedSchema` (v4) before `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" absorption intent for direct routes; `/v1/runs` remains distinct and chain-authoritative via `auditAppend`.
@@ -196,17 +207,17 @@ Summarized in [stale-docs-register.md](./stale-docs-register.md): README status 
 
 ## 8. P0 findings register (F1–F6, C-2) and F4 canonical state
 
-The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `01c05fd6` is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it. EP-11 (PR #126) is a **subsequent provider-truth correction outside this matrix** — it is not an F-finding and must not be conflated with F2, which remains `OPEN_PENDING_SOURCE_CLASSIFICATION`.
+The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `f381d3fa` is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it. EP-11 (PR #126) is a **subsequent provider-truth correction outside this matrix** — it is not an F-finding and must not be conflated with F2, which remains `OPEN_PENDING_SOURCE_CLASSIFICATION`.
 
 | Finding | Classification | Implementation status | Landed by / next | Subject |
 |---|---|---|---|---|
 | F1 | DEMONSTRATED | CORRECTED | P0.2 / `19bcb452` (PR #119) | real provider-credential provenance |
 | F2 | PENDING_SOURCE_CLASSIFICATION | OPEN | separate source adjudication + sealed-schema decision (do not classify as demonstrated, latent or disproved before that) | block-source provenance / sealed-schema decision |
-| F3 | DEMONSTRATED | CORRECTED | P0.3-A / `165291d9` (PR #123) — durable provider dispatch; remaining P0.3 slices (P0.3-C) stay open as separate work | transaction and dispatch-state work |
+| F3 | DEMONSTRATED | CORRECTED | P0.3-A / `165291d9` (PR #123) — durable provider dispatch; the remaining P0.3 slice (P0.3-C) landed as PR #129 / `f381d3fa` — the P0.3 runtime lane is COMPLETE | transaction and dispatch-state work |
 | F4 | LATENT_ARCHITECTURAL_RISK_NOT_OBSERVED_AS_FAILURE | PREVENTIVE_HARDENING_MERGED_AND_DUAL_VERIFIED | PR #120 / merge `719fefc2`, tree `c13d83db` | AuditBridge request-identity lifecycle scoping |
 | F5 | DEMONSTRATED | CORRECTED | P0.1 / `ed18736a` (PR #118) | demonstrated overlapping-span redaction paths |
 | F6 | DEMONSTRATED | CORRECTED | P0.1 / `ed18736a` (PR #118) | evidence counts derived from fused spans |
-| C-2 | DEMONSTRATED — catalogued **SEPARATE from the F1–F6 numbering** | CORRECTED | P0.2 / `19bcb452` (PR #119) | real SHA-256 of the blocked native request body (after PR #123 the real native-body hash is computed before the dispatch boundary — `run-orchestrator.ts:999` governed, `:1475` passthrough — and carried by the durable dispatch records) |
+| C-2 | DEMONSTRATED — catalogued **SEPARATE from the F1–F6 numbering** | CORRECTED | P0.2 / `19bcb452` (PR #119) | real SHA-256 of the blocked native request body (after PR #123 the real native-body hash is computed before the dispatch boundary — `run-orchestrator.ts:1184` governed, `:1707` passthrough — and carried by the durable dispatch records) |
 
 ### EP-DOCS-04 / PR #121 canonical state
 
@@ -246,7 +257,8 @@ PR123_SOURCE_BRANCH_PRESERVED=YES
 F3_CLASSIFICATION=DEMONSTRATED
 F3_STATUS=CORRECTED
 P0_3_A=COMPLETE
-P0_3_C=OPEN
+P0_3_C=COMPLETE          (PR #129 — see the P0.3-C canonical state below;
+                          was OPEN at the PR #123 anchor)
 F2_STATUS=OPEN_PENDING_SOURCE_CLASSIFICATION
 ```
 
@@ -310,6 +322,65 @@ historical event/emitter/capture compatibility machinery
 implementation" (complete, PR #126) and the ADR file's own "documentary
 pointer" (`IMPLEMENTATION_STATUS=PENDING` — localized staleness, separate
 maintenance) are distinct statements; see the register.
+
+### P0.3-C / PR #129 canonical state (cross-request execution idempotency)
+
+```text
+PR129_STATUS=MERGED
+PR129_MERGE_SHA=f381d3fac24d5938aed91b6618ef511b66ddc878
+PR129_MERGE_TREE=a64e7178ecd0e90f43d67550be3a6e688054a67c
+PR129_MERGE_PARENT=21afa116e8e85b536a000f0889e6d2bf6929a4a9
+PR129_PARENT_COUNT=1
+PR129_AUDITED_HEAD=bfa05c5bfeca536d0bd4c41c045246ecd5124c95
+PR129_TREE_EQUALS_AUDITED_HEAD_TREE=PASS
+PR129_CHANGED_FILES=8
+PR129_POST_MERGE_MAIN_CI_RUN=31802636887
+PR129_POST_MERGE_MAIN_CI=SUCCESS
+PR129_SOURCE_BRANCH_PRESERVED=YES
+
+P0_3_C=COMPLETE
+P03_RUNTIME_LANE=COMPLETE
+P0_TRUTH_AND_INTEGRITY_PROGRAM=OPEN     (F2 + repository promulgation remain)
+F2_STATUS=OPEN_PENDING_SOURCE_CLASSIFICATION
+PROVIDER_EXACTLY_ONCE=NOT_CLAIMED
+```
+
+Review/process bookkeeping (canonical): 4 substantive review threads, all
+resolved with recorded adjudications, 0 active unresolved current threads;
+**3 substantive Codex correction rounds** (the configured maximum was not
+exceeded) followed by **1 final verification pass** on the corrected exact
+head, which produced **2 explicit clean responses** — delivered as issue
+comments from the trusted Codex bot identity with exact-head attribution (a
+valid clean-signal transport only when author provenance, explicit clean
+content and exact-head SHA are ALL verified; see stale-docs-register.md,
+process-control lessons).
+
+#### P0.3-C known v1 boundary (non-blocking)
+
+```text
+P03C_PRE_RESERVATION_CONCURRENT_WINNER_WINDOW=KNOWN_V1_LIMITATION
+CLASS=DEFERRED_LIVENESS_ENHANCEMENT_BY_FROZEN_CONSTRAINT
+SAFETY_DEFECT=NO
+IDEMPOTENCY_VIOLATION=NO
+DUPLICATE_EXECUTION_RISK_FROM_THIS_WINDOW=NO
+P03C_BLOCKER=NO
+```
+
+When two matching keyed requests overlap and the winner's TX-A is still
+uncommitted at BOTH of the loser's committed reads (the initial probe and the
+bounded recheck after a pre-reservation failure such as credential/KMS
+resolution), the loser may return its original pre-reservation error while
+the winner commits immediately afterward. This is a consistent linearizable
+history for v1: no second committed run, no second provider execution, no key
+poisoning, no second approval consumption — and a later retry of the same key
+converges to the winner's committed run. The frozen v1 constraints
+deliberately exclude the mechanisms that would close it (polling for the
+winner's commit, automatic execution/credential/provider retry, candidate-run
+creation before credential resolution, or an advisory-lock authority in front
+of the binding-table arbiter). Revisit only if those architectural
+constraints are deliberately reconsidered. This is **not** an exactly-once
+gap and **not** a duplicate-execution vulnerability, and P0.3-C is not
+incomplete because of it.
 
 ### F4 canonical state
 
