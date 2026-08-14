@@ -241,9 +241,10 @@ Notes (NOT corrections):
 
 ## Post-P0.3-C canonical state roll reconciliation (2026-08-14) — P0.3-C recorded COMPLETE
 
-Since the post-EP11 roll (PR #127) anchored the four canonicals at
-`01c05fd6`, three merges landed: PR #128 refined the routine-authorization
-semantics in resume-playbook §9–§10 (merge `21afa116`), and PR #129
+Since the post-EP11 roll (PR #127, merge `6da481c`) anchored the four
+canonicals at `01c05fd6`, two merges landed: PR #128 refined the
+routine-authorization semantics in resume-playbook §9–§10 (merge
+`21afa116`), and PR #129
 implemented **P0.3-C cross-request run execution idempotency** (squash
 `f381d3fac24d5938aed91b6618ef511b66ddc878`, tree `a64e7178` byte-identical to
 the audited head `bfa05c5b`, single parent `21afa116`, 8 files, post-merge
