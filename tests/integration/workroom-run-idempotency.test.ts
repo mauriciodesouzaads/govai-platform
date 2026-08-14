@@ -238,6 +238,17 @@ describe('T20 — Workroom governed sequential replay', () => {
     expect(replay.body['workroom_id']).toBe(workroomId);
     expect(replay.body['status']).toBe('completed');
 
+    // A retry that differs ONLY in the path uuid's hex casing is the SAME
+    // semantic execution: PostgreSQL resolves the same workroom, so the
+    // canonical intent must too (never a spurious 409).
+    const upper = await post(
+      `/v1/workrooms/${workroomId.toUpperCase()}/runs`,
+      org.api_key,
+      governedRun(),
+      { [H]: key },
+    );
+    expectReplay(upper, runId);
+
     expect(await orgRuns(org)).toBe(1);
     expect(await runEventTurns(org, workroomId)).toBe(1);
     expect(providerCalls(org.workspace_id)).toBe(1);

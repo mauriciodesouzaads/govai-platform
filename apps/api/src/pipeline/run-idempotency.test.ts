@@ -201,4 +201,43 @@ describe('RunExecutionIntentV1 correspondence hash', () => {
     expect(buildStandaloneRunIntent(STANDALONE_BASE).contract).toBe(RUN_INTENT_CONTRACT);
     expect(buildWorkroomRunIntent(WORKROOM_BASE).contract).toBe(RUN_INTENT_CONTRACT);
   });
+
+  it('uuid HEX CASING never changes the hash — routes accept either spelling', () => {
+    const sBase = runIntentHash(buildStandaloneRunIntent(STANDALONE_BASE));
+    const sUpper = runIntentHash(
+      buildStandaloneRunIntent({
+        ...STANDALONE_BASE,
+        actorUserId: STANDALONE_BASE.actorUserId.toUpperCase(),
+        workspaceId: STANDALONE_BASE.workspaceId.toUpperCase(),
+      }),
+    );
+    expect(sUpper.equals(sBase)).toBe(true);
+
+    const withIds = {
+      ...WORKROOM_BASE,
+      workroomTaskId: '00000000-0000-4000-8000-00000000aaaa',
+      effectiveApprovalRequestId: '00000000-0000-4000-8000-00000000cccc',
+    };
+    const wBase = runIntentHash(buildWorkroomRunIntent(withIds));
+    const wUpper = runIntentHash(
+      buildWorkroomRunIntent({
+        ...withIds,
+        actorUserId: withIds.actorUserId.toUpperCase(),
+        createdByParticipantId: withIds.createdByParticipantId.toUpperCase(),
+        workroomId: withIds.workroomId.toUpperCase(),
+        workroomTaskId: withIds.workroomTaskId.toUpperCase(),
+        workspaceId: withIds.workspaceId.toUpperCase(),
+        effectiveApprovalRequestId: withIds.effectiveApprovalRequestId.toUpperCase(),
+      }),
+    );
+    expect(wUpper.equals(wBase)).toBe(true);
+    // DIFFERENT uuids (not just casing) still diverge.
+    const wOther = runIntentHash(
+      buildWorkroomRunIntent({
+        ...withIds,
+        workroomTaskId: '00000000-0000-4000-8000-00000000aaab',
+      }),
+    );
+    expect(wOther.equals(wBase)).toBe(false);
+  });
 });

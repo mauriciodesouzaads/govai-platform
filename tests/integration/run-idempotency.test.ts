@@ -269,6 +269,26 @@ describe('T03 — malformed run idempotency key → 400, zero runs, zero provide
 // T04 / T05 — standalone governed sequential + concurrent
 // =============================================================================
 
+describe('uuid casing — a retry differing only in workspace_id hex casing is the SAME intent', () => {
+  it('uppercase workspace_id replays the lowercase original instead of conflicting', async () => {
+    const org = await seedOrg(stack);
+    const key = keyOf();
+    const first = await post('/v1/runs', org.api_key, governedBody(org), { [H]: key });
+    expect(first.statusCode).toBe(200);
+    const runId = first.body['run_id'] as string;
+
+    const replay = await post(
+      '/v1/runs',
+      org.api_key,
+      governedBody(org, { workspace_id: org.workspace_id.toUpperCase() }),
+      { [H]: key },
+    );
+    expectReplay(replay, runId);
+    expect(await countRuns(org)).toBe(1);
+    expect(providerCalls(org.workspace_id)).toBe(1);
+  });
+});
+
 describe('T04 — governed sequential replay', () => {
   it('same key + same intent × 3 → one run, ONE actual provider call', async () => {
     const org = await seedOrg(stack);

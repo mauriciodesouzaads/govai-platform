@@ -184,6 +184,14 @@ export function runIntentHash(intent: RunExecutionIntentV1): Buffer {
   return createHash('sha256').update(stableCanonicalJson(intent), 'utf8').digest();
 }
 
+/** UUID-valued intent fields are canonicalized to lowercase: the routes accept
+ *  any hexadecimal casing (and PostgreSQL compares uuids case-insensitively),
+ *  so the client's spelling must never influence the semantic hash — a retry
+ *  that differs only in uuid casing is the SAME execution intent. */
+const canonicalUuid = (v: string): string => v.toLowerCase();
+const canonicalUuidOrNull = (v: string | null): string | null =>
+  v === null ? null : v.toLowerCase();
+
 /** Build the standalone-route intent. Omitted metadata normalizes to {}. */
 export function buildStandaloneRunIntent(input: {
   actorUserId: string;
@@ -197,8 +205,8 @@ export function buildStandaloneRunIntent(input: {
   return {
     contract: RUN_INTENT_CONTRACT,
     route_scope: 'standalone',
-    actor_user_id: input.actorUserId,
-    workspace_id: input.workspaceId,
+    actor_user_id: canonicalUuid(input.actorUserId),
+    workspace_id: canonicalUuid(input.workspaceId),
     capability: input.capability,
     model: input.model,
     input: input.input,
@@ -226,18 +234,18 @@ export function buildWorkroomRunIntent(input: {
   return {
     contract: RUN_INTENT_CONTRACT,
     route_scope: 'workroom',
-    actor_user_id: input.actorUserId,
-    created_by_participant_id: input.createdByParticipantId,
-    workroom_id: input.workroomId,
-    workroom_task_id: input.workroomTaskId,
+    actor_user_id: canonicalUuid(input.actorUserId),
+    created_by_participant_id: canonicalUuid(input.createdByParticipantId),
+    workroom_id: canonicalUuid(input.workroomId),
+    workroom_task_id: canonicalUuidOrNull(input.workroomTaskId),
     workroom_governance_mode: input.workroomGovernanceMode,
-    workspace_id: input.workspaceId,
+    workspace_id: canonicalUuid(input.workspaceId),
     capability: input.capability,
     model: input.model,
     input: input.input,
     resolved_mode: input.resolvedMode,
     metadata: input.metadata ?? {},
-    effective_approval_request_id: input.effectiveApprovalRequestId,
+    effective_approval_request_id: canonicalUuidOrNull(input.effectiveApprovalRequestId),
   };
 }
 
