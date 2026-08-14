@@ -1,6 +1,6 @@
 # GovAI Development Roadmap
 
-Anchored on [current-state.md](./current-state.md) (main `01c05fd6`, evidence-first, post-EP11). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
+Anchored on [current-state.md](./current-state.md) (main `f381d3fa`, evidence-first, post-P0.3-C). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
 
 ---
 
@@ -18,7 +18,7 @@ P0
 
 **P0** is an *operational priority* lane inside the macro-phase "Phase 0 — Truth and Integrity" (a truth-and-integrity program over already-shipped evidence surfaces). A P0-priority item does **not** thereby belong to the product-phase numbering below (in particular, it is not part of "Phase 0 — Built and source-verified", which is a product phase that happens to share the label). The canonical F1–F6 + C-2 matrix and the F4 canonical state live in current-state.md §8.
 
-Current P0 sequence at main `01c05fd6`:
+Current P0 sequence at main `f381d3fa`:
 
 1. **Prior documentary reconciliation — COMPLETE.** EP-DOCS-04 / PR #121
    (squash `e422280d`, dual merge-verified), the EP-DOCS-05 anchor roll
@@ -50,25 +50,44 @@ Current P0 sequence at main `01c05fd6`:
    test deleted; `block_post_sunset`, the synthetic local 403 and
    `x-govai-deprecation-warning` removed) while provider forwarding and
    provider-result evidence are preserved (current-state.md §8).
-5. **Remaining P0.3 slices (P0.3-C — OPEN).** The next runtime-development
-   lane.
+5. **P0.3-C — cross-request run execution idempotency — COMPLETE.** PR #129
+   squash-merged as `f381d3fa` (tree `a64e7178` byte-identical to the audited
+   head `bfa05c5b`; single parent `21afa116`; 8 files; post-merge main CI run
+   `31802636887` SUCCESS). Both run-creation surfaces (standalone `/v1/runs`
+   + Workroom `POST /v1/workrooms/:id/runs`) accept the optional
+   `X-GovAI-Run-Idempotency-Key`; the immutable tenant-scoped
+   `govai.run_idempotency` binding (migration 0030) plus the canonical
+   `govai.run_execution_intent.v1` semantic-intent correspondence give one
+   durable logical run per matching keyed intent, with no intentional second
+   local provider execution and no second approval consumption. **No
+   provider-side exactly-once is claimed** (current-state.md §3).
+   **The P0.3 runtime lane is COMPLETE.**
 6. **F2** source adjudication and sealed-schema decision
-   (OPEN_PENDING_SOURCE_CLASSIFICATION).
+   (OPEN_PENDING_SOURCE_CLASSIFICATION). **The next development movement.**
 7. **PR-0 / D9 V2 — final rebase and repository promulgation**,
    after its required inputs and rebaseline are available (see the
    D9 state below: the source corpus is located; promulgation into
    main is what remains).
 
-Sequencing after the post-EP11 canonical state roll (this movement):
+Sequencing after the post-P0.3-C canonical state roll (this movement):
 
 ```text
-POST_EP11_CANONICAL_STATE_ROLL=THIS_MOVEMENT
-NEXT_DEVELOPMENT_MOVEMENT=P0.3-C
-THEN=F2
+POST_P03C_CANONICAL_STATE_ROLL=THIS_MOVEMENT
+P03_RUNTIME_LANE=COMPLETE
+P0_TRUTH_AND_INTEGRITY_PROGRAM=OPEN     (F2 + PR-0/D9 promulgation remain)
+NEXT_DEVELOPMENT_MOVEMENT=F2_SOURCE_ADJUDICATION
 THEN=PR-0/D9_V2
 ```
 
-Operational note (not a blocker, not sequenced ahead of P0.3-C):
+Operational note (not a blocker, not sequenced ahead of F2): the P0.3-C
+known v1 boundary — the pre-reservation concurrent-winner window — is
+registered as `KNOWN_V1_LIMITATION` /
+`DEFERRED_LIVENESS_ENHANCEMENT_BY_FROZEN_CONSTRAINT` (`SAFETY_DEFECT=NO`;
+no duplicate execution, no key poisoning; a same-key retry converges; no
+polling in v1). It is **not** a P0.3-C runtime defect and requires no
+corrective runtime PR; see current-state.md §8 *P0.3-C known v1 boundary*.
+
+Operational note (not a blocker, not sequenced ahead of F2):
 `REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` — repository
 branch-protection/ruleset hardening remains a deferred, non-blocking
 assessment. Repository enforcement is **not claimed enabled**; the CI

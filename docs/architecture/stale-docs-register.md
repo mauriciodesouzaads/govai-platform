@@ -1,6 +1,6 @@
 # GovAI Stale Docs Register
 
-Documents whose statements no longer match source ([current-state.md](./current-state.md), main `01c05fd6`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
+Documents whose statements no longer match source ([current-state.md](./current-state.md), main `f381d3fa`). "Confidence" = how strongly source verifies the correction. "Severity" = onboarding/continuity risk. The "Blocks B3?" column is historical: B3 (the AuditSealer runner) was authorized and implemented in EP-006 — every former B3 blocker below is resolved (see the PR-B / EP-004 and EP-006 reconciliation sections).
 
 | Document | Stale statement | Current source evidence | Confidence | Severity | Action | Blocks B3? |
 |---|---|---|---|---|---|---|
@@ -238,3 +238,65 @@ Notes (NOT corrections):
 - This roll changes exactly four documentation files (the four canonicals);
   no runtime, tests, migrations, workflows, dependencies, ADRs, or
   repository settings.
+
+## Post-P0.3-C canonical state roll reconciliation (2026-08-14) — P0.3-C recorded COMPLETE
+
+Since the post-EP11 roll (PR #127) anchored the four canonicals at
+`01c05fd6`, three merges landed: PR #128 refined the routine-authorization
+semantics in resume-playbook §9–§10 (merge `21afa116`), and PR #129
+implemented **P0.3-C cross-request run execution idempotency** (squash
+`f381d3fac24d5938aed91b6618ef511b66ddc878`, tree `a64e7178` byte-identical to
+the audited head `bfa05c5b`, single parent `21afa116`, 8 files, post-merge
+main CI run `31802636887` SUCCESS — unit + integration). Before this roll the
+four canonicals (`current-state.md`, `development-roadmap.md`,
+`stale-docs-register.md`, `resume-playbook.md`) were still anchored at the
+post-EP11 state and still described **P0.3-C as open** / "the next
+runtime-development movement". This roll resolves that staleness and brings
+the four canonicals to `f381d3fa`. Corrections applied:
+
+| Document | Was (stale) | Now (corrected, this roll) |
+|---|---|---|
+| `current-state.md` anchor + manifests | anchor `01c05fd6`; migrations **28** (highest `0029`); tests **191** on disk (112 unit / 74 integration / 5 live); default `pnpm test` 112 files / 1286 tests | anchor **`f381d3fa`**; migrations **29** (0001..0030, missing 0006; highest `0030_run_idempotency.sql`); tests **194** on disk (**113** unit / **76** integration / 5 live — P0.3-C added `run-idempotency.test.ts` unit + `run-idempotency.test.ts`/`workroom-run-idempotency.test.ts` integration); default `pnpm test` = 113 files / **1316** tests, reproduced locally at this anchor; architecture docs (67), regulatory (20), ADRs (24) and routes (18) unchanged |
+| `current-state.md` §8 P0 register + PR #123 block | "the remaining P0.3 slices (P0.3-C) remain open"; `P0_3_C=OPEN` | P0.3-C **COMPLETE** (PR #129, new §8 canonical-state block); `P03_RUNTIME_LANE=COMPLETE`; `P0_TRUTH_AND_INTEGRITY_PROGRAM=OPEN` (F2 + PR-0/D9 promulgation remain); the known v1 pre-reservation window is registered as `KNOWN_V1_LIMITATION` / `DEFERRED_LIVENESS_ENHANCEMENT_BY_FROZEN_CONSTRAINT` (`SAFETY_DEFECT=NO`) |
+| `development-roadmap.md` P0 register + sequencing | item 5 "Remaining P0.3 slices (P0.3-C — OPEN)"; `NEXT_DEVELOPMENT_MOVEMENT=P0.3-C` | item 5 = P0.3-C **COMPLETE** with merge evidence; `NEXT_DEVELOPMENT_MOVEMENT=F2_SOURCE_ADJUDICATION`, `THEN=PR-0/D9_V2`; independent queues (LOCAL_DENY, EC-5, repo enforcement, streams, prefix robustness, ADR-032 maintenance, Phase 5+, Workroom 5–7) preserved unabsorbed |
+| `resume-playbook.md` §2–§4 | known-good main `01c05fd6` (post-EP11); open gates led by "P0.3-C OPEN" | known-good main **`f381d3fa`** (post-P0.3-C, CI run `31802636887`); P0.3-C moved to closed gates; the first open development gate is **F2** |
+
+Review/process bookkeeping for PR #129 (canonical): **4 substantive review
+threads, 4 resolved, 0 active unresolved current threads** (a thread may
+remain non-outdated while correctly resolved — non-outdated ≠ unresolved);
+**3 substantive Codex correction rounds** (the configured maximum was not
+exceeded) + **1 final verification pass** on the corrected exact head with
+**2 explicit clean responses**. Do not restate this as "6 threads" or "4
+correction rounds".
+
+### Process-control lesson — automated probe semantics
+
+Automated textual probes (grep/regex/literal scans) may produce false
+positives and false negatives — especially around negations, comments, SQL
+syntax variants and semantic context. Canonical review discipline:
+
+```text
+PROBE → READ_SOURCE → UNDERSTAND_SEMANTICS → ONLY_THEN_REPORT
+```
+
+A grep/regex match alone is not a finding, and a probe miss alone is not an
+absence proof. This does not weaken fail-closed gates: a defined semantic
+requirement that genuinely fails still blocks.
+
+### Process-control lesson — Codex clean-signal transport
+
+The final clean Codex results for PR #129 arrived as **issue comments**
+("Didn't find any major issues", with an explicit `Reviewed commit:`
+attribution), not as `pull_request_review` objects or reactions. The
+controlling invariant is **semantic**, not the transport object type:
+
+```text
+CODEX_CLEAN_ACCEPTABLE_SIGNAL =
+  explicit clean result + reviewed SHA resolves to the EXACT current head
+```
+
+Extract the reviewed SHA, compare it to the exact current PR head, then
+classify the content. A missing, ambiguous or mismatched reviewed SHA — or
+content containing a substantive finding — remains fail-closed. Never treat
+"a comment exists" alone as clean, and never treat the absence of one
+particular transport type as the absence of a review result.
