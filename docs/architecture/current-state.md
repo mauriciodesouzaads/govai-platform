@@ -350,8 +350,10 @@ resolved with recorded adjudications, 0 active unresolved current threads;
 **3 substantive Codex correction rounds** (the configured maximum was not
 exceeded) followed by **1 final verification pass** on the corrected exact
 head, which produced **2 explicit clean responses** — delivered as issue
-comments with exact-head attribution (a valid clean-signal transport; see
-stale-docs-register.md, process-control lessons).
+comments from the trusted Codex bot identity with exact-head attribution (a
+valid clean-signal transport only when author provenance, explicit clean
+content and exact-head SHA are ALL verified; see stale-docs-register.md,
+process-control lessons).
 
 #### P0.3-C known v1 boundary (non-blocking)
 

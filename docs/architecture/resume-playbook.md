@@ -100,10 +100,15 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 8. **Never claim evidence-plane completeness beyond what current-state.md §3 verifies** (real EC-5 is deferred; the local-deny evidence-incompleteness class is open).
 9. **Codex clean-signal handling:** do not wait indefinitely for only a
    `pull_request_review` object or a reaction — an explicit Codex
-   clean/finding result may arrive as an **issue comment**. Always extract
-   the reviewed SHA and verify `reviewed SHA == exact current PR head`, then
-   classify the content. Never treat "a comment exists" alone as clean; a
-   missing/ambiguous/mismatched reviewed SHA stays fail-closed.
+   clean/finding result may arrive as an **issue comment**. The gate is
+   three-part, ALL required: (a) **author provenance** — the signal must come
+   from the trusted Codex bot/App identity (the installed Codex GitHub App's
+   bot login, e.g. `chatgpt-codex-connector[bot]`), never merely any account
+   with comment permission; (b) extract the reviewed SHA and verify
+   `reviewed SHA == exact current PR head`; (c) classify the content as
+   explicitly clean vs. containing findings. Never treat "a comment exists"
+   alone as clean; a missing/ambiguous/mismatched reviewed SHA — or an
+   untrusted/unverifiable author — stays fail-closed.
 10. **Automated probe discipline:** a literal/regex probe hit or miss is
     **not** an automatic semantic finding or absence proof — inspect the
     source before adjudicating (`PROBE → READ_SOURCE → UNDERSTAND_SEMANTICS

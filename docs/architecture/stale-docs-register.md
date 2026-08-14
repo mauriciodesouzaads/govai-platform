@@ -292,11 +292,18 @@ controlling invariant is **semantic**, not the transport object type:
 
 ```text
 CODEX_CLEAN_ACCEPTABLE_SIGNAL =
-  explicit clean result + reviewed SHA resolves to the EXACT current head
+  trusted Codex bot/App author identity
+  + explicit clean result
+  + reviewed SHA resolves to the EXACT current head
 ```
 
-Extract the reviewed SHA, compare it to the exact current PR head, then
-classify the content. A missing, ambiguous or mismatched reviewed SHA — or
-content containing a substantive finding — remains fail-closed. Never treat
+First verify the comment AUTHOR is the trusted Codex bot/App identity (the
+installed Codex GitHub App's bot login, e.g. `chatgpt-codex-connector[bot]`)
+— an untrusted account with comment permission could imitate a clean
+response that includes the current SHA, so author provenance is part of the
+gate, not an optional check. Then extract the reviewed SHA, compare it to
+the exact current PR head, and classify the content. A missing, ambiguous or
+mismatched reviewed SHA, an untrusted/unverifiable author, or content
+containing a substantive finding — each remains fail-closed. Never treat
 "a comment exists" alone as clean, and never treat the absence of one
 particular transport type as the absence of a review result.
