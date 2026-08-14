@@ -427,21 +427,32 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
     let approvalContext: ApprovalConsumptionContext | undefined;
     if (modeDecision.mode_relation === 'override_approved') {
       const approvalRequestId = body.approval_request_id!;
-      const preflight = await preflightApproval(app, identity.org_id, approvalRequestId, workroomId, {
-        mode: 'passthrough',
-        capability: body.capability,
-        model: body.model,
-        input: body.input,
-        workspace_id: workroom.workspace_id,
-      });
-      if (!preflight.ok) {
-        reply.code(preflight.code === 'workroom_approval_not_found' ? 404 : 403);
-        return {
-          error: preflight.code,
-          mode_relation: 'override_denied' satisfies ModeRelation,
-          workroom_id: workroomId,
-          workroom_governance_mode: workroom.governance_mode,
-        };
+      // P0.3-C §15 — for a KEYED request the approval is validated ONLY inside
+      // TX-A, after the reservation winner is known: a consumability failure
+      // read HERE could be the concurrent matching winner's own consumption
+      // committing between the probe above and this read, and answering 403
+      // from that read would deny a legitimate replay. The PostgreSQL
+      // reservation arbiter — not a preflight read — decides; the orchestrator
+      // revalidates the approval under a row lock after winning and maps a
+      // genuinely unusable approval to the same 403/404 contract. The unkeyed
+      // path keeps the fast preflight UX unchanged.
+      if (!runKeyHash) {
+        const preflight = await preflightApproval(app, identity.org_id, approvalRequestId, workroomId, {
+          mode: 'passthrough',
+          capability: body.capability,
+          model: body.model,
+          input: body.input,
+          workspace_id: workroom.workspace_id,
+        });
+        if (!preflight.ok) {
+          reply.code(preflight.code === 'workroom_approval_not_found' ? 404 : 403);
+          return {
+            error: preflight.code,
+            mode_relation: 'override_denied' satisfies ModeRelation,
+            workroom_id: workroomId,
+            workroom_governance_mode: workroom.governance_mode,
+          };
+        }
       }
       approvalContext = { approval_request_id: approvalRequestId };
     }

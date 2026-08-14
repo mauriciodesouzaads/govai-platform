@@ -1776,7 +1776,12 @@ export async function executePassthroughRun(
   }
 
   // §12.2 — read-only preflight (workroom → approval shape → capability).
-  await runPreflight(deps, identity, body, workroomContext, approval);
+  // P0.3-C §15: on a KEYED execution the approval is NOT validated here — a
+  // consumability failure read before the reservation winner is known could be
+  // the concurrent matching winner's own consumption, and failing on it would
+  // deny a legitimate replay. TX-A validates the approval under a row lock
+  // after winning the reservation (same error contract, no race window).
+  await runPreflight(deps, identity, body, workroomContext, idemCtx ? undefined : approval);
 
   // §12.3 — credential fully resolved BEFORE TX-A (lookup TX committed, then KMS).
   const provider = providerForCapability(body.capability);

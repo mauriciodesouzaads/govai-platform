@@ -8,7 +8,11 @@
 // assertions count ACTUAL upstream HTTP requests (recordedRequestHeaders).
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  buildWorkroomRunIntent,
+  runIntentHash,
+} from '../../apps/api/src/pipeline/run-idempotency.js';
 import {
   startStack,
   stopStack,
@@ -394,6 +398,160 @@ describe('T25 — same key with the approval OMITTED after the original used one
     );
     expect(noBinding.statusCode).toBe(403);
     expect(noBinding.body['error']).toBe('workroom_run_mode_override_requires_approval');
+  });
+});
+
+// =============================================================================
+// §15 window — the winner's TX-A commits BETWEEN the loser's committed-replay
+// probe and database arbitration. The loser must reach the reservation and
+// replay — NEVER answer workroom_approval_already_consumed from a read that
+// merely observed the winner's own consumption (Codex P1 on c140c20).
+// =============================================================================
+
+describe('§15 window — winner commits while the loser is between probe and arbitration', () => {
+  it('the loser blocks on the reservation and replays the winner run instead of 403', async () => {
+    const org = await devOrg();
+    const workroomId = await createWorkroom(org, 'governance_active');
+    const approvalId = await grantedApproval(org, workroomId);
+    const key = keyOf();
+
+    const participant = await queryAsOrg<{ id: string }>(
+      org.org_id,
+      `SELECT id FROM govai.workroom_participants
+        WHERE workroom_id = $1::uuid AND user_id = $2::uuid AND status = 'active'`,
+      [workroomId, org.user_id],
+    );
+    expect(participant).toHaveLength(1);
+
+    // The EXACT canonical intent the route/executor compute for this request.
+    const intentHash = runIntentHash(
+      buildWorkroomRunIntent({
+        actorUserId: org.user_id,
+        createdByParticipantId: participant[0]!.id,
+        workroomId,
+        workroomTaskId: null,
+        workroomGovernanceMode: 'governance_active',
+        workspaceId: org.workspace_id,
+        capability: INTENDED_RUN.capability,
+        model: INTENDED_RUN.model,
+        input: INTENDED_RUN.input,
+        resolvedMode: 'passthrough',
+        metadata: undefined,
+        effectiveApprovalRequestId: approvalId,
+      }),
+    );
+
+    // Simulate the winner's TX-A held OPEN: candidate run + reservation +
+    // approval consumption, all uncommitted — invisible to the loser's probe.
+    const runW = randomUUID();
+    const winner = await stack.db.appPool.connect();
+    try {
+      await winner.query('BEGIN');
+      await winner.query("SELECT set_config('app.org_id', $1, true)", [org.org_id]);
+      await winner.query(
+        `INSERT INTO govai.runs
+           (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+            workroom_id, created_by_participant_id, workroom_governance_mode,
+            dispatch_protocol_version, dispatch_prepared_at)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', $5::text, 'passthrough',
+            'queued', '{}'::jsonb, $6::uuid, $7::uuid, 'governance_active', 1, now())`,
+        [runW, org.org_id, org.workspace_id, org.user_id, INTENDED_RUN.model, workroomId, participant[0]!.id],
+      );
+      await winner.query(
+        `INSERT INTO govai.run_idempotency
+           (org_id, idempotency_key_hash, request_canonical_hash, request_hash_version,
+            route_scope, run_id)
+         VALUES ($1::uuid, $2::bytea, $3::bytea, 1, 'workroom', $4::uuid)`,
+        [org.org_id, createHash('sha256').update(key, 'utf8').digest(), intentHash, runW],
+      );
+      const consumed = await winner.query(
+        `UPDATE govai.workroom_approval_requests
+            SET consumed_run_id = $2::uuid, consumed_at = now()
+          WHERE id = $1::uuid AND consumed_at IS NULL`,
+        [approvalId, runW],
+      );
+      expect(consumed.rowCount).toBe(1);
+
+      // Loser arrives WHILE the winner transaction is open: its probe misses
+      // the uncommitted binding; it must proceed to the reservation (blocking
+      // on the winner) — not to an approval-consumability read.
+      const loser = post(
+        `/v1/workrooms/${workroomId}/runs`,
+        org.api_key,
+        { ...INTENDED_RUN, mode: 'passthrough', approval_request_id: approvalId },
+        { [H]: key },
+      );
+      // Give the loser time to travel past the probe into arbitration, then
+      // land the winner's COMMIT inside the historical race window.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await winner.query('COMMIT');
+
+      const res = await loser;
+      expectReplay(res, runW);
+      expect(res.body['status']).toBe('queued');
+    } finally {
+      winner.release();
+    }
+
+    // One consumption, one run, zero provider calls (the winner never forwarded).
+    const state = await approvalState(org, approvalId);
+    expect(state.consumed_run_id).toBe(runW);
+    expect(await orgRuns(org)).toBe(1);
+    expect(providerCalls(org.workspace_id)).toBe(0);
+  });
+});
+
+// =============================================================================
+// Keyed approval validation lives in TX-A: a genuinely unusable approval keeps
+// the same 403 contract, and a failed authorization never burns the key.
+// =============================================================================
+
+describe('keyed TX-A approval validation — same contract, no key poisoning', () => {
+  it('a keyed request with a genuinely consumed approval → 403; the key stays reusable', async () => {
+    const org = await devOrg();
+    const workroomId = await createWorkroom(org, 'governance_active');
+    const approvalId = await grantedApproval(org, workroomId);
+
+    // Genuinely consume the approval via an UNKEYED execution.
+    const unkeyed = await post(`/v1/workrooms/${workroomId}/runs`, org.api_key, {
+      ...INTENDED_RUN,
+      mode: 'passthrough',
+      approval_request_id: approvalId,
+    });
+    expect(unkeyed.statusCode).toBe(201);
+
+    // Keyed attempt with the consumed approval: 403 with the SAME error
+    // contract (now surfaced by the TX-A row-lock revalidation), no run, and
+    // NO committed binding — a failed authorization must not burn the key.
+    const key = keyOf();
+    const denied = await post(
+      `/v1/workrooms/${workroomId}/runs`,
+      org.api_key,
+      { ...INTENDED_RUN, mode: 'passthrough', approval_request_id: approvalId },
+      { [H]: key },
+    );
+    expect(denied.statusCode).toBe(403);
+    expect(denied.body['error']).toBe('workroom_approval_already_consumed');
+    expect(denied.body['mode_relation']).toBe('override_denied');
+    const burned = await queryAsOrg<{ n: string }>(
+      org.org_id,
+      'SELECT COUNT(*) AS n FROM govai.run_idempotency WHERE org_id = $1::uuid AND idempotency_key_hash = $2::bytea',
+      [org.org_id, createHash('sha256').update(key, 'utf8').digest()],
+    );
+    expect(Number(burned[0]!.n)).toBe(0);
+
+    // The SAME key with a fresh approval executes: the failed attempt did not
+    // poison the tenant key.
+    const approval2 = await grantedApproval(org, workroomId);
+    const retry = await post(
+      `/v1/workrooms/${workroomId}/runs`,
+      org.api_key,
+      { ...INTENDED_RUN, mode: 'passthrough', approval_request_id: approval2 },
+      { [H]: key },
+    );
+    expect(retry.statusCode).toBe(201);
+    expect(await orgRuns(org)).toBe(2);
+    expect(providerCalls(org.workspace_id)).toBe(2);
   });
 });
 
