@@ -43,6 +43,18 @@ import {
   type IntendedPassthroughAction,
   type WorkroomApprovalInvalidCode,
 } from '../pipeline/run-orchestrator.js';
+import {
+  buildWorkroomRunIntent,
+  findCommittedBinding,
+  isRunIdempotentReplay,
+  parseRunIdempotencyKey,
+  resolveCommittedKeyedRequest,
+  runIntentHash,
+  InvalidRunIdempotencyKeyError,
+  RunIdempotencyConflictError,
+  RUN_IDEMPOTENCY_HEADER,
+  type RunIdempotencyExecution,
+} from '../pipeline/run-idempotency.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -254,6 +266,24 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
       };
     }
 
+    // P0.3-C — optional execution-idempotency header. Only the sha256 of the
+    // normalized key survives the parse; a malformed/ambiguous header fails
+    // BEFORE authentication and any run/approval work. Distinct from the
+    // AuditBridge X-GovAI-Idempotency-Key (direct-route evidence identity).
+    let runKeyHash: Buffer | null;
+    try {
+      runKeyHash = parseRunIdempotencyKey(
+        req.headers[RUN_IDEMPOTENCY_HEADER],
+        req.raw.rawHeaders,
+      );
+    } catch (err) {
+      if (err instanceof InvalidRunIdempotencyKeyError) {
+        reply.code(400);
+        return { error: err.code, message: err.message };
+      }
+      throw err;
+    }
+
     const identity = await authenticate(app, req, reply);
     if (!identity) return reply;
 
@@ -315,6 +345,71 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
       body.mode,
       body.approval_request_id !== undefined,
     );
+
+    // P0.3-C §10.2 — keyed request: authentication, Workroom existence, active
+    // participation and task validity are already proven above (idempotency is
+    // never an authorization bypass), so the committed-replay probe runs HERE:
+    // BEFORE the mode-matrix rejection and BEFORE the approval preflight. A
+    // matching replay must not be rejected merely because the ORIGINAL
+    // approval is now consumed — no new provider action is being authorized.
+    if (runKeyHash) {
+      try {
+        if (modeDecision.ok) {
+          const intent = buildWorkroomRunIntent({
+            actorUserId: identity.user_id,
+            createdByParticipantId: participantId,
+            workroomId,
+            workroomTaskId: body.workroom_task_id ?? null,
+            workroomGovernanceMode: workroom.governance_mode,
+            workspaceId: workroom.workspace_id,
+            capability: body.capability,
+            model: body.model,
+            input: body.input,
+            resolvedMode: modeDecision.mode,
+            metadata: body.metadata,
+            effectiveApprovalRequestId:
+              modeDecision.mode_relation === 'override_approved'
+                ? body.approval_request_id!
+                : null,
+          });
+          const replay = await resolveCommittedKeyedRequest(
+            app.govai.pool,
+            identity.org_id,
+            runKeyHash,
+            runIntentHash(intent),
+          );
+          if (replay) {
+            reply.code(200);
+            reply.header('x-govai-run-idempotent-replay', 'true');
+            reply.header('location', `/v1/runs/${replay.run_id}`);
+            return { ...replay, workroom_id: workroomId };
+          }
+        } else {
+          // Mode unresolvable (e.g. a passthrough override with the approval
+          // omitted): this request can never match a committed intent — every
+          // committed binding was written by an execution whose mode resolved.
+          // With a binding present this is a 409 (§8.2: a replay that omits
+          // the approval the original consumed conflicts); without one the
+          // existing mode-matrix rejection below stands.
+          const binding = await findCommittedBinding(
+            app.govai.pool,
+            identity.org_id,
+            runKeyHash,
+          );
+          if (binding) {
+            reply.code(409);
+            return { error: 'idempotency_key_conflict' };
+          }
+        }
+      } catch (err) {
+        if (err instanceof RunIdempotencyConflictError) {
+          reply.code(409);
+          return { error: 'idempotency_key_conflict' };
+        }
+        throw err;
+      }
+    }
+
     if (!modeDecision.ok) {
       reply.code(403);
       return {
@@ -374,11 +469,35 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
     };
     const apiKey = extractApiKey(req);
 
+    // P0.3-C — thread the execution-idempotency context into the orchestrator:
+    // the TX-A reservation is the authoritative concurrency arbiter (the probe
+    // above only answers ALREADY-COMMITTED bindings).
+    const idem: RunIdempotencyExecution | undefined = runKeyHash
+      ? { keyHash: runKeyHash }
+      : undefined;
+
     try {
       const result =
         modeDecision.mode === 'governed'
-          ? await executeGovernedRun(deps, apiKey, runRequest, workroomContext)
-          : await executePassthroughRun(deps, apiKey, runRequest, workroomContext, approvalContext);
+          ? await executeGovernedRun(deps, apiKey, runRequest, workroomContext, idem)
+          : await executePassthroughRun(
+              deps,
+              apiKey,
+              runRequest,
+              workroomContext,
+              approvalContext,
+              idem,
+            );
+
+      // P0.3-C §17 — a replay may reference an in-progress run whose terminal
+      // run_event turn does not exist yet: return the durable projection with
+      // NO turn read-back, no synthesized turn and no synthesized audit event.
+      if (isRunIdempotentReplay(result)) {
+        reply.code(200);
+        reply.header('x-govai-run-idempotent-replay', 'true');
+        reply.header('location', `/v1/runs/${result.run_id}`);
+        return { ...result, workroom_id: workroomId };
+      }
 
       // Read back the run_event turn the orchestrator created in the run
       // transaction — exactly one exists per Workroom-owned run.
@@ -449,6 +568,13 @@ export async function workroomRunsRoute(app: FastifyInstance): Promise<void> {
       if (err instanceof CapabilityNotRegisteredError) {
         reply.code(404);
         return { error: 'capability_not_registered', capability: err.capabilityId };
+      }
+      // P0.3-C §12 — divergent keyed request (surfaced by the orchestrator's
+      // reservation loser path): static body only; no second run, no provider
+      // dispatch, no approval mutation, no turn.
+      if (err instanceof RunIdempotencyConflictError) {
+        reply.code(409);
+        return { error: 'idempotency_key_conflict' };
       }
       // TOCTOU: the Workroom context went stale between preflight and the run
       // write transaction. No run row and no turn were committed.
