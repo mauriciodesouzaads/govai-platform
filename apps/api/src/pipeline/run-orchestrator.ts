@@ -79,6 +79,19 @@ import {
   resolveOpenAIProviderKey,
 } from './provider-credentials.js';
 import { dlpPreScan, redactFindings, type MergedDlpFinding } from './dlp.js';
+import {
+  buildStandaloneRunIntent,
+  buildWorkroomRunIntent,
+  findCommittedBinding,
+  readRunReplayProjection,
+  reserveRunIdempotency,
+  resolveCommittedKeyedRequest,
+  runIntentHash,
+  RunIdempotencyLoserSignal,
+  type RunIdempotencyExecution,
+  type RunIdempotentReplay,
+  type RunRouteScope,
+} from './run-idempotency.js';
 import { decidePolicy, persistPolicyDecision, type PipelinePolicyDecision } from './policy.js';
 import { runDispatchConfigFromEnv, type RunDispatchConfig } from './run-dispatch-config.js';
 import {
@@ -856,6 +869,169 @@ function parseResponseBody(raw: Buffer): unknown {
 }
 
 // =============================================================================
+// P0.3-C — cross-request execution idempotency (shared by both executors)
+// =============================================================================
+
+/** The resolved idempotency context for ONE keyed execution: the key hash from
+ *  the route plus the canonical intent hash computed here. */
+type ResolvedIdempotencyContext = {
+  keyHash: Buffer;
+  intentHash: Buffer;
+  routeScope: RunRouteScope;
+};
+
+/** Build + hash the canonical RunExecutionIntentV1 for this execution. Uses
+ *  the SAME builders as the Workroom route's committed-replay probe so the
+ *  projection cannot drift between the route and the executor. */
+function resolveIdempotencyContext(
+  idem: RunIdempotencyExecution,
+  identity: AuthIdentity,
+  body: RunRequest,
+  resolvedMode: 'governed' | 'passthrough',
+  workroomContext?: WorkroomRunContext,
+  approval?: ApprovalConsumptionContext,
+): ResolvedIdempotencyContext {
+  const intent = workroomContext
+    ? buildWorkroomRunIntent({
+        actorUserId: identity.user_id,
+        createdByParticipantId: workroomContext.created_by_participant_id,
+        workroomId: workroomContext.workroom_id,
+        workroomTaskId: workroomContext.workroom_task_id ?? null,
+        workroomGovernanceMode: workroomContext.workroom_governance_mode,
+        workspaceId: body.workspace_id,
+        capability: body.capability,
+        model: body.model,
+        input: body.input,
+        resolvedMode,
+        metadata: body.metadata,
+        effectiveApprovalRequestId: approval?.approval_request_id ?? null,
+      })
+    : buildStandaloneRunIntent({
+        actorUserId: identity.user_id,
+        workspaceId: body.workspace_id,
+        capability: body.capability,
+        model: body.model,
+        input: body.input,
+        resolvedMode,
+        metadata: body.metadata,
+      });
+  return {
+    keyHash: idem.keyHash,
+    intentHash: runIntentHash(intent),
+    routeScope: workroomContext ? 'workroom' : 'standalone',
+  };
+}
+
+/** §13/§14 — TX-A reservation, called immediately after the candidate run row
+ *  exists and BEFORE any duplicate-sensitive durable work. Loser ⇒
+ *  RunIdempotencyLoserSignal: the TX-A catch rolls the whole candidate
+ *  transaction back (no committed run / policy / DLP / approval / turn) and
+ *  the executor answers from the committed binding. */
+async function reserveOrSignalLoser(
+  client: PoolClient,
+  orgId: string,
+  runId: string,
+  idem: ResolvedIdempotencyContext,
+): Promise<void> {
+  const winner = await reserveRunIdempotency(client, {
+    orgId,
+    keyHash: idem.keyHash,
+    intentHash: idem.intentHash,
+    routeScope: idem.routeScope,
+    runId,
+  });
+  if (!winner) throw new RunIdempotencyLoserSignal();
+}
+
+/** §13.2 — the candidate transaction lost the reservation and was rolled back;
+ *  answer from the committed binding: matching intent ⇒ replay, divergent ⇒
+ *  RunIdempotencyConflictError (409). A loser implies a COMMITTED binding (the
+ *  unique-index arbitration only reports a conflict after the owning
+ *  transaction commits — an owner that rolls back lets the contender win
+ *  instead), so a missing binding here is an invariant break, never a retry. */
+async function answerAsLoser(
+  deps: OrchestratorDeps,
+  orgId: string,
+  idem: ResolvedIdempotencyContext,
+): Promise<RunIdempotentReplay> {
+  const replay = await resolveCommittedKeyedRequest(
+    deps.pool,
+    orgId,
+    idem.keyHash,
+    idem.intentHash,
+  );
+  if (!replay) {
+    throw new Error('run idempotency: reservation lost but no committed binding is visible');
+  }
+  return replay;
+}
+
+/**
+ * P0.3-C §10 — pre-reservation setup failed AFTER the keyed canonical intent
+ * was fixed but BEFORE database arbitration (read-only preflight, capability
+ * mapping, credential lookup, KMS decrypt). A concurrent matching winner may
+ * have committed its TX-A inside that window (its binding was invisible to
+ * the earlier probe), so ONE committed-binding recheck decides between
+ * replaying the winner and surfacing the original failure. Bounded by
+ * construction: a single read, no polling, no credential/provider/execution
+ * retry.
+ *
+ * Never replays across an authorization failure: WorkroomRunContextInvalid
+ * means the CALLER's current membership/context is invalid, and §7 requires
+ * current authorization for every replay. A divergent or absent binding — or
+ * any failure of the recheck itself — preserves the original error unchanged.
+ */
+async function replayOnPreReservationFailure(
+  deps: OrchestratorDeps,
+  orgId: string,
+  idem: ResolvedIdempotencyContext,
+  err: unknown,
+): Promise<RunIdempotentReplay | null> {
+  if (err instanceof WorkroomRunContextInvalidError) return null;
+  try {
+    const binding = await findCommittedBinding(deps.pool, orgId, idem.keyHash);
+    if (!binding || !binding.requestCanonicalHash.equals(idem.intentHash)) return null;
+    return await readRunReplayProjection(deps.pool, orgId, binding.runId);
+  } catch {
+    return null;
+  }
+}
+
+/** §12.2/§12.3 shared by both executors: read-only preflight + provider
+ *  mapping + credential resolution (own short TX; KMS outside any TX). On a
+ *  KEYED execution, a failure anywhere in this pre-reservation window runs
+ *  the single committed-binding recheck above — a matching concurrent winner
+ *  is replayed; anything else surfaces the original error unchanged. */
+async function setupPreReservation(
+  deps: OrchestratorDeps,
+  identity: AuthIdentity,
+  body: RunRequest,
+  workroomContext: WorkroomRunContext | undefined,
+  approvalForPreflight: ApprovalConsumptionContext | undefined,
+  idemCtx: ResolvedIdempotencyContext | undefined,
+): Promise<
+  | {
+      kind: 'ready';
+      provider: 'anthropic' | 'openai';
+      resolvedCredential: ResolvedProviderCredential;
+    }
+  | { kind: 'replay'; replay: RunIdempotentReplay }
+> {
+  try {
+    await runPreflight(deps, identity, body, workroomContext, approvalForPreflight);
+    const provider = providerForCapability(body.capability);
+    const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+    return { kind: 'ready', provider, resolvedCredential };
+  } catch (err) {
+    if (idemCtx) {
+      const replay = await replayOnPreReservationFailure(deps, identity.org_id, idemCtx, err);
+      if (replay) return { kind: 'replay', replay };
+    }
+    throw err;
+  }
+}
+
+// =============================================================================
 // Governed execution (F3-phased)
 // =============================================================================
 
@@ -880,6 +1056,7 @@ async function governedTxA(
   identity: AuthIdentity,
   body: RunRequest,
   workroomContext?: WorkroomRunContext,
+  idem?: ResolvedIdempotencyContext,
 ): Promise<GovernedTxAResult> {
   const client = await deps.pool.connect();
   try {
@@ -919,6 +1096,14 @@ async function governedTxA(
           workroomContext?.workroom_governance_mode ?? null,
         ],
       );
+
+      // P0.3-C §14 — the idempotency reservation is established immediately
+      // after the candidate run exists and BEFORE any duplicate-sensitive
+      // durable work (policy decision, DLP findings, deny evidence). A loser
+      // rolls the whole candidate transaction back via the catch below.
+      if (idem) {
+        await reserveOrSignalLoser(client, identity.org_id, runId, idem);
+      }
 
       const dlp = await dlpPreScan(client, body.input);
       const { decision } = decidePolicy(
@@ -1050,26 +1235,67 @@ async function governedTxA(
   }
 }
 
+export function executeGovernedRun(
+  deps: OrchestratorDeps,
+  apiKey: string,
+  body: RunRequest,
+  workroomContext?: WorkroomRunContext,
+): Promise<RunResponse>;
+export function executeGovernedRun(
+  deps: OrchestratorDeps,
+  apiKey: string,
+  body: RunRequest,
+  workroomContext: WorkroomRunContext | undefined,
+  idem: RunIdempotencyExecution | undefined,
+): Promise<RunResponse | RunIdempotentReplay>;
 export async function executeGovernedRun(
   deps: OrchestratorDeps,
   apiKey: string,
   body: RunRequest,
   workroomContext?: WorkroomRunContext,
-): Promise<RunResponse> {
+  idem?: RunIdempotencyExecution,
+): Promise<RunResponse | RunIdempotentReplay> {
   const config: RunDispatchConfig = runDispatchConfigFromEnv(deps.env);
 
   // §12.1 — authenticate; client released before anything else.
   const identity = await authenticateShortLived(deps.pool, apiKey);
 
-  // §12.2 — read-only preflight (error ordering: workroom/capability before credential).
-  await runPreflight(deps, identity, body, workroomContext);
+  // P0.3-C §10 — committed-replay probe BEFORE preflight, credential lookup,
+  // KMS decrypt and any new durable work: a matching keyed replay returns the
+  // existing durable run; a divergent keyed request is a 409.
+  const idemCtx = idem
+    ? resolveIdempotencyContext(idem, identity, body, 'governed', workroomContext)
+    : undefined;
+  if (idemCtx) {
+    const replay = await resolveCommittedKeyedRequest(
+      deps.pool,
+      identity.org_id,
+      idemCtx.keyHash,
+      idemCtx.intentHash,
+    );
+    if (replay) return replay;
+  }
 
-  // §12.3 — credential lookup (own short TX) + KMS decrypt, all before TX-A.
-  const provider = providerForCapability(body.capability);
-  const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+  // §12.2/§12.3 — read-only preflight (error ordering: workroom/capability
+  // before credential), then credential lookup (own short TX) + KMS decrypt,
+  // all before TX-A. P0.3-C: a keyed failure inside this pre-reservation
+  // window rechecks the committed binding ONCE — a concurrent matching winner
+  // that committed in the window is replayed instead of a spurious failure.
+  const setup = await setupPreReservation(deps, identity, body, workroomContext, undefined, idemCtx);
+  if (setup.kind === 'replay') return setup.replay;
+  const { provider, resolvedCredential } = setup;
 
-  // §14.1 — TX-A: durable preparation (or committed policy deny).
-  const txa = await governedTxA(deps, identity, body, workroomContext);
+  // §14.1 — TX-A: durable preparation (or committed policy deny). A lost
+  // P0.3-C reservation surfaces here AFTER the candidate rollback.
+  let txa: GovernedTxAResult;
+  try {
+    txa = await governedTxA(deps, identity, body, workroomContext, idemCtx);
+  } catch (err) {
+    if (err instanceof RunIdempotencyLoserSignal && idemCtx) {
+      return answerAsLoser(deps, identity.org_id, idemCtx);
+    }
+    throw err;
+  }
   if (txa.kind === 'denied') return txa.response;
 
   const ctx: RunDispatchContext = {
@@ -1449,6 +1675,7 @@ async function passthroughTxA(
   body: RunRequest,
   workroomContext?: WorkroomRunContext,
   approval?: ApprovalConsumptionContext,
+  idem?: ResolvedIdempotencyContext,
 ): Promise<PassthroughTxAResult> {
   const client = await deps.pool.connect();
   try {
@@ -1459,7 +1686,12 @@ async function passthroughTxA(
       if (workroomContext) {
         await assertWorkroomRunContextStillValid(client, identity, workroomContext);
       }
-      if (approval && workroomContext) {
+      // P0.3-C §15 — for a KEYED execution the approval row lock moves to
+      // AFTER the idempotency reservation below: only the reservation winner
+      // may lock/revalidate/consume, so a matching concurrent retry can never
+      // lose the race by first observing an already-consumed approval. The
+      // unkeyed path keeps the original error ordering unchanged.
+      if (!idem && approval && workroomContext) {
         await assertApprovalConsumable(client, identity, {
           workroomContext,
           approvalRequestId: approval.approval_request_id,
@@ -1503,6 +1735,22 @@ async function passthroughTxA(
         ],
       );
       const preparedAt = ins.rows[0]!.dispatch_prepared_at;
+
+      // P0.3-C §14/§15 — the idempotency reservation is established
+      // immediately after the candidate run row and BEFORE the approval row
+      // lock/consumption. A loser rolls the candidate transaction back via the
+      // catch below — no committed run, no approval mutation, no turn. Only
+      // the winner then locks and revalidates the consumable approval.
+      if (idem) {
+        await reserveOrSignalLoser(client, identity.org_id, runId, idem);
+        if (approval && workroomContext) {
+          await assertApprovalConsumable(client, identity, {
+            workroomContext,
+            approvalRequestId: approval.approval_request_id,
+            body,
+          });
+        }
+      }
 
       // Approval consumption is durable WITH the preparation (owner-adjudicated):
       // TX-A committed but provider never called ⇒ approval remains consumed;
@@ -1551,27 +1799,83 @@ async function passthroughTxA(
  * dispatch protocol as governed: prepared → claimed → provider I/O outside any
  * transaction → TX-B / honest unknown. No governed enforcement is applied.
  */
+export function executePassthroughRun(
+  deps: OrchestratorDeps,
+  apiKey: string,
+  body: RunRequest,
+  workroomContext?: WorkroomRunContext,
+  approval?: ApprovalConsumptionContext,
+): Promise<PassthroughRunResponse>;
+export function executePassthroughRun(
+  deps: OrchestratorDeps,
+  apiKey: string,
+  body: RunRequest,
+  workroomContext: WorkroomRunContext | undefined,
+  approval: ApprovalConsumptionContext | undefined,
+  idem: RunIdempotencyExecution | undefined,
+): Promise<PassthroughRunResponse | RunIdempotentReplay>;
 export async function executePassthroughRun(
   deps: OrchestratorDeps,
   apiKey: string,
   body: RunRequest,
   workroomContext?: WorkroomRunContext,
   approval?: ApprovalConsumptionContext,
-): Promise<PassthroughRunResponse> {
+  idem?: RunIdempotencyExecution,
+): Promise<PassthroughRunResponse | RunIdempotentReplay> {
   const config = runDispatchConfigFromEnv(deps.env);
 
   // §12.1 — authenticate; client released.
   const identity = await authenticateShortLived(deps.pool, apiKey);
 
-  // §12.2 — read-only preflight (workroom → approval shape → capability).
-  await runPreflight(deps, identity, body, workroomContext, approval);
+  // P0.3-C §10 — committed-replay probe BEFORE preflight, credential lookup
+  // and any new durable work. For a matching Workroom replay this is what
+  // makes the already-consumed original approval a non-issue: no new provider
+  // action is being authorized, so no approval state is consulted or mutated.
+  const idemCtx = idem
+    ? resolveIdempotencyContext(idem, identity, body, 'passthrough', workroomContext, approval)
+    : undefined;
+  if (idemCtx) {
+    const replay = await resolveCommittedKeyedRequest(
+      deps.pool,
+      identity.org_id,
+      idemCtx.keyHash,
+      idemCtx.intentHash,
+    );
+    if (replay) return replay;
+  }
 
-  // §12.3 — credential fully resolved BEFORE TX-A (lookup TX committed, then KMS).
-  const provider = providerForCapability(body.capability);
-  const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+  // §12.2/§12.3 — read-only preflight (workroom → approval shape →
+  // capability), then credential resolution, all before TX-A.
+  // P0.3-C §15: on a KEYED execution the approval is NOT validated in the
+  // preflight — a consumability failure read before the reservation winner is
+  // known could be the concurrent matching winner's own consumption, and
+  // failing on it would deny a legitimate replay. TX-A validates the approval
+  // under a row lock after winning the reservation (same error contract, no
+  // race window). A keyed failure inside this pre-reservation window rechecks
+  // the committed binding ONCE — a concurrent matching winner that committed
+  // in the window is replayed instead of a spurious failure.
+  const setup = await setupPreReservation(
+    deps,
+    identity,
+    body,
+    workroomContext,
+    idemCtx ? undefined : approval,
+    idemCtx,
+  );
+  if (setup.kind === 'replay') return setup.replay;
+  const { provider, resolvedCredential } = setup;
 
-  // §14.2 — TX-A: durable preparation + approval consumption.
-  const txa = await passthroughTxA(deps, identity, body, workroomContext, approval);
+  // §14.2 — TX-A: durable preparation + approval consumption. A lost P0.3-C
+  // reservation surfaces here AFTER the candidate rollback.
+  let txa: PassthroughTxAResult;
+  try {
+    txa = await passthroughTxA(deps, identity, body, workroomContext, approval, idemCtx);
+  } catch (err) {
+    if (err instanceof RunIdempotencyLoserSignal && idemCtx) {
+      return answerAsLoser(deps, identity.org_id, idemCtx);
+    }
+    throw err;
+  }
 
   const ctx: RunDispatchContext = {
     orgId: identity.org_id,

@@ -12,6 +12,14 @@ import {
 } from '../pipeline/run-orchestrator.js';
 import { authenticateApiKey } from '../pipeline/auth.js';
 import { MissingProviderKeyError } from '../pipeline/provider-credentials.js';
+import {
+  isRunIdempotentReplay,
+  parseRunIdempotencyKey,
+  InvalidRunIdempotencyKeyError,
+  RunIdempotencyConflictError,
+  RUN_IDEMPOTENCY_HEADER,
+  type RunIdempotencyExecution,
+} from '../pipeline/run-idempotency.js';
 
 // Accept any non-empty capability string and let resolveCapability map unknown ids
 // to CapabilityNotRegisteredError → 404. Zod enum would short-circuit to 400.
@@ -64,6 +72,26 @@ export async function runsRoute(app: FastifyInstance): Promise<void> {
       };
     }
 
+    // P0.3-C — optional execution-idempotency header. Only the sha256 of the
+    // normalized key survives the parse; a malformed/ambiguous header fails
+    // BEFORE any run, provider or approval work. Distinct from the AuditBridge
+    // X-GovAI-Idempotency-Key, which stays direct-route evidence identity and
+    // never suppresses `/v1/runs` execution.
+    let idem: RunIdempotencyExecution | undefined;
+    try {
+      const keyHash = parseRunIdempotencyKey(
+        req.headers[RUN_IDEMPOTENCY_HEADER],
+        req.raw.rawHeaders,
+      );
+      idem = keyHash ? { keyHash } : undefined;
+    } catch (err) {
+      if (err instanceof InvalidRunIdempotencyKeyError) {
+        reply.code(400);
+        return { error: err.code, message: err.message };
+      }
+      throw err;
+    }
+
     const deps = {
       pool: app.govai.pool,
       kms: app.govai.kms,
@@ -74,8 +102,31 @@ export async function runsRoute(app: FastifyInstance): Promise<void> {
     try {
       const result =
         mode === 'passthrough'
-          ? await executePassthroughRun(deps, apiKey ?? '', parsed.data as RunRequest)
-          : await executeGovernedRun(deps, apiKey ?? '', parsed.data as RunRequest);
+          ? await executePassthroughRun(
+              deps,
+              apiKey ?? '',
+              parsed.data as RunRequest,
+              undefined,
+              undefined,
+              idem,
+            )
+          : await executeGovernedRun(
+              deps,
+              apiKey ?? '',
+              parsed.data as RunRequest,
+              undefined,
+              idem,
+            );
+
+      // P0.3-C §11 — matching keyed replay: the existing durable run is being
+      // retrieved, not a new provider execution initiated. Always 200, with
+      // the durable status exposed in the body (queued/running included).
+      if (isRunIdempotentReplay(result)) {
+        reply.code(200);
+        reply.header('x-govai-run-idempotent-replay', 'true');
+        reply.header('location', `/v1/runs/${result.run_id}`);
+        return result;
+      }
 
       // §23.1 — synchronous unknown: 202 Accepted + Location for status polling.
       // Retry-After orients ONLY a new status consultation — NEVER a repeat of
@@ -120,6 +171,14 @@ export async function runsRoute(app: FastifyInstance): Promise<void> {
       if (err instanceof CapabilityNotRegisteredError) {
         reply.code(404);
         return { error: 'capability_not_registered', capability: err.capabilityId };
+      }
+      // P0.3-C §12 — divergent keyed request: the key is committed to a
+      // DIFFERENT canonical execution intent. Static body only — never the
+      // key, any hash, the stored request or another actor's details. No
+      // second run was committed and no provider dispatch occurred.
+      if (err instanceof RunIdempotencyConflictError) {
+        reply.code(409);
+        return { error: 'idempotency_key_conflict' };
       }
       // F3: the credential now resolves BEFORE any run row exists (§12.3), so a
       // missing/undecryptable credential is a clean pre-run 502 — no run, no
