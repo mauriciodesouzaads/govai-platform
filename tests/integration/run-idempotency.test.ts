@@ -455,6 +455,15 @@ describe('T14 — raw-key absence from durable state and error surfaces', () => 
       );
       expect(Number(rows[0]!.n)).toBe(0);
     }
+
+    // §6 — the header is never forwarded upstream: the ONE provider request
+    // for this workspace carries neither the header nor the raw key anywhere.
+    const upstream = stack.provider.recordedRequestHeaders.filter(
+      (h) => h['x-test-workspace-id'] === org.workspace_id,
+    );
+    expect(upstream).toHaveLength(1);
+    expect(upstream[0]!['x-govai-run-idempotency-key']).toBeUndefined();
+    expect(JSON.stringify(upstream[0])).not.toContain(canary);
   });
 });
 
