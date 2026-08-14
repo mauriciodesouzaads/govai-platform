@@ -82,6 +82,8 @@ import { dlpPreScan, redactFindings, type MergedDlpFinding } from './dlp.js';
 import {
   buildStandaloneRunIntent,
   buildWorkroomRunIntent,
+  findCommittedBinding,
+  readRunReplayProjection,
   reserveRunIdempotency,
   resolveCommittedKeyedRequest,
   runIntentHash,
@@ -964,6 +966,71 @@ async function answerAsLoser(
   return replay;
 }
 
+/**
+ * P0.3-C §10 — pre-reservation setup failed AFTER the keyed canonical intent
+ * was fixed but BEFORE database arbitration (read-only preflight, capability
+ * mapping, credential lookup, KMS decrypt). A concurrent matching winner may
+ * have committed its TX-A inside that window (its binding was invisible to
+ * the earlier probe), so ONE committed-binding recheck decides between
+ * replaying the winner and surfacing the original failure. Bounded by
+ * construction: a single read, no polling, no credential/provider/execution
+ * retry.
+ *
+ * Never replays across an authorization failure: WorkroomRunContextInvalid
+ * means the CALLER's current membership/context is invalid, and §7 requires
+ * current authorization for every replay. A divergent or absent binding — or
+ * any failure of the recheck itself — preserves the original error unchanged.
+ */
+async function replayOnPreReservationFailure(
+  deps: OrchestratorDeps,
+  orgId: string,
+  idem: ResolvedIdempotencyContext,
+  err: unknown,
+): Promise<RunIdempotentReplay | null> {
+  if (err instanceof WorkroomRunContextInvalidError) return null;
+  try {
+    const binding = await findCommittedBinding(deps.pool, orgId, idem.keyHash);
+    if (!binding || !binding.requestCanonicalHash.equals(idem.intentHash)) return null;
+    return await readRunReplayProjection(deps.pool, orgId, binding.runId);
+  } catch {
+    return null;
+  }
+}
+
+/** §12.2/§12.3 shared by both executors: read-only preflight + provider
+ *  mapping + credential resolution (own short TX; KMS outside any TX). On a
+ *  KEYED execution, a failure anywhere in this pre-reservation window runs
+ *  the single committed-binding recheck above — a matching concurrent winner
+ *  is replayed; anything else surfaces the original error unchanged. */
+async function setupPreReservation(
+  deps: OrchestratorDeps,
+  identity: AuthIdentity,
+  body: RunRequest,
+  workroomContext: WorkroomRunContext | undefined,
+  approvalForPreflight: ApprovalConsumptionContext | undefined,
+  idemCtx: ResolvedIdempotencyContext | undefined,
+): Promise<
+  | {
+      kind: 'ready';
+      provider: 'anthropic' | 'openai';
+      resolvedCredential: ResolvedProviderCredential;
+    }
+  | { kind: 'replay'; replay: RunIdempotentReplay }
+> {
+  try {
+    await runPreflight(deps, identity, body, workroomContext, approvalForPreflight);
+    const provider = providerForCapability(body.capability);
+    const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+    return { kind: 'ready', provider, resolvedCredential };
+  } catch (err) {
+    if (idemCtx) {
+      const replay = await replayOnPreReservationFailure(deps, identity.org_id, idemCtx, err);
+      if (replay) return { kind: 'replay', replay };
+    }
+    throw err;
+  }
+}
+
 // =============================================================================
 // Governed execution (F3-phased)
 // =============================================================================
@@ -1209,12 +1276,14 @@ export async function executeGovernedRun(
     if (replay) return replay;
   }
 
-  // §12.2 — read-only preflight (error ordering: workroom/capability before credential).
-  await runPreflight(deps, identity, body, workroomContext);
-
-  // §12.3 — credential lookup (own short TX) + KMS decrypt, all before TX-A.
-  const provider = providerForCapability(body.capability);
-  const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+  // §12.2/§12.3 — read-only preflight (error ordering: workroom/capability
+  // before credential), then credential lookup (own short TX) + KMS decrypt,
+  // all before TX-A. P0.3-C: a keyed failure inside this pre-reservation
+  // window rechecks the committed binding ONCE — a concurrent matching winner
+  // that committed in the window is replayed instead of a spurious failure.
+  const setup = await setupPreReservation(deps, identity, body, workroomContext, undefined, idemCtx);
+  if (setup.kind === 'replay') return setup.replay;
+  const { provider, resolvedCredential } = setup;
 
   // §14.1 — TX-A: durable preparation (or committed policy deny). A lost
   // P0.3-C reservation surfaces here AFTER the candidate rollback.
@@ -1775,17 +1844,26 @@ export async function executePassthroughRun(
     if (replay) return replay;
   }
 
-  // §12.2 — read-only preflight (workroom → approval shape → capability).
-  // P0.3-C §15: on a KEYED execution the approval is NOT validated here — a
-  // consumability failure read before the reservation winner is known could be
-  // the concurrent matching winner's own consumption, and failing on it would
-  // deny a legitimate replay. TX-A validates the approval under a row lock
-  // after winning the reservation (same error contract, no race window).
-  await runPreflight(deps, identity, body, workroomContext, idemCtx ? undefined : approval);
-
-  // §12.3 — credential fully resolved BEFORE TX-A (lookup TX committed, then KMS).
-  const provider = providerForCapability(body.capability);
-  const resolvedCredential = await resolveCredentialForProvider(deps, identity, provider);
+  // §12.2/§12.3 — read-only preflight (workroom → approval shape →
+  // capability), then credential resolution, all before TX-A.
+  // P0.3-C §15: on a KEYED execution the approval is NOT validated in the
+  // preflight — a consumability failure read before the reservation winner is
+  // known could be the concurrent matching winner's own consumption, and
+  // failing on it would deny a legitimate replay. TX-A validates the approval
+  // under a row lock after winning the reservation (same error contract, no
+  // race window). A keyed failure inside this pre-reservation window rechecks
+  // the committed binding ONCE — a concurrent matching winner that committed
+  // in the window is replayed instead of a spurious failure.
+  const setup = await setupPreReservation(
+    deps,
+    identity,
+    body,
+    workroomContext,
+    idemCtx ? undefined : approval,
+    idemCtx,
+  );
+  if (setup.kind === 'replay') return setup.replay;
+  const { provider, resolvedCredential } = setup;
 
   // §14.2 — TX-A: durable preparation + approval consumption. A lost P0.3-C
   // reservation surfaces here AFTER the candidate rollback.

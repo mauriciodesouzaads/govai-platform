@@ -14,15 +14,22 @@ import { request as httpRequest } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { PoolClient } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { DevKms } from '@govai/core-identity';
 import { chainIdFor } from '@govai/core-events';
 import { detectAllBaseline } from '@govai/dlp-br';
 import { redactFindings } from '../../apps/api/src/pipeline/dlp.js';
 import {
+  executeGovernedRun,
+  executePassthroughRun,
+} from '../../apps/api/src/pipeline/run-orchestrator.js';
+import { MissingProviderKeyError } from '../../apps/api/src/pipeline/provider-credentials.js';
+import {
   buildStandaloneRunIntent,
+  isRunIdempotentReplay,
   runIntentHash,
   RUN_INTENT_HASH_VERSION,
+  type RunIdempotentReplay,
 } from '../../apps/api/src/pipeline/run-idempotency.js';
 import {
   finalizeKnownOutcome,
@@ -36,6 +43,7 @@ import {
   seedOrg,
   addApiKey,
   setBaselineDlpAction,
+  setOrgOperationalMode,
   type Stack,
   type SeededOrg,
 } from './helpers/server-fixture.js';
@@ -882,6 +890,195 @@ describe('T32 — migration 0030 is idempotent', () => {
     expect(await countBindings(org)).toBe(before);
     const replayable = await post('/v1/runs', org.api_key, governedBody(org), { [H]: keyOf() });
     expect(replayable.statusCode).toBe(200);
+  });
+});
+
+// =============================================================================
+// Pre-reservation failure window (Codex P2 on c909f72): setup fails AFTER the
+// probe missed the winner's UNCOMMITTED binding, and the winner then commits.
+// A matching keyed retry must observe the winner via the single recheck; a
+// rolled-back winner must leave the ORIGINAL error untouched (no polling, no
+// credential/provider retry).
+// =============================================================================
+
+/** A REAL pool whose clients fire `onFirstIdempotencyRead` exactly once,
+ *  right after the FIRST govai.run_idempotency SELECT resolves — the
+ *  deterministic hook that lands a concurrent winner's COMMIT/ROLLBACK inside
+ *  the pre-reservation window (post-probe, pre-arbitration). The later
+ *  recheck read does not re-fire. */
+function probeTriggeredPool(
+  connectionString: string,
+  onFirstIdempotencyRead: () => Promise<void>,
+): { pool: Pool; end: () => Promise<void>; didFire: () => boolean } {
+  const basePool = new Pool({ connectionString });
+  let fired = false;
+  const ORIG = Symbol('origQuery');
+  const pool = {
+    connect: async () => {
+      const c = (await basePool.connect()) as PoolClient & { [ORIG]?: PoolClient['query'] };
+      c[ORIG] ??= c.query.bind(c) as PoolClient['query'];
+      const orig = c[ORIG];
+      (c as { query: unknown }).query = (async (...args: unknown[]) => {
+        const first = args[0];
+        const sql = typeof first === 'string' ? first : (first as { text?: string } | null)?.text;
+        const result = await (orig as (...a: unknown[]) => Promise<unknown>)(...args);
+        if (!fired && typeof sql === 'string' && sql.includes('FROM govai.run_idempotency')) {
+          fired = true;
+          await onFirstIdempotencyRead();
+        }
+        return result;
+      }) as PoolClient['query'];
+      return c;
+    },
+  } as unknown as Pool;
+  return { pool, end: () => basePool.end(), didFire: () => fired };
+}
+
+describe('pre-reservation failure recheck', () => {
+  const WINDOW_INPUT = 'pre-reservation window input';
+
+  function windowIntentHash(org: SeededOrg, resolvedMode: 'governed' | 'passthrough'): Buffer {
+    return runIntentHash(
+      buildStandaloneRunIntent({
+        actorUserId: org.user_id,
+        workspaceId: org.workspace_id,
+        capability: 'anthropic.messages.create',
+        model: 'claude-fixture-1',
+        input: WINDOW_INPUT,
+        resolvedMode,
+        metadata: undefined,
+      }),
+    );
+  }
+
+  async function seedOpenWinner(
+    org: SeededOrg,
+    key: string,
+    mode: 'governed' | 'passthrough',
+  ): Promise<{ winner: PoolClient; runW: string }> {
+    const runW = randomUUID();
+    const winner = await beginAsOrg(org.org_id);
+    await winner.query(
+      `INSERT INTO govai.runs
+         (id, org_id, workspace_id, actor_user_id, provider, model, mode, status, metadata,
+          dispatch_protocol_version, dispatch_prepared_at)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'anthropic', 'claude-fixture-1',
+          $5::text, 'queued', '{}'::jsonb, 1, now())`,
+      [runW, org.org_id, org.workspace_id, org.user_id, mode],
+    );
+    await winner.query(
+      `INSERT INTO govai.run_idempotency
+         (org_id, idempotency_key_hash, request_canonical_hash, request_hash_version,
+          route_scope, run_id)
+       VALUES ($1::uuid, $2::bytea, $3::bytea, 1, 'standalone', $4::uuid)`,
+      [org.org_id, createHash('sha256').update(key, 'utf8').digest(), windowIntentHash(org, mode), runW],
+    );
+    return { winner, runW };
+  }
+
+  it('governed: credential failure inside the window → replay of the committed winner', async () => {
+    const org = await seedOrg(stack);
+    // production mode + no tenant credential ⇒ resolveCredentialForProvider FAILS.
+    await setOrgOperationalMode(stack, org.org_id, 'production');
+    const key = keyOf();
+    const { winner, runW } = await seedOpenWinner(org, key, 'governed');
+    const trig = probeTriggeredPool(stack.db.appUrl, async () => {
+      await winner.query('COMMIT');
+    });
+    try {
+      const result = await executeGovernedRun(
+        { pool: trig.pool, kms: new DevKms(stack.seed), env: stack.env, policyCommitSha: 'p03c-w1' },
+        org.api_key,
+        {
+          workspace_id: org.workspace_id,
+          capability: 'anthropic.messages.create',
+          model: 'claude-fixture-1',
+          input: WINDOW_INPUT,
+        },
+        undefined,
+        { keyHash: createHash('sha256').update(key, 'utf8').digest() },
+      );
+      expect(trig.didFire()).toBe(true);
+      expect(isRunIdempotentReplay(result)).toBe(true);
+      const replay = result as RunIdempotentReplay;
+      expect(replay.run_id).toBe(runW);
+      expect(replay.status).toBe('queued');
+    } finally {
+      winner.release();
+      await trig.end();
+    }
+    expect(providerCalls(org.workspace_id)).toBe(0);
+    expect(await countRuns(org)).toBe(1);
+  });
+
+  it('governed control: winner rolls back → the ORIGINAL credential error is preserved', async () => {
+    const org = await seedOrg(stack);
+    await setOrgOperationalMode(stack, org.org_id, 'production');
+    const key = keyOf();
+    const { winner } = await seedOpenWinner(org, key, 'governed');
+    const trig = probeTriggeredPool(stack.db.appUrl, async () => {
+      await winner.query('ROLLBACK');
+    });
+    try {
+      await expect(
+        executeGovernedRun(
+          { pool: trig.pool, kms: new DevKms(stack.seed), env: stack.env, policyCommitSha: 'p03c-w2' },
+          org.api_key,
+          {
+            workspace_id: org.workspace_id,
+            capability: 'anthropic.messages.create',
+            model: 'claude-fixture-1',
+            input: WINDOW_INPUT,
+          },
+          undefined,
+          { keyHash: createHash('sha256').update(key, 'utf8').digest() },
+        ),
+      ).rejects.toThrow(MissingProviderKeyError);
+      expect(trig.didFire()).toBe(true);
+    } finally {
+      winner.release();
+      await trig.end();
+    }
+    // Nothing committed, key not burned, no provider call.
+    expect(await countRuns(org)).toBe(0);
+    expect(await countBindings(org)).toBe(0);
+    expect(providerCalls(org.workspace_id)).toBe(0);
+  });
+
+  it('passthrough: credential failure inside the window → replay of the committed winner', async () => {
+    const org = await seedOrg(stack);
+    await setOrgOperationalMode(stack, org.org_id, 'production');
+    const key = keyOf();
+    const { winner, runW } = await seedOpenWinner(org, key, 'passthrough');
+    const trig = probeTriggeredPool(stack.db.appUrl, async () => {
+      await winner.query('COMMIT');
+    });
+    try {
+      const result = await executePassthroughRun(
+        { pool: trig.pool, kms: new DevKms(stack.seed), env: stack.env, policyCommitSha: 'p03c-w3' },
+        org.api_key,
+        {
+          workspace_id: org.workspace_id,
+          capability: 'anthropic.messages.create',
+          model: 'claude-fixture-1',
+          input: WINDOW_INPUT,
+          mode: 'passthrough',
+        },
+        undefined,
+        undefined,
+        { keyHash: createHash('sha256').update(key, 'utf8').digest() },
+      );
+      expect(trig.didFire()).toBe(true);
+      expect(isRunIdempotentReplay(result)).toBe(true);
+      const replay = result as RunIdempotentReplay;
+      expect(replay.run_id).toBe(runW);
+      expect(replay.mode).toBe('passthrough');
+    } finally {
+      winner.release();
+      await trig.end();
+    }
+    expect(providerCalls(org.workspace_id)).toBe(0);
+    expect(await countRuns(org)).toBe(1);
   });
 });
 
