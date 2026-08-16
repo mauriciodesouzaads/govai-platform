@@ -1,7 +1,25 @@
 // Register Fastify routes for /passthrough/anthropic/* under a parent app.
 // Decisão 4: capability_canonical_level (registry value) ≠ capability_level (operational mode).
 // Audit emit always sets BOTH for provider-namespaced capabilities.
+//
+// Foundation V1 M1 (OD-1=A) — Native/Audited contract of this route:
+//   gate order  auth → path registry → method → beta floor → tool floor → credential → forward
+//   - tenant AUTH runs first, so an unauthenticated caller learns nothing about
+//     which provider paths GovAI registers (§14.1); an authenticated caller gets
+//     404 capability_not_registered for an unknown path and 405 method_not_allowed
+//     (+ truthful Allow) for a registered path with an unmapped method (§14.2) —
+//     never an internal 500 for a caller mismatch (a REAL registry inconsistency
+//     on a mapped method still fails loud as 500 capability_registry_missing).
+//   - the ONLY Native semantic denies are the explicit computer-use high-risk
+//     floor (hard_denied beta / provider-hosted computer-use tool). Every such
+//     deny is EXPLICIT (403 + machine-readable body), keeps its specialized
+//     diagnostic event AND is durably evidenced by a valid blocked
+//     `passthrough.invoked` v4 (enforcement_decision='blocked',
+//     body_forward_mode='blocked', status 403, provider NOT called) — FB-4.
+//   - unknown / unresolved beta tokens and non-computer tools are forwarded and
+//     observed (bounded hashed markers in `risk_escalation_reasons`).
 
+import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { BetaTokenPolicyEntry, Capability, ResolvedProviderCredential } from '@govai/core-types';
 import { resolveGovernance } from '@govai/core-governance';
@@ -18,6 +36,7 @@ import { handleAnthropicBetaHeader } from '../passthrough/beta-header-handler.js
 import { classifyTools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
 import { forwardStream } from '../passthrough/stream-forward.js';
+import { SHA256_EMPTY } from '../passthrough/evidence-constants.js';
 import { armAbortOnClose, pumpStreamWithTerminalEmit } from '@govai/provider-stream-http';
 import {
   buildPassthroughInvoked,
@@ -116,6 +135,34 @@ function bufferifyBody(body: unknown): Buffer {
   return Buffer.from(JSON.stringify(body), 'utf8');
 }
 
+function sha256Hex(buf: Buffer): string {
+  return createHash('sha256').update(buf).digest('hex');
+}
+
+const ROUTE_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
+
+/**
+ * Methods the CURRENT REGISTERED SURFACE supports for a matched path template —
+ * truthful by construction from BOTH sources: the resolver must map
+ * (method, template) to a capability AND that capability's registry
+ * `endpoint_coverage` must declare exactly that (method, path). The resolver's
+ * files / vector-store branches are method-agnostic (they resolve for any
+ * verb), so the registry declaration is what makes e.g. `PATCH /v1/files/{id}`
+ * a 405 instead of an accidental forward (Codex P2 on dee0b40). Method support
+ * is NOT widened: the registry is unchanged.
+ */
+function allowedMethodsFor(pathTemplate: string): string[] {
+  return ROUTE_METHODS.filter((m) => {
+    const r = resolveAnthropicCapabilityForRequest({ method: m, pathTemplate, isStream: false });
+    if (r.capability_id === 'unknown') return false;
+    const cap = ANTHROPIC_CAPABILITIES.find((c) => c.id === r.capability_id);
+    return (
+      cap !== undefined &&
+      cap.endpoint_coverage.some((e) => e.method === m && e.path === pathTemplate)
+    );
+  });
+}
+
 // Detect a streaming request by reading ONLY the top-level `stream` field.
 //
 // The body is the client's raw Buffer (provider-native passthrough does not
@@ -175,8 +222,19 @@ export async function registerAnthropicPassthrough(
     '/passthrough/anthropic/*',
     async (req, reply) => {
       const policyTable = deps.policyTable ?? ANTHROPIC_BETA_POLICY;
+      const now = deps.now ?? (() => new Date());
 
-      // Path match.
+      // Tenant context FIRST (auth happens here; deps decides how) — §14.1: an
+      // unauthenticated caller must not learn whether a path is registered.
+      let tenant: TenantContext;
+      try {
+        tenant = await deps.resolveTenant(req);
+      } catch (err) {
+        reply.code(401);
+        return { error: 'auth_error', message: (err as Error).message };
+      }
+
+      // Path registry (authenticated callers only).
       const matched = matchAnthropicPath(req.url);
       if (!matched) {
         reply.code(404);
@@ -194,9 +252,27 @@ export async function registerAnthropicPassthrough(
         pathTemplate: matched.pathTemplate,
         isStream,
       });
-      // `matchAnthropicPath` already returned 404 above if the path was unknown,
-      // so resolveAnthropicCapabilityForRequest MUST return a registered id here.
-      // Fail loudly instead of falling back to a fake default risk/enforcement.
+      // §14.2: a registered path with a method the current registered surface
+      // does not support is a CALLER contract error (405 + truthful Allow) —
+      // never an internal 500 and never an accidental forward. Two caller cases:
+      // (a) the resolver maps no capability for (method, path); (b) the resolver
+      // maps one (its files / vector-store branches are method-agnostic) but the
+      // capability's registry `endpoint_coverage` does not declare that
+      // (method, path) pair. Method support is NOT widened here.
+      const methodNotAllowed = (): { error: string; message: string; allow: string[] } => {
+        const allow = allowedMethodsFor(matched.pathTemplate);
+        reply.code(405);
+        reply.header('allow', allow.join(', '));
+        return {
+          error: 'method_not_allowed',
+          message: `${req.method} is not supported on ${matched.pathTemplate} by the GovAI passthrough surface`,
+          allow,
+        };
+      };
+      if (resolved.capability_id === 'unknown') return methodNotAllowed();
+      // A mapped method whose capability id is missing from the registry is a
+      // REAL internal inconsistency — fail loudly (§14.3), never mask it as a
+      // caller error (checked BEFORE the coverage gate on purpose).
       const capabilityRegistryEntry: Capability | undefined = ANTHROPIC_CAPABILITIES.find(
         (c) => c.id === resolved.capability_id,
       );
@@ -207,55 +283,23 @@ export async function registerAnthropicPassthrough(
           message: `path matched but capability ${resolved.capability_id} not in registry`,
         };
       }
-
-      // Tenant context (auth happens here; deps decides how).
-      let tenant: TenantContext;
-      try {
-        tenant = await deps.resolveTenant(req);
-      } catch (err) {
-        reply.code(401);
-        return { error: 'auth_error', message: (err as Error).message };
+      if (
+        !capabilityRegistryEntry.endpoint_coverage.some(
+          (e) => e.method === req.method.toUpperCase() && e.path === matched.pathTemplate,
+        )
+      ) {
+        return methodNotAllowed();
       }
 
-      // Beta header gate.
-      const betaResult = await handleAnthropicBetaHeader({
-        org_id: tenant.org_id,
-        header_value: typeof req.headers['anthropic-beta'] === 'string'
-          ? (req.headers['anthropic-beta'] as string)
-          : Array.isArray(req.headers['anthropic-beta'])
-            ? (req.headers['anthropic-beta'] as string[]).join(',')
-            : undefined,
-        policy_table: policyTable,
-        active_overrides_loader: deps.activeOverridesLoader,
-      });
-      if (betaResult.decision === 'deny') {
-        for (const d of betaResult.denied) {
-          await deps.emitAuditEvent(
-            buildPassthroughBetaDenied({
-              tenant,
-              capability_id: resolved.capability_id,
-              beta_token: d.beta_token,
-              policy_at_resolution: d.policy_at_resolution as
-                | 'global_allowlist'
-                | 'org_override_allowed'
-                | 'hard_denied'
-                | 'verification_required'
-                | 'denied_until_decision'
-                | 'removed_as_no_longer_needed'
-                | 'unknown',
-              reason_code: d.reason_code,
-            }),
-          );
-        }
-        reply.code(403);
-        return {
-          error: 'beta_denied',
-          denied: betaResult.denied,
-        };
-      }
+      const requestBody = bufferifyBody(req.body);
+      const isMultipartReq =
+        typeof req.headers['content-type'] === 'string' &&
+        req.headers['content-type'].toLowerCase().startsWith('multipart/form-data');
 
-      // Tool classifier (only on /v1/messages with body.tools[]).
+      // Tool classifier (only on /v1/messages with body.tools[]) — runs BEFORE
+      // the beta floor so a blocked event always carries the classifications.
       let toolClassifications: ReturnType<typeof classifyTools>['classifications'] = [];
+      let toolBlock: Extract<ReturnType<typeof classifyTools>, { decision: 'block' }> | null = null;
       if (matched.pathTemplate === '/v1/messages') {
         let parsedBody: { tools?: unknown[] } | null = null;
         if (Buffer.isBuffer(req.body)) {
@@ -271,34 +315,116 @@ export async function registerAnthropicPassthrough(
         if (Array.isArray(tools) && tools.length > 0) {
           const result = classifyTools(tools);
           toolClassifications = result.classifications;
-          if (result.decision === 'block') {
-            for (const b of result.blocked) {
-              await deps.emitAuditEvent(
-                buildToolValidationBlocked({
-                  tenant,
-                  capability_id: resolved.capability_id,
-                  tool_index: b.tool_index,
-                  tool_type: b.tool_type,
-                  tool_type_observed: b.tool_type_observed,
-                  classification: b.classification,
-                  reason: b.reason,
-                  reason_detail: b.reason_detail,
-                }),
-              );
-            }
-            reply.code(403);
-            return {
-              error:
-                result.blocked[0]?.reason === 'capability_blocked_via_token' ||
-                result.blocked[0]?.reason === 'hard_denied_beta'
-                  ? 'tool_blocked_until_governance_primitive'
-                  : result.blocked[0]?.reason === 'capability_planned'
-                    ? 'tool_pending_capability_promotion'
-                    : 'tool_type_unknown',
-              blocked: result.blocked,
-            };
-          }
+          if (result.decision === 'block') toolBlock = result;
         }
+      }
+
+      // Beta header — Native application policy (OD-1=A): forward + observe by
+      // default; deny ONLY the explicit hard_denied (computer-use) floor.
+      const betaResult = await handleAnthropicBetaHeader({
+        org_id: tenant.org_id,
+        header_value: typeof req.headers['anthropic-beta'] === 'string'
+          ? (req.headers['anthropic-beta'] as string)
+          : Array.isArray(req.headers['anthropic-beta'])
+            ? (req.headers['anthropic-beta'] as string[]).join(',')
+            : undefined,
+        policy_table: policyTable,
+        active_overrides_loader: deps.activeOverridesLoader,
+      });
+
+      // FB-4: durable evidence for a pre-provider Native deny — a valid blocked
+      // v4 `passthrough.invoked` (provider NOT called; interpretation: the
+      // invocation ATTEMPT was blocked by GovAI before dispatch).
+      const emitNativeBlocked = async (blockMarkers: string[]): Promise<void> => {
+        const gov = resolveGovernance({
+          capability: capabilityRegistryEntry,
+          tenant_tier: tenant.tier,
+          operational_mode: tenant.operational_mode,
+          tool_classifications: toolClassifications.map((c) => ({
+            tool_index: c.tool_index,
+            classification: c.classification,
+            contributed_risk_class: c.contributed_risk_class,
+          })),
+          dlp_findings: [],
+          is_multipart: isMultipartReq,
+        });
+        await deps.emitAuditEvent(
+          buildPassthroughInvoked({
+            tenant,
+            capability_id: resolved.capability_id,
+            capability_level: 'passthrough_audited',
+            capability_canonical_level: resolved.canonical_level,
+            native_endpoint: matched.pathTemplate,
+            native_method: req.method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+            is_stream: isStream,
+            is_multipart: isMultipartReq,
+            base_risk_class: gov.base_risk_class,
+            effective_risk_class: gov.effective_risk_class,
+            risk_escalation_reasons: [...gov.risk_escalation_reasons, ...blockMarkers],
+            enforcement_decision: 'blocked',
+            native_request_hash: sha256Hex(requestBody),
+            // A streaming request blocked pre-provider streamed ZERO bytes: the
+            // hash over the emitted stream bytes is SHA-256(empty); no
+            // stream_outcome is fabricated (no stream ever started).
+            ...(isStream ? { stream_final_hash: SHA256_EMPTY } : {}),
+            latency_ms: 0,
+            occurred_at: now(),
+            status_code: 403,
+            // The resolver is not called on this path (F1 sentinel, as governed).
+            credential_source: 'not_resolved_pre_provider_block',
+            allowlist_version: ANTHROPIC_BETA_POLICY_VERSION,
+            body_forward_mode: 'blocked',
+            // No forwarding happened: no allowlist provenance is claimed.
+            beta_allowlist_sources: [],
+            detected_tool_classifications: toolClassifications,
+          }),
+        );
+      };
+
+      if (betaResult.decision === 'deny') {
+        for (const d of betaResult.denied) {
+          await deps.emitAuditEvent(
+            buildPassthroughBetaDenied({
+              tenant,
+              capability_id: resolved.capability_id,
+              beta_token: d.beta_token,
+              policy_at_resolution: d.policy_at_resolution,
+              reason_code: d.reason_code,
+            }),
+          );
+        }
+        await emitNativeBlocked(betaResult.observations);
+        reply.code(403);
+        return {
+          error: 'beta_denied',
+          denied: betaResult.denied,
+        };
+      }
+
+      if (toolBlock !== null) {
+        for (const b of toolBlock.blocked) {
+          await deps.emitAuditEvent(
+            buildToolValidationBlocked({
+              tenant,
+              capability_id: resolved.capability_id,
+              tool_index: b.tool_index,
+              tool_type: b.tool_type,
+              tool_type_observed: b.tool_type_observed,
+              classification: b.classification,
+              reason: b.reason,
+              reason_detail: b.reason_detail,
+            }),
+          );
+        }
+        // Forwarded-but-observed betas on a blocked request are still recorded
+        // as observation markers (they never contribute to the block).
+        await emitNativeBlocked(betaResult.observations);
+        reply.code(403);
+        return {
+          // M1: the only validation block is the explicit computer-use floor.
+          error: 'tool_blocked_until_governance_primitive',
+          blocked: toolBlock.blocked,
+        };
       }
 
       // Forward.
@@ -308,11 +434,10 @@ export async function registerAnthropicPassthrough(
       const concretePath = req.url
         .replace(/^\/passthrough\/anthropic/, '')
         .replace(/\?.*$/, '');
-      const requestBody = bufferifyBody(req.body);
 
       if (isStream) {
         // Stream variant.
-        const occurredAt = (deps.now ?? (() => new Date()))();
+        const occurredAt = now();
         // EP-008C: pass an AbortController so a client disconnect aborts upstream.
         const ac = new AbortController();
         // EP-008C P2: arm the client-disconnect → abort hook BEFORE the upstream-headers
@@ -397,7 +522,13 @@ export async function registerAnthropicPassthrough(
                 is_multipart: false,
                 base_risk_class: govStream.base_risk_class,
                 effective_risk_class: govStream.effective_risk_class,
-                risk_escalation_reasons: govStream.risk_escalation_reasons,
+                // Beta observation markers are evidence-only (they never lift
+                // the class nor change enforcement) — appended after the
+                // governance-derived reasons.
+                risk_escalation_reasons: [
+                  ...govStream.risk_escalation_reasons,
+                  ...betaResult.observations,
+                ],
                 // Audit-only surface: enforcement is intentionally `observe`.
                 enforcement_decision: 'observe',
                 native_request_hash: streamRes.native_request_hash,
@@ -427,7 +558,7 @@ export async function registerAnthropicPassthrough(
       }
 
       // Non-stream raw forward.
-      const occurredAt = (deps.now ?? (() => new Date()))();
+      const occurredAt = now();
       const fwd = await forwardRaw({
         baseUrl: deps.upstreamBaseUrl,
         pathTemplate: matched.pathTemplate,
@@ -445,9 +576,6 @@ export async function registerAnthropicPassthrough(
       }
       reply.code(fwd.status);
 
-      const isMultipartReq =
-        typeof req.headers['content-type'] === 'string' &&
-        req.headers['content-type'].toLowerCase().startsWith('multipart/form-data');
       const govNonStream = resolveGovernance({
         capability: capabilityRegistryEntry,
         tenant_tier: tenant.tier,
@@ -472,7 +600,11 @@ export async function registerAnthropicPassthrough(
           is_multipart: isMultipartReq,
           base_risk_class: govNonStream.base_risk_class,
           effective_risk_class: govNonStream.effective_risk_class,
-          risk_escalation_reasons: govNonStream.risk_escalation_reasons,
+          // Beta observation markers are evidence-only (see stream branch).
+          risk_escalation_reasons: [
+            ...govNonStream.risk_escalation_reasons,
+            ...betaResult.observations,
+          ],
           // Audit-only surface: enforcement is intentionally `observe`.
           enforcement_decision: 'observe',
           native_request_hash: fwd.native_request_hash,

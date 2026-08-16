@@ -128,7 +128,7 @@ describe('classifyOpenAITool — Chat Completions surface (only function allowed
   });
 });
 
-describe('decideOpenAITool — block_reason mapping', () => {
+describe('decideOpenAITool — M1 (OD-1=A): tools classify risk; only computer use blocks', () => {
   it('function (responses) → allowed, Risk C', () => {
     const r = decideOpenAITool({ type: 'function' }, 'responses');
     expect(r.decision).toBe('allowed');
@@ -153,54 +153,82 @@ describe('decideOpenAITool — block_reason mapping', () => {
     expect(r.contributed_risk_class).toBe('B');
   });
 
-  it('tool_search → blocked_at_validation, reason=capability_planned', () => {
+  it('tool_search → allowed, Risk B (no longer a stale capability_planned block)', () => {
     const r = decideOpenAITool({ type: 'tool_search' }, 'responses');
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('capability_planned');
+    expect(r.classification).toBe('openai_provider_hosted_tool_search');
+    expect(r.decision).toBe('allowed');
+    expect(r.block_reason).toBeUndefined();
+    expect(r.contributed_risk_class).toBe('B');
   });
 
-  it('code_interpreter → blocked_at_validation, reason=capability_planned', () => {
+  it('code_interpreter → allowed, Risk C', () => {
     const r = decideOpenAITool({ type: 'code_interpreter' }, 'responses');
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('capability_planned');
+    expect(r.decision).toBe('allowed');
+    expect(r.contributed_risk_class).toBe('C');
   });
 
-  it('computer_use_preview → blocked_at_validation, reason=capability_blocked_via_token (Risk D)', () => {
+  it('computer_use_preview → blocked_at_validation, reason=capability_blocked_via_token (Risk D) — the ONLY floor', () => {
     const r = decideOpenAITool({ type: 'computer_use_preview' }, 'responses');
     expect(r.decision).toBe('blocked_at_validation');
     expect(r.block_reason).toBe('capability_blocked_via_token');
     expect(r.contributed_risk_class).toBe('D');
   });
 
-  it('hosted_shell → blocked_at_validation, reason=capability_planned (Risk D)', () => {
-    const r = decideOpenAITool({ type: 'hosted_shell' }, 'responses');
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('capability_planned');
-    expect(r.contributed_risk_class).toBe('D');
+  it('hosted_shell / shell → allowed, Risk D (classified + escalated, forwarded)', () => {
+    for (const t of ['hosted_shell', 'shell']) {
+      const r = decideOpenAITool({ type: t }, 'responses');
+      expect(r.classification).toBe('openai_provider_hosted_hosted_shell');
+      expect(r.decision).toBe('allowed');
+      expect(r.contributed_risk_class).toBe('D');
+    }
   });
 
-  it('apply_patch → blocked_at_validation, reason=capability_planned (Risk C)', () => {
+  it('apply_patch → allowed, Risk C', () => {
     const r = decideOpenAITool({ type: 'apply_patch' }, 'responses');
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('capability_planned');
+    expect(r.decision).toBe('allowed');
+    expect(r.contributed_risk_class).toBe('C');
   });
 
-  it('mcp → blocked_at_validation, reason=capability_planned (Risk D)', () => {
+  it('mcp → allowed, Risk D', () => {
     const r = decideOpenAITool({ type: 'mcp' }, 'responses');
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('capability_planned');
+    expect(r.decision).toBe('allowed');
     expect(r.contributed_risk_class).toBe('D');
   });
 
-  it('typed_unknown → blocked_at_validation, reason=typed_unknown', () => {
-    const r = decideOpenAITool({ type: 'whatever_unknown' }, 'responses');
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('typed_unknown');
+  it('typed_unknown (future / unknown type) → allowed, Risk C; unknown != unsafe', () => {
+    for (const t of ['whatever_unknown', 'image_generation', 'local_shell', 'namespace', 'custom']) {
+      const r = decideOpenAITool({ type: t }, 'responses');
+      expect(r.classification).toBe('openai_typed_unknown');
+      expect(r.decision).toBe('allowed');
+      expect(r.block_reason).toBeUndefined();
+      expect(r.contributed_risk_class).toBe('C');
+    }
   });
 
-  it('null type → blocked_at_validation, reason=typed_unknown (Matrix v2.0.1 P3)', () => {
-    const r = decideOpenAITool({ type: null }, 'responses');
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('typed_unknown');
+  it('null / missing / non-string type → typed_unknown, allowed (provider owns tool-shape validity)', () => {
+    for (const tool of [{ type: null }, {}, { type: 7 }, { type: '' }]) {
+      const r = decideOpenAITool(tool, 'responses');
+      expect(r.classification).toBe('openai_typed_unknown');
+      expect(r.decision).toBe('allowed');
+    }
+  });
+
+  it('non-function type on chat_completions → typed_unknown, allowed (surface rule unchanged; provider decides)', () => {
+    const r = decideOpenAITool({ type: 'web_search' }, 'chat_completions');
+    expect(r.classification).toBe('openai_typed_unknown');
+    expect(r.decision).toBe('allowed');
+  });
+
+  it('NATIVE_HARD_DENY_EXPANDED=NO: exactly one classification blocks at validation', () => {
+    const types = [
+      'function', 'web_search', 'web_search_preview', 'file_search', 'tool_search',
+      'code_interpreter', 'computer_use_preview', 'hosted_shell', 'shell', 'apply_patch',
+      'mcp', 'something_new',
+    ];
+    const blocked = types
+      .map((t) => decideOpenAITool({ type: t }, 'responses'))
+      .filter((d) => d.decision === 'blocked_at_validation')
+      .map((d) => d.classification);
+    expect(blocked).toEqual(['openai_provider_hosted_computer_use']);
   });
 });

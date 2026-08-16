@@ -1003,8 +1003,9 @@ describe('T12 — governed v4 capture persistence', () => {
     const claim = await claimDispatch(stack.db.appPool, kms, ctx, { timeoutMs: 60_000 });
     const token = (claim as Extract<typeof claim, { claimed: true }>).token;
 
-    // A REAL blocked governed dispatch (code_execution tool → blocked before
-    // any credential/fetch), captured in memory.
+    // A REAL blocked governed dispatch (computer-use tool → the M1 explicit
+    // high-risk floor, blocked before any credential/fetch; code_execution now
+    // classifies + forwards under OD-1=A), captured in memory.
     const capture = createGovernedV4Capture();
     const blocked = await handleAnthropicGovernedMessages(
       {
@@ -1019,7 +1020,7 @@ describe('T12 — governed v4 capture persistence', () => {
             model: 'claude-fixture-1',
             max_tokens: 16,
             messages: [{ role: 'user', content: 'hi' }],
-            tools: [{ type: 'code_execution_20241022', name: 'code_execution' }],
+            tools: [{ type: 'computer_20250124', name: 'computer', display_width_px: 1, display_height_px: 1 }],
           }),
           'utf8',
         ),
@@ -1057,7 +1058,7 @@ describe('T12 — governed v4 capture persistence', () => {
             model: 'claude-fixture-1',
             max_tokens: 16,
             messages: [{ role: 'user', content: 'hi' }],
-            tools: [{ type: 'code_execution_20241022', name: 'code_execution' }],
+            tools: [{ type: 'computer_20250124', name: 'computer', display_width_px: 1, display_height_px: 1 }],
           }),
           'utf8',
         ),

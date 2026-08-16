@@ -40,61 +40,82 @@ describe('classifyTools — allow paths', () => {
   });
 });
 
-describe('classifyTools — block paths and reason_detail branches', () => {
-  it('blocks typed_unknown and emits the typed_unknown reason_detail variant (with serialized tool.type)', () => {
+describe('classifyTools — M1 (OD-1=A): non-computer tools forward, classification recorded', () => {
+  it('typed_unknown (unknown string type) → allow, recorded as anthropic_typed_unknown / allowed (Risk C)', () => {
     const r = classifyTools([{ type: 'banana' }]);
-    expect(r.decision).toBe('block');
-    if (r.decision === 'block') {
-      const b = r.blocked[0];
-      expect(b?.reason).toBe('typed_unknown');
-      expect(b?.tool_type_observed).toBe('other_typed_unknown');
-      expect(b?.reason_detail).toMatch(/^tool\.type "banana" is not classified/);
+    expect(r.decision).toBe('allow');
+    expect(r.classifications[0]).toEqual({
+      tool_index: 0,
+      tool_type: 'banana',
+      classification: 'anthropic_typed_unknown',
+      contributed_risk_class: 'C',
+      decision: 'allowed',
+    });
+  });
+
+  it("type:'custom' (documented client-defined form) → allow as client_defined (Risk B)", () => {
+    const r = classifyTools([{ type: 'custom', name: 'add', input_schema: {} }]);
+    expect(r.decision).toBe('allow');
+    expect(r.classifications[0]?.classification).toBe('client_defined');
+    expect(r.classifications[0]?.tool_type).toBe('custom');
+    expect(r.classifications[0]?.contributed_risk_class).toBe('B');
+  });
+
+  it('empty-string / null tool.type → allow, typed_unknown recorded (tool_type only when a string)', () => {
+    for (const [tool, expectedType] of [
+      [{ type: '' }, ''],
+      [{ type: null }, undefined],
+    ] as Array<[Record<string, unknown>, string | undefined]>) {
+      const r = classifyTools([tool]);
+      expect(r.decision).toBe('allow');
+      expect(r.classifications[0]?.classification).toBe('anthropic_typed_unknown');
+      expect(r.classifications[0]?.tool_type).toBe(expectedType);
     }
   });
 
-  it('flags an empty-string tool.type via observeToolType=empty_string', () => {
-    const r = classifyTools([{ type: '' }]);
-    expect(r.decision).toBe('block');
-    if (r.decision === 'block') {
-      expect(r.blocked[0]?.tool_type_observed).toBe('empty_string');
-    }
-  });
-
-  it('flags a null tool.type via observeToolType=null', () => {
-    const r = classifyTools([{ type: null }]);
-    expect(r.decision).toBe('block');
-    if (r.decision === 'block') {
-      expect(r.blocked[0]?.tool_type_observed).toBe('null');
-    }
-  });
-
-  it('blocks code_execution_* with the capability_planned reason_detail variant (target PR4)', () => {
+  it('code_execution_* → allow with its dedicated classification (Risk C) — no stale planned block', () => {
     const r = classifyTools([{ type: 'code_execution_20251010' }]);
-    expect(r.decision).toBe('block');
-    if (r.decision === 'block') {
-      const b = r.blocked[0];
-      expect(b?.reason).toBe('capability_planned');
-      expect(b?.reason_detail).toMatch(/planned capability \(target PR4\)/);
-    }
+    expect(r.decision).toBe('allow');
+    expect(r.classifications[0]?.classification).toBe('anthropic_provider_hosted_code_execution');
+    expect(r.classifications[0]?.decision).toBe('allowed');
   });
 
-  it('blocks computer_* with the hard_denied-style reason_detail variant', () => {
+  it('future provider types lacking a dedicated v4 enum (web_fetch_*, memory_*, tool_search_tool_*, mcp_toolset) → typed_unknown, allow', () => {
+    const r = classifyTools([
+      { type: 'web_fetch_20250910' },
+      { type: 'memory_20250818' },
+      { type: 'tool_search_tool_regex_20251119' },
+      { type: 'mcp_toolset' },
+    ]);
+    expect(r.decision).toBe('allow');
+    expect(r.classifications.every((c) => c.classification === 'anthropic_typed_unknown')).toBe(true);
+    expect(r.classifications.every((c) => c.decision === 'allowed')).toBe(true);
+  });
+
+  it('computer_* → block (the ONLY floor) with reason=capability_blocked_via_token + explicit detail', () => {
     const r = classifyTools([{ type: 'computer_20250101' }]);
     expect(r.decision).toBe('block');
     if (r.decision === 'block') {
       const b = r.blocked[0];
       expect(b?.reason).toBe('capability_blocked_via_token');
-      expect(b?.reason_detail).toMatch(/hard_denied until governance primitive \(target PR8\+\)/);
+      expect(b?.tool_type_observed).toBe('other_typed_unknown');
+      expect(b?.reason_detail).toMatch(/provider-hosted computer use — the explicit Native high-risk floor/);
+      expect(r.classifications[0]?.decision).toBe('blocked_at_validation');
     }
   });
 
-  it('combines mixed allow/block: when any tool is blocked the request is blocked, with all classifications recorded', () => {
-    const r = classifyTools([{ name: 'ok' }, { type: 'banana' }, { type: 'web_search_20260101' }]);
+  it('mixed: only the computer-use tool blocks; every classification is still recorded', () => {
+    const r = classifyTools([{ name: 'ok' }, { type: 'computer_20250124' }, { type: 'banana' }]);
     expect(r.decision).toBe('block');
     if (r.decision === 'block') {
       expect(r.classifications).toHaveLength(3);
       expect(r.blocked).toHaveLength(1);
       expect(r.blocked[0]?.tool_index).toBe(1);
+      expect(r.classifications.map((c) => c.decision)).toEqual([
+        'allowed',
+        'blocked_at_validation',
+        'allowed',
+      ]);
     }
   });
 });

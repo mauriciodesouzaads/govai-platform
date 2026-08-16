@@ -89,9 +89,27 @@ describe('classifyAnthropicTool — 16 canonical cases', () => {
   });
 });
 
-describe('decideAnthropicTool — block_reason mapping', () => {
-  it('client_defined → allowed', () => {
-    expect(decideAnthropicTool({}).decision).toBe('allowed');
+describe('classifyAnthropicTool — M1 rule 5b: explicit documented client-defined form', () => {
+  it("type: 'custom' → client_defined (same thing as the absent-type form; no new enum)", () => {
+    expect(classifyAnthropicTool({ type: 'custom', name: 'my_tool' })).toBe('client_defined');
+  });
+  it("type: 'Custom' (case-sensitive mismatch) → anthropic_typed_unknown (rule 7)", () => {
+    expect(classifyAnthropicTool({ type: 'Custom' })).toBe('anthropic_typed_unknown');
+  });
+});
+
+describe('decideAnthropicTool — M1 (OD-1=A): tools classify risk; only computer use blocks', () => {
+  it('client_defined → allowed (risk B)', () => {
+    const r = decideAnthropicTool({});
+    expect(r.decision).toBe('allowed');
+    expect(r.contributed_risk_class).toBe('B');
+  });
+
+  it("type:'custom' → allowed as client_defined (risk B)", () => {
+    const r = decideAnthropicTool({ type: 'custom' });
+    expect(r.classification).toBe('client_defined');
+    expect(r.decision).toBe('allowed');
+    expect(r.contributed_risk_class).toBe('B');
   });
 
   it('text_editor → allowed (risk C)', () => {
@@ -108,27 +126,57 @@ describe('decideAnthropicTool — block_reason mapping', () => {
     expect(decideAnthropicTool({ type: 'web_search_20260209' }).decision).toBe('allowed');
   });
 
-  it('code_execution → blocked_at_validation, reason=capability_planned', () => {
+  it('code_execution → allowed (risk C) — no longer a stale capability_planned block', () => {
     const r = decideAnthropicTool({ type: 'code_execution_20250522' });
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('capability_planned');
+    expect(r.classification).toBe('anthropic_provider_hosted_code_execution');
+    expect(r.decision).toBe('allowed');
+    expect(r.block_reason).toBeUndefined();
+    expect(r.contributed_risk_class).toBe('C');
   });
 
-  it('computer_use → blocked_at_validation, reason=capability_blocked_via_token', () => {
-    const r = decideAnthropicTool({ type: 'computer_20241022' });
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('capability_blocked_via_token');
+  it('computer_use → blocked_at_validation, reason=capability_blocked_via_token (the ONLY floor)', () => {
+    for (const t of ['computer_20241022', 'computer_20250124', 'computer_20251124']) {
+      const r = decideAnthropicTool({ type: t });
+      expect(r.decision).toBe('blocked_at_validation');
+      expect(r.block_reason).toBe('capability_blocked_via_token');
+      expect(r.contributed_risk_class).toBe('D');
+    }
   });
 
-  it('typed_unknown → blocked_at_validation, reason=typed_unknown', () => {
-    const r = decideAnthropicTool({ type: 'web_fetch_20260101' });
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('typed_unknown');
+  it('typed_unknown (future provider type, e.g. web_fetch_*) → allowed (risk C); unknown != unsafe', () => {
+    for (const t of ['web_fetch_20260101', 'memory_20250818', 'tool_search_tool_regex_20251119', 'mcp_toolset']) {
+      const r = decideAnthropicTool({ type: t });
+      expect(r.classification).toBe('anthropic_typed_unknown');
+      expect(r.decision).toBe('allowed');
+      expect(r.block_reason).toBeUndefined();
+      expect(r.contributed_risk_class).toBe('C');
+    }
   });
 
-  it('null type → blocked_at_validation, reason=typed_unknown (Matrix v2.0.1 P3)', () => {
-    const r = decideAnthropicTool({ type: null });
-    expect(r.decision).toBe('blocked_at_validation');
-    expect(r.block_reason).toBe('typed_unknown');
+  it('null / non-string / empty type → typed_unknown, allowed (provider owns tool-shape validity)', () => {
+    for (const t of [null, 42, '', '   ']) {
+      const r = decideAnthropicTool({ type: t });
+      expect(r.classification).toBe('anthropic_typed_unknown');
+      expect(r.decision).toBe('allowed');
+    }
+  });
+
+  it('NATIVE_HARD_DENY_EXPANDED=NO: exactly one classification blocks at validation', () => {
+    const samples: Array<Record<string, unknown>> = [
+      {},
+      { type: 'custom' },
+      { type: 'text_editor_20241029' },
+      { type: 'bash_20241022' },
+      { type: 'web_search_20260209' },
+      { type: 'code_execution_20250522' },
+      { type: 'computer_20250124' },
+      { type: 'anything_else' },
+      { type: null },
+    ];
+    const blocked = samples
+      .map((t) => decideAnthropicTool(t))
+      .filter((d) => d.decision === 'blocked_at_validation')
+      .map((d) => d.classification);
+    expect(blocked).toEqual(['anthropic_provider_hosted_computer_use']);
   });
 });

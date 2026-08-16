@@ -1,8 +1,12 @@
-// OpenAI tool classifier — Matrix v2 §23.2 + Peça A v2 §8.4 + Matrix v2.0.1 P3.
+// OpenAI tool classifier — Matrix v2 §23.2 + Peça A v2 §8.4 + Matrix v2.0.1 P3,
+// decision semantics re-adjudicated under Foundation V1 M1 (OD-1=A).
 //
 // Differs from Anthropic in one structural way: OpenAI has NO `client_defined`
 // fallback. Modern OpenAI tools require an explicit `type` field; absence or
-// malformed type is `openai_typed_unknown` and is blocked at validation.
+// malformed type is `openai_typed_unknown`. Since M1 typed_unknown is observed
+// (Risk C) and FORWARDED — the provider owns tool-shape validity — instead of
+// being blocked at validation. Classification rules are UNCHANGED (the v4
+// ToolClassificationEnum is not widened).
 //
 // Canonical rules:
 //   1. !('type' in tool)                        → openai_typed_unknown   (no client_defined)
@@ -85,22 +89,24 @@ export function classifyOpenAITool(
 }
 
 /**
- * Decision for a classified OpenAI tool against PR2 supported set.
- * - `allowed`: tool is supported in PR2 (function on either surface, web_search, file_search).
- * - `blocked_at_validation`: tool is recognized but its capability is not supported in PR2,
- *   or the tool is typed_unknown.
- *
- * Reuses the same 4-value `block_reason` enum as Anthropic (HAE-001):
- *   typed_unknown | capability_planned | capability_blocked_via_token | hard_denied_beta.
+ * Native/Governed validation decision for a classified OpenAI tool — Foundation
+ * V1 M1 (OD-1=A): tools classify RISK; taxonomy age does not block.
+ * - `allowed`: the tool is inspected, classified as precisely as the current v4
+ *   taxonomy permits, contributes its risk class, is recorded and FORWARDED —
+ *   function, web_search, file_search, tool_search, code_interpreter,
+ *   hosted_shell/shell, apply_patch, mcp (their former `capability_planned`
+ *   blocks were a stale local snapshot) and `openai_typed_unknown` (unknown /
+ *   future / malformed type — unknown != unsafe).
+ * - `blocked_at_validation`: ONLY provider-hosted computer use
+ *   (`computer_use_preview`) — the sole explicit Native high-risk floor
+ *   authorized in M1. Governed reaches the same block through this classifier;
+ *   any OTHER governed block is a real `resolveGovernance` matrix outcome.
  */
 export type OpenAIToolDecision = {
   classification: OpenAIToolClassification;
   decision: 'allowed' | 'blocked_at_validation';
-  block_reason?:
-    | 'typed_unknown'
-    | 'capability_planned'
-    | 'capability_blocked_via_token'
-    | 'hard_denied_beta';
+  /** M1: the only producible validation-block reason is the computer-use floor. */
+  block_reason?: 'capability_blocked_via_token';
   contributed_risk_class: 'A' | 'B' | 'C' | 'D' | 'E';
 };
 
@@ -119,19 +125,9 @@ export function decideOpenAITool(
     case 'openai_provider_hosted_file_search':
       return { classification, decision: 'allowed', contributed_risk_class: 'B' };
     case 'openai_provider_hosted_tool_search':
-      return {
-        classification,
-        decision: 'blocked_at_validation',
-        block_reason: 'capability_planned',
-        contributed_risk_class: 'B',
-      };
+      return { classification, decision: 'allowed', contributed_risk_class: 'B' };
     case 'openai_provider_hosted_code_interpreter':
-      return {
-        classification,
-        decision: 'blocked_at_validation',
-        block_reason: 'capability_planned',
-        contributed_risk_class: 'C',
-      };
+      return { classification, decision: 'allowed', contributed_risk_class: 'C' };
     case 'openai_provider_hosted_computer_use':
       return {
         classification,
@@ -140,32 +136,12 @@ export function decideOpenAITool(
         contributed_risk_class: 'D',
       };
     case 'openai_provider_hosted_hosted_shell':
-      return {
-        classification,
-        decision: 'blocked_at_validation',
-        block_reason: 'capability_planned',
-        contributed_risk_class: 'D',
-      };
+      return { classification, decision: 'allowed', contributed_risk_class: 'D' };
     case 'openai_provider_hosted_apply_patch':
-      return {
-        classification,
-        decision: 'blocked_at_validation',
-        block_reason: 'capability_planned',
-        contributed_risk_class: 'C',
-      };
+      return { classification, decision: 'allowed', contributed_risk_class: 'C' };
     case 'openai_provider_hosted_mcp':
-      return {
-        classification,
-        decision: 'blocked_at_validation',
-        block_reason: 'capability_planned',
-        contributed_risk_class: 'D',
-      };
+      return { classification, decision: 'allowed', contributed_risk_class: 'D' };
     case 'openai_typed_unknown':
-      return {
-        classification,
-        decision: 'blocked_at_validation',
-        block_reason: 'typed_unknown',
-        contributed_risk_class: 'C',
-      };
+      return { classification, decision: 'allowed', contributed_risk_class: 'C' };
   }
 }

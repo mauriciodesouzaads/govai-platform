@@ -44,15 +44,31 @@ function bufferifyBody(body: unknown): Buffer {
   return Buffer.from(JSON.stringify(body), 'utf8');
 }
 
-function isStreamRequest(body: unknown, headers: Record<string, string>): boolean {
+// Detect a streaming request by reading ONLY the top-level `stream` field —
+// aligned with the Native/H1 semantics (M1 §13). We JSON.parse a COPY of the
+// raw Buffer purely for read-only inspection; never a substring/regex match
+// (which false-positives on a nested `"stream": true` inside message content)
+// and never the Accept header. A parse failure means the body is not JSON we
+// can inspect: it is NOT a new GovAI rejection — the request proceeds as
+// non-streaming (the provider owns body validity). The original bytes are
+// never mutated or re-serialized.
+function isStreamRequest(body: unknown): boolean {
   if (Buffer.isBuffer(body)) {
-    const sniff = body.toString('utf8');
-    if (/"stream"\s*:\s*true/.test(sniff)) return true;
-  } else if (body && typeof body === 'object') {
-    if ((body as { stream?: boolean }).stream === true) return true;
+    try {
+      const parsed: unknown = JSON.parse(body.toString('utf8'));
+      return (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        (parsed as { stream?: unknown }).stream === true
+      );
+    } catch {
+      return false;
+    }
   }
-  const accept = headers['accept'];
-  return typeof accept === 'string' && accept.includes('text/event-stream');
+  if (body && typeof body === 'object') {
+    return (body as { stream?: unknown }).stream === true;
+  }
+  return false;
 }
 
 async function pumpResult(
@@ -64,11 +80,21 @@ async function pumpResult(
   controller: AbortController,
 ): Promise<unknown | undefined> {
   if (result.kind === 'blocked') {
+    // F2 HTTP honesty (M1, OD-2=A): the recommendation header keeps its
+    // meaning (matrix/governance recommendation) and the APPLIED result is
+    // stated separately — a tool-floor block can carry decision=observe +
+    // applied=blocked, which is exactly the distinction F2 exposes.
+    reply.header('x-govai-capability-level', 'policy_governed');
+    reply.header('x-govai-effective-risk-class', result.governance.effective_risk_class);
+    reply.header('x-govai-enforcement-decision', result.governance.enforcement_decision);
+    reply.header('x-govai-enforcement-applied', 'blocked');
     reply.code(403);
     return {
       error: 'governed_blocked',
       reason: result.reason,
       governance: result.governance,
+      enforcement_applied: 'blocked',
+      block_trigger: result.block_trigger,
     };
   }
   if (result.kind === 'stream') {
@@ -83,7 +109,11 @@ async function pumpResult(
     }
     respHeaders['x-govai-capability-level'] = 'policy_governed';
     respHeaders['x-govai-effective-risk-class'] = result.governance.effective_risk_class;
+    // Recommendation (matrix label) vs APPLIED (forwarded) — F2 (OD-2=A):
+    // ask / enforce / sandbox_required labels are NOT executed today; the
+    // truth is exposed additively, never faked.
     respHeaders['x-govai-enforcement-decision'] = result.governance.enforcement_decision;
+    respHeaders['x-govai-enforcement-applied'] = 'forwarded';
     reply.raw.writeHead(result.status_code, respHeaders);
     // EP-008C: drain + emit the terminal event on EVERY termination path via the shared
     // helper (covers both /v1/responses and /v1/chat/completions). finalize (build+emit)
@@ -110,7 +140,10 @@ async function pumpResult(
   }
   reply.header('x-govai-capability-level', 'policy_governed');
   reply.header('x-govai-effective-risk-class', result.governance.effective_risk_class);
+  // Recommendation vs APPLIED — see the stream branch (F2, OD-2=A). The
+  // provider-native success body is NOT modified.
   reply.header('x-govai-enforcement-decision', result.governance.enforcement_decision);
+  reply.header('x-govai-enforcement-applied', 'forwarded');
   reply.code(result.status_code);
   reply.send(result.response_body_raw);
   return reply;
@@ -120,6 +153,16 @@ export async function registerOpenAIGoverned(
   app: FastifyInstance,
   deps: OpenAIGovernedDeps,
 ): Promise<void> {
+  // Fastify ships a built-in EXACT-string `application/json` parser that
+  // getParser() resolves BEFORE the RegExp list — so without removing it here
+  // the buffer parser below is shadowed, the handler receives a PARSED object,
+  // `bufferifyBody` re-serializes it (whitespace / number / escape
+  // normalization: not the client's bytes), `native_request_hash` attests the
+  // re-serialization, and malformed JSON is 400'd by Fastify before governance
+  // ever sees it. M1 (§13 / H1 fidelity): remove it in THIS encapsulated plugin
+  // scope, exactly as the passthrough routes do, so the governed surface holds
+  // the ORIGINAL bytes; other plugins keep the default parser.
+  app.removeContentTypeParser('application/json');
   app.addContentTypeParser(
     /^application\/json/,
     { parseAs: 'buffer' },
@@ -136,7 +179,7 @@ export async function registerOpenAIGoverned(
     }
     const inboundHeaders = inboundHeadersFromReq(req);
     const rawBody = bufferifyBody(req.body);
-    const isStream = isStreamRequest(req.body, inboundHeaders);
+    const isStream = isStreamRequest(req.body);
     // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
     const ac = new AbortController();
     // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await
@@ -181,7 +224,7 @@ export async function registerOpenAIGoverned(
     }
     const inboundHeaders = inboundHeadersFromReq(req);
     const rawBody = bufferifyBody(req.body);
-    const isStream = isStreamRequest(req.body, inboundHeaders);
+    const isStream = isStreamRequest(req.body);
     // EP-008C: AbortController threaded to the upstream stream fetch + the terminal-emit helper.
     const ac = new AbortController();
     // EP-008C P2: arm the client-disconnect → abort hook BEFORE the governed-handler await

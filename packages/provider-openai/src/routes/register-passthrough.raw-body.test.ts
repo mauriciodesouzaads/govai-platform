@@ -6,8 +6,9 @@
 // client's exact bytes are forwarded byte-for-byte and that
 // `native_request_hash` attests those original bytes (not a re-serialized body).
 //
-// Scope: non-compressed JSON. `Content-Encoding: gzip` is out of scope for this
-// phase (see RAW BODY PRESERVATION FIX PLAN — reported as a non-blocking gap).
+// Scope: non-compressed JSON. `Content-Encoding` (gzip/deflate/br, non-stream +
+// stream) is covered by register-passthrough.content-encoding.test.ts (M1 FB-3,
+// closes the CT-005 gap).
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -264,13 +265,15 @@ describe('OpenAI passthrough raw-body preservation (real socket, app.listen + fe
   });
 
   it('classifies tools from the raw Buffer path (valid JSON with top-level tools)', async () => {
-    // `web_search` is not a valid Chat Completions tool → the classifier blocks
-    // it. Reaching that 403 proves the classifier parsed tools from the Buffer.
+    // M1 (OD-1=A): the ONLY tool the classifier blocks is provider-hosted
+    // computer use (`computer_use_preview` on /v1/responses). Reaching that 403
+    // proves the classifier parsed tools from the raw Buffer; the blocked v4
+    // `passthrough.invoked` proves the deny is durably evidenced (FB-4).
     const raw =
-      '{"model":"gpt-test","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search"}]}';
+      '{"model":"gpt-test","input":"hi","tools":[{"type":"computer_use_preview","display_width":1,"display_height":1,"environment":"browser"}]}';
     const sentRawBody = Buffer.from(raw, 'utf8');
 
-    const res = await fetch(`${govUrl}/passthrough/openai/v1/chat/completions`, {
+    const res = await fetch(`${govUrl}/passthrough/openai/v1/responses`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: sentRawBody,
@@ -279,6 +282,32 @@ describe('OpenAI passthrough raw-body preservation (real socket, app.listen + fe
     expect(eventOfType('tool.validation_blocked')).toBeDefined();
     // Blocked before forward → the provider is never called.
     expect(captured).toBeNull();
+    const ev = invokedEvent();
+    expect(ev['enforcement_decision']).toBe('blocked');
+    expect(ev['body_forward_mode']).toBe('blocked');
+    expect(ev['status_code']).toBe(403);
+    expect(ev['native_request_hash']).toBe(sha256(sentRawBody));
+    expect(ev['native_response_hash']).toBeUndefined();
+    expect(ev['provider_request_id']).toBeUndefined();
+  });
+
+  it('M1: a non-function tool on Chat Completions (web_search) is typed_unknown → forwarded byte-for-byte, provider decides', async () => {
+    const raw =
+      '{"model":"gpt-test","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search"}]}';
+    const sentRawBody = Buffer.from(raw, 'utf8');
+    const res = await fetch(`${govUrl}/passthrough/openai/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: sentRawBody,
+    });
+    expect(res.status).toBe(200);
+    expect(eventOfType('tool.validation_blocked')).toBeUndefined();
+    const cap = requireCaptured();
+    expect(Buffer.compare(cap.rawBody, sentRawBody)).toBe(0);
+    const ev = invokedEvent();
+    const cls = ev['detected_tool_classifications'] as Array<Record<string, unknown>>;
+    expect(cls[0]?.['classification']).toBe('openai_typed_unknown');
+    expect(cls[0]?.['decision']).toBe('allowed');
   });
 
   it('forwards valid tools byte-for-byte after governance inspection', async () => {

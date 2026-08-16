@@ -19,8 +19,9 @@ const TENANT = {
   operational_mode: 'test' as const,
 };
 
-/** A real blocked dispatch: a provider-hosted code_execution tool is
- *  blocked_at_validation by the classifier — before any credential/fetch. */
+/** A real blocked dispatch: a provider-hosted computer-use tool is
+ *  blocked_at_validation by the classifier (M1: the ONLY validation floor —
+ *  code_execution now classifies + forwards) — before any credential/fetch. */
 async function realBlockedDispatch(capture: ReturnType<typeof createGovernedV4Capture>) {
   return handleAnthropicGovernedMessages(
     {
@@ -30,7 +31,7 @@ async function realBlockedDispatch(capture: ReturnType<typeof createGovernedV4Ca
           model: 'claude-fixture-1',
           max_tokens: 16,
           messages: [{ role: 'user', content: 'run ls' }],
-          tools: [{ type: 'code_execution_20241022', name: 'code_execution' }],
+          tools: [{ type: 'computer_20250124', name: 'computer', display_width_px: 1, display_height_px: 1 }],
         }),
         'utf8',
       ),
