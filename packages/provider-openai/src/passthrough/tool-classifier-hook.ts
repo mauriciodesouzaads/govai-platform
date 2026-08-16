@@ -1,6 +1,13 @@
 // OpenAI tool classifier hook — runs before forwarding. Returns either:
 //   - { decision: 'allow', classifications: [...] }    : forward continues
 //   - { decision: 'block', blocked: [...] }            : 403 + tool.validation_blocked
+//
+// Foundation V1 M1 (OD-1=A): every NON-computer tool is classified, contributes
+// risk, is recorded and forwarded (`decision: 'allowed'`). The ONLY block this
+// hook can produce is the explicit provider-hosted computer-use floor
+// (`capability_blocked_via_token`); typed_unknown / former "planned" tools no
+// longer block. Governed callers still route the classifications through
+// `resolveGovernance` — a governed block for such tools is a matrix outcome.
 
 import {
   decideOpenAITool,
@@ -59,12 +66,8 @@ export function classifyOpenAITools(
         tool_type_observed: observeToolType(tool.type),
         classification: decided.classification,
         reason: decided.block_reason,
-        reason_detail:
-          decided.block_reason === 'typed_unknown'
-            ? `tool.type ${JSON.stringify(tool.type)} is not classified in the GovAI OpenAI taxonomy`
-            : decided.block_reason === 'capability_planned'
-              ? `tool classified as ${decided.classification} maps to a planned capability (target PR4+)`
-              : `tool classified as ${decided.classification} is hard_denied until governance primitive (target PR8+)`,
+        // M1: the sole validation block is the explicit computer-use high-risk floor.
+        reason_detail: `tool classified as ${decided.classification} is provider-hosted computer use — the explicit Native high-risk floor (OD-1=A); requires a dedicated governance primitive`,
       });
     }
   }

@@ -121,18 +121,25 @@ describe('F1 — governed OpenAI chat completions credential_source (Point 2)', 
     expect(resolveSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('C — a blocked chat-completions request emits not_resolved_pre_provider_block AND never calls the resolver', async () => {
+  it('C (M1) — a non-function tool on chat-completions is typed_unknown → NOT a stale pre-block: it forwards, the resolver runs once, evidence records the classification', async () => {
+    // Pre-M1 this shape was blocked at validation (typed_unknown). Under OD-1=A
+    // Chat Completions has no computer-use tool and its matrix at base A caps
+    // at C, so NO pre-provider block is reachable on this producer any more —
+    // the request reaches governance and is forwarded; the provider decides.
     const res = await postChatCompletions({
       model: 'gpt-x',
       messages: [{ role: 'user', content: 'hi' }],
-      // computer_use_preview → blocked_at_validation → 403 before any provider call.
       tools: [{ type: 'computer_use_preview' }],
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-govai-enforcement-applied')).toBe('forwarded');
     await res.text();
     const ev = invoked();
-    expect(ev['credential_source']).toBe('not_resolved_pre_provider_block');
-    expect(ev['body_forward_mode']).toBe('blocked');
-    expect(resolveSpy).toHaveBeenCalledTimes(0);
+    expect(ev['credential_source']).toBe('platform_env');
+    expect(ev['body_forward_mode']).toBe('raw');
+    const cls = ev['detected_tool_classifications'] as Array<Record<string, unknown>>;
+    expect(cls[0]?.['classification']).toBe('openai_typed_unknown');
+    expect(cls[0]?.['decision']).toBe('allowed');
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
   });
 });

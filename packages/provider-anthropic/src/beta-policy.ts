@@ -1,5 +1,12 @@
 // ANTHROPIC_BETA_POLICY — literal of Matrix v2 §13. 9 entries, frozen at module load.
 // Token literals are exact (with full date suffixes); modifying this list requires PR + ADR.
+//
+// Foundation V1 M1 (OD-1=A) — Native/Audited application semantics of these
+// table states (see passthrough/beta-header-handler.ts): ONLY `hard_denied`
+// (the provider-hosted computer-use family below) blocks the Native surface.
+// `verification_required` / `denied_until_decision` / unknown tokens are
+// FORWARDED and observed (hashed evidence markers); the provider decides.
+// The table content and its version are unchanged by M1.
 
 import type { BetaTokenPolicyEntry } from '@govai/core-types';
 
@@ -83,3 +90,6 @@ export const ANTHROPIC_BETA_POLICY_VERSION = 'anthropic-beta-policy@2026-05-06';
 // Batch M deve resolver `prompt-caching-2024-07-31` e `message-batches-2024-09-24`
 // para `global_allowlist`, `denied_until_decision` ou `removed_as_no_longer_needed`,
 // conforme verificação técnica e decisão arquitetural.
+// M1 note: since Native no longer blocks on `verification_required`, that
+// resolution is an evidence-granularity item (typed provenance), not a
+// production blocker.

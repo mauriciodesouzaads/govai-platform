@@ -20,6 +20,7 @@ import { OPENAI_BETA_POLICY_VERSION } from '../beta-policy.js';
 import { classifyOpenAITools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
 import { forwardStream } from '../passthrough/stream-forward.js';
+import { SHA256_EMPTY } from '../passthrough/evidence-constants.js';
 import type { StreamOutcome } from '@govai/provider-stream-http';
 import { KNOWN_OPENAI_TAXONOMY_VERSION } from '../tool-taxonomy-version.js';
 import { extractOpenAIChatCompletionsText } from './extract-text.js';
@@ -162,6 +163,7 @@ export async function handleOpenAIGovernedChatCompletions(
     const reason = toolBlock
       ? `tool_blocked:${toolBlock.classification}:${toolBlock.reason}`
       : `enforcement_blocked:${governance.effective_risk_class}`;
+    const block_trigger = toolBlock ? 'tool_validation' : 'governance_enforcement';
     const ev = PassthroughInvokedSchema.parse({
       event_type: 'passthrough.invoked',
       schema_version: 4,
@@ -179,6 +181,10 @@ export async function handleOpenAIGovernedChatCompletions(
       risk_escalation_reasons: governance.risk_escalation_reasons,
       enforcement_decision: 'blocked',
       native_request_hash: sha256Hex(input.rawBody),
+      // M1 §11.4: a STREAMING request blocked pre-provider streamed zero bytes —
+      // the truthful hash over the emitted stream bytes is SHA-256(empty); no
+      // stream_outcome is fabricated. (Pre-M1 this path threw on Rule 1.)
+      ...(input.isStream ? { stream_final_hash: SHA256_EMPTY } : {}),
       latency_ms: 0,
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
@@ -196,7 +202,7 @@ export async function handleOpenAIGovernedChatCompletions(
       chain_category: 'run',
     });
     await deps.emitAuditEvent(ev);
-    return { kind: 'blocked', status_code: 403, reason, audit_event: ev, governance };
+    return { kind: 'blocked', status_code: 403, reason, block_trigger, audit_event: ev, governance };
   }
 
   // F1: destructure directly so the streaming finalizer closes over `source`

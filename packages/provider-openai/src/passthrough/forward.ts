@@ -3,6 +3,10 @@
 // Stream variant lives in stream-forward.ts.
 
 import { createHash } from 'node:crypto';
+import {
+  normalizeFetchResponseHeaders,
+  withIdentityAcceptEncoding,
+} from './transport-encoding.js';
 
 export type ForwardInput = {
   baseUrl: string;
@@ -66,7 +70,10 @@ export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
 
   const init: RequestInit = {
     method: input.method,
-    headers: input.headers,
+    // FB-3 (M1): the caller's transport compression negotiation is NOT
+    // propagated to the Fetch hop — GovAI asks for `identity` so the bytes it
+    // hashes and relays are the wire bytes (see transport-encoding.ts).
+    headers: withIdentityAcceptEncoding(input.headers),
   };
   if (input.method !== 'GET' && requestBody.length > 0) {
     init.body = requestBody;
@@ -106,10 +113,14 @@ export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
   const responseBuf = Buffer.from(await res.arrayBuffer());
   const native_response_hash = sha256Hex(responseBuf);
 
-  const responseHeaders: Record<string, string> = {};
+  const rawResponseHeaders: Record<string, string> = {};
   res.headers.forEach((value, key) => {
-    responseHeaders[key.toLowerCase()] = value;
+    rawResponseHeaders[key.toLowerCase()] = value;
   });
+  // FB-3 (M1) defense in depth: if Fetch decoded a compressed body, drop the
+  // stale content-encoding / content-length so downstream framing describes
+  // `responseBuf` (the bytes GovAI hashed and delivers).
+  const responseHeaders = normalizeFetchResponseHeaders(res.status, rawResponseHeaders);
 
   // OpenAI canonical request id header is `openai-request-id`; some endpoints
   // also surface `x-request-id`.

@@ -14,7 +14,10 @@ import {
   type OpenAIGovernedTenant,
 } from '@govai/provider-openai';
 import { authenticateApiKey } from '../pipeline/auth.js';
-import { resolveOpenAIProviderKey } from '../pipeline/provider-credentials.js';
+import {
+  providerCredentialUnresolvableHttp,
+  resolveOpenAIProviderKey,
+} from '../pipeline/provider-credentials.js';
 import { makeAuditBridge } from '../pipeline/audit-bridge.js';
 import { requestIdentityAls } from '../pipeline/request-identity.js';
 
@@ -79,6 +82,26 @@ export async function governedOpenaiRoute(app: FastifyInstance): Promise<void> {
     // the ingress hook populated for this request.
     await auditBridge(event, requestIdentityAls.getStore());
   };
+
+  // Foundation V1 M1 (FB-4 §11.5): a missing/undecryptable tenant provider
+  // credential on this DIRECT route is a stable 502 provider_credential_unresolvable
+  // (safe metadata only, zero provider calls) — never an unshaped 500. Scoped to
+  // this encapsulated plugin; every other error re-enters the parent chain via
+  // reply.send(err). The v4 evidence schema cannot truthfully represent a
+  // credential failure (it is neither a governance block nor a forwarded raw
+  // response), so this path is evidenced by the structured log below (no
+  // secret is ever logged: only provider / org_id / bounded reason code).
+  app.setErrorHandler((err, req, reply) => {
+    const mapped = providerCredentialUnresolvableHttp(err);
+    if (mapped) {
+      req.log.warn(
+        { provider: mapped.body.provider, org_id: mapped.org_id, reason: mapped.body.reason },
+        'provider credential unresolvable on direct provider route',
+      );
+      return reply.code(mapped.statusCode).send(mapped.body);
+    }
+    return reply.send(err);
+  });
 
   const deps: OpenAIGovernedDeps = {
     upstreamBaseUrl,

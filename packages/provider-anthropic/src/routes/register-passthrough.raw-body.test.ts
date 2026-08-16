@@ -222,10 +222,12 @@ describe('Anthropic passthrough raw-body preservation (real socket, app.listen +
   });
 
   it('classifies tools from the raw Buffer path (valid JSON with top-level tools)', async () => {
-    // tool with type:null → classifier blocks (typed_unknown). Reaching that 403
-    // proves the classifier parsed tools from the raw Buffer.
+    // M1 (OD-1=A): the ONLY tool the classifier blocks is provider-hosted
+    // computer use (`computer_<8d>`). Reaching that 403 proves the classifier
+    // parsed tools from the raw Buffer; the blocked v4 `passthrough.invoked`
+    // proves the deny is durably evidenced (FB-4).
     const raw =
-      '{"model":"claude-test","max_tokens":777,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":null}]}';
+      '{"model":"claude-test","max_tokens":777,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"computer_20250124","name":"computer","display_width_px":1,"display_height_px":1}]}';
     const sentRawBody = Buffer.from(raw, 'utf8');
 
     const res = await fetch(`${govUrl}/passthrough/anthropic/v1/messages`, {
@@ -236,6 +238,31 @@ describe('Anthropic passthrough raw-body preservation (real socket, app.listen +
     expect(res.status).toBe(403);
     expect(eventOfType('tool.validation_blocked')).toBeDefined();
     expect(captured).toBeNull();
+    const ev = invokedEvent();
+    expect(ev['enforcement_decision']).toBe('blocked');
+    expect(ev['body_forward_mode']).toBe('blocked');
+    expect(ev['status_code']).toBe(403);
+    expect(ev['native_request_hash']).toBe(sha256(sentRawBody));
+    expect(ev['native_response_hash']).toBeUndefined();
+  });
+
+  it('M1: a tool with type:null (typed_unknown) is forwarded byte-for-byte — the provider decides', async () => {
+    const raw =
+      '{"model":"claude-test","max_tokens":777,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":null}]}';
+    const sentRawBody = Buffer.from(raw, 'utf8');
+    const res = await fetch(`${govUrl}/passthrough/anthropic/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: sentRawBody,
+    });
+    expect(res.status).toBe(200);
+    expect(eventOfType('tool.validation_blocked')).toBeUndefined();
+    const cap = requireCaptured();
+    expect(Buffer.compare(cap.rawBody, sentRawBody)).toBe(0);
+    const ev = invokedEvent();
+    const cls = ev['detected_tool_classifications'] as Array<Record<string, unknown>>;
+    expect(cls[0]?.['classification']).toBe('anthropic_typed_unknown');
+    expect(cls[0]?.['decision']).toBe('allowed');
   });
 
   it('forwards valid tools byte-for-byte after governance inspection', async () => {

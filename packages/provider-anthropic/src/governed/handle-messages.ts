@@ -25,6 +25,7 @@ import { ANTHROPIC_BETA_POLICY_VERSION } from '../beta-policy.js';
 import { classifyTools } from '../passthrough/tool-classifier-hook.js';
 import { forwardRaw } from '../passthrough/forward.js';
 import { forwardStream } from '../passthrough/stream-forward.js';
+import { SHA256_EMPTY } from '../passthrough/evidence-constants.js';
 import type { StreamOutcome } from '@govai/provider-stream-http';
 import { KNOWN_ANTHROPIC_TAXONOMY_VERSION } from '../tool-taxonomy-version.js';
 import { extractAnthropicText } from './extract-text.js';
@@ -116,6 +117,13 @@ export type GovernedBlockedResult = {
   kind: 'blocked';
   status_code: 403;
   reason: string;
+  /**
+   * F2 HTTP honesty (M1, OD-2=A): WHAT applied the block. `tool_validation` =
+   * the explicit computer-use floor (classifier); `governance_enforcement` =
+   * the matrix said `blocked` (a legitimate governed outcome). Additive HTTP
+   * contract only — NOT part of the sealed v4 event.
+   */
+  block_trigger: 'tool_validation' | 'governance_enforcement';
   audit_event: PassthroughInvoked;
   governance: {
     base_risk_class: string;
@@ -284,8 +292,10 @@ export async function handleAnthropicGovernedMessages(
     is_multipart: input.isMultipart === true,
   });
 
-  // Block path: tool classifier or enforcement said no. Emit v3 audit with
-  // body_forward_mode='blocked', NO native_response_hash.
+  // Block path: the explicit computer-use floor (tool classifier, M1's only
+  // validation block) or the governance matrix said `blocked`. Emit a v4 audit
+  // with body_forward_mode='blocked', NO native_response_hash. Non-computer
+  // tools never block here any more — they reach the matrix like everything else.
   // occurred_at: the invocation start instant (the latency_ms anchor), captured
   // once before any provider call so it is identical across all three audit
   // paths and stable for this event across dispatch retries (ADR-028 / EP-002).
@@ -295,6 +305,7 @@ export async function handleAnthropicGovernedMessages(
     const reason = toolBlock
       ? `tool_blocked:${toolBlock.classification}:${toolBlock.reason}`
       : `enforcement_blocked:${governance.effective_risk_class}`;
+    const block_trigger = toolBlock ? 'tool_validation' : 'governance_enforcement';
     const native_request_hash_hex = sha256Hex(input.rawBody);
     const ev = PassthroughInvokedSchema.parse({
       event_type: 'passthrough.invoked',
@@ -313,6 +324,10 @@ export async function handleAnthropicGovernedMessages(
       risk_escalation_reasons: governance.risk_escalation_reasons,
       enforcement_decision: 'blocked',
       native_request_hash: native_request_hash_hex,
+      // M1 §11.4: a STREAMING request blocked pre-provider streamed zero bytes —
+      // the truthful hash over the emitted stream bytes is SHA-256(empty); no
+      // stream_outcome is fabricated. (Pre-M1 this path threw on Rule 1.)
+      ...(input.isStream ? { stream_final_hash: SHA256_EMPTY } : {}),
       latency_ms: 0,
       status_code: 403,
       occurred_at: occurredAt.toISOString(),
@@ -337,6 +352,7 @@ export async function handleAnthropicGovernedMessages(
       kind: 'blocked',
       status_code: 403,
       reason,
+      block_trigger,
       audit_event: ev,
       governance,
     };

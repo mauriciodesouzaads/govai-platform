@@ -3,6 +3,10 @@
 // chunks to the caller. Aborts upstream when the caller signals abort.
 
 import { createHash } from 'node:crypto';
+import {
+  normalizeFetchResponseHeaders,
+  withIdentityAcceptEncoding,
+} from './transport-encoding.js';
 
 export type StreamForwardInput = {
   baseUrl: string;
@@ -40,15 +44,20 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
 
   const res = await fetch(url, {
     method: input.method,
-    headers: input.headers,
+    // FB-3 (M1): identity on the Fetch hop — see transport-encoding.ts.
+    headers: withIdentityAcceptEncoding(input.headers),
     body: input.body,
     ...(input.signal ? { signal: input.signal } : {}),
   });
 
-  const responseHeaders: Record<string, string> = {};
+  const rawResponseHeaders: Record<string, string> = {};
   res.headers.forEach((value, key) => {
-    responseHeaders[key.toLowerCase()] = value;
+    rawResponseHeaders[key.toLowerCase()] = value;
   });
+  // FB-3 (M1) defense in depth: the streamed chunks are the DECODED bytes when
+  // Fetch decoded — drop the stale content-encoding / content-length so the
+  // relayed stream headers describe the chunks actually written + hashed.
+  const responseHeaders = normalizeFetchResponseHeaders(res.status, rawResponseHeaders);
   const provider_request_id =
     responseHeaders['anthropic-request-id'] ?? responseHeaders['x-request-id'] ?? null;
 

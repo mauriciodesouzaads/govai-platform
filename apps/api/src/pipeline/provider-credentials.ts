@@ -66,6 +66,29 @@ export class MissingProviderKeyError extends Error {
   }
 }
 
+/**
+ * Foundation V1 M1 (FB-4 §11.5): the stable HTTP contract for a DIRECT provider
+ * route (/passthrough/*, /governed/*) whose tenant credential could not be
+ * resolved (missing in production/pilot, revoked, KMS-undecryptable, lookup
+ * failure). Mirrors the mapping /v1/runs already applies (routes/runs.ts):
+ * 502 `provider_credential_unresolvable` with ONLY safe metadata — provider +
+ * bounded reason code — never a secret, never an unshaped 500. Returns null for
+ * any other error so the caller delegates to the default handler unchanged.
+ * Zero provider calls happen on this path (the resolver runs before dispatch).
+ */
+export function providerCredentialUnresolvableHttp(err: unknown): {
+  statusCode: 502;
+  org_id: string;
+  body: { error: 'provider_credential_unresolvable'; provider: ProviderName; reason: string };
+} | null {
+  if (!(err instanceof MissingProviderKeyError)) return null;
+  return {
+    statusCode: 502,
+    org_id: err.org_id,
+    body: { error: 'provider_credential_unresolvable', provider: err.provider, reason: err.reason },
+  };
+}
+
 const HERMETIC_ANTHROPIC = 'sk-ant-test-hermetic';
 const HERMETIC_OPENAI = 'sk-openai-test-hermetic';
 
