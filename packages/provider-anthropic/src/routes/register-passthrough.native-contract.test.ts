@@ -352,4 +352,26 @@ describe('ROUTE — auth before registry disclosure; method mismatch is a client
     expect(res2.headers.get('allow')).toBe('GET');
     expect(auditEvents).toHaveLength(0);
   });
+
+  it('ROUTE-03b: the 405 contract is registry-truthful on the method-agnostic files resolver branch — PATCH/PUT/POST on /v1/files/{id} → 405 Allow: GET, DELETE; registered pairs still forward', async () => {
+    for (const m of ['PATCH', 'PUT', 'POST']) {
+      const r = await fetch(`${govUrl}/passthrough/anthropic/v1/files/file_123`, {
+        method: m,
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(r.status).toBe(405);
+      expect(r.headers.get('allow')).toBe('GET, DELETE');
+    }
+    expect(providerCalls).toBe(0);
+    // /v1/files: POST (upload) + GET (list) registered; PUT/PATCH/DELETE not (Allow follows the route method order).
+    const r2 = await fetch(`${govUrl}/passthrough/anthropic/v1/files`, { method: 'PUT' });
+    expect(r2.status).toBe(405);
+    expect(r2.headers.get('allow')).toBe('GET, POST');
+    // Registered pair → forwarded to the provider (GET /v1/files/{id}).
+    const ok = await fetch(`${govUrl}/passthrough/anthropic/v1/files/file_123`, { method: 'GET' });
+    expect(ok.status).toBe(200);
+    expect(providerCalls).toBe(1);
+    expect(captured?.method).toBe('GET');
+  });
 });

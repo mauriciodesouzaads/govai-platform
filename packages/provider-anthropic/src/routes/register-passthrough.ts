@@ -141,14 +141,26 @@ function sha256Hex(buf: Buffer): string {
 
 const ROUTE_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as const;
 
-/** Methods the current registry maps for a matched path template — derived from
- *  the resolver itself so the `Allow` header is truthful by construction. */
+/**
+ * Methods the CURRENT REGISTERED SURFACE supports for a matched path template —
+ * truthful by construction from BOTH sources: the resolver must map
+ * (method, template) to a capability AND that capability's registry
+ * `endpoint_coverage` must declare exactly that (method, path). The resolver's
+ * files / vector-store branches are method-agnostic (they resolve for any
+ * verb), so the registry declaration is what makes e.g. `PATCH /v1/files/{id}`
+ * a 405 instead of an accidental forward (Codex P2 on dee0b40). Method support
+ * is NOT widened: the registry is unchanged.
+ */
 function allowedMethodsFor(pathTemplate: string): string[] {
-  return ROUTE_METHODS.filter(
-    (m) =>
-      resolveAnthropicCapabilityForRequest({ method: m, pathTemplate, isStream: false })
-        .capability_id !== 'unknown',
-  );
+  return ROUTE_METHODS.filter((m) => {
+    const r = resolveAnthropicCapabilityForRequest({ method: m, pathTemplate, isStream: false });
+    if (r.capability_id === 'unknown') return false;
+    const cap = ANTHROPIC_CAPABILITIES.find((c) => c.id === r.capability_id);
+    return (
+      cap !== undefined &&
+      cap.endpoint_coverage.some((e) => e.method === m && e.path === pathTemplate)
+    );
+  });
 }
 
 // Detect a streaming request by reading ONLY the top-level `stream` field.
@@ -240,10 +252,14 @@ export async function registerAnthropicPassthrough(
         pathTemplate: matched.pathTemplate,
         isStream,
       });
-      // §14.2: a registered path with a method the current surface does not map
-      // is a CALLER contract error (405 + truthful Allow), never an internal 500.
-      // Method support is NOT widened here.
-      if (resolved.capability_id === 'unknown') {
+      // §14.2: a registered path with a method the current registered surface
+      // does not support is a CALLER contract error (405 + truthful Allow) —
+      // never an internal 500 and never an accidental forward. Two caller cases:
+      // (a) the resolver maps no capability for (method, path); (b) the resolver
+      // maps one (its files / vector-store branches are method-agnostic) but the
+      // capability's registry `endpoint_coverage` does not declare that
+      // (method, path) pair. Method support is NOT widened here.
+      const methodNotAllowed = (): { error: string; message: string; allow: string[] } => {
         const allow = allowedMethodsFor(matched.pathTemplate);
         reply.code(405);
         reply.header('allow', allow.join(', '));
@@ -252,9 +268,11 @@ export async function registerAnthropicPassthrough(
           message: `${req.method} is not supported on ${matched.pathTemplate} by the GovAI passthrough surface`,
           allow,
         };
-      }
+      };
+      if (resolved.capability_id === 'unknown') return methodNotAllowed();
       // A mapped method whose capability id is missing from the registry is a
-      // REAL internal inconsistency — fail loudly (§14.3), never mask it.
+      // REAL internal inconsistency — fail loudly (§14.3), never mask it as a
+      // caller error (checked BEFORE the coverage gate on purpose).
       const capabilityRegistryEntry: Capability | undefined = ANTHROPIC_CAPABILITIES.find(
         (c) => c.id === resolved.capability_id,
       );
@@ -264,6 +282,13 @@ export async function registerAnthropicPassthrough(
           error: 'capability_registry_missing',
           message: `path matched but capability ${resolved.capability_id} not in registry`,
         };
+      }
+      if (
+        !capabilityRegistryEntry.endpoint_coverage.some(
+          (e) => e.method === req.method.toUpperCase() && e.path === matched.pathTemplate,
+        )
+      ) {
+        return methodNotAllowed();
       }
 
       const requestBody = bufferifyBody(req.body);

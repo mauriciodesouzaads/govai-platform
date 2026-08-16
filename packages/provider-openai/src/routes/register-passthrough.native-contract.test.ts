@@ -342,4 +342,36 @@ describe('ROUTE — auth before registry disclosure; method mismatch is a client
     expect(providerCalls).toBe(0);
     expect(auditEvents).toHaveLength(0);
   });
+
+  it('ROUTE-03b: the 405 contract is registry-truthful on the method-agnostic files / vector-store resolver branches', async () => {
+    // files/{id}: GET + DELETE registered → PATCH/PUT/POST are 405.
+    for (const m of ['PATCH', 'PUT', 'POST']) {
+      const r = await fetch(`${govUrl}/passthrough/openai/v1/files/file_123`, {
+        method: m,
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(r.status).toBe(405);
+      expect(r.headers.get('allow')).toBe('GET, DELETE');
+    }
+    // vector_stores/{id}: GET + DELETE registered (modify via POST is NOT in the registry) → 405.
+    const vs = await fetch(`${govUrl}/passthrough/openai/v1/vector_stores/vs_1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"name":"x"}',
+    });
+    expect(vs.status).toBe(405);
+    expect(vs.headers.get('allow')).toBe('GET, DELETE');
+    // vector_stores/{id}/files: POST + GET registered → PATCH 405.
+    const vsf = await fetch(`${govUrl}/passthrough/openai/v1/vector_stores/vs_1/files`, { method: 'PATCH' });
+    expect(vsf.status).toBe(405);
+    expect(vsf.headers.get('allow')).toBe('GET, POST');
+    expect(providerCalls).toBe(0);
+    // Registered pairs still forward.
+    const ok = await fetch(`${govUrl}/passthrough/openai/v1/vector_stores/vs_1`, { method: 'GET' });
+    expect(ok.status).toBe(200);
+    const ok2 = await fetch(`${govUrl}/passthrough/openai/v1/vector_stores/vs_1`, { method: 'DELETE' });
+    expect(ok2.status).toBe(200);
+    expect(providerCalls).toBe(2);
+  });
 });
