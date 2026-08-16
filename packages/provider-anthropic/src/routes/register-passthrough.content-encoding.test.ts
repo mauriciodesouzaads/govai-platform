@@ -341,6 +341,62 @@ describe('Anthropic passthrough — Content-Encoding transparency over real TCP 
     expect(requireCaptured().headers['accept-encoding']).toBe('identity');
   });
 
+  it('ENC-01c: representation validators computed over the ENCODED bytes (content-digest / strong etag / content-md5) are dropped when Fetch decoded; a weak etag survives; identity keeps them all', async () => {
+    const gz = zlib.gzipSync(PLAIN_JSON);
+    fakeResponse = {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'content-encoding': 'gzip',
+        'content-length': String(gz.length),
+        'content-digest': 'sha-256=:over-gzip-bytes:',
+        'content-md5': 'b3ZlciBnemlwIGJ5dGVz',
+        etag: '"strong-over-gzip"',
+        ...USEFUL_HEADERS,
+      },
+      body: gz,
+    };
+    const res = await rawRequest('/passthrough/anthropic/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: MESSAGES_BODY,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.equals(PLAIN_JSON)).toBe(true);
+    expect(res.headers['content-encoding']).toBeUndefined();
+    expect(res.headers['content-digest']).toBeUndefined();
+    expect(res.headers['content-md5']).toBeUndefined();
+    expect(res.headers['etag']).toBeUndefined();
+    expect(res.headers['x-should-pass']).toBe('yes');
+
+    // weak etag on a decoded body survives
+    fakeResponse = {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': String(gz.length), etag: 'W/"weak"' },
+      body: gz,
+    };
+    const res2 = await rawRequest('/passthrough/anthropic/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: MESSAGES_BODY,
+    });
+    expect(res2.headers['etag']).toBe('W/"weak"');
+
+    // identity: nothing was decoded → validators are truthful and relayed
+    fakeResponse = {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'content-digest': 'sha-256=:plain:', etag: '"strong-plain"' },
+      body: PLAIN_JSON,
+    };
+    const res3 = await rawRequest('/passthrough/anthropic/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: MESSAGES_BODY,
+    });
+    expect(res3.headers['content-digest']).toBe('sha-256=:plain:');
+    expect(res3.headers['etag']).toBe('"strong-plain"');
+  });
+
   it('ENC-04: an identity (uncompressed) response is relayed unchanged — headers, bytes and hash', async () => {
     fakeResponse = {
       status: 200,

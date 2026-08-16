@@ -58,6 +58,30 @@ describe('normalizeFetchResponseHeaders', () => {
     expect(out).toEqual({ 'content-type': 'application/json', 'x-request-id': 'r1' });
     expect(base['content-encoding']).toBe('gzip');
   });
+  it('when decoded, also drops representation-bound validators/integrity headers (content-digest, repr-digest, digest, content-md5, content-range, STRONG etag) and keeps a weak etag', () => {
+    const encoded = {
+      ...base,
+      'content-digest': 'sha-256=:abc:',
+      'repr-digest': 'sha-256=:def:',
+      digest: 'sha-256=xyz',
+      'content-md5': 'Q2hlY2sgSW50ZWdyaXR5IQ==',
+      'content-range': 'bytes 0-53/54',
+      etag: '"strong-over-gzip"',
+      'cache-control': 'no-store',
+    };
+    expect(normalizeFetchResponseHeaders(200, encoded)).toEqual({
+      'content-type': 'application/json',
+      'x-request-id': 'r1',
+      'cache-control': 'no-store',
+    });
+    const weak = { ...base, etag: 'W/"weak-across-encodings"' };
+    expect(normalizeFetchResponseHeaders(200, weak)['etag']).toBe('W/"weak-across-encodings"');
+    // Not decoded → every one of them is left untouched (they are truthful for raw bytes).
+    const raw = { ...encoded, 'content-encoding': 'x-custom' };
+    expect(normalizeFetchResponseHeaders(200, raw)).toEqual(raw);
+    const identity = { 'content-type': 'application/json', etag: '"strong-plain"', 'content-digest': 'sha-256=:p:' };
+    expect(normalizeFetchResponseHeaders(200, identity)).toEqual(identity);
+  });
   it('leaves everything untouched when Fetch did not decode', () => {
     const raw = { ...base, 'content-encoding': 'x-custom' };
     expect(normalizeFetchResponseHeaders(200, raw)).toEqual(raw);

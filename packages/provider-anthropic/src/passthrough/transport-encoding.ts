@@ -16,10 +16,17 @@
 //      Bytes GovAI hashes = bytes on the wire = bytes delivered downstream.
 //
 //   2. Response side (defense in depth) — if the provider compresses anyway
-//      with a coding Fetch decodes, the stale `content-encoding` +
-//      `content-length` are DROPPED so downstream Node/Fastify framing
-//      describes the bytes actually delivered. Everything else (content-type,
-//      provider request ids, rate-limit headers, ...) is preserved.
+//      with a coding Fetch decodes, every header that describes the ENCODED
+//      representation is DROPPED — the stale `content-encoding` +
+//      `content-length`, plus the representation validators / integrity fields
+//      that are computed over the encoded bytes (`content-digest`,
+//      `repr-digest`, legacy `digest` / `content-md5`, a STRONG `etag`,
+//      `content-range`) — so downstream Node/Fastify framing describes the
+//      bytes actually delivered and no client-side integrity check, cache or
+//      range client associates decoded bytes with the wrong representation.
+//      A weak `etag` (W/"…") asserts semantic equivalence across encodings and
+//      is kept. Everything else (content-type, provider request ids,
+//      rate-limit headers, ...) is preserved.
 //
 // "Was it decoded?" mirrors undici's own rule (lib/web/fetch/index.js): the
 // body is decoded iff the response is not a null-body status (101/204/205/304)
@@ -76,10 +83,31 @@ export function fetchDecodedBody(status: number, contentEncoding: string | undef
 }
 
 /**
+ * Headers that describe the ENCODED representation and become stale once Fetch
+ * has decoded the body: framing (`content-encoding`, `content-length`) and the
+ * integrity / validator fields computed over the encoded bytes (RFC 9530
+ * `content-digest` / `repr-digest`, legacy RFC 3230 `digest`, RFC 2616
+ * `content-md5`, RFC 9110 `content-range`). A strong `etag` is handled
+ * separately (kept only when weak).
+ */
+const ENCODED_REPRESENTATION_HEADERS = new Set([
+  'content-encoding',
+  'content-length',
+  'content-digest',
+  'repr-digest',
+  'digest',
+  'content-md5',
+  'content-range',
+]);
+
+/**
  * Normalize lower-cased response headers captured from a Fetch response so they
  * describe the bytes GovAI actually holds: when Fetch decoded the body, drop the
- * stale `content-encoding` and `content-length`. Pure — returns a new object;
- * all other headers pass through untouched.
+ * stale `content-encoding` / `content-length` AND every representation-bound
+ * validator / integrity header (see ENCODED_REPRESENTATION_HEADERS; a strong
+ * `etag` is dropped, a weak `W/"…"` etag is kept). Pure — returns a new object;
+ * all other headers pass through untouched; nothing is touched when Fetch did
+ * not decode.
  */
 export function normalizeFetchResponseHeaders(
   status: number,
@@ -88,7 +116,8 @@ export function normalizeFetchResponseHeaders(
   if (!fetchDecodedBody(status, headers['content-encoding'])) return { ...headers };
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) {
-    if (k === 'content-encoding' || k === 'content-length') continue;
+    if (ENCODED_REPRESENTATION_HEADERS.has(k)) continue;
+    if (k === 'etag' && !v.trim().startsWith('W/')) continue;
     out[k] = v;
   }
   return out;
