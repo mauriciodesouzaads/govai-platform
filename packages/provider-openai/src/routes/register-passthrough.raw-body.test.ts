@@ -6,8 +6,9 @@
 // client's exact bytes are forwarded byte-for-byte and that
 // `native_request_hash` attests those original bytes (not a re-serialized body).
 //
-// Scope: non-compressed JSON. `Content-Encoding: gzip` is out of scope for this
-// phase (see RAW BODY PRESERVATION FIX PLAN — reported as a non-blocking gap).
+// Scope: non-compressed JSON. `Content-Encoding` (gzip/deflate/br, non-stream +
+// stream) is covered by register-passthrough.content-encoding.test.ts (M1 FB-3,
+// closes the CT-005 gap).
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';

@@ -153,6 +153,16 @@ export async function registerOpenAIGoverned(
   app: FastifyInstance,
   deps: OpenAIGovernedDeps,
 ): Promise<void> {
+  // Fastify ships a built-in EXACT-string `application/json` parser that
+  // getParser() resolves BEFORE the RegExp list — so without removing it here
+  // the buffer parser below is shadowed, the handler receives a PARSED object,
+  // `bufferifyBody` re-serializes it (whitespace / number / escape
+  // normalization: not the client's bytes), `native_request_hash` attests the
+  // re-serialization, and malformed JSON is 400'd by Fastify before governance
+  // ever sees it. M1 (§13 / H1 fidelity): remove it in THIS encapsulated plugin
+  // scope, exactly as the passthrough routes do, so the governed surface holds
+  // the ORIGINAL bytes; other plugins keep the default parser.
+  app.removeContentTypeParser('application/json');
   app.addContentTypeParser(
     /^application\/json/,
     { parseAs: 'buffer' },

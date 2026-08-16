@@ -17,7 +17,14 @@
 //   - vector_stores DELETE Starter tier path resolved.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { startStack, stopStack, seedOrg, inject, type Stack } from './helpers/server-fixture.js';
+import {
+  startStack,
+  stopStack,
+  seedOrg,
+  setOrgOperationalMode,
+  inject,
+  type Stack,
+} from './helpers/server-fixture.js';
 
 let stack: Stack;
 const auditEvents: unknown[] = [];
@@ -144,7 +151,7 @@ describe('Batch C — /passthrough/openai/*', () => {
     expect(typeof ev['stream_final_hash']).toBe('string');
   });
 
-  it('OpenAI-Beta hard_denied (assistants=v2) → 403 + passthrough.beta_denied', async () => {
+  it('M1 BETA-05: OpenAI-Beta deprecation-only token (assistants=v2) → FORWARDED (no Native hard deny), decision_pending marker, no beta_denied', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
     const res = await stack.app.inject({
@@ -157,12 +164,36 @@ describe('Batch C — /passthrough/openai/*', () => {
       },
       payload: JSON.stringify({ model: 'gpt-fixture-1', input: 'x' }),
     });
-    expect(res.statusCode).toBe(403);
-    const denied = takeDenied();
-    expect(denied.length).toBe(1);
-    expect(denied[0]!['provider']).toBe('openai');
-    expect(denied[0]!['beta_token']).toBe('assistants=v2');
-    expect(denied[0]!['reason_code']).toBe('hard_denied');
+    expect(res.statusCode).toBe(200);
+    expect(takeDenied().length).toBe(0);
+    const ev = takeInvoked()[0]!;
+    expect(ev['enforcement_decision']).toBe('observe');
+    expect(ev['beta_allowlist_sources']).toEqual([]);
+    const reasons = ev['risk_escalation_reasons'] as string[];
+    expect(reasons.length).toBe(1);
+    expect(reasons[0]).toMatch(/^beta:decision_pending:sha256:[0-9a-f]{64}$/);
+    expect(ev['allowlist_version']).toBe('openai-beta-policy@2026-08-16');
+  });
+
+  it('M1 BETA-01: unknown OpenAI-Beta token → FORWARDED, hashed unknown_token marker, raw token not in evidence', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/openai/v1/responses',
+      headers: {
+        'content-type': 'application/json',
+        'x-govai-api-key': org.api_key,
+        'openai-beta': 'responses=experimental-2099',
+      },
+      payload: JSON.stringify({ model: 'gpt-fixture-1', input: 'x' }),
+    });
+    expect(res.statusCode).toBe(200);
+    const ev = takeInvoked()[0]!;
+    const reasons = ev['risk_escalation_reasons'] as string[];
+    expect(reasons.length).toBe(1);
+    expect(reasons[0]).toMatch(/^beta:unknown_token:sha256:[0-9a-f]{64}$/);
+    expect(JSON.stringify(ev)).not.toContain('experimental-2099');
   });
 
   it('tool computer_use_preview on /v1/responses → 403 + tool.validation_blocked, reason=capability_blocked_via_token', async () => {
@@ -178,9 +209,19 @@ describe('Batch C — /passthrough/openai/*', () => {
     expect(blocked.length).toBe(1);
     expect(blocked[0]!['reason']).toBe('capability_blocked_via_token');
     expect(blocked[0]!['classification']).toBe('openai_provider_hosted_computer_use');
+    // M1 FB-4: durable blocked v4 (provider not called) with taxonomy v3.
+    const inv = takeInvoked();
+    expect(inv.length).toBe(1);
+    expect(inv[0]!['enforcement_decision']).toBe('blocked');
+    expect(inv[0]!['body_forward_mode']).toBe('blocked');
+    expect(inv[0]!['status_code']).toBe(403);
+    expect(inv[0]!['native_response_hash']).toBeUndefined();
+    expect(inv[0]!['tools_taxonomy_version']).toBe(
+      'openai.tools_taxonomy:schema_version=3:m1_noncomputer_forward_computer_use_floor',
+    );
   });
 
-  it('tool web_search on Chat Completions → 403 + reason=typed_unknown (Chat only accepts function)', async () => {
+  it('M1 FB-2: tool web_search on Chat Completions → typed_unknown, FORWARDED (provider decides), no stale 403', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
     const res = await inject(stack, 'POST', '/passthrough/openai/v1/chat/completions', org.api_key, {
@@ -188,25 +229,71 @@ describe('Batch C — /passthrough/openai/*', () => {
       messages: [{ role: 'user', content: 'x' }],
       tools: [{ type: 'web_search' }],
     });
-    expect(res.statusCode).toBe(403);
-    const blocked = takeBlocked();
-    expect(blocked.length).toBe(1);
-    expect(blocked[0]!['reason']).toBe('typed_unknown');
-    expect(blocked[0]!['classification']).toBe('openai_typed_unknown');
+    expect(res.statusCode).toBe(200);
+    expect(takeBlocked().length).toBe(0);
+    const cls = takeInvoked()[0]!['detected_tool_classifications'] as Array<Record<string, unknown>>;
+    expect(cls[0]!['classification']).toBe('openai_typed_unknown');
+    expect(cls[0]!['decision']).toBe('allowed');
   });
 
-  it('tool type:null on /v1/responses → 403 + reason=typed_unknown', async () => {
+  it('M1 FB-2: former planned/unknown tools on /v1/responses (type:null, code_interpreter, mcp, tool_search) → FORWARDED + classified', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
     const res = await inject(stack, 'POST', '/passthrough/openai/v1/responses', org.api_key, {
       model: 'gpt-fixture-1',
       input: 'x',
-      tools: [{ type: null }],
+      tools: [{ type: null }, { type: 'code_interpreter' }, { type: 'mcp', server_label: 'x' }, { type: 'tool_search' }],
     });
-    expect(res.statusCode).toBe(403);
-    const blocked = takeBlocked();
-    expect(blocked.length).toBe(1);
-    expect(blocked[0]!['reason']).toBe('typed_unknown');
+    expect(res.statusCode).toBe(200);
+    expect(takeBlocked().length).toBe(0);
+    const cls = takeInvoked()[0]!['detected_tool_classifications'] as Array<Record<string, unknown>>;
+    expect(cls.map((c) => c['classification'])).toEqual([
+      'openai_typed_unknown',
+      'openai_provider_hosted_code_interpreter',
+      'openai_provider_hosted_mcp',
+      'openai_provider_hosted_tool_search',
+    ]);
+    expect(cls.every((c) => c['decision'] === 'allowed')).toBe(true);
+  });
+
+  it('M1 CRED-02: production org WITHOUT a tenant credential → 502 provider_credential_unresolvable (stable, no secret, no 500)', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    await setOrgOperationalMode(stack, org.org_id, 'production');
+    const res = await inject(stack, 'POST', '/passthrough/openai/v1/responses', org.api_key, {
+      model: 'gpt-fixture-1',
+      input: 'x',
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.body).toEqual({
+      error: 'provider_credential_unresolvable',
+      provider: 'openai',
+      reason: 'no_tenant_credential_in_production_mode',
+    });
+    expect(takeInvoked().length).toBe(0);
+  });
+
+  it('M1 ROUTE-01/02/03: auth before registry disclosure; authenticated unknown path → 404; method mismatch → 405 (never 500)', async () => {
+    const org = await seedOrg(stack);
+    const r1 = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/openai/v1/batches',
+      headers: { 'content-type': 'application/json' },
+      payload: '{}',
+    });
+    expect(r1.statusCode).toBe(401);
+    expect(r1.json().error).toBe('auth_error');
+    const r2 = await inject(stack, 'POST', '/passthrough/openai/v1/batches', org.api_key, {});
+    expect(r2.statusCode).toBe(404);
+    expect((r2.body as { error: string }).error).toBe('capability_not_registered');
+    const r3 = await stack.app.inject({
+      method: 'GET',
+      url: '/passthrough/openai/v1/responses',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(r3.statusCode).toBe(405);
+    expect(r3.headers['allow']).toBe('POST');
+    expect(r3.json().error).toBe('method_not_allowed');
   });
 
   it('POST /v1/files purpose=assistants, provider accepts → provider 200 recorded, no local warning, no runtime deprecation fields (ADR-032)', async () => {

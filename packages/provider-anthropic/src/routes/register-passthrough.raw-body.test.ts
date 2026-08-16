@@ -6,8 +6,9 @@
 // `native_request_hash` attests the original client bytes, and that the
 // client's `max_tokens` is preserved (never coerced to 1024).
 //
-// Scope: non-compressed JSON. `Content-Encoding: gzip` is out of scope for this
-// phase (reported as a non-blocking gap).
+// Scope: non-compressed JSON. `Content-Encoding` (gzip/deflate/br, non-stream +
+// stream) is covered by register-passthrough.content-encoding.test.ts (M1 FB-3,
+// closes the CT-005 gap).
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';

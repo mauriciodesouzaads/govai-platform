@@ -1,7 +1,7 @@
 // /governed/openai/* — governed-native OpenAI surface.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
+import { startStack, stopStack, seedOrg, setOrgOperationalMode, type Stack } from './helpers/server-fixture.js';
 
 let stack: Stack;
 const auditEvents: unknown[] = [];
@@ -57,6 +57,25 @@ describe('Batch G — /governed/openai/v1/responses', () => {
     expect(typeof ev['native_response_hash']).toBe('string');
   });
 
+  it('M1 CRED: governed credential-unresolvable (production org, no tenant credential) → 502 stable, zero provider calls', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    await setOrgOperationalMode(stack, org.org_id, 'production');
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/governed/openai/v1/responses',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({ model: 'gpt-fixture-1', input: 'x' }),
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({
+      error: 'provider_credential_unresolvable',
+      provider: 'openai',
+      reason: 'no_tenant_credential_in_production_mode',
+    });
+    expect(takeInvoked().length).toBe(0);
+  });
+
   it('blocked computer_use_preview tool → 403 + body_forward_mode=blocked', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
@@ -74,6 +93,13 @@ describe('Batch G — /governed/openai/v1/responses', () => {
       }),
     });
     expect(res.statusCode).toBe(403);
+    // M1 F2-03: applied vs recommendation + block trigger (additive HTTP contract).
+    expect(res.headers['x-govai-enforcement-applied']).toBe('blocked');
+    expect(res.json()).toMatchObject({
+      error: 'governed_blocked',
+      enforcement_applied: 'blocked',
+      block_trigger: 'tool_validation',
+    });
     const ev = takeInvoked()[0]!;
     expect(ev['enforcement_decision']).toBe('blocked');
     expect(ev['body_forward_mode']).toBe('blocked');
@@ -135,7 +161,7 @@ describe('Batch G — /governed/openai/v1/chat/completions', () => {
     expect(ev['capability_canonical_level']).toBe('policy_governed');
   });
 
-  it('Chat Completions with web_search tool → 403 (chat only accepts function)', async () => {
+  it('M1 FB-2: Chat Completions with a web_search tool → typed_unknown reaches governance and is FORWARDED (no stale pre-block); F2 headers present', async () => {
     auditEvents.length = 0;
     const org = await seedOrg(stack);
     const res = await stack.app.inject({
@@ -151,9 +177,14 @@ describe('Batch G — /governed/openai/v1/chat/completions', () => {
         tools: [{ type: 'web_search' }],
       }),
     });
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-govai-enforcement-applied']).toBe('forwarded');
+    expect(typeof res.headers['x-govai-enforcement-decision']).toBe('string');
     const ev = takeInvoked()[0]!;
-    expect(ev['enforcement_decision']).toBe('blocked');
+    expect(ev['body_forward_mode']).toBe('raw');
+    const cls = ev['detected_tool_classifications'] as Array<Record<string, unknown>>;
+    expect(cls[0]!['classification']).toBe('openai_typed_unknown');
+    expect(cls[0]!['decision']).toBe('allowed');
   });
 
   it('streaming chat: SSE + stream_final_hash + policy_governed', async () => {

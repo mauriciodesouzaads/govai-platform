@@ -6,6 +6,7 @@ import {
   stopStack,
   seedOrg,
   seedProviderCredential,
+  setOrgOperationalMode,
   type Stack,
 } from './helpers/server-fixture.js';
 
@@ -163,10 +164,62 @@ describe('Batch G — /governed/anthropic/v1/messages', () => {
       }),
     });
     expect(res.statusCode).toBe(403);
+    // M1 F2-03: applied vs recommendation + block trigger (additive HTTP contract).
+    expect(res.headers['x-govai-enforcement-applied']).toBe('blocked');
+    expect(typeof res.headers['x-govai-enforcement-decision']).toBe('string');
+    expect(res.json()).toMatchObject({
+      error: 'governed_blocked',
+      enforcement_applied: 'blocked',
+      block_trigger: 'tool_validation',
+    });
     const ev = takeInvoked()[0]!;
     expect(ev['enforcement_decision']).toBe('blocked');
     expect(ev['body_forward_mode']).toBe('blocked');
     expect(ev['native_response_hash']).toBeUndefined();
+  });
+
+  it('M1 F2-01: forwarded governed request carries x-govai-enforcement-applied=forwarded next to the recommendation header; provider body unchanged', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/governed/anthropic/v1/messages',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({
+        model: 'claude-fixture-1',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'x' }],
+        tools: [{ type: 'code_execution_20250522', name: 'code_execution' }],
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-govai-enforcement-applied']).toBe('forwarded');
+    expect(res.headers['x-govai-enforcement-decision']).toBe('observe');
+    const ev = takeInvoked()[0]!;
+    expect(ev['body_forward_mode']).toBe('raw');
+    expect(ev['enforcement_applied']).toBeUndefined();
+    const cls = ev['detected_tool_classifications'] as Array<Record<string, unknown>>;
+    expect(cls[0]!['classification']).toBe('anthropic_provider_hosted_code_execution');
+    expect(cls[0]!['decision']).toBe('allowed');
+  });
+
+  it('M1 CRED: governed credential-unresolvable (production org, no tenant credential) → 502 stable, zero provider calls', async () => {
+    auditEvents.length = 0;
+    const org = await seedOrg(stack);
+    await setOrgOperationalMode(stack, org.org_id, 'production');
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/governed/anthropic/v1/messages',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({ model: 'claude-fixture-1', max_tokens: 10, messages: [{ role: 'user', content: 'x' }] }),
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({
+      error: 'provider_credential_unresolvable',
+      provider: 'anthropic',
+      reason: 'no_tenant_credential_in_production_mode',
+    });
+    expect(takeInvoked().length).toBe(0);
   });
 
   it('streaming: SSE response + stream_final_hash + capability_level=policy_governed in audit', async () => {
