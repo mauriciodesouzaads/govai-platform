@@ -29,7 +29,7 @@
 //   test + non-loopback + no tenant + env → env key
 //   test + non-loopback + no tenant + ø  → THROW
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { GovAIEnv } from '@govai/config';
 import type { Kms } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
@@ -114,12 +114,19 @@ async function tryLoadTenantKey(
   orgId: string,
   provider: ProviderName,
 ): Promise<string | null> {
-  const client = await deps.pool.connect();
+  // M1 (Codex P2 on dd5ad03): pool ACQUISITION is part of the lookup — an
+  // unavailable database / exhausted pool must surface as the same
+  // safe-by-construction MissingProviderKeyError (reason db_lookup_failed:*)
+  // so the direct routes' stable 502 contract holds for every credential-lookup
+  // failure, never a raw 500. Only an acquired client is released.
+  let client: PoolClient | null = null;
   let row: CredentialRow | null = null;
   try {
-    await client.query('BEGIN');
-    await setLocalAppOrgId(client, orgId);
-    const result = await client.query<CredentialRow>(
+    const acquired: PoolClient = await deps.pool.connect();
+    client = acquired;
+    await acquired.query('BEGIN');
+    await setLocalAppOrgId(acquired, orgId);
+    const result = await acquired.query<CredentialRow>(
       `SELECT ciphertext, dek_wrapped, kms_key_id, kms_key_version
          FROM govai.provider_credentials
         WHERE org_id   = $1::uuid
@@ -129,9 +136,9 @@ async function tryLoadTenantKey(
       [orgId, provider],
     );
     row = result.rows[0] ?? null;
-    await client.query('COMMIT');
+    await acquired.query('COMMIT');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    if (client) await client.query('ROLLBACK').catch(() => undefined);
     // Wrap with a safe-by-construction code; do not pass row content.
     throw new MissingProviderKeyError(
       provider,
@@ -139,7 +146,7 @@ async function tryLoadTenantKey(
       `db_lookup_failed:${err instanceof Error ? err.name : 'unknown'}`,
     );
   } finally {
-    client.release();
+    client?.release();
   }
   if (!row) return null;
   try {
