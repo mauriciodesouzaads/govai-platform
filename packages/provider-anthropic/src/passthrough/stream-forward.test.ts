@@ -86,6 +86,25 @@ describe('forwardStream', () => {
     expect(init.signal).toBe(ac.signal);
   });
 
+  it('M2A F1: surfaces the REAL Anthropic `request-id` FIRST, even when legacy names are also present', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(bodyFromString('event: a\ndata: 1\n\n'), {
+        status: 200,
+        headers: { 'request-id': 'req_real', 'anthropic-request-id': 'legacy', 'x-request-id': 'x' },
+      }),
+    );
+    const r = await forwardStream({
+      baseUrl: 'https://api.anthropic.example',
+      concretePath: '/v1/messages',
+      method: 'POST',
+      headers: {},
+      body: Buffer.from('{}', 'utf8'),
+    });
+    expect(r.provider_request_id).toBe('req_real');
+    await drain(r.body);
+    await r.finalize();
+  });
+
   it('falls back to x-request-id when anthropic-request-id is absent', async () => {
     fetchSpy.mockResolvedValueOnce(
       new Response(bodyFromString('x'), {

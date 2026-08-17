@@ -115,6 +115,14 @@ export {
   type ToolHookResult,
 } from './passthrough/tool-classifier-hook.js';
 export { forwardRaw, type ForwardInput, type ForwardResult } from './passthrough/forward.js';
+// M2A F1: real-provider-first Anthropic request id extraction (shared with the
+// apps/api run dispatcher so shared code never applies Anthropic names to OpenAI).
+export {
+  ANTHROPIC_REQUEST_ID_HEADER,
+  ANTHROPIC_REQUEST_ID_HEADER_PRECEDENCE,
+  extractAnthropicRequestId,
+  type HeaderSource as AnthropicRequestIdHeaderSource,
+} from './passthrough/request-id.js';
 export {
   forwardStream,
   type StreamForwardInput,

@@ -32,6 +32,7 @@ import {
   startRunDispatchRecoveryWorker,
   type RecoveryWorkerHandle,
 } from './pipeline/run-dispatch-recovery.js';
+import { isMainModule } from './main-module.js';
 
 export type ServerDeps = {
   env: GovAIEnv;
@@ -249,7 +250,9 @@ declare module 'fastify' {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// M2A F2: canonical-path entrypoint check (the textual `file://${argv[1]}` guard
+// silently no-ops under percent-encoded / symlinked checkout paths — see main-module.ts).
+if (isMainModule(import.meta.url)) {
   buildServer()
     .then(async (app) => {
       try {

@@ -24,6 +24,7 @@
 import { Pool } from 'pg';
 import { loadEnv } from '@govai/config';
 import { ALL_ROLES, type Role } from '@govai/core-identity';
+import { isMainModule } from '../main-module.js';
 
 export const GRANT_DEPRECATION_NOTICE =
   '[bridge] grant-api-key-role CLI: break-glass only. The canonical control plane is the HTTP admin surface; this CLI exists to bootstrap the first admin key and will be removed/restricted (see issue #27).';
@@ -197,13 +198,8 @@ export async function runGrant(deps: {
   }
 }
 
-const isMain = (() => {
-  try {
-    return import.meta.url === `file://${process.argv[1]}`;
-  } catch {
-    return false;
-  }
-})();
+// M2A F2: canonical-path entrypoint check (see ../main-module.ts); never throws.
+const isMain = isMainModule(import.meta.url);
 
 if (isMain) {
   void runGrant({

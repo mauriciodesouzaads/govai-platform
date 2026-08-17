@@ -431,9 +431,16 @@ export async function registerAnthropicPassthrough(
       // F1: .apiKey builds headers (memory only); .source flows to credential_source.
       const resolvedCredential = await deps.resolveProviderKey(req);
       const headers = buildOutboundHeaders(req.headers, resolvedCredential.apiKey);
-      const concretePath = req.url
-        .replace(/^\/passthrough\/anthropic/, '')
-        .replace(/\?.*$/, '');
+      // M2A F5 — provider-native query fidelity: forward the ORIGINAL request-target
+      // minus the GovAI route prefix, PRESERVING the raw query byte-semantics
+      // (key order, duplicates, empty values, percent escapes, `+`, encoded
+      // delimiters). Routing/capability matching already ignores the query
+      // (matchers split on '?'); only the upstream forward needs it. No
+      // decoding/re-encoding, no URLSearchParams reconstruction. The Claude CLI
+      // marker `?beta=true` is preserved like any other component — real
+      // Anthropic accepts `POST /v1/messages?beta=true` (M2A §6 direct probe,
+      // HTTP 200), so no consume-marker exception exists.
+      const concretePath = req.url.replace(/^\/passthrough\/anthropic/, '');
 
       if (isStream) {
         // Stream variant.
