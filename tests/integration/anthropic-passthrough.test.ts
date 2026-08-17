@@ -341,3 +341,148 @@ describe('Batch A — /passthrough/anthropic/*', () => {
     expect(sources[0]!['source']).toBe('global_allowlist');
   });
 });
+
+// =============================================================================
+// M2A F1 — Anthropic REAL `request-id` evidence (anti-masking contract).
+// The real provider returns its identifier in `request-id` (M2 real-provider
+// acceptance observed it on every response); the hermetic fixture now emits
+// ONLY that header on the happy path, so a regression to legacy-only extraction
+// (`anthropic-request-id` / `x-request-id`) cannot pass here.
+// =============================================================================
+describe('M2A F1 — Anthropic provider_request_id == real `request-id`', () => {
+  function lastInvoked(): Record<string, unknown> {
+    const invokedEvents = auditEvents.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && (e as Record<string, unknown>).event_type === 'passthrough.invoked',
+    );
+    expect(invokedEvents.length).toBe(1);
+    return invokedEvents[0]!;
+  }
+
+  it('F1-T1 — principal fixture happy path emits `request-id` ONLY (no x-request-id, no anthropic-request-id)', async () => {
+    const res = await fetch(`${stack.provider.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-fixture-1', max_tokens: 5, messages: [{ role: 'user', content: 'x' }] }),
+    });
+    expect(res.status).toBe(200);
+    await res.arrayBuffer();
+    expect(res.headers.get('request-id')).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.headers.get('x-request-id')).toBeNull();
+    expect(res.headers.get('anthropic-request-id')).toBeNull();
+  });
+
+  it('F1-T2 — passthrough non-stream: capture provider_request_id == the fixture-issued `request-id` (also relayed to the client)', async () => {
+    auditEvents.length = 0;
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/anthropic/v1/messages',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({ model: 'claude-fixture-1', max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    expect(res.statusCode).toBe(200);
+    const issued = stack.provider.recordedRequests.at(-1)?.provider_request_id;
+    expect(issued).toMatch(/^[0-9a-f-]{36}$/);
+    // Header mirror: the client sees the provider's real header.
+    expect(res.headers['request-id']).toBe(issued);
+    const ev = lastInvoked();
+    expect(ev['capability_id']).toBe('anthropic.messages.create');
+    expect(ev['provider_request_id']).toBe(issued);
+  });
+
+  it('F1-T3 — passthrough stream: capture provider_request_id == the fixture-issued `request-id`', async () => {
+    auditEvents.length = 0;
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/anthropic/v1/messages',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({ model: 'claude-fixture-1', max_tokens: 5, stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    expect(res.statusCode).toBe(200);
+    const issued = stack.provider.recordedRequests.at(-1)?.provider_request_id;
+    expect(issued).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.headers['request-id']).toBe(issued);
+    const ev = lastInvoked();
+    expect(ev['capability_id']).toBe('anthropic.messages.stream');
+    expect(ev['provider_request_id']).toBe(issued);
+  });
+});
+
+// =============================================================================
+// M2A F5 — provider-native query fidelity through the FULL stack (auth + registry
+// + AuditBridge + hermetic provider). Routing is pathname-only; the forward keeps
+// the raw query. See packages/provider-anthropic/src/routes/*.query-fidelity.test.ts
+// for the byte-level serialization matrix on a real socket.
+// =============================================================================
+describe('M2A F5 — /passthrough/anthropic query fidelity (full stack)', () => {
+  it('F5-T8 POST /v1/messages?beta=true (Claude CLI marker) → upstream sees /v1/messages?beta=true; capture unchanged (template endpoint, v4)', async () => {
+    auditEvents.length = 0;
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/anthropic/v1/messages?beta=true',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({ model: 'claude-fixture-1', max_tokens: 5, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    expect(res.statusCode).toBe(200);
+    const up = stack.provider.recordedRequests.at(-1)!;
+    expect(up.method).toBe('POST');
+    expect(up.url).toBe('/v1/messages?beta=true');
+    const invokedEvents = auditEvents.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && (e as Record<string, unknown>).event_type === 'passthrough.invoked',
+    );
+    expect(invokedEvents.length).toBe(1);
+    const ev = invokedEvents[0]!;
+    expect(ev['schema_version']).toBe(4);
+    expect(ev['native_endpoint']).toBe('/v1/messages');
+    expect(ev['capability_id']).toBe('anthropic.messages.create');
+    expect(ev['provider_request_id']).toBe(up.provider_request_id);
+    expect(Object.keys(ev).some((k) => /query/i.test(k))).toBe(false);
+  });
+
+  it('F5-T3/T5 GET /v1/models?limit=1 → upstream sees /v1/models?limit=1; capability resolution unaffected', async () => {
+    auditEvents.length = 0;
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'GET',
+      url: '/passthrough/anthropic/v1/models?limit=1&after=a%2Fb&x=&x=two+words',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(stack.provider.recordedRequests.at(-1)!.url).toBe('/v1/models?limit=1&after=a%2Fb&x=&x=two+words');
+    const invokedEvents = auditEvents.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && (e as Record<string, unknown>).event_type === 'passthrough.invoked',
+    );
+    expect(invokedEvents.length).toBe(1);
+    expect(invokedEvents[0]!['capability_id']).toBe('anthropic.models');
+    expect(invokedEvents[0]!['native_endpoint']).toBe('/v1/models');
+  });
+
+  it('F5-T6/T7/T9 a query bypasses nothing: no credential → 401, unsupported method → 405, unregistered path → 404; ZERO upstream requests', async () => {
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const r401 = await stack.app.inject({ method: 'GET', url: '/passthrough/anthropic/v1/models?limit=1' });
+    expect(r401.statusCode).toBe(401);
+    const r405 = await stack.app.inject({
+      method: 'DELETE',
+      url: '/passthrough/anthropic/v1/models?limit=1',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(r405.statusCode).toBe(405);
+    const r404 = await stack.app.inject({
+      method: 'GET',
+      url: '/passthrough/anthropic/v1/not-registered?limit=1',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(r404.statusCode).toBe(404);
+    expect(stack.provider.recordedRequests.length).toBe(0);
+  });
+});

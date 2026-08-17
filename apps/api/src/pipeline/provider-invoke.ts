@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { sha256 } from '@govai/core-audit';
+import { extractAnthropicRequestId } from '@govai/provider-anthropic';
 import { isLoopbackUrl } from './capability-resolution.js';
 
 export type ProviderInvokeInput = {
@@ -147,6 +148,28 @@ function extractUsage(
   return null;
 }
 
+/**
+ * M2A F1 — provider-AWARE request id extraction for the shared dispatcher.
+ * The dispatcher knows its concrete capability, so it must never apply one
+ * provider's identifier names to another:
+ *   anthropic.messages.create → request-id → anthropic-request-id → x-request-id → null
+ *                               (the REAL Anthropic header is `request-id`)
+ *   openai.*                  → x-request-id → null
+ * A synthetic `request-id` / `anthropic-request-id` on an OpenAI response must
+ * NOT override OpenAI's real `x-request-id`; a missing header yields null (no
+ * fabrication).
+ */
+export function extractProviderRequestId(
+  capability: ProviderInvokeInput['capability'],
+  headers: Headers,
+): string | null {
+  if (capability === 'anthropic.messages.create') {
+    return extractAnthropicRequestId(headers);
+  }
+  const v = headers.get('x-request-id');
+  return v === null || v === '' ? null : v;
+}
+
 export async function invokeProvider(input: ProviderInvokeInput): Promise<ProviderInvokeResult> {
   const endpoint = endpointFor(input.capability);
   const url = `${input.baseUrl.replace(/\/$/, '')}${endpoint}`;
@@ -196,8 +219,7 @@ export async function invokeProvider(input: ProviderInvokeInput): Promise<Provid
   }
 
   const usage = extractUsage(input.capability, responseBody);
-  const providerRequestId =
-    res.headers.get('x-request-id') ?? res.headers.get('anthropic-request-id') ?? null;
+  const providerRequestId = extractProviderRequestId(input.capability, res.headers);
 
   return {
     invocationId,

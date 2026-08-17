@@ -291,3 +291,30 @@ describe('Batch G — /governed/anthropic/v1/messages', () => {
     expect(ev['risk_escalation_reasons']).toContain('tool:anthropic_defined_client_executed_bash:d');
   });
 });
+
+// M2A F1 — governed Anthropic capture carries the REAL provider `request-id`
+// (the fixture emits ONLY that header on the happy path — anti-masking contract).
+describe('M2A F1 — /governed/anthropic provider_request_id == real `request-id`', () => {
+  it('F1-T4 — governed non-stream: capture provider_request_id == the fixture-issued `request-id`', async () => {
+    auditEvents.length = 0;
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/governed/anthropic/v1/messages',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({
+        model: 'claude-fixture-1',
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'hello governed' }],
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const issued = stack.provider.recordedRequests.at(-1)?.provider_request_id;
+    expect(issued).toMatch(/^[0-9a-f-]{36}$/);
+    const ev = takeInvoked()[0]!;
+    expect(ev['capability_id']).toBe('anthropic.messages.create');
+    expect(ev['capability_level']).toBe('policy_governed');
+    expect(ev['provider_request_id']).toBe(issued);
+  });
+});

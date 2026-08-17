@@ -27,6 +27,7 @@ import { Pool } from 'pg';
 import { loadEnv } from '@govai/config';
 import { createKmsFromEnv } from '@govai/core-identity';
 import { createProviderCredential } from '@govai/core-governance';
+import { isMainModule } from '../main-module.js';
 
 interface ParsedArgs {
   org_id: string;
@@ -208,13 +209,8 @@ export async function runSeed(deps: {
   }
 }
 
-const isMain = (() => {
-  try {
-    return import.meta.url === `file://${process.argv[1]}`;
-  } catch {
-    return false;
-  }
-})();
+// M2A F2: canonical-path entrypoint check (see ../main-module.ts); never throws.
+const isMain = isMainModule(import.meta.url);
 
 if (isMain) {
   void runSeed({

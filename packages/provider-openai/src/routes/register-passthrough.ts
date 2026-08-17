@@ -446,9 +446,14 @@ export async function registerOpenAIPassthrough(
         ? await deps.resolveProviderOrganization(req)
         : undefined;
       const headers = buildOutboundHeaders(req.headers, resolvedCredential.apiKey, organization);
-      const concretePath = req.url
-        .replace(/^\/passthrough\/openai/, '')
-        .replace(/\?.*$/, '');
+      // M2A F5 — provider-native query fidelity: forward the ORIGINAL request-target
+      // minus the GovAI route prefix, PRESERVING the raw query byte-semantics
+      // (key order, duplicates, empty values, percent escapes, `+`, encoded
+      // delimiters). Routing/capability matching already ignores the query
+      // (matchers split on '?'); only the upstream forward needs it. No
+      // decoding/re-encoding, no URLSearchParams reconstruction (e.g.
+      // `/v1/files?limit=1&order=desc` reaches the provider exactly as sent).
+      const concretePath = req.url.replace(/^\/passthrough\/openai/, '');
 
       if (isStream) {
         const occurredAt = now();

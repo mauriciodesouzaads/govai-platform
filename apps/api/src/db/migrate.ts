@@ -9,6 +9,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Pool, type PoolClient } from 'pg';
+import { isMainModule } from '../main-module.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -174,7 +175,8 @@ export async function migrate(opts: MigrateOptions): Promise<void> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// M2A F2: canonical-path entrypoint check (see ../main-module.ts).
+if (isMainModule(import.meta.url)) {
   const conn = process.env['DATABASE_ADMIN_URL'];
   const appPassword = process.env['GOVAI_DB_APP_PASSWORD'];
   // Optional (EP-EVIDENCE-GAUGE-WIRING CREDENTIAL-LIFECYCLE-RUNNER): password absent AND

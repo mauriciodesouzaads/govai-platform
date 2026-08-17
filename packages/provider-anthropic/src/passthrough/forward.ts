@@ -7,6 +7,7 @@ import {
   normalizeFetchResponseHeaders,
   withIdentityAcceptEncoding,
 } from './transport-encoding.js';
+import { extractAnthropicRequestId } from './request-id.js';
 
 export type ForwardInput = {
   baseUrl: string;
@@ -122,8 +123,8 @@ export async function forwardRaw(input: ForwardInput): Promise<ForwardResult> {
   // `responseBuf` (the bytes GovAI hashed and delivers).
   const responseHeaders = normalizeFetchResponseHeaders(res.status, rawResponseHeaders);
 
-  const provider_request_id =
-    responseHeaders['anthropic-request-id'] ?? responseHeaders['x-request-id'] ?? null;
+  // M2A F1: real Anthropic header `request-id` first; legacy names are fallbacks only.
+  const provider_request_id = extractAnthropicRequestId(responseHeaders);
 
   return {
     status: res.status,

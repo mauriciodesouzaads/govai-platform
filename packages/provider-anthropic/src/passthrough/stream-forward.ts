@@ -7,6 +7,7 @@ import {
   normalizeFetchResponseHeaders,
   withIdentityAcceptEncoding,
 } from './transport-encoding.js';
+import { extractAnthropicRequestId } from './request-id.js';
 
 export type StreamForwardInput = {
   baseUrl: string;
@@ -58,8 +59,8 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
   // Fetch decoded — drop the stale content-encoding / content-length so the
   // relayed stream headers describe the chunks actually written + hashed.
   const responseHeaders = normalizeFetchResponseHeaders(res.status, rawResponseHeaders);
-  const provider_request_id =
-    responseHeaders['anthropic-request-id'] ?? responseHeaders['x-request-id'] ?? null;
+  // M2A F1: real Anthropic header `request-id` first; legacy names are fallbacks only.
+  const provider_request_id = extractAnthropicRequestId(responseHeaders);
 
   // Tee the stream: one branch goes to caller; other branch feeds the hasher.
   const upstream = res.body;

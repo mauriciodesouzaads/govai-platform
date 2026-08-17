@@ -401,3 +401,60 @@ describe('Batch C — /passthrough/openai/*', () => {
     expect(invoked[0]!['capability_canonical_level']).toBe('passthrough_audited');
   });
 });
+
+// M2A F1 regression guard — OpenAI keeps its own semantics: `x-request-id`.
+describe('M2A F1 — OpenAI provider_request_id == fixture-issued `x-request-id`', () => {
+  it('F1-T6 — /v1/responses non-stream capture carries the issued x-request-id', async () => {
+    auditEvents.length = 0;
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'POST',
+      url: '/passthrough/openai/v1/responses',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify({ model: 'gpt-fixture-1', input: 'hi' }),
+    });
+    expect(res.statusCode).toBe(200);
+    const issued = stack.provider.recordedRequests.at(-1)?.provider_request_id;
+    expect(issued).toMatch(/^[0-9a-f-]{36}$/);
+    expect(res.headers['x-request-id']).toBe(issued);
+    const invoked = takeInvoked();
+    expect(invoked.length).toBe(1);
+    expect(invoked[0]!['capability_id']).toBe('openai.responses.create');
+    expect(invoked[0]!['provider_request_id']).toBe(issued);
+  });
+});
+
+// M2A F5 — provider-native query fidelity through the FULL stack (OpenAI).
+describe('M2A F5 — /passthrough/openai query fidelity (full stack)', () => {
+  it('F5-T1/T2 GET /v1/files?limit=1&order=desc → upstream sees EXACTLY that; raw serialization preserved', async () => {
+    auditEvents.length = 0;
+    stack.provider.clearRecordedRequests();
+    const org = await seedOrg(stack);
+    const res = await stack.app.inject({
+      method: 'GET',
+      url: '/passthrough/openai/v1/files?limit=1&order=desc',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(stack.provider.recordedRequests.at(-1)!.url).toBe('/v1/files?limit=1&order=desc');
+    const invoked = takeInvoked();
+    expect(invoked.length).toBe(1);
+    expect(invoked[0]!['capability_id']).toBe('openai.files');
+    expect(invoked[0]!['native_endpoint']).toBe('/v1/files');
+    const res2 = await stack.app.inject({
+      method: 'GET',
+      url: '/passthrough/openai/v1/files?after=a%2Fb&x=&x=two+words&encoded=%252F',
+      headers: { 'x-govai-api-key': org.api_key },
+    });
+    expect(res2.statusCode).toBe(200);
+    expect(stack.provider.recordedRequests.at(-1)!.url).toBe('/v1/files?after=a%2Fb&x=&x=two+words&encoded=%252F');
+  });
+
+  it('F5-T6 no credential + query → 401 and ZERO upstream requests', async () => {
+    stack.provider.clearRecordedRequests();
+    const r401 = await stack.app.inject({ method: 'GET', url: '/passthrough/openai/v1/files?limit=1' });
+    expect(r401.statusCode).toBe(401);
+    expect(stack.provider.recordedRequests.length).toBe(0);
+  });
+});

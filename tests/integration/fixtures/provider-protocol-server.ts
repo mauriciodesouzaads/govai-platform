@@ -11,6 +11,14 @@
 //   - Normal mode: returns a fixed shape.
 //   - Streaming mode: when body.stream === true, emits SSE/chunks.
 //   - Error simulation: header `x-test-error: 401|429|500|502` short-circuits.
+//
+// Response identifier headers (M2A F1 — anti-masking contract):
+//   - Anthropic happy path emits ONLY the REAL provider header `request-id`
+//     (never `x-request-id` / `anthropic-request-id` — those are compatibility
+//     fallbacks the extraction code tolerates; emitting them here would let a
+//     regression to legacy-only extraction pass hermetically, which is exactly
+//     the blind spot M2 exposed against the real provider).
+//   - OpenAI paths emit `x-request-id` (+ `openai-request-id` where OpenAI does).
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
@@ -24,6 +32,21 @@ export type ProviderProtocolServer = {
    *  Used by EP-005 to assert the consumed idempotency key is NOT forwarded. */
   recordedRequestHeaders: Array<Record<string, string | string[] | undefined>>;
   clearRecordedRequestHeaders: () => void;
+  /** M2A: every request the upstream mock received — method + RAW request-target
+   *  (path + query, byte-faithful, from req.raw.url) + the provider request id the
+   *  mock issued for it (null when the reply never reached onSend). Used by F5
+   *  (query fidelity) and F1 (provider_request_id == issued id). */
+  recordedRequests: RecordedRequest[];
+  clearRecordedRequests: () => void;
+};
+
+export type RecordedRequest = {
+  method: string;
+  /** Raw request-target exactly as received (path + '?' + query), e.g. `/v1/files?limit=1&order=desc`. */
+  url: string;
+  /** Provider request id issued by the mock for this reply (`request-id` for Anthropic paths,
+   *  `x-request-id` for OpenAI paths, else `openai-request-id`), or null. */
+  provider_request_id: string | null;
 };
 
 type ErrorPayload = {
@@ -170,8 +193,25 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
   // EP-005: record the inbound headers of every forwarded request so tests can
   // assert which headers the GovAI proxy did (not) forward upstream.
   const recordedRequestHeaders: Array<Record<string, string | string[] | undefined>> = [];
+  // M2A: raw request-target + issued provider request id per request (see RecordedRequest).
+  const recordedRequests: RecordedRequest[] = [];
+  const recordedByReq = new WeakMap<object, RecordedRequest>();
   app.addHook('onRequest', async (req) => {
     recordedRequestHeaders.push({ ...req.headers });
+    const entry: RecordedRequest = { method: req.method, url: req.raw.url ?? req.url, provider_request_id: null };
+    recordedRequests.push(entry);
+    recordedByReq.set(req, entry);
+  });
+  app.addHook('onSend', async (req, reply, payload) => {
+    const entry = recordedByReq.get(req);
+    if (entry) {
+      const pick = (name: string): string | null => {
+        const v = reply.getHeader(name);
+        return typeof v === 'string' ? v : Array.isArray(v) ? (v[0] ?? null) : v === undefined ? null : String(v);
+      };
+      entry.provider_request_id = pick('request-id') ?? pick('x-request-id') ?? pick('openai-request-id');
+    }
+    return payload;
   });
 
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
@@ -190,8 +230,9 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
     '/v1/messages',
     async (req, reply) => {
       const requestId = randomUUID();
-      reply.header('x-request-id', requestId);
-      reply.header('anthropic-request-id', requestId);
+      // M2A F1: the REAL Anthropic identifier header is `request-id` — and ONLY that on the
+      // principal happy path (no `x-request-id`, no `anthropic-request-id`). See file header.
+      reply.header('request-id', requestId);
 
       await maybePark(req);
       if (maybeDestroy(req, reply)) return reply;
@@ -514,6 +555,10 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
     recordedRequestHeaders,
     clearRecordedRequestHeaders: () => {
       recordedRequestHeaders.length = 0;
+    },
+    recordedRequests,
+    clearRecordedRequests: () => {
+      recordedRequests.length = 0;
     },
   };
 }

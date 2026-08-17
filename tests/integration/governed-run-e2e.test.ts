@@ -484,3 +484,39 @@ describe('Governed Run E2E', () => {
     }
   });
 });
+
+// M2A F1 — /v1/runs (shared provider-invoke dispatcher, provider-aware id extraction):
+// the Anthropic run's provider_invocations.provider_request_id must equal the REAL
+// provider `request-id` the fixture issued (the fixture emits ONLY that header).
+describe('M2A F1 — /v1/runs anthropic provider_invocations.provider_request_id == real `request-id`', () => {
+  it('F1-T5 — governed Anthropic run persists the fixture-issued `request-id`', async () => {
+    const org = await seedOrg(stack);
+    stack.provider.clearRecordedRequests();
+    const res = await inject(stack, 'POST', '/v1/runs', org.api_key, {
+      workspace_id: org.workspace_id,
+      capability: 'anthropic.messages.create',
+      model: 'claude-fixture-1',
+      input: 'Olá, request-id?',
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.body as { status: string; provider_invocation_id: string };
+    expect(body.status).toBe('completed');
+    const issued = stack.provider.recordedRequests.at(-1)?.provider_request_id;
+    expect(issued).toMatch(/^[0-9a-f-]{36}$/);
+
+    const c = await stack.db.appPool.connect();
+    try {
+      await c.query('BEGIN');
+      await setLocalAppOrgId(c, org.org_id);
+      const inv = await c.query<{ provider_request_id: string | null }>(
+        `SELECT provider_request_id FROM govai.provider_invocations WHERE id = $1::uuid`,
+        [body.provider_invocation_id],
+      );
+      await c.query('COMMIT');
+      expect(inv.rows).toHaveLength(1);
+      expect(inv.rows[0]!.provider_request_id).toBe(issued);
+    } finally {
+      c.release();
+    }
+  });
+});
