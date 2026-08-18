@@ -11,6 +11,7 @@
 > **HISTORICAL_BODY_PRESERVED:** YES_WITH_BOUNDED_EDITS (status line reconciled; body otherwise byte-preserved)
 > **SOURCE_SHA256:** `de1b4e29dffdf9a57e8933c0202f8371c0bcbac35aca3336deb003ce0f488c31` (owner-supplied source bytes, verified against the 43-entry corpus ledger; see `docs/architecture/d9-promulgation-manifest.md`)
 > **NOTES:** ACCEPTED as doctrine (D6). Operational rule for sharing artifacts; the §6 acceptance criteria (safe packaging script, CI/local forbidden-path check, README documentation) describe the target operating state and are not asserted as implemented by this promulgation — CI runs gitleaks; the safe-package script and README section are not verified present at the Foundation V1 anchor.
+> **BOUNDED CLARIFICATION (M3, applies to this repository):** the repository tracks a secret-free template `.env.example` (used by the README quickstart: `cp .env.example .env`); it is NOT a secret-bearing `.env`/`.env.*` file and is exempt from the §1 prohibition. Consequently the preferred `git archive` artifact (§2) legitimately contains `.env.example`, and the §4 forbidden-path check must be read as `find … -name '.env*' ! -name '.env.example'` (or an equivalent exemption); no `.gitattributes` `export-ignore` rule exists at the anchor and none is required for the template. Real `.env`, `.env.local` and any secret-bearing variant remain forbidden.
 > ---
 
 # Artifact Hygiene
