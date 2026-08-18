@@ -461,7 +461,7 @@ FOUNDATION_V1_RUNTIME_FREEZE_READY=YES
 ```text
 FOUNDATION_V1_RUNTIME_ANCHOR=de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68
 FOUNDATION_V1_DOCUMENTARY_FREEZE_PR=133   (branch docs/foundation-v1-m3-canonical-freeze; frozen head/tree + merge SHA in the external mission record)
-FOUNDATION_V1=FREEZE_PENDING_M3_MERGE
+FOUNDATION_V1=DOCUMENTARY_FREEZE_RECORDED_IN_THIS_TREE   (tree-stable: this tree carries the freeze record; the lifecycle step FREEZE_PENDING_M3_MERGE → FROZEN_BASELINE is declared by the external post-merge proof of PR #133, never by this file)
 
 D9_SOURCE_CORPUS_LOCATED=YES
 D9_SOURCE_PROVENANCE=USER_SUPPLIED_V09_PACKAGE

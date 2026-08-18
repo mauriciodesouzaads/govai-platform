@@ -83,7 +83,7 @@ Sequencing after the M3 canonical freeze:
 P03_RUNTIME_LANE=COMPLETE
 F2_FOUNDATION_STATUS=CLOSED_WITH_RESIDUAL
 PR0_D9_V2=COMPLETE_IN_M3_TREE
-FOUNDATION_V1=FREEZE_PENDING_M3_MERGE            (→ FROZEN_BASELINE after PR #133 squash-merges + post-merge proofs)
+FOUNDATION_V1=DOCUMENTARY_FREEZE_RECORDED_IN_THIS_TREE   (tree-stable; lifecycle: FREEZE_PENDING_M3_MERGE while PR #133 is open → FROZEN_BASELINE once the external post-merge proof passes — declared by the external mission record, not by this file)
 P0_TRUTH_AND_INTEGRITY_PROGRAM=CLOSED_AT_FOUNDATION_V1_FREEZE
 NEXT_RECOMMENDED_PRODUCT_LANE=UI_UX_V1_FOUNDATION   (do NOT start inside M3)
 ```
