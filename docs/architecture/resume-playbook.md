@@ -4,26 +4,37 @@ Purpose: resume the project after a crash, a stalled session, or a fresh Claude 
 
 ---
 
-## 1. How to identify current repo state
+## 1. How to identify current repo state (dynamic — never trust a frozen SHA)
 
 ```bash
-cd "/Users/mauriciodesouza/Projects/GovAI GRC Platform/govai-platform"
+cd <repo-root>            # the govai-platform checkout
+git fetch origin --prune
 git branch --show-current
 git rev-parse HEAD
+git rev-parse origin/main         # CURRENT_REPOSITORY_HEAD — obtain it here, every time
 git status --short
 gh pr list --state open
 gh pr checks <PR#>
 pnpm -v       # expect 10.33.2
-node -v       # expect v24.x (nvm use 24)
+node -v       # expect v24.x (nvm use 24.15.0 — under Node 22 re2 fails ABI load)
 ```
 
-Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GIT_PAGER=cat`.
+Repo shell note: `grep` may be a hanging shell function in this repo's shell — use `command grep`; prefer `GIT_PAGER=cat`.
+
+Three different anchors, never conflated:
+
+```text
+CURRENT_REPOSITORY_HEAD          = whatever `git rev-parse origin/main` returns NOW (mutable; do not freeze it in this file)
+FOUNDATION_V1_RUNTIME_ANCHOR     = de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68 (tree 0174a5c5…) — immutable; last runtime-changing Foundation V1 commit (PR #132 / M2A)
+FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/foundation-v1-m3-canonical-freeze; frozen head/tree + merge SHA in the external M3 mission record)
+```
 
 ---
 
-## 2. Current known-good main
+## 2. Foundation V1 baseline (not a frozen "current main")
 
-- main after PR #129 (post-P0.3-C): `f381d3fac24d5938aed91b6618ef511b66ddc878` — **P0.3-C cross-request run execution idempotency** (squash of PR #129, "feat(runs): add cross-request execution idempotency"; single parent `21afa116` = the PR #128 authorization-semantics merge; tree `a64e7178` byte-identical to the audited head `bfa05c5b`; post-merge main CI run `31802636887` SUCCESS, unit + integration). [current-state.md](./current-state.md) is the evidence-first source of truth — resume from it, not from this line alone.
+- **Runtime:** the Backend Foundation V1 runtime is COMPLETE and real-provider accepted (executed scope) at `de80664a` — M1 (PR #131, native/governed contract), M2 (live acceptance: real Anthropic + OpenAI, official SDKs, Claude Code, Codex CLI, `/v1/runs`, AuditBridge captures, bounded seal), M2A (PR #132: `request-id` evidence, entrypoints, raw query). `FOUNDATION_V1_KNOWN_RUNTIME_BLOCKERS=0`. Read [current-state.md](./current-state.md) (evidence-first SoT) and [foundation-v1-freeze.md](./foundation-v1-freeze.md) (freeze assertions, explicit negatives, residual register R1–R16, anti-evaporation clause) — resume from them, never from a SHA in this file. Any commit after `de80664a` is post-Foundation work; check its PR/CI/merge proofs before treating it as known-good.
+- **Documentary:** PR-0/D9 promulgated (M3, PR #133); ADR-021 Accepted; ADR-032 implementation reconciled; H1 coverage map regenerated; navigation and hierarchy of truth in [../README.md](../README.md).
 - Toolchain: Node v24.15.0 (modules 137), pnpm 10.33.2.
 
 ---
@@ -51,15 +62,27 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
   canonical `govai.run_execution_intent.v1` semantic intent — one durable
   logical run per matching keyed intent, **no intentional second local
   provider execution**, a matching replay consumes no approval twice, and
-  **no provider-side exactly-once claim**. `P03_RUNTIME_LANE=COMPLETE`
-  (the P0 Truth-and-Integrity **program** stays open — F2 + PR-0/D9 remain).
-- **ADR-032 — ACCEPTED + PROMULGATED (PR #125).** The controlling
-  provider-truth decision is Accepted and its repository-promulgation
-  artifact
-  `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`
-  is on `main`. Only the version present on `main` is canonical. The ADR
-  file's own `IMPLEMENTATION_STATUS=PENDING` pointer is registered
-  localized staleness (separate maintenance; see the register).
+  **no provider-side exactly-once claim**. `P03_RUNTIME_LANE=COMPLETE`.
+- **F2 — CLOSED WITH REGISTERED RESIDUAL (M3).** `EVIDENCE_GRANULARITY_GAP`,
+  no runtime defect, no false evidence, no v5; recommendation vs applied is
+  honest over HTTP since M1 (residual R2; anti-evaporation clause).
+- **PR-0 / D9 V2 — PROMULGATED (M3, PR #133).** 43/43 · 26/26 · 15 · 11/11;
+  authority classes D0–D16 in every promoted file's header and in
+  `d9-promulgation-manifest.md`; the `0025_…sql` / `capture.ts` references
+  resolve. The P0 Truth-and-Integrity program is CLOSED at the Foundation V1
+  freeze.
+- **Foundation V1 M1 / M2 / M2A — COMPLETE** (see §2). Native contract:
+  pass-and-observe (unknown betas / non-computer tools forwarded + observed;
+  hashed markers), computer-use-only hard floor with durable blocked v4
+  evidence, Content-Encoding truth, gate order auth → 404 → 405 → floors →
+  credential 502 → forward, raw query preserved, Anthropic `request-id`
+  captured, governed recommendation-vs-applied honesty. **ADR-021 Accepted**
+  (doctrine ≠ universal parity).
+- **ADR-032 — ACCEPTED + PROMULGATED (PR #125) + IMPLEMENTATION RECONCILED (M3).**
+  `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md` now
+  reads `IMPLEMENTATION_STATUS=COMPLETE — implemented by EP-11 / PR #126`;
+  the interim wording is retained as historical. Only the version present on
+  `main` is canonical.
 - **EP-11 — IMPLEMENTED (PR #126, squash `01c05fd6`).** The false local
   deny and warning are removed (validator + unit test deleted;
   `block_post_sunset`, the synthetic local 403 and
@@ -69,13 +92,12 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
 
 ---
 
-## 4. Open gates
+## 4. Open gates and residuals
 
-- **F2** — `OPEN_PENDING_SOURCE_CLASSIFICATION`: separate source adjudication + sealed-schema decision; do not classify it (or assert an aggregate findings count) before that. **`NEXT_DEVELOPMENT_MOVEMENT=F2_SOURCE_ADJUDICATION`** (P0.3-C is closed — see §3).
-- **Real EC-5** — deferred to a separate Option-A EP.
-- **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** — separate P1 evidence-integrity class; remediation is a separate EP. EP-11 removed only the specific `purpose_deprecated_post_sunset` no-audit-event branch (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`); other local-deny evidence gaps remain open.
-- **PR-0 / D9** — source corpus **LOCATED** (11/11 required paths, owner-supplied v0.9 package, hash-inventoried); **repository promulgation PENDING** (`PR0_STATUS=DOCUMENTARY_BLOCKED_PENDING_PROMULGATION`). The 2 genuine in-repo references to the D9 artifacts (migration `0025:36-37` and `core-audit/capture.ts:54` — see the register's precise classification) remain broken in-tree until promotion.
-- **Runtime hard-deny enforcement** not source/test-verified as complete (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only; Phase 5).
+- **Foundation V1 residual register** — R1–R16 in [foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 (evidence-granularity R1–R4, diagnostics noise R5, beta snapshot R6, real EC-5 R7, P0.3-C liveness window R8, branch protection R9, broader parity R10, Workroom 5–7 R11, Phase 5 primitives R12, tier/profile separation R13, human auth for a production UI R14, SPEC v2.2 R15, legacy docs-root hygiene R16). None is a runtime blocker; none may be silently erased (anti-evaporation clause §7 for schema residuals).
+- **Runtime hard-deny enforcement** beyond the computer-use floor and the governed matrix `blocked` outcome is not implemented (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only; Phase 5).
+- **Next recommended product lane:** `UI_UX_V1_FOUNDATION` (see development-roadmap.md) — NOT started; requires human auth/session/key lifecycle for a production release; must not represent ask/sandbox/enforcement as applied.
+- Untouched documentary follow-ups: `source-spec.md` ADP-canonical declaration (owner gate), ADR-022–027 status-line normalization, `workroom-governance-room.md`/`governance-philosophy.md`/`contracts/*` prepends, two `tests/live/*` comments, legacy `docs/` root artifacts (see stale-docs-register.md, M3 section).
 
 ---
 
@@ -97,7 +119,7 @@ Repo shell note: `grep` is a hanging function — use `command grep`; prefer `GI
    (`G17_ROUTINE_DEVELOPMENT=RETIRED`); G17 applies only if the active
    dispatch explicitly requires it. The §9 STOP exceptions always apply.
 7. **Never start/run the B3 runner-loop against live infrastructure** without explicit owner authorization (the code is implemented; live operation is a separate authorization).
-8. **Never claim evidence-plane completeness beyond what current-state.md §3 verifies** (real EC-5 is deferred; the local-deny evidence-incompleteness class is open).
+8. **Never claim evidence-plane completeness beyond what current-state.md §3 verifies** (real EC-5 is deferred; the former class-wide local-deny label is superseded by the narrow residuals R2–R5 in the freeze record).
 9. **Codex clean-signal handling:** do not wait indefinitely for only a
    `pull_request_review` object or a reaction — an explicit Codex
    clean/finding result may arrive as an **issue comment**. The gate is
@@ -125,9 +147,9 @@ Stop and report (no push/merge) if:
 - CI failing or pending;
 - an unresolved, **non-outdated** Codex review thread;
 - a docs-only PR contains a production/test/migration/package/lock change;
-- any text would overclaim compliance/certification, or claim evidence-plane completeness beyond what current-state.md §3 verifies (real EC-5 deferred; the local-deny evidence-incompleteness class open);
+- any text would overclaim compliance/certification, or claim evidence-plane completeness beyond what current-state.md §3 verifies (real EC-5 deferred; residuals R1–R6 registered);
 - **any prompt that treats the implemented B3 code as authorization to RUN the sealer loop against live infrastructure** (implementation and live operation are separate authorizations);
-- any prompt that promotes D9 artifacts outside the dedicated PR-0/D9 V2 movement;
+- any prompt that changes the promulgated D9 doctrine (ADR-016..019, master architecture, claims-policy, threat-model, artifact-hygiene, SPEC v2.1, the two futures) outside a dedicated architecture/doctrine movement (M3 was the dedicated promulgation movement — that former "do not promulgate" guard is historical);
 - a provider-native parity claim without tests;
 - a status marked IMPLEMENTED_RUNTIME without source evidence;
 - **runtime route existence used as proof of sealed evidence capture**;
@@ -157,8 +179,9 @@ End every task with:
 - No AWS/KMS use without explicit scope; no reading `.env`/secrets; no live provider tests unless requested.
 - No live B3 sealer-loop operation without explicit owner authorization.
 - No editing production/tests/migrations in a docs-only task.
-- No ADR status changes (and no D9 artifact promotion) outside the dedicated, owner-authorized PR for that movement.
+- No ADR status changes (and no D9 doctrine changes) outside a dedicated, owner-authorized movement.
 - **No evidence-plane completeness claim beyond what current-state.md §3 verifies.**
+- No claim of universal provider parity, exactly-once provider execution, certification/compliance, full Phase 5, full Workroom, EC-5, production human auth, or complete query request-target sealed reconstruction (foundation-v1-freeze.md §3 explicit negatives).
 
 ---
 
@@ -247,7 +270,7 @@ reinterpret an exception as routine authority.
 
 ---
 
-## 11. Known limits / do not overclaim (P0.3-C)
+## 11. Known limits / do not overclaim (P0.3-C; Foundation V1 negatives)
 
 - **Pre-reservation concurrent-winner window (v1):** when two matching keyed
   requests overlap and the winner's TX-A is still uncommitted at both of the
@@ -265,3 +288,10 @@ reinterpret an exception as routine authority.
   transmission). P0.3-C's strongest statement: GovAI will not intentionally
   launch a second local provider execution for a matching tenant-scoped
   keyed execution intent.
+- **Foundation V1 explicit negatives** (freeze record §3): `UNIVERSAL_PROVIDER_PARITY=NOT_CLAIMED`,
+  `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED`, `CERTIFICATION=NOT_CLAIMED`,
+  `REGULATORY_COMPLIANCE=NOT_CLAIMED`, `PRODUCT_COMPLETE=NO`, `PHASE5_COMPLETE=NO`,
+  `WORKROOM_COMPLETE=NO`, `HUMAN_AUTH_COMPLETE=NO`, `EC5_COMPLETE=NO`,
+  `QUERY_TARGET_FULL_SEALED_RECONSTRUCTION=NOT_CLAIMED`. "Foundation V1 works
+  against real AI providers" is permitted only with the executed-scope
+  qualification (freeze record §4).

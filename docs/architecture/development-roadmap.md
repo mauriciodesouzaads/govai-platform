@@ -1,6 +1,6 @@
 # GovAI Development Roadmap
 
-Anchored on [current-state.md](./current-state.md) (main `f381d3fa`, evidence-first, post-P0.3-C). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
+Anchored on [current-state.md](./current-state.md) at the **Foundation V1 runtime anchor** `de80664a` (evidence-first, post-M2A) and on the Foundation V1 freeze record [foundation-v1-freeze.md](./foundation-v1-freeze.md). B3 was authorized and implemented in EP-006; this roadmap sequenced it (Phases 2–3). Each phase: Goal, Inputs, Outputs, Exit criteria, Explicit non-goals, Dependencies, Risks if skipped, Resume anchor. No dates; no compliance claims; no runtime enforcement or evidence-plane completeness claim without evidence.
 
 ---
 
@@ -18,7 +18,7 @@ P0
 
 **P0** is an *operational priority* lane inside the macro-phase "Phase 0 — Truth and Integrity" (a truth-and-integrity program over already-shipped evidence surfaces). A P0-priority item does **not** thereby belong to the product-phase numbering below (in particular, it is not part of "Phase 0 — Built and source-verified", which is a product phase that happens to share the label). The canonical F1–F6 + C-2 matrix and the F4 canonical state live in current-state.md §8.
 
-Current P0 sequence at main `f381d3fa`:
+P0 sequence, final state at the Foundation V1 anchor `de80664a` (all items dispositioned):
 
 1. **Prior documentary reconciliation — COMPLETE.** EP-DOCS-04 / PR #121
    (squash `e422280d`, dual merge-verified), the EP-DOCS-05 anchor roll
@@ -37,11 +37,11 @@ Current P0 sequence at main `f381d3fa`:
    the controlling provider-truth constraint
    `docs/architecture/adr/ADR-032-openai-files-purpose-provider-truth.md`
    is present on `main` (added by PR #125, merge `629b6e9f`). Runtime
-   implemented by PR #126. The ADR file itself was **not** textually
-   updated from its promulgation-era `IMPLEMENTATION_STATUS=PENDING`
-   wording — that localized documentary staleness is registered in
-   [stale-docs-register.md](./stale-docs-register.md) for separate,
-   non-blocking ADR maintenance.
+   implemented by PR #126. The ADR file's promulgation-era
+   `IMPLEMENTATION_STATUS=PENDING` wording (a localized documentary
+   staleness registered at the time) was **reconciled by M3** (2026-08-18):
+   the file now reads `IMPLEMENTATION_STATUS=COMPLETE — implemented by
+   EP-11 / PR #126`, with the interim wording retained as historical.
 4. **EP-11 — OpenAI Files-purpose provider-truth runtime correction —
    COMPLETE.** PR #126 squash-merged as `01c05fd6` (tree `20ccd433`
    byte-identical to the audited head `acc740fd`; single parent
@@ -62,24 +62,33 @@ Current P0 sequence at main `f381d3fa`:
    local provider execution and no second approval consumption. **No
    provider-side exactly-once is claimed** (current-state.md §3).
    **The P0.3 runtime lane is COMPLETE.**
-6. **F2** source adjudication and sealed-schema decision
-   (OPEN_PENDING_SOURCE_CLASSIFICATION). **The next development movement.**
-7. **PR-0 / D9 V2 — final rebase and repository promulgation**,
-   after its required inputs and rebaseline are available (see the
-   D9 state below: the source corpus is located; promulgation into
-   main is what remains).
+6. **F2 — CLOSED WITH REGISTERED RESIDUAL (M3, 2026-08-18).** Source
+   adjudication at `de80664a`: `F2_CLASSIFICATION=EVIDENCE_GRANULARITY_GAP`,
+   `F2_RUNTIME_DEFECT=NO`, `F2_FALSE_EVIDENCE=NO`, `F2_FOUNDATION_BLOCKER=NO`,
+   `F2_SCHEMA_V5_REQUIRED_NOW=NO`. M1 (PR #131) made recommendation vs applied
+   honest over HTTP; the applied-vs-recommended provenance is not first-class
+   in sealed v4 (residual R2, anti-evaporation clause). See
+   foundation-v1-freeze.md §5.
+7. **PR-0 / D9 V2 — COMPLETE IN THE M3 TREE.** The verified corpus
+   (43/43 external ledger, PR-0 26/26, v0.9 15, D9 11/11) is promulgated with
+   the owner's D0–D16 authority classes; provenance in
+   [d9-promulgation-manifest.md](./d9-promulgation-manifest.md).
+8. **Foundation V1 runtime — COMPLETE and real-provider accepted (executed
+   scope).** M1 (PR #131, `3e90f2fb`), M2 (read-only live acceptance), M2A
+   (PR #132, `de80664a`); `FOUNDATION_V1_KNOWN_RUNTIME_BLOCKERS=0`.
 
-Sequencing after the post-P0.3-C canonical state roll (this movement):
+Sequencing after the M3 canonical freeze:
 
 ```text
-POST_P03C_CANONICAL_STATE_ROLL=THIS_MOVEMENT
 P03_RUNTIME_LANE=COMPLETE
-P0_TRUTH_AND_INTEGRITY_PROGRAM=OPEN     (F2 + PR-0/D9 promulgation remain)
-NEXT_DEVELOPMENT_MOVEMENT=F2_SOURCE_ADJUDICATION
-THEN=PR-0/D9_V2
+F2_FOUNDATION_STATUS=CLOSED_WITH_RESIDUAL
+PR0_D9_V2=COMPLETE_IN_M3_TREE
+FOUNDATION_V1=FREEZE_PENDING_M3_MERGE            (→ FROZEN_BASELINE after PR #133 squash-merges + post-merge proofs)
+P0_TRUTH_AND_INTEGRITY_PROGRAM=CLOSED_AT_FOUNDATION_V1_FREEZE
+NEXT_RECOMMENDED_PRODUCT_LANE=UI_UX_V1_FOUNDATION   (do NOT start inside M3)
 ```
 
-Operational note (not a blocker, not sequenced ahead of F2): the P0.3-C
+Operational note (not a blocker): the P0.3-C
 known v1 boundary — the pre-reservation concurrent-winner window — is
 registered as `KNOWN_V1_LIMITATION` /
 `DEFERRED_LIVENESS_ENHANCEMENT_BY_FROZEN_CONSTRAINT` (`SAFETY_DEFECT=NO`;
@@ -87,54 +96,71 @@ no duplicate execution, no key poisoning; a same-key retry converges; no
 polling in v1). It is **not** a P0.3-C runtime defect and requires no
 corrective runtime PR; see current-state.md §8 *P0.3-C known v1 boundary*.
 
-Operational note (not a blocker, not sequenced ahead of F2):
+Operational note (not a blocker):
 `REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` — repository
 branch-protection/ruleset hardening remains a deferred, non-blocking
 assessment. Repository enforcement is **not claimed enabled**; the CI
 workflow executing unit + integration jobs is real evidence, and the merge
 protocol is process-enforced (see resume-playbook.md).
 
-Separate P1 evidence-integrity follow-up:
+Former separate P1 evidence-integrity follow-up — SUPERSEDED (M3):
 
-- **LOCAL_DENY_EVIDENCE_INCOMPLETENESS.** This is not part of
-  EP-11's narrow implementation scope. Subfamily A (local-deny
-  events emitted and dropped at the AuditBridge schema boundary)
-  remains open. Subfamily B's known member — the
-  `purpose_deprecated_post_sunset` no-audit-event branch — was
-  **removed by EP-11 (PR #126)**
-  (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`); EP-11 did
-  **not** remediate the entire family. Class-wide remediation
-  requires a separate EP
-  (`LOCAL_DENY_EVIDENCE_INCOMPLETENESS=OPEN_SEPARATE_P1`).
+- **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** is no longer carried as a class
+  (`OLD_CLASS_WIDE_LOCAL_DENY_LABEL=SUPERSEDED_BY_NARROW_RESIDUALS`): since M1
+  every Native/Governed pre-provider governance block emits a durable blocked
+  v4 capture; Subfamily B's member was removed by EP-11. What remains is
+  registered narrowly in foundation-v1-freeze.md §6/§9 — R4
+  (credential-unresolvable path: 502 + structured log, no fabricated v4), R5
+  (v1 diagnostics counted as bridge drops), R2/R3 (evidence granularity).
 
-D9 state (supersedes the former `D9_LOCATION=UNRESOLVED`, which WAS
-the recorded state until 2026-08-08 and is now HISTORICAL — the D9
-source corpus has been located and integrity-inventoried in the
-owner-supplied v0.9/PR-0 package, per
-`EP-PR0-D9-RECONCILIATION-V2_MANIFEST_v0.2`):
+D9 state (final — the former `D9_LOCATION=UNRESOLVED` (until 2026-08-08) and
+`D9_PRESENT_IN_REPOSITORY_MAIN=NO` / `PR0_STATUS=DOCUMENTARY_BLOCKED_PENDING_PROMULGATION`
+(until the M3 tree) are HISTORICAL):
 
 ```text
 D9_SOURCE_CORPUS_LOCATED=YES
-D9_REQUIRED_PATHS_PRESENT_IN_SOURCE=11_OF_11
-D9_CONTENT_HASHED=YES
 D9_SOURCE_PROVENANCE=USER_SUPPLIED_V09_PACKAGE
+D9_EXTERNAL_LEDGER=43_OF_43_PASS
+D9_REQUIRED_PATHS_SOURCE=11_OF_11
+D9_HASH_VERIFICATION=11_OF_11_PASS
 D9_PRIOR_CANONICAL_HASH_LEDGER=NOT_AVAILABLE
 
-D9_PRESENT_IN_REPOSITORY_MAIN=NO
-D9_REPOSITORY_PROMULGATION=PENDING
+D9_PRESENT_IN_REPOSITORY_MAIN=YES_IN_M3_TREE      (post-merge proof re-runs against main)
+D9_REPOSITORY_PROMULGATION=COMPLETE_IN_M3_TREE
+D9_REAL_MISSING_TARGETS_IN_PR_TREE=0
 
-PR0_STATUS=DOCUMENTARY_BLOCKED_PENDING_PROMULGATION
+PR0_STATUS=PROMULGATED_BY_M3
 TECHNICAL_P0_3_STATUS=NOT_BLOCKED_BY_D9
 ```
 
-`D9_PRESENT_IN_REPOSITORY_MAIN=NO` does **not** mean the source
-corpus was not found — those are distinct statements. The corpus
-exists and is hash-inventoried outside the repository; what remains
-is its promulgation into main (a future PR-0/D9 V2 movement, after
-its required inputs and rebaseline). Until that promotion, in-repo
-references to the D9 artifacts remain broken (see
-stale-docs-register.md — repository reference targets missing while
-the source artifacts are available externally).
+The two production-source references that were broken while promotion was
+pending — `apps/api/src/db/migrations/0025_audit_capture_outbox_foundation.sql:35-37`
+(SPEC v2.1, ADR-017, `docs/security/threat-model.md`) and
+`packages/core-audit/src/capture.ts:54` ("See ADR-017") — now resolve to
+promulgated files. Future D9 doctrine changes require a dedicated
+architecture/doctrine movement (M3 was that movement for the initial promulgation).
+
+## Foundation V1 → next product lane (recommended, NOT started)
+
+```text
+NEXT_RECOMMENDED_PRODUCT_LANE=UI_UX_V1_FOUNDATION
+NEXT_EXECUTED=NO
+```
+
+Initial architecture direction only (from the July 2026 UI plans, reconciled to
+Foundation V1 — see `plans/GOVAI-UI-MASTER-PLAN…` header, `plans/GOVAI-UI-ARCHITECTURE-CONSULT…`,
+and foundation-v1-freeze.md §11):
+
+- conversational / native streaming UX → the direct native/governed provider routes;
+- durable work, replay, workrooms → `/v1/runs` (+ `X-GovAI-Run-Idempotency-Key`);
+- evidence views → `/v1/evidence`, `/v1/audit-events`;
+- constraints that must hold: a production human UI requires a human auth /
+  session / API-key lifecycle (none exists — residual R14); governance settings
+  and high-risk agentic UX cannot pretend ask/sandbox/enforce primitives exist
+  (they do not — R12) or couple commercial tier to governance profile (R13);
+  simple interactive chat may use direct native/governed streaming; a UI must not
+  represent ask/sandbox/enforcement as applied. Claims follow
+  `claims-policy.md`.
 
 ---
 
