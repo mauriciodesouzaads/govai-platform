@@ -1,6 +1,35 @@
 # ADR-021: Provider-Native Experience Preservation Doctrine
 
-Status: Proposed
+Status: Accepted (owner adjudication `ADR021_FINAL_STATUS=ACCEPTED`, EP-FOUNDATION-V1-M3, 2026-08-18; originally Proposed, 2026-05/06). Accepted as **doctrine**; the currently proven scope is recorded in "Implementation and validation" below and in `docs/architecture/current-state.md` — acceptance of the doctrine is not a claim of universal provider parity.
+
+## Acceptance note (M3, 2026-08-18) — doctrine vs proven scope
+
+- **NORMATIVE DOCTRINE (accepted):** preserve provider-specific semantics;
+  provider-native default pass-through; unknown/future semantics (fields,
+  headers, beta flags, streaming events, usage/error fields) pass or are
+  observed by default; explicit high-risk intervention only, never disguised
+  as a provider error; evidence asynchronous / off the hot path; no
+  common-denominator semantic downgrade; provider error truth preserved;
+  supported SDK/CLI compatibility is a release gate.
+- **CURRENT PROVEN SCOPE (Foundation V1 anchor `de80664a`):** exactly the
+  registered and tested lanes — Anthropic `POST /v1/messages` (±stream),
+  `count_tokens`, `GET /v1/models`, `/v1/files`; OpenAI `POST /v1/responses`
+  (±stream), `POST /v1/chat/completions` (±stream), `/v1/models`,
+  `/v1/embeddings`, `/v1/files`, `/v1/vector_stores` — as registered in
+  `packages/provider-*/src/capabilities/`; the governed `/v1/messages`,
+  `/v1/responses`, `/v1/chat/completions` handlers; the hermetic H1 v2 +
+  M1 suites; and the live M2/M2A acceptance (official `@anthropic-ai/sdk`
+  0.117.1 and `openai` 7.4.0, Claude Code 2.1.233, Codex CLI 0.140.0-alpha.2,
+  real Anthropic + OpenAI, non-stream + stream, tools forwarded, unknown beta
+  forwarded, provider 4xx relayed).
+- **NOT CLAIMED:** universal parity; every endpoint; every model; every SDK
+  version; every future beta; every CLI workflow; exactly-once provider
+  execution.
+- The B3-gating wording in "Provider-native compatibility baseline" and
+  "Stop conditions for B3" below is **historical**: B3 was implemented in
+  EP-006 (`apps/audit-sealer`) after the H1 v2 harness and coverage map
+  existed and passed; those gates were satisfied and are retained as the
+  original rationale.
 
 ## Context
 
@@ -77,6 +106,8 @@ provider integrations.
 - Any governance interruption is explicit and testable.
 
 ## Provider-native compatibility baseline
+
+*(Historical framing — the "B3 must not start" gates below were satisfied before EP-006; see the M3 acceptance note.)*
 
 - Provider-native compatibility is a release gate, not an aspiration.
 - B3 must not start until this baseline is specified.
@@ -188,9 +219,57 @@ asynchronous, not a synchronous tax on the provider path.
 
 ## Stop conditions for B3
 
+*(Historical — B3 is implemented (EP-006); these conditions were the pre-implementation stop rules and remain the intent for any future evidence component on the provider path.)*
+
 - If Claude Code breaks, B3 stops.
 - If streaming is buffered, B3 stops.
 - If tool calling is altered, B3 stops.
 - If Anthropic or OpenAI headers are lost, B3 stops.
 - If model or tokens are silently capped, B3 stops.
 - If the sealer enters the provider hot path, B3 stops.
+
+## Implementation and validation (Foundation V1, 2026-08-18)
+
+Source-verified at the Foundation V1 runtime anchor
+`de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68` (see `docs/architecture/current-state.md`
+§2 and `docs/architecture/specs/h1v2-coverage-map.md`):
+
+- **Byte-level fidelity (H1 v2):** original client bytes forwarded and hashed
+  (`native_request_hash` over the original bytes, `body_forward_mode:"raw"`),
+  no re-serialization, no hidden defaults/caps, unknown/future fields
+  preserved, hop-by-hop response filtering, malformed JSON forwarded, nested
+  `"stream":true` not treated as streaming — executing raw-body/response-header
+  tests on both providers.
+- **Native/Audited contract (M1, PR #131 — owner decision OD-1=A):**
+  pass-and-observe by default; unknown/unresolved beta tokens forwarded
+  byte-intact and observed via bounded hashed markers; non-computer tools
+  classified and forwarded; the ONLY hard floor is provider-hosted computer
+  use (explicit 403 + durable blocked v4 capture); Content-Encoding handled
+  truthfully (identity upstream; stale `content-encoding`/`content-length`
+  and representation validators dropped only when the runtime decoded);
+  gate order auth → path (404) → method (405 + truthful `Allow`) → tool floor
+  → beta floor → credential (502 `provider_credential_unresolvable`) → forward.
+- **Governed contract (M1):** the governed surface holds original bytes,
+  applies only the `blocked` outcome of the enforcement matrix, and exposes
+  recommendation vs applied additively (`x-govai-enforcement-decision`,
+  `x-govai-enforcement-applied`, `block_trigger` on 403) — Phase 5
+  ask/sandbox/enforce primitives are NOT implemented.
+- **Provider truth (M2A, PR #132):** the raw request query is preserved on
+  both passthroughs; the real Anthropic `request-id` header is captured in
+  evidence; the executable entrypoints run from any checkout path.
+- **Live acceptance (M2 at `3e90f2fb`, M2A at tree `0174a5c5` = this anchor):**
+  real Anthropic + OpenAI through official SDKs over real TCP, Native/Audited
+  and Governed, non-stream and stream, provider 4xx relayed truthfully,
+  synthetic unknown beta forwarded (provider rejected it), real current beta
+  accepted, client-defined tools reached both providers, computer-use blocked
+  pre-provider (dispatch count 0), `/v1/runs` with idempotent replay,
+  AuditBridge captures with recomputed hashes, one bounded seal, Claude Code
+  and Codex CLI answered through GovAI, zero provider-secret leakage.
+- **Current limitations (not claimed):** universal endpoint/provider parity;
+  Anthropic multipart route-level test; typed first-class provenance for
+  unknown betas / applied-vs-recommended / query request-target in the
+  sealed v4 event (registered evidence-granularity residuals — see
+  `docs/architecture/foundation-v1-freeze.md`); beta snapshot freshness;
+  Claude Code's auxiliary `HEAD <base>/api/hello` probe answers 401/404
+  (non-fatal); the `X-GovAI-Request-Id` echo does not reach direct streaming
+  responses.
