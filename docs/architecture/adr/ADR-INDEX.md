@@ -6,7 +6,7 @@ freeze (EP-FOUNDATION-V1-M3, 2026-08-18; runtime anchor
 regenerate this index when the directory changes; do not infer a status from a file's
 presence, and do not create files to fill numeric gaps.
 
-- ADR files present: **31** (ADR-001..014, ADR-016..032). Absent number: **ADR-015**.
+- ADR decision-record files present (`ADR-[0-9][0-9][0-9]-*.md`): **31** (ADR-001..014, ADR-016..032). Absent number: **ADR-015**. This index file is not a decision record (the directory holds 32 `.md` files including it).
 - Status vocabulary used here: `Accepted` (owner/repository decision in force),
   `Accepted (baseline)` (PR1-era baseline decisions), `Accepted as target decision`,
   `Accepted as doctrine`, `Candidate target architecture`, `Historical precursor`,
