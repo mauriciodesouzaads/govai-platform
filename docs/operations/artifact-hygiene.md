@@ -12,7 +12,7 @@
 > **SOURCE_SHA256:** `de1b4e29dffdf9a57e8933c0202f8371c0bcbac35aca3336deb003ce0f488c31` (owner-supplied source bytes, verified against the 43-entry corpus ledger; see `docs/architecture/d9-promulgation-manifest.md`)
 > **NOTES:** ACCEPTED as doctrine (D6). Operational rule for sharing artifacts; the §6 acceptance criteria (safe packaging script, CI/local forbidden-path check, README documentation) describe the target operating state and are not asserted as implemented by this promulgation — CI runs gitleaks; the safe-package script and README section are not verified present at the Foundation V1 anchor.
 > **BOUNDED CLARIFICATION (M3, applies to this repository):** the repository tracks a secret-free template `.env.example` (used by the README quickstart: `cp .env.example .env`); it is NOT a secret-bearing `.env`/`.env.*` file and is exempt from the §1 prohibition. Consequently the preferred `git archive` artifact (§2) legitimately contains `.env.example`, and the §4 forbidden-path check exempts it explicitly (`-name '.env.*' ! -name '.env.example'`); no `.gitattributes` `export-ignore` rule exists at the anchor and none is required for the template. Real `.env`, `.env.local` and any secret-bearing variant remain forbidden.
-> **BOUNDED CORRECTION OF §4 (M3, Codex review round 3 — P1 + P2):** the original v0.9 §4 commands were `mkdir -p /tmp/govai-artifact-check` / `unzip -q govai-platform-src.zip -d /tmp/govai-artifact-check` / `gitleaks detect --no-git --source /tmp/govai-artifact-check --redact` and `find /tmp/govai-artifact-check -name '.env*' -o -name '.git' -o -name 'node_modules' -o -name 'coverage'`. They were replaced (not merely annotated) because a fixed reusable extraction directory lets a stale extraction survive between runs (`unzip` does not overwrite collisions non-interactively → a new secret could be skipped while gitleaks scans old contents) and because the forbidden-path check covered only 4 of the §1 categories. The corrected §4 extracts into a fresh `mktemp -d` directory with cleanup and checks every §1 category (with the `.env.example` exemption and dump-only database patterns that never match migration SQL). Doctrine intent unchanged; the §6 acceptance criteria remain targets. EDITORIAL (Codex round 4, non-substantive): §3 gained a one-line cwd note — the `tar … govai-platform` operand names the checkout directory, so the command runs from its PARENT directory (unlike §2, which runs inside the repository); no policy or command semantics changed.
+> **BOUNDED CORRECTION OF §4 (M3, Codex review round 3 — P1 + P2):** the original v0.9 §4 commands were `mkdir -p /tmp/govai-artifact-check` / `unzip -q govai-platform-src.zip -d /tmp/govai-artifact-check` / `gitleaks detect --no-git --source /tmp/govai-artifact-check --redact` and `find /tmp/govai-artifact-check -name '.env*' -o -name '.git' -o -name 'node_modules' -o -name 'coverage'`. They were replaced (not merely annotated) because a fixed reusable extraction directory lets a stale extraction survive between runs (`unzip` does not overwrite collisions non-interactively → a new secret could be skipped while gitleaks scans old contents) and because the forbidden-path check covered only 4 of the §1 categories. The corrected §4 extracts into a fresh `mktemp -d` directory with cleanup and checks every §1 category (with the `.env.example` exemption and dump-only database patterns that never match migration SQL). Doctrine intent unchanged; the §6 acceptance criteria remain targets. EDITORIAL (Codex round 4, non-substantive): §3 gained a one-line cwd note — the `tar … govai-platform` operand names the checkout directory, so the command runs from its PARENT directory (unlike §2, which runs inside the repository); no policy or command semantics changed. Codex round 5 (P2, on the round-3 text): the §4 scan is now ONE scoped subshell block so the cleanup trap fires when the block ends (also when pasted interactively) and repeated runs cannot orphan earlier extraction directories; the find expression is unchanged.
 > ---
 
 # Artifact Hygiene
@@ -76,41 +76,47 @@ tar \
 
 ## 4. Required scan before sharing
 
-Run a non-git secret scan against the final artifact contents. Every scan
-starts from an EMPTY, freshly created directory (never a fixed reusable path:
-a stale extraction can survive between runs and `unzip` will not overwrite
-collisions non-interactively, so a new secret could go unscanned), and the
-directory is removed afterwards:
+Run a non-git secret scan AND the forbidden-path check against the final
+artifact contents, in ONE scoped subshell: every run extracts into an EMPTY,
+freshly created directory (never a fixed reusable path — a stale extraction can
+survive between runs and `unzip` will not overwrite collisions
+non-interactively, so a new secret could go unscanned), and the directory is
+removed when the subshell ends — also when the snippet is pasted into an
+interactive shell (an `EXIT` trap in the interactive shell itself would only fire
+at logout, leaving extracted contents in `/tmp`; the subshell parentheses are
+therefore part of the procedure, not decoration):
 
 ```bash
-CHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/govai-artifact-check.XXXXXX")"
-trap 'rm -rf "$CHECK_DIR"' EXIT
+(
+  set -eu
+  CHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/govai-artifact-check.XXXXXX")"
+  trap 'rm -rf "$CHECK_DIR"' EXIT
 
-unzip -q govai-platform-src.zip -d "$CHECK_DIR"
-# tar alternative (§3): tar -xzf govai-platform-src.tgz -C "$CHECK_DIR"
+  unzip -q govai-platform-src.zip -d "$CHECK_DIR"
+  # tar alternative (§3): tar -xzf govai-platform-src.tgz -C "$CHECK_DIR"
 
-gitleaks detect --no-git --source "$CHECK_DIR" --redact
+  gitleaks detect --no-git --source "$CHECK_DIR" --redact
+
+  # Forbidden paths (every §1 category). ZERO output = no forbidden path found;
+  # ANY output = the artifact violates the policy and must not be shared.
+  # `.env.example` (tracked, secret-free template) is the only accepted `.env*`;
+  # repository migration `.sql` files are legitimate — only dump/backup formats match.
+  find "$CHECK_DIR" \( \
+       -name '.env' -o \( -name '.env.*' ! -name '.env.example' \) \
+    -o -name '.git' -o -name 'node_modules' -o -name 'coverage' \
+    -o -name 'dist' \
+    -o -name '*.tsbuildinfo' -o -name '.DS_Store' -o -name '__MACOSX' -o -name '*.log' \
+    -o -name '*.dump' -o -name '*.pgdump' -o -name '*.backup' \
+    -o -name '*.sql.gz' -o -name '*.sql.bz2' -o -name '*.sql.xz' -o -name '*.sql.zst' \
+    -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*dump*.sql' \
+  \)
+)
 ```
 
-Also verify EVERY path prohibited by §1 (zero output = no forbidden path found;
-ANY output = the artifact violates the policy and must not be shared). The
-secret-free tracked template `.env.example` is the only accepted `.env*` path;
-repository migration `.sql` files are legitimate source and are not matched —
-only dump/backup formats are:
-
-```bash
-find "$CHECK_DIR" \( \
-     -name '.env' -o \( -name '.env.*' ! -name '.env.example' \) \
-  -o -name '.git' -o -name 'node_modules' -o -name 'coverage' \
-  -o -name 'dist' \
-  -o -name '*.tsbuildinfo' -o -name '.DS_Store' -o -name '__MACOSX' -o -name '*.log' \
-  -o -name '*.dump' -o -name '*.pgdump' -o -name '*.backup' \
-  -o -name '*.sql.gz' -o -name '*.sql.bz2' -o -name '*.sql.xz' -o -name '*.sql.zst' \
-  -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*dump*.sql' \
-\)
-```
-
-Notes: `-name 'dist'` covers both `dist/` and `tests/dist/`; the last three
+Notes: the subshell exit runs the trap, so the extraction is deleted after
+both checks whether the snippet is run from a script or pasted interactively,
+and consecutive/concurrent runs never share or orphan extraction directories;
+`-name 'dist'` covers both `dist/` and `tests/dist/`; the last three `find`
 lines are the "local database dumps" patterns (pg_dump / SQLite / compressed
 SQL dumps and `*dump*.sql`), chosen so that `apps/api/src/db/migrations/*.sql`
 and `infra/postgres/bootstrap.sql` are never flagged.
