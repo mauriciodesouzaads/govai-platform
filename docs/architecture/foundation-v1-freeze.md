@@ -186,8 +186,18 @@ FOUNDATION_RUNTIME_BLOCKER=NO
 Additional non-blocking notes carried from the records: Claude Code's auxiliary
 `HEAD <base>/api/hello` probe answers 401 (passthrough) / 404 (governed), non-fatal
 (`DEFERRED_COMPATIBILITY_NON_BLOCKING`); the `X-GovAI-Request-Id` echo does not reach direct
-streaming responses (`PRE_EXISTING`, tracked); `SEEDORG_FLAKE_CANDIDATE` in the shared
-integration fixture (test-harness only).
+streaming responses (`PRE_EXISTING`, tracked); `SEEDORG_FLAKE_CANDIDATE` — observed in the
+shared integration harness, but source review at the anchor shows its collision domain derives
+from the current API-key prefix generator and schema, not from the fixture:
+`packages/core-identity/src/api-keys.ts` forms the lookup prefix as `govai_sk_` plus the first
+three base64url characters (`PREFIX_LOOKUP_LEN=12`, nominal domain 64³ = 262,144) with no
+collision retry, and `govai.api_keys.prefix` is the PRIMARY KEY (migration
+`0005_runtime_patch_1.sql`). Foundation V1 implements no production human/API-key issuance
+lifecycle — at the anchor `generateApiKey()` and every `INSERT INTO govai.api_keys` in the tree
+are test-only — so this is classified `LATENT_AUTH_LIFECYCLE_DESIGN_RISK` and carried as
+deferred hardening in the R14 human-auth lane under the named follow-up
+`EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING`; it is NOT a current Foundation V1 runtime
+blocker, and M3 records this truth without changing any runtime behaviour.
 
 ## 7. Anti-evaporation clause for future event schemas
 
