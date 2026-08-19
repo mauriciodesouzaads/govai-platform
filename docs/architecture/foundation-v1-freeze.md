@@ -283,4 +283,13 @@ See `development-roadmap.md`.
   and Durable Run Dispatch). Not authored in M3; current operational truth = merged source +
   accepted ADRs + `current-state.md` + this record. No file exists yet; do not link to one.
 - Legacy `docs/` root artifact relocation (R16) — separate hygiene PR after checks L1–L5.
+- `EP-FOUNDATION-V1-RUN-DISPATCH-DEPLOY-RUNBOOK` — author
+  `docs/runbooks/run-dispatch-deploy.md` as a dedicated operational-documentation movement.
+  It must formalize the source-proven migration 0029 deployment invariant
+  (`apps/api/src/db/migrations/0029_durable_provider_dispatch.sql`, `DEPLOY_ORDER`):
+  `APPLY_MIGRATION → DRAIN_OLD_API_INSTANCES → DEPLOY_NEW_API →
+  START_RECOVERY_WORKER → RESUME_RUN_TRAFFIC`. That ordering already exists today as a
+  migration/runtime compatibility constraint; M3 records the outstanding
+  operational-documentation obligation and neither authors the runbook nor changes any
+  deployment behavior. No file exists at that path yet; do not link to one.
 - Future D9 doctrine changes require a dedicated architecture/doctrine movement.
