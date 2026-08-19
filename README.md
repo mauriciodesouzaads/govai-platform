@@ -4,27 +4,43 @@ Plataforma de governance de IA, modular, com audit chain append-only,
 RLS multi-tenant, KMS, capability registry, DLP-BR (CPF/CNPJ/email/telefone + RE2 custom),
 e providers Anthropic + OpenAI nativos.
 
-**Status:** Active development. Implemented runtime surfaces include provider-native
-**passthrough** and **governed** surfaces (OpenAI + Anthropic), the `/v1/runs` governed
-shortcut, the append-only audit chain + capability registry, Workroom Phases 1–4
-(create/participants, transcript/tasks/evidence, workroom-owned runs, approvals),
-regulatory foundational controls (PR-R1..R9, **evidence-only**, not runtime enforcement),
-and the AuditSealer **B0/B1/B2** foundations (capture outbox + capture adapter + sealer
-**library**). The AuditSealer **B3 runner is not implemented and is not authorized**. Direct
-governed-native and passthrough audit emission is currently **logger-only**
-(`app.log.info`); runtime-to-evidence (capture-outbox) dispatch is **not yet wired or
-source-verified** (see current-state.md §3). Two admin routes
-(`/v1/admin/audit-events/:id/crypto-shred`, `/v1/admin/dlp-detectors`) are still PR3
-not-implemented stubs.
+**Status:** Active development. Implemented and source-verified on `main` at the
+**Foundation V1 runtime anchor** (`de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68`, 2026-08-17):
+provider-native **passthrough** (Native/Audited) and **governed** surfaces (OpenAI + Anthropic),
+the `/v1/runs` governed execution API (durable provider dispatch outside DB transactions,
+honest `run.outcome_unknown`, cross-request run idempotency via `X-GovAI-Run-Idempotency-Key`),
+the append-only HMAC audit chain + capability registry, the **AuditBridge wired on the four
+direct provider routes** (runtime → durable capture outbox, ADR-027/028), the AuditSealer
+**B0/B1/B2/B3** (capture outbox + capture adapter + sealer library + the implemented **B3
+runner**, `apps/audit-sealer/`, with a deployable bundle), the evidence-completeness views /
+metrics and the RLS-scoped `/v1/evidence` read API, Workroom Phases 1–4 (create/participants,
+transcript/tasks/evidence, workroom-owned runs, approvals), regulatory foundational controls
+(PR-R1..R9, **evidence-only**, not runtime enforcement), DLP-BR detectors, and KMS
+envelope-encrypted provider credentials (dev KMS + AWS KMS adapter). Foundation V1 was
+live-accepted against the real Anthropic and OpenAI APIs with the official SDKs, Claude Code
+and Codex CLI **within an explicitly executed scope** (see the freeze record). Two admin routes
+(`/v1/admin/audit-events/:id/crypto-shred`, `/v1/admin/dlp-detectors`) remain not-implemented
+stubs.
 
-GovAI does **not** claim regulatory compliance, certification, legal/judicial validity, or
-runtime hard-deny completeness. The authoritative implementation state is
-[`docs/architecture/current-state.md`](docs/architecture/current-state.md); see also the
-[development roadmap](docs/architecture/development-roadmap.md) and
+**Not implemented / not claimed:** Phase 5 runtime enforcement primitives (ask / sandbox /
+enforce — the governed surface reports recommendation vs applied honestly over HTTP and only
+`blocked` blocks), Workroom Phases 5–7, a human UI and a production human auth/session/API-key
+lifecycle, real EC-5, universal provider/endpoint parity, provider-side exactly-once, and any
+regulatory-compliance, certification or legal/judicial-validity claim. The sealer runner code
+exists; **continuous production sealer operation is a separate operational authorization** and
+is not implied here.
+
+The authoritative implementation state is
+[`docs/architecture/current-state.md`](docs/architecture/current-state.md); the Foundation V1
+baseline is [`docs/architecture/foundation-v1-freeze.md`](docs/architecture/foundation-v1-freeze.md);
+documentation navigation and the hierarchy of truth start at [`docs/README.md`](docs/README.md);
+see also the [development roadmap](docs/architecture/development-roadmap.md) and the
 [resume playbook](docs/architecture/resume-playbook.md).
 
-> Veja `../docs/govai_adp_v3.md` para a especificação canônica externa.
-> Veja `docs/architecture/baseline-decisions.md` para resoluções pinadas.
+> Canonical architecture documents live in this repository under `docs/` (see `docs/README.md`).
+> The former external `../docs/govai_adp_v3.md` reference is **historical** — it is no longer a
+> current authority; the in-repo canonical set supersedes it. `docs/architecture/baseline-decisions.md`
+> records the pinned ADP-v3-era baseline resolutions (historical document).
 
 ## Pré-requisitos
 
@@ -77,10 +93,12 @@ pnpm test:live
 
 ```
 govai-platform/
-  apps/api/                     # Fastify boot + rotas + pipeline
+  apps/api/                     # Fastify boot + rotas + pipeline (AuditBridge, durable run dispatch)
+  apps/audit-sealer/            # B3 AuditSealer runner (dedicated deploy unit; esbuild bundle + Dockerfile)
   packages/
     config/                     # env loader + boot fail conditions
-    core-events/                # Run, ProviderInvocation, EvidenceRecord types
+    core-events/                # Run, ProviderInvocation, EvidenceRecord types; PassthroughInvoked v4
+    core-types/                 # shared types (tiers, risk classes, enforcement modes)
     core-tenant/                # SET LOCAL app.org_id helpers
     core-audit/                 # canonical-json, hmac, lock-key, append, verify
     core-identity/              # KMS (DevKms HKDF — dev; AWS KMS adapter — production), JWT (jose), API keys (argon2id), RBAC
@@ -89,12 +107,16 @@ govai-platform/
     dlp-br/                     # CPF/CNPJ/email/phone + RE2 custom
     provider-anthropic/         # SDK wrapper + usage extraction
     provider-openai/            # SDK wrapper + usage extraction
+    provider-stream-http/       # stream pump/classify helper (terminal-event completeness)
+    observability/              # shared OTel MeterProvider bootstrap
   infra/
     postgres/bootstrap.sql      # idempotente (DO blocks)
     docker-compose.yml          # dev only
   docs/
-    architecture/adr/           # ADRs do projeto
-    architecture/baseline-decisions.md
+    README.md                   # documentation index + hierarchy of truth (start here)
+    architecture/               # current-state, roadmap, freeze record, ADRs, specs, plans, registers
+    architecture/adr/           # ADRs do projeto (see ADR-INDEX.md)
+    security/ operations/       # threat model, artifact hygiene (doctrine)
     contracts/                  # planned: passthrough-headers, ICP-BR, TSA, MCP, etc.
     runbooks/
   tests/
@@ -102,10 +124,10 @@ govai-platform/
     live/                       # opt-in via GOVAI_LIVE_TESTS=1
 ```
 
-## Auditoria contra ADP v3
+## Documentation provenance
 
-```bash
-# As fontes canônicas vivem fora do monorepo:
-sha256sum ../docs/govai_adp_v3.md
-sha256sum ../docs/govai_claude_code_prompt_v2.md
-```
+Promulgated architecture documents carry a promulgation header with their source SHA-256;
+the corpus provenance is recorded in
+[`docs/architecture/d9-promulgation-manifest.md`](docs/architecture/d9-promulgation-manifest.md).
+The former "audit against ADP v3" step (checksums of external files outside the monorepo) is
+historical; those checksums are recorded in `docs/architecture/baseline-decisions.md`.

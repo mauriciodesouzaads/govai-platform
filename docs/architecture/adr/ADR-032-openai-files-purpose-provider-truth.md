@@ -13,11 +13,32 @@ canonical.
 
 `DECISION_STATUS=ACCEPTED`
 
-`IMPLEMENTATION_STATUS=PENDING` — EP-11 is a subsequent, separate
-implementation movement.
+`IMPLEMENTATION_STATUS=COMPLETE` — implemented by **EP-11 / PR #126**
+(squash `01c05fd61428a76d300b73fb335021f598519d2f`, tree `20ccd433`
+byte-identical to the audited head, single parent `629b6e9f`; post-merge
+main CI run `31649394857` SUCCESS). `IMPLEMENTED_BY=EP-11 / PR #126`.
+Reconciled by EP-FOUNDATION-V1-M3 (2026-08-18); the promulgation-era pointer
+`IMPLEMENTATION_STATUS=PENDING` and the "Runtime truth at promulgation" /
+"Consequences" interim wording below are **HISTORICAL_PRE_EP11_RUNTIME** —
+retained as the record of the state when this ADR was promulgated (PR #125),
+not as current prose.
 
-This ADR changes no runtime code. Repository promulgation of this decision
-does not constitute EP-11 implementation.
+Current runtime (Foundation V1 anchor
+`de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68`): the removed local Files-purpose
+validator (`packages/provider-openai/src/passthrough/files-purpose-validator.ts`)
+does NOT exist and does NOT execute; the date-triggered `block_post_sunset`
+branch, the synthetic local 403, the `x-govai-deprecation-warning` header and
+the route-side supply of the legacy purpose-deprecation fields are gone;
+passthrough Files requests with `purpose=assistants` are forwarded and the
+provider's own accept/reject is the recorded evidence. Only the historical
+event/emitter/capture compatibility machinery is retained
+(`packages/provider-openai/src/passthrough/audit-emit.ts`,
+`packages/core-events/src/passthrough-invoked.ts`,
+`packages/core-events/src/audit-bridge-capture-payload.ts`).
+
+This ADR changes no runtime code. Repository promulgation of the decision
+(PR #125) and its runtime implementation (PR #126) were distinct, separately
+verified acts.
 
 ## Context
 
@@ -47,7 +68,7 @@ audit event is emitted for that locally blocked request.
    accept/reject is the recorded truth.
 5. This decision and its priority are not date-dependent.
 
-## Runtime truth at promulgation
+## Runtime truth at promulgation (HISTORICAL_PRE_EP11_RUNTIME — superseded by PR #126)
 
 At source anchor
 `main@ee984f2111611b3fef71ad00ac897f3ff984347c`, the validator remains
@@ -76,6 +97,8 @@ The merge of this ADR alone changes none of the behavior above.
 
 EP-11 is a subsequent, separate implementation movement and must not begin
 until this ADR's repository-promulgation artifact is present on `main`.
+*(Historical gate — satisfied: PR #125 promulgated this ADR; PR #126
+implemented EP-11.)*
 
 ## Invariants
 
@@ -89,12 +112,14 @@ until this ADR's repository-promulgation artifact is present on `main`.
 - EP-11 has a narrow implementation scope: remove the false local deny and
   warning paths, preserve provider forwarding, preserve provider-result
   evidence, and update the affected tests accordingly.
-- Until EP-11 merges, every passthrough Files request that reaches this
-  validator with `purpose=assistants` continues to follow the current
-  validator behavior: warning-and-forward at or before the configured
-  boundary instant, and synthetic local 403 after it.
-- The known interim runtime state is recorded here so acceptance of this ADR
-  cannot be mistaken for completed implementation.
+- *(Historical, pre-EP11)* Until EP-11 merged, every passthrough Files request
+  that reached the validator with `purpose=assistants` followed the then-current
+  validator behavior: warning-and-forward at or before the configured boundary
+  instant, and synthetic local 403 after it. **EP-11 merged (PR #126); this
+  interim state no longer exists.**
+- The interim runtime state was recorded here so acceptance of this ADR could
+  not be mistaken for completed implementation; implementation is now
+  complete and recorded above.
 
 ## Non-goals
 

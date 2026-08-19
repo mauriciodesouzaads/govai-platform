@@ -2,15 +2,13 @@
 
 ## Status
 
-- **Evidence-first source of truth** for the current implementation state of GovAI.
-- **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner; it consumes no provider traffic and runs outside the request hot path (see §3 and §7).
-- Distinguishes runtime implementation, foundational controls, provider-native evidence, target architecture, stale docs, and unverified claims. Generated from repository **source manifests** at main `f381d3fac24d5938aed91b6618ef511b66ddc878` (post-P0.3-C / PR #129), not from memory.
-- **Five P0 "Truth and Integrity" packages have landed:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`), the F4 preventive hardening (PR #120, merge `719fefc2`), **P0.3-A (F3 durable provider dispatch, PR #123, squash `165291d9`)** and **P0.3-C (cross-request run execution idempotency, PR #129, squash `f381d3fa`)**. The **P0.3 runtime lane is COMPLETE**; F2 remains open (pending source classification), so the P0 Truth and Integrity **program** as a whole remains open. See §8 for the canonical F1–F6 + C-2 matrix, the F4 canonical state and the narrow follow-up register.
-- **EP-DOCS-04 / PR #121 is merged and dual-verified:** squash `e422280d`, tree `196701d8`, single parent `719fefc2`. It reconciles the canonical P0 record and changes no executable behavior. EP-DOCS-05 / PR #122 (squash `4d6eab72`) rolled the canonical anchor to `e422280d`.
-- **P0.3-A / PR #123 is merged:** squash `165291d9`, tree `93613383`, single parent `4d6eab72`, 38 files, one commit added to main; the squash tree is byte-identical to the audited PR head tree (`08b59930`). Post-merge main CI run `31282331366` SUCCESS (unit + integration). It moves provider network I/O outside database transactions and checked-out clients (§3 *Durable provider dispatch*). **F3: DEMONSTRATED → CORRECTED.**
-- **EP-11 / ADR-032 provider-truth runtime correction is merged:** PR #126 squash `01c05fd6`, tree `20ccd433` (byte-identical to the audited PR head tree), single parent `629b6e9f` (the PR #125 ADR-032 promulgation), 6 files; post-merge main CI run `31649394857` SUCCESS (unit + integration). `ADR032_DECISION_STATUS=ACCEPTED`; `ADR032_REPOSITORY_PROMULGATION=COMPLETE` (PR #125); `ADR032_RUNTIME_IMPLEMENTATION=IMPLEMENTED` (PR #126). The ADR file's own promulgation-era `IMPLEMENTATION_STATUS=PENDING` pointer is registered as **localized documentary staleness** ([stale-docs-register.md](./stale-docs-register.md)) — deliberately not edited by this state roll; the accepted decision itself is not stale. See §8 *EP-11 / PR #126 canonical state*.
-- **P0.3-C / PR #129 cross-request execution idempotency is merged:** squash `f381d3fac24d5938aed91b6618ef511b66ddc878`, tree `a64e7178` (byte-identical to the audited PR head `bfa05c5b`), single parent `21afa116` (the PR #128 authorization-semantics merge), 8 files; post-merge main CI run `31802636887` SUCCESS (unit + integration). P0.3-C implements **cross-request execution idempotency for the two governed run-creation surfaces** (`POST /v1/runs`, `POST /v1/workrooms/:id/runs`) via the optional `X-GovAI-Run-Idempotency-Key` header, the immutable tenant-scoped `govai.run_idempotency` binding (migration 0030) and the canonical `govai.run_execution_intent.v1` semantic-intent correspondence. It does **not** claim provider-side exactly-once (§3).
-- **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring*.
+- **Evidence-first source of truth** for the current implementation state of GovAI. Generated from repository **source manifests** at the **Foundation V1 runtime anchor** `de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68` (tree `0174a5c5b2e74c80b904d035b4f8ddc10abbbd69`, squash of PR #132 / M2A, 2026-08-17), not from memory. The Foundation V1 baseline, its executed-scope acceptance, its residual register and its explicit non-claims are recorded in [foundation-v1-freeze.md](./foundation-v1-freeze.md); this document and that record prevail over every plan/target/historical document under `docs/`.
+- **B3 (the AuditSealer runner) is authorized and implemented (EP-006).** `apps/audit-sealer` ships the dedicated runner (deployable bundle, EP-SEALER-DEPLOY); it consumes no provider traffic and runs outside the request hot path (see §3 and §7). Live continuous operation remains a separate operational authorization.
+- **Backend Foundation V1 runtime is complete and real-provider accepted (executed scope):** M1 (PR #131, `3e90f2fb`) restored the low-friction Native/Audited contract and the governed honesty contract; M2 (read-only at `3e90f2fb`) exercised the runtime against the real Anthropic and OpenAI APIs with official SDKs, Claude Code and Codex CLI; M2A (PR #132, `de80664a`) closed the three narrow M2 gaps (Anthropic `request-id` evidence, entrypoint canonical-path guard, raw query preservation) and was live re-accepted at the merged tree. `FOUNDATION_V1_KNOWN_RUNTIME_BLOCKERS=0`. See §2 (provider-native contract) and §8 (canonical states).
+- **P0 "Truth and Integrity" program — all seven items dispositioned:** P0.1 (F5+F6, PR #118, `ed18736a`), P0.2 (F1+C-2, PR #119, `19bcb452`), F4 preventive hardening (PR #120, `719fefc2`), P0.3-A (F3 durable provider dispatch, PR #123, `165291d9`), P0.3-C (cross-request run execution idempotency, PR #129, `f381d3fa`), and **F2 CLOSED as an evidence-granularity residual** (`F2_CLASSIFICATION=EVIDENCE_GRANULARITY_GAP`, `F2_RUNTIME_DEFECT=NO`, `F2_FALSE_EVIDENCE=NO`, `F2_FOUNDATION_BLOCKER=NO`, no schema v5 — freeze record §5). The **P0.3 runtime lane is COMPLETE**; the program's remaining documentary item — **PR-0/D9 repository promulgation — is COMPLETE in this tree** (see §"D9 / PR-0 promulgation state" in §8). See §8 for the canonical F1–F6 + C-2 matrix.
+- **EP-11 / ADR-032 provider-truth runtime correction is merged and the ADR file is reconciled:** PR #126 squash `01c05fd6` (runtime), ADR-032 `IMPLEMENTATION_STATUS=COMPLETE` (reconciled by M3; the promulgation-era `PENDING` pointer is historical). See §8 *EP-11 / PR #126 canonical state*.
+- **Provider-native doctrine ACCEPTED (ADR-021)** with an explicit separation between normative doctrine and the currently proven scope; unknown provider semantics pass or are observed by default; the only Native hard floor is provider-hosted computer-use; Phase 5 ask/sandbox/enforce primitives are NOT implemented (recommendation vs applied is honest over HTTP). No universal provider parity is claimed.
+- **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring* (wired for the four direct routes; `/v1/runs` chain-authoritative).
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
 
@@ -27,40 +25,40 @@
 
 ## Source manifests
 
-Counts from `find` at the source commit (not from docs):
+Counts from `find` at the source commit (`de80664a`) plus the files added by the M3 documentary freeze in this tree (docs counts are for the M3 tree; code/test counts are unchanged by M3):
 
-- architecture docs (`docs/architecture/**.md`): **67**
+- architecture docs (`docs/architecture/**.md`): **104** in the M3 tree (67 at `de80664a`; M3 added the promulgated corpus, the freeze record, the ADR index and the D9 promulgation manifest)
 - regulatory docs (`docs/architecture/regulatory/*.md`): **20** (18–25 series present; **no** 26–30 files exist)
-- ADR docs (`docs/architecture/adr/*.md`): **24** (ADR-001..014 + ADR-020..028 + ADR-032; **missing** ADR-015..019 and ADR-029..031; ADR-032 is the most recent — `Accepted` and in main, added by PR #125)
-- API route files (`apps/api/src/routes/*`): **18** (17 routes + `_not-implemented.ts`; `evidence.ts` added by EP-008D)
-- DB migrations (`apps/api/src/db/migrations/*`): **29** (0001..0030, **missing** 0006; highest `0030_run_idempotency.sql` — the P0.3-C immutable execution-idempotency binding)
-- test files (`*.test.ts`/`*.spec.ts`): **194** on disk — **113** unit (under `apps/`+`packages/`; P0.3-C added `apps/api/src/pipeline/run-idempotency.test.ts`), **76** under `tests/integration/` (P0.3-C added `run-idempotency.test.ts` + `workroom-run-idempotency.test.ts`), **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate (`vitest.config.ts`), the default `pnpm test` is **unit-only** (113 files, **1316** tests, reproduced locally at this anchor); `pnpm test:integration` adds the integration files (CI runs both jobs)
+- ADR decision records (`docs/architecture/adr/ADR-[0-9][0-9][0-9]-*.md`): **31** (ADR-001..014 + ADR-016..032; ADR-015 reserved/cancelled; the generated `adr/ADR-INDEX.md` is not a decision record and is excluded from this count — the directory holds 32 `.md` files — see [adr/ADR-INDEX.md](./adr/ADR-INDEX.md); ADR-016..019 and ADR-029..031 promulgated by M3; status per file: 27 accepted-family, 1 candidate target (016), 1 historical precursor (017), 2 Proposed (029, 030))
+- API route files (`apps/api/src/routes/*`): **18** (17 routes + `_not-implemented.ts`)
+- DB migrations (`apps/api/src/db/migrations/*`): **29** (0001..0030, **missing** 0006; highest `0030_run_idempotency.sql`) — unchanged by M1/M2A/M3
+- test files (`*.test.ts`): **209** on disk — **128** unit (under `apps/`+`packages/`; M1 added the content-encoding / native-contract / registry-invariant / transport-encoding / m1-contract suites, M2A added `request-id.test.ts`, `main-module.test.ts` and the two `query-fidelity` suites), **76** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate the default `pnpm test` is **unit-only** (128 files, **1453** tests, reproduced locally at this anchor under Node 24); `pnpm test:integration` adds the integration files (CI runs both jobs; post-merge main CI run `31988375993` SUCCESS at `de80664a`)
 
 ---
 
 ## 1. Runtime surfaces
 
-All surfaces registered in `apps/api/src/server.ts:161-181` (the direct-route identity hook registers at `:175`; the P0.3-A dispatch-recovery worker starts at `:191`). Status reflects **runtime execution**; audit-evidence capture is a separate axis (§3).
+All surfaces registered in `apps/api/src/server.ts:162-182` (the direct-route identity hook registers at `:176`; the P0.3-A dispatch-recovery worker starts at `:192`; the M2A `isMainModule` entry guard is at `:255`). Line anchors re-derived at `de80664a`. Status reflects **runtime execution**; audit-evidence capture is a separate axis (§3).
 
 | Surface | Status | Route/entrypoint | Handler/service | Tests | Limitations | Next step |
 |---|---|---|---|---|---|---|
-| Health | IMPLEMENTED_RUNTIME_SOURCE_VERIFIED_TESTS_NOT_LOCATED | `routes/health.ts` (`server.ts:161`) | inline | dedicated route test not located in this review | liveness/readiness | — |
-| Capabilities | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/capabilities.ts` (`:162`) | `@govai/core-governance` | `tests/integration/capabilities-by-org.test.ts` | per-org view; default-deny | — |
-| `/v1/runs` | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/runs.ts` (`:163`) | `pipeline/run-orchestrator.ts` + the P0.3-A durable dispatch layer (`run-dispatch-config.ts`, `run-dispatch-state.ts`, `run-dispatch-recovery.ts`) + the P0.3-C execution-idempotency layer (`pipeline/run-idempotency.ts`) | `tests/integration/governed-run-e2e.test.ts`, `runs-passthrough-mode.test.ts`, the `run-dispatch-*.test.ts` suites, `runs-status-endpoint.test.ts`, `run-idempotency.test.ts` (P0.3-C) | governed+passthrough; run-lifecycle chain evidence via the durable dispatch layer (§3); tenant-isolated status polling `GET /v1/runs/:run_id` (`routes/runs.ts:224`); optional `X-GovAI-Run-Idempotency-Key` — tenant-scoped execution-idempotency binding with canonical semantic-intent correspondence: a matching replay returns the current durable run (200 + `X-GovAI-Run-Idempotent-Replay`), a divergent same-key intent is 409 `idempotency_key_conflict` (distinct from the AuditBridge `X-GovAI-Idempotency-Key`, which stays direct-route evidence identity) | — |
-| Audit events | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/audit-events.ts` (`:164`) | reads HMAC chain | `audit-events-rls.test.ts`, `audit-events-pagination.test.ts` | read-only | — |
+| Health | IMPLEMENTED_RUNTIME_SOURCE_VERIFIED_TESTS_NOT_LOCATED | `routes/health.ts` (`server.ts:162`) | inline | dedicated route test not located in this review | liveness/readiness | — |
+| Capabilities | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/capabilities.ts` (`:163`) | `@govai/core-governance` | `tests/integration/capabilities-by-org.test.ts` | per-org view; default-deny | — |
+| `/v1/runs` | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/runs.ts` (`:164`) | `pipeline/run-orchestrator.ts` + the P0.3-A durable dispatch layer (`run-dispatch-config.ts`, `run-dispatch-state.ts`, `run-dispatch-recovery.ts`) + the P0.3-C execution-idempotency layer (`pipeline/run-idempotency.ts`) | `tests/integration/governed-run-e2e.test.ts`, `runs-passthrough-mode.test.ts`, the `run-dispatch-*.test.ts` suites, `runs-status-endpoint.test.ts`, `run-idempotency.test.ts` (P0.3-C) | governed+passthrough; run-lifecycle chain evidence via the durable dispatch layer (§3); tenant-isolated status polling `GET /v1/runs/:run_id` (`routes/runs.ts:224`); optional `X-GovAI-Run-Idempotency-Key` — tenant-scoped execution-idempotency binding with canonical semantic-intent correspondence: a matching replay returns the current durable run (200 + `X-GovAI-Run-Idempotent-Replay`), a divergent same-key intent is 409 `idempotency_key_conflict` (distinct from the AuditBridge `X-GovAI-Idempotency-Key`, which stays direct-route evidence identity) | — |
+| Audit events | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/audit-events.ts` (`:165`) | reads HMAC chain | `audit-events-rls.test.ts`, `audit-events-pagination.test.ts` | read-only | — |
 | Admin audit crypto-shred | PLANNED | `routes/admin-audit-shred.ts:41` (`sendNotImplemented … 'PR3'`) | stub | n/a | not-implemented stub; `crypto_shredded` state + ADR-011 exist in schema | implement later |
 | Admin DLP detector CRUD | PLANNED | `routes/admin-dlp.ts:40` (`sendNotImplemented … 'PR3'`) | stub | n/a | admin CRUD stub; DLP pre-scan itself runs in governed surfaces | implement later |
-| Passthrough Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-anthropic.ts` (`:168`) | `@govai/provider-anthropic` | `tests/integration/anthropic-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Passthrough OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `routes/passthrough-openai.ts` (`:169`) | `@govai/provider-openai` | `tests/integration/openai-passthrough.test.ts` + raw-body tests | audit emission: logger + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3); the retired GovAI-local Files `purpose=assistants` date policy (local deny/warning) was removed by EP-11 (PR #126) — Files requests follow the normal provider-forwarding/result-evidence path (a narrow claim; not a broader OpenAI compatibility guarantee) | — |
-| Governed Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-anthropic.ts` (`:170`) | `@govai/provider-anthropic/governed` | `tests/integration/governed-anthropic.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Governed OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/governed-openai.ts` (`:171`) | `@govai/provider-openai/governed` | `tests/integration/governed-openai.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox, integration-tested (PR-B, §3) | — |
-| Admin provider credentials | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/admin-provider-credentials.ts` (`:176`) | KMS envelope; `auditAppend` (`:165,289`) | `admin-provider-credentials-*.test.ts` (6 files) | SET/GET/REVOKE; no rotation policy | — |
-| Workrooms (Phase 1) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workrooms.ts` (`:177`) | inline; migration 0012 | `tests/integration/workroom-participants.test.ts` (+ ~20 workroom tests) | partial runtime (Phase 1) | — |
-| Workroom transcript (Phase 2) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-transcript.ts` (`:178`) | migration 0013 | `workroom-messages.test.ts`, `workroom-audit-subview.test.ts` | partial runtime (Phase 2) | — |
-| Workroom runs (Phase 3) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-runs.ts` (`:179`) | `run-orchestrator.ts` `WorkroomRunContext`; migration 0014 | `workroom-runs.test.ts`, `workroom-runs-mode.test.ts`, `workroom-run-idempotency.test.ts` (P0.3-C) | partial runtime (Phase 3); P0.3-C covers `POST /v1/workrooms/:id/runs` — current membership authorization stays mandatory (key knowledge is never an authorization capability), a matching replay does not consume the approval twice, approval provenance participates in the semantic-intent correspondence, and an in-progress replay does not fabricate a `run_event` turn | — |
-| Workroom approvals (Phase 4) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-approvals.ts` (`:180`) | migration 0015 | `workroom-approvals.test.ts`, `workroom-approvals-runs.test.ts` | partial runtime (Phase 4); SoD/TOCTOU | — |
-| Regulatory | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/regulatory.ts` (`:181`) | `regulatory/service.ts`; migrations 0016–0024 | `regulatory-*.test.ts` (11 files) | **evidence only, not runtime enforcement** (§4/§5) | — |
-| Evidence read API (`/v1/evidence`) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-008D) | `routes/evidence.ts` (`:165`) | `pipeline/evidence-reports.ts` (EC summary + gap lists) | `tests/integration/evidence-reports.test.ts`, `evidence-cockpit.test.ts` | read-only, RLS-scoped (the auditor IS the tenant — per-org view, no cross-tenant operator role); `/gaps` enum `ec1\|ec2\|ec3seal\|ec3drop\|ec4`; EC-5 deferred | real EC-5 (separate Option-A EP) |
+| Passthrough Anthropic (Native/Audited) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE + LIVE_ACCEPTED (M2/M2A, executed scope) | `routes/passthrough-anthropic.ts` (`:169`) | `@govai/provider-anthropic` | `tests/integration/anthropic-passthrough.test.ts` (+ F1-T*/F5-T*), raw-body, content-encoding, native-contract, registry-invariant, query-fidelity, request-id suites | audit emission: logger + AuditBridge → B1 capture outbox (PR-B, §3); Foundation V1 native contract (§2): auth → 404 → 405 → computer-use floor → `hard_denied` beta floor → credential (502) → forward; unknown betas / non-computer tools forwarded + observed; raw query preserved; `request-id` captured; Content-Encoding truth; scoped 502 `provider_credential_unresolvable` | — |
+| Passthrough OpenAI (Native/Audited) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE + LIVE_ACCEPTED (M2/M2A, executed scope) | `routes/passthrough-openai.ts` (`:170`) | `@govai/provider-openai` | `tests/integration/openai-passthrough.test.ts` (+ F1-T6/F5-T*), raw-body, content-encoding, native-contract, registry-invariant, query-fidelity suites | audit emission: logger + AuditBridge → B1 capture outbox (PR-B, §3); Foundation V1 native contract as for Anthropic (§2); the retired GovAI-local Files `purpose=assistants` date policy (local deny/warning) was removed by EP-11 (PR #126) — Files requests follow the normal provider-forwarding/result-evidence path (a narrow claim; not a broader OpenAI compatibility guarantee); OpenAI historical beta entries (`assistants=v2`, `realtime=v1`) are `denied_until_decision` → forwarded + observed (`openai-beta-policy@2026-08-16`) | — |
+| Governed Anthropic | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + LIVE_ACCEPTED (M2, executed scope) | `routes/governed-anthropic.ts` (`:171`) | `@govai/provider-anthropic/governed` | `tests/integration/governed-anthropic.test.ts` (+ F1-T4), `register-governed.m1-contract.test.ts` | direct governed-native audit emission: `app.log.info` + AuditBridge → B1 capture outbox (PR-B, §3); M1: original bytes held (no re-serialization), top-level-only stream detection, non-computer tools reach the matrix, only `blocked` blocks, recommendation vs applied honest over HTTP (`x-govai-enforcement-decision` / `x-govai-enforcement-applied`, 403 `block_trigger`), truthful streaming pre-provider block | — |
+| Governed OpenAI | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED + LIVE_ACCEPTED (M2, executed scope) | `routes/governed-openai.ts` (`:172`) | `@govai/provider-openai/governed` | `tests/integration/governed-openai.test.ts`, `register-governed.m1-contract.test.ts` | as Governed Anthropic (M1 honesty contract); under OD-1=A the OpenAI Chat Completions governed path has no reachable pre-provider block (documented, not a defect) | — |
+| Admin provider credentials | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/admin-provider-credentials.ts` (`:177`) | KMS envelope; `auditAppend` (`:165,289`) | `admin-provider-credentials-*.test.ts` (6 files) | SET/GET/REVOKE; no rotation policy | — |
+| Workrooms (Phase 1) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workrooms.ts` (`:178`) | inline; migration 0012 | `tests/integration/workroom-participants.test.ts` (+ ~20 workroom tests) | partial runtime (Phase 1) | — |
+| Workroom transcript (Phase 2) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-transcript.ts` (`:179`) | migration 0013 | `workroom-messages.test.ts`, `workroom-audit-subview.test.ts` | partial runtime (Phase 2) | — |
+| Workroom runs (Phase 3) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-runs.ts` (`:180`) | `run-orchestrator.ts` `WorkroomRunContext`; migration 0014 | `workroom-runs.test.ts`, `workroom-runs-mode.test.ts`, `workroom-run-idempotency.test.ts` (P0.3-C) | partial runtime (Phase 3); P0.3-C covers `POST /v1/workrooms/:id/runs` — current membership authorization stays mandatory (key knowledge is never an authorization capability), a matching replay does not consume the approval twice, approval provenance participates in the semantic-intent correspondence, and an in-progress replay does not fabricate a `run_event` turn | — |
+| Workroom approvals (Phase 4) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `routes/workroom-approvals.ts` (`:181`) | migration 0015 | `workroom-approvals.test.ts`, `workroom-approvals-runs.test.ts` | partial runtime (Phase 4); SoD/TOCTOU | — |
+| Regulatory | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | `routes/regulatory.ts` (`:182`) | `regulatory/service.ts`; migrations 0016–0024 | `regulatory-*.test.ts` (11 files) | **evidence only, not runtime enforcement** (§4/§5) | — |
+| Evidence read API (`/v1/evidence`) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-008D) | `routes/evidence.ts` (`:166`) | `pipeline/evidence-reports.ts` (EC summary + gap lists) | `tests/integration/evidence-reports.test.ts`, `evidence-cockpit.test.ts` | read-only, RLS-scoped (the auditor IS the tenant — per-org view, no cross-tenant operator role); `/gaps` enum `ec1\|ec2\|ec3seal\|ec3drop\|ec4`; EC-5 deferred | real EC-5 (separate Option-A EP) |
 
 Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are `DOCUMENTED_TARGET_ONLY`. Workroom is **not complete**.
 
@@ -68,7 +66,7 @@ Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are
 
 ## 2. Provider-native layer
 
-`IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE`, proven by the H1 v2 harness/coverage map (versioned; PRs #81/#82/#83/#84/#86/#87). This is **byte/parity evidence**, not evidence-plane dispatch (see §3).
+`IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE`, proven by the H1 v2 harness/coverage map (versioned; PRs #81/#82/#83/#84/#86/#87), extended by the Foundation V1 M1/M2A suites, and — separately — LIVE-ACCEPTED in the executed M2/M2A scope (real Anthropic + OpenAI, official SDKs, Claude Code, Codex CLI; see [foundation-v1-freeze.md](./foundation-v1-freeze.md) §4). Hermetic coverage and live acceptance are kept distinct in [specs/h1v2-coverage-map.md](./specs/h1v2-coverage-map.md) (regenerated at `de80664a`). This is **byte/parity + contract evidence**, not evidence-plane dispatch (see §3). Doctrine: ADR-021 (Accepted); no universal provider/endpoint parity is claimed — the proven scope is exactly the registered capabilities and executed lanes.
 
 | Capability | Status | Evidence | Remaining follow-ups |
 |---|---|---|---|
@@ -77,16 +75,20 @@ Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are
 | `native_request_hash` over original bytes | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB-OAI/RB-ANT hash | — |
 | `body_forward_mode:"raw"` | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | byte equality | — |
 | Valid-tools pass-through | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | PR #87 RB-OAI/RB-ANT[valid-tools] | — |
-| Invalid-tools block | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB[tools-block] (403) | — |
+| Non-computer tools forwarded (typed_unknown, custom, hosted non-computer) — M1 | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB-*[typed-unknown-forward]; native-contract `TOOLS`; governed m1-contract `FB-2` | dedicated enums for new provider tool types (deferred; taxonomy v3) |
+| Provider-hosted computer-use hard floor (only validation block; 403 + durable blocked v4; streaming block truthful) — M1 | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB-*[tools-block]; native-contract `DENY-02/03`; governed `§11.4` | — |
+| Unknown / unresolved beta tokens forwarded byte-intact + hashed marker evidence; only `hard_denied` fails closed (403 + durable blocked v4) — M1 | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | native-contract `BETA-01..08`, `DENY-01` (both providers) | typed unknown-beta provenance (residual R3); beta snapshot freshness (R6) |
 | Unknown/future fields preserved | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB[byte-for-byte] + [valid-tools] | — |
 | Response hop-by-hop filter | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | PR #86 RH-OAI/RH-ANT + RB[hop-by-hop] | downstream keep-alive/transfer-encoding/content-length is runtime-owned (non-blocking) |
-| Malformed JSON forwarded | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB[malformed] | — |
-| Streaming detection | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB[nested-stream] | — |
-| gzip / `Content-Encoding` policy | PLANNED | spec §12/§15 | non-blocking |
-| Anthropic multipart route-level | PLANNED | spec §9/§15 | non-blocking |
-| `stream_final_hash` hash-over-bytes | PLANNED | presence only (EP-008C adds the terminal-outcome marker `stream_outcome` on every stream termination; the hash-over-bytes content itself is still presence-only) | non-blocking |
-
----
+| Malformed JSON forwarded | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB[malformed]; governed m1-contract | — |
+| Streaming detection (top-level only) | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | RB[nested-stream]; governed `H-2` | — |
+| gzip / `Content-Encoding` transport truth (identity upstream; decoded-only drop of stale `content-encoding`/`content-length` + representation validators; unknown coding relayed raw) — M1 FB-3 | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `register-passthrough.content-encoding.test.ts` ×2 (real TCP), `transport-encoding.test.ts` ×2; live FB-3 header truth (M2) | — (was PLANNED at `f381d3fa`) |
+| Gate order auth → path 404 → method 405 (+`Allow`) → floors → credential 502 → forward; auth before registry disclosure — M1 | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | native-contract `ROUTE-01..03b`; registry-invariant `ROUTE-04`; `provider-credentials.pool-acquire.test.ts` | — |
+| Raw query preserved on both passthroughs (routing pathname-only) — M2A F5 | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `register-passthrough.query-fidelity.test.ts` ×2 (real socket); integration F5-T*; live M2A | query not first-class in sealed v4 (residual R1) |
+| Anthropic `request-id` captured in evidence (provider-aware dispatcher) — M2A F1 | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | `request-id.test.ts`, `provider-invoke.test.ts`, integration F1-T1..T6; live M2A 3/3 | — |
+| Anthropic multipart route-level | PLANNED | spec §9/§15 | non-blocking (R10) |
+| `stream_final_hash` hash-over-bytes | IMPLEMENTED_PROVIDER_NATIVE_EVIDENCE | content-encoding `ENC-03/10` (`stream_final_hash === sha256(<emitted bytes>)`); stream-terminal `(1)`; EP-008C `stream_outcome` | — (was presence-only) |
+| Executable entrypoints from any checkout path (`isMainModule`) — M2A F2 | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `apps/api/src/main-module.test.ts`; real spaced-path `run migrate` / `run dev` (M2A) | — |
 
 ## 3. Audit and Evidence Plane
 
@@ -141,7 +143,8 @@ P0.3-C adds the keyed-intent layer on top of F3 for both run-creation surfaces (
 **Status lines:**
 - Runtime-to-evidence dispatch for **direct governed-native / passthrough** routes: **IMPLEMENTED & INTEGRATION-TESTED (PR-B / EP-004)** — the AuditBridge (ADR-027) is wired into all four routes; `event: unknown` is validated/narrowed via `PassthroughInvokedSchema` (v4) before `captureAuditEvent` → outbox. ADR-027 supersedes the older passthrough "Governed Run pipeline (PR3+)" absorption intent for direct routes; `/v1/runs` remains distinct and chain-authoritative via `auditAppend`.
 - Direct-route request identity (**ADR-028**): **IMPLEMENTED** — an ingress hook mints `govai_request_id` + optional `X-GovAI-Idempotency-Key`; the AuditBridge `captureId` is the deterministic UUIDv5 (NOT `audit_event_id`), and `payloadHash` is the stable `AuditBridgeCapturePayloadV1` projection. Same-key replay reuse (I3) and divergent-`occurred_at` conflict (I4) are proven end-to-end.
-- Evidence primitives (B0/B1/B2): `IMPLEMENTED_FOUNDATIONAL_CONTROL`.
+- Evidence primitives (B0/B1/B2): `IMPLEMENTED_FOUNDATIONAL_CONTROL`. **Live (M2/M2A, executed scope):** every direct-route request against the real providers produced exactly one durable `passthrough.invoked` v4 capture in `govai.audit_capture_outbox`; `payload_hash` + `capture_id` recomputed with the repository's own functions matched (21/21, 6/6); one bounded seal-once (`apps/audit-sealer/src/seal-once.ts`, one committed tx, no loop) sealed exactly one capture with the deterministic `audit_event_id`, chain verified, tenant isolation held. This is acceptance evidence, not a claim of continuous production sealing.
+- **Native/Governed pre-provider denies are evidenced (M1 FB-4):** every governance-decision block (computer-use floor, `hard_denied` beta, governed matrix `blocked`) emits a durable blocked v4 capture (`enforcement_decision='blocked'`, `body_forward_mode='blocked'`, `credential_source='not_resolved_pre_provider_block'`, streaming block `stream_final_hash=SHA256(empty)` without `stream_outcome`); the ONE local outcome without a durable v4 event is provider-credential-unresolvable (HTTP 502 + structured warn log; residual R4). The v1 diagnostics `tool.validation_blocked` / `passthrough.beta_denied` remain log-only and are counted as bridge drops (residual R5).
 - Continuous sealer runner (B3): **IMPLEMENTED & INTEGRATION-TESTED (EP-006, `apps/audit-sealer`)** — Shape-S choreography (SPEC-B3 §1), the SEPARATE stale-recovery path, startup probe, bounded loop, OTel metrics; S0–S11 against real Postgres. ADR-023 Option A(b) impl/tested PR #92; AuditBridge wiring impl/tested PR-B #98; B3 authorized + implemented. (A B0 `failed→sealing` "unstick" migration for a terminally-stalled chain is a SEPARATE future decision, not in EP-006.)
 - `/v1/runs` run-lifecycle → audit chain (`auditAppend` via the P0.3-A durable dispatch layer, `run-dispatch-state.ts`): `IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED` (but to the chain, not the outbox). Durable dispatch boundary + honest `run.outcome_unknown` + bounded recovery: **IMPLEMENTED & INTEGRATION-TESTED (P0.3-A / PR #123)** — see *Durable provider dispatch* above.
 
@@ -156,9 +159,9 @@ P0.3-C adds the keyed-intent layer on top of F3 for both run-creation surfaces (
 | `/v1/runs` governed mode | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `run-orchestrator.ts`; `governed-run-e2e.test.ts` |
 | `/v1/runs` passthrough mode | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `run-orchestrator.ts`; `runs-passthrough-mode.test.ts` |
 | DLP pre-scan (scan-only) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `@govai/dlp-br`; governed handlers `dlpScan`; `scan-sensitive.test.ts` |
-| Policy decision persistence | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | beta-policy gate emits `passthrough.beta_denied`; `passthrough-beta-denied.test.ts` |
+| Policy decision persistence (Native beta floor) | IMPLEMENTED_FOUNDATIONAL_CONTROL_SOURCE_AND_TEST_VERIFIED | M1: only `hard_denied` tokens (provider-hosted computer-use family) are denied — 403 + `passthrough.beta_denied` diagnostic + durable blocked v4 capture; unknown/unresolved tokens forwarded with hashed markers (`beta:<state>:sha256:<64hex>` in `risk_escalation_reasons`); native-contract `BETA-*`/`DENY-01`; `passthrough-beta-denied.test.ts` |
 | Workroom approval override (passthrough) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `workroom-approvals.ts`; `workroom-approvals-runs.test.ts` |
-| Hard-deny runtime enforcement (regulatory) | DOCUMENTED_TARGET_ONLY | beta-policy does 403 at the provider surface, but regulatory prohibited-use/high-risk/agent hard-deny-floor are **evidence only** — no runtime gateway block. **Not claimed complete.** |
+| Hard-deny runtime enforcement (regulatory) | DOCUMENTED_TARGET_ONLY | the ONLY runtime hard denies are the provider-hosted computer-use floor (tool + beta) and the governed matrix `blocked` outcome; regulatory prohibited-use/high-risk/agent hard-deny-floor are **evidence only** — no runtime gateway block; Phase 5 ask/sandbox/enforce primitives NOT implemented. **Not claimed complete.** |
 
 ---
 
@@ -189,7 +192,7 @@ The README and regulatory docs explicitly disclaim LGPD/judicial/legal/medical/f
 
 ## 6. Known stale docs
 
-Summarized in [stale-docs-register.md](./stale-docs-register.md): README status block, `workroom-governance-room.md` status, ADR-020 role-model wording, and the ADR-032 file's promulgation-era `IMPLEMENTATION_STATUS=PENDING` pointer (localized documentary staleness — the accepted decision is not stale; EP-11 is implemented). ADR-022..026 are Accepted and B3 (EP-006) is implemented; see the PR-B / EP-004 and EP-006 reconciliation sections in stale-docs-register.md.
+Summarized in [stale-docs-register.md](./stale-docs-register.md). At the M3 freeze the former README status block, the ADR-032 `IMPLEMENTATION_STATUS=PENDING` pointer, the H1 coverage map's B3-gate wording, ADR-021 "Proposed" and the D9 "not present in repository" statements are all resolved. Remaining registered staleness is localized: `workroom-governance-room.md` status, ADR-020/022–027 status-line wording that predates EP-004/EP-006 (accepted decisions, not stale decisions), the untouched PR-0 E2–E13 targets (`governance-philosophy.md`, `baseline-decisions.md`, `source-spec.md`, `docs/contracts/*` — historical/target framing), two `tests/live/*` comments, and the promoted July 2026 plans/registers whose bodies are historical snapshots (each carries a promulgation header saying so). ADR-022..026 are Accepted and B3 (EP-006) is implemented.
 
 ---
 
@@ -207,12 +210,12 @@ Summarized in [stale-docs-register.md](./stale-docs-register.md): README status 
 
 ## 8. P0 findings register (F1–F6, C-2) and F4 canonical state
 
-The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at main `f381d3fa` is the **matrix below** — deliberately **no aggregate count** ("N findings") is asserted, because F2's classification is pending a separate source adjudication and any total would prejudge it. EP-11 (PR #126) is a **subsequent provider-truth correction outside this matrix** — it is not an F-finding and must not be conflated with F2, which remains `OPEN_PENDING_SOURCE_CLASSIFICATION`.
+The P0 "Truth and Integrity" program tracks source findings about evidence truthfulness (see the roadmap's operational-priority register for sequencing). The canonical per-finding state at the Foundation V1 anchor `de80664a` is the **matrix below**. All seven items (F1–F6 + C-2) are dispositioned: five corrected, F4 preventive hardening, and **F2 CLOSED as an evidence-granularity residual** by the M3 source adjudication (freeze record §5) — no runtime defect, no false evidence, no schema v5. EP-11 (PR #126) is a **subsequent provider-truth correction outside this matrix** — it is not an F-finding and must not be conflated with F2.
 
 | Finding | Classification | Implementation status | Landed by / next | Subject |
 |---|---|---|---|---|
 | F1 | DEMONSTRATED | CORRECTED | P0.2 / `19bcb452` (PR #119) | real provider-credential provenance |
-| F2 | PENDING_SOURCE_CLASSIFICATION | OPEN | separate source adjudication + sealed-schema decision (do not classify as demonstrated, latent or disproved before that) | block-source provenance / sealed-schema decision |
+| F2 | EVIDENCE_GRANULARITY_GAP (`F2_RUNTIME_DEFECT=NO`, `F2_FALSE_EVIDENCE=NO`, `F2_FOUNDATION_BLOCKER=NO`) | CLOSED_WITH_REGISTERED_RESIDUAL (residual R2; `F2_SCHEMA_EVOLUTION=DEFERRED`, no v5) | M1 (PR #131) exposed recommendation vs applied honestly over HTTP (`x-govai-enforcement-decision` / `x-govai-enforcement-applied`, 403 `block_trigger`); M3 source adjudication closed it documentarily (freeze record §5, anti-evaporation clause §7) | block-source / applied-vs-recommended provenance is recomputed from other sealed fields + HTTP, not first-class in sealed v4 |
 | F3 | DEMONSTRATED | CORRECTED | P0.3-A / `165291d9` (PR #123) — durable provider dispatch; the remaining P0.3 slice (P0.3-C) landed as PR #129 / `f381d3fa` — the P0.3 runtime lane is COMPLETE | transaction and dispatch-state work |
 | F4 | LATENT_ARCHITECTURAL_RISK_NOT_OBSERVED_AS_FAILURE | PREVENTIVE_HARDENING_MERGED_AND_DUAL_VERIFIED | PR #120 / merge `719fefc2`, tree `c13d83db` | AuditBridge request-identity lifecycle scoping |
 | F5 | DEMONSTRATED | CORRECTED | P0.1 / `ed18736a` (PR #118) | demonstrated overlapping-span redaction paths |
@@ -259,7 +262,7 @@ F3_STATUS=CORRECTED
 P0_3_A=COMPLETE
 P0_3_C=COMPLETE          (PR #129 — see the P0.3-C canonical state below;
                           was OPEN at the PR #123 anchor)
-F2_STATUS=OPEN_PENDING_SOURCE_CLASSIFICATION
+F2_STATUS=CLOSED_WITH_REGISTERED_RESIDUAL   (M3; was OPEN_PENDING_SOURCE_CLASSIFICATION at the PR #123 anchor)
 ```
 
 **RLS process description (migration 0029), canonical correction** — earlier
@@ -300,7 +303,7 @@ EP11_MERGE_SHA=01c05fd61428a76d300b73fb335021f598519d2f
 ADR032_DECISION_STATUS=ACCEPTED
 ADR032_REPOSITORY_PROMULGATION=COMPLETE
 ADR032_RUNTIME_IMPLEMENTATION=IMPLEMENTED
-ADR032_ADR_FILE_IMPLEMENTATION_POINTER=STALE_PENDING_SEPARATE_MAINTENANCE
+ADR032_ADR_FILE_IMPLEMENTATION_POINTER=RECONCILED_BY_M3   (was STALE_PENDING_SEPARATE_MAINTENANCE)
 
 LOCAL_DATE_TRIGGERED_DENY_REMOVED=YES
 LOCAL_DEPRECATION_WARNING_REMOVED=YES
@@ -320,8 +323,10 @@ historical event/emitter/capture compatibility machinery
 `packages/core-events/src/passthrough-invoked.ts`,
 `packages/core-events/src/audit-bridge-capture-payload.ts`). "Runtime
 implementation" (complete, PR #126) and the ADR file's own "documentary
-pointer" (`IMPLEMENTATION_STATUS=PENDING` — localized staleness, separate
-maintenance) are distinct statements; see the register.
+pointer" were distinct statements at the PR #130 anchor; the ADR file now
+reads `IMPLEMENTATION_STATUS=COMPLETE — implemented by EP-11 / PR #126` (M3
+reconciliation; the promulgation-era interim wording is retained as
+`HISTORICAL_PRE_EP11_RUNTIME`).
 
 ### P0.3-C / PR #129 canonical state (cross-request execution idempotency)
 
@@ -340,8 +345,8 @@ PR129_SOURCE_BRANCH_PRESERVED=YES
 
 P0_3_C=COMPLETE
 P03_RUNTIME_LANE=COMPLETE
-P0_TRUTH_AND_INTEGRITY_PROGRAM=OPEN     (F2 + repository promulgation remain)
-F2_STATUS=OPEN_PENDING_SOURCE_CLASSIFICATION
+P0_TRUTH_AND_INTEGRITY_PROGRAM=CLOSED_AT_FOUNDATION_V1_FREEZE   (F2 closed with residual; PR-0/D9 promulgated in the M3 tree — see the M3 blocks below)
+F2_STATUS=CLOSED_WITH_REGISTERED_RESIDUAL   (was OPEN_PENDING_SOURCE_CLASSIFICATION at this PR's anchor)
 PROVIDER_EXACTLY_ONCE=NOT_CLAIMED
 ```
 
@@ -382,6 +387,104 @@ constraints are deliberately reconsidered. This is **not** an exactly-once
 gap and **not** a duplicate-execution vulnerability, and P0.3-C is not
 incomplete because of it.
 
+### Foundation V1 M1 / PR #131 canonical state (native/governed contract)
+
+```text
+PR131_STATUS=MERGED
+PR131_MERGE_SHA=3e90f2fbfb60a011ce8a21e189896c06887c1c04
+PR131_MERGE_TREE=599501bfe48e75b3b0b51edb042a0aa796563f56
+PR131_MERGE_PARENT=ab722debf92166a0685593cc6a80b2b69204fc3c
+PR131_PARENT_COUNT=1
+PR131_AUDITED_HEAD=1dd4d5e9d2cc653bd4df65d432cc9fd8eba12fe5
+PR131_TREE_EQUALS_AUDITED_HEAD_TREE=PASS
+PR131_CHANGED_FILES=57
+PR131_POST_MERGE_MAIN_CI_RUN=31965736103
+PR131_POST_MERGE_MAIN_CI=SUCCESS
+PR131_SOURCE_BRANCH_PRESERVED=YES
+
+OD1=A   NATIVE_AUDITED_DEFAULT=PASS_OBSERVE_EVIDENCE; hard-deny family = PROVIDER_HOSTED_COMPUTER_USE only; NATIVE_HARD_DENY_EXPANSION=FORBIDDEN
+OD2=A   labels keep forwarding; enforcement_applied + block_trigger exposed additively over HTTP; no sealed-schema change
+UNKNOWN_BETA_EVIDENCE_MODE=hashed_marker_in_risk_escalation_reasons   RAW_UNKNOWN_BETA_IN_EVIDENCE=NO
+CONTENT_ENCODING_DECISION=identity_upstream + defense_in_depth_drop_when_decoded
+DIRECT_CREDENTIAL_UNRESOLVABLE=502 provider_credential_unresolvable (scoped error handler; no fabricated v4)
+TAXONOMY_VERSION=<provider>.tools_taxonomy:schema_version=3:m1_noncomputer_forward_computer_use_floor
+OPENAI_BETA_POLICY_VERSION=openai-beta-policy@2026-08-16   ANTHROPIC_BETA_POLICY_VERSION=unchanged (2026-05-06 table)
+MIGRATIONS_CHANGED=0  CORE_EVENTS_CHANGED=0  AUDIT_BRIDGE_CHANGED=0  CAPTURE_PROJECTION_CHANGED=0  HASH_DOMAIN_CHANGED=0
+```
+
+Codex: 3 substantive P2 rounds (representation validators when decoded; 405 gate on
+method-agnostic resolver branches; pool acquisition inside the 502-wrapped path), then an
+explicit clean on the exact head.
+
+### Foundation V1 M2 real-provider acceptance canonical state (read-only at `3e90f2fb`)
+
+```text
+M2_BASE_SHA=3e90f2fbfb60a011ce8a21e189896c06887c1c04
+M2_REPOSITORY_WRITES=NONE
+M2_LANES=8/8 SDK Native+Governed × non-stream+stream (Anthropic + OpenAI) + chat-completions smoke
+M2_PROVIDER_4XX_RELAY=PASS   M2_UNKNOWN_BETA=PASS_PROVIDER_REJECTED_AS_EXPECTED   M2_REAL_BETA=PASS
+M2_TOOL_DESCRIPTORS=PASS   M2_COMPUTER_USE_BLOCK=PASS (4/4 surfaces, provider dispatch count 0)
+M2_V1_RUNS=PASS (both providers)   M2_IDEMPOTENT_REPLAY=PASS (0 second dispatch; divergent → 409)
+M2_AUDITBRIDGE_CAPTURE=PASS (30 durable rows; 21/21 hash + capture_id recomputation)
+M2_ONE_SHOT_SEALER=PASS (bounded seal-once; deterministic audit_event_id; chain valid; tenant isolation)
+M2_AGENT_CLIENTS=PASS (Claude Code 2.1.233 + Codex CLI 0.140.0-alpha.2, passthrough + governed)
+M2_SECRET_LEAK_CHECK=PASS   M2_SPEND_USD≈0.0177
+M2_FINDINGS=6 (F1 P2 request-id; F2–F6 P3) → F1/F2/F5 fixed by M2A; F3/F4/F6 deferred non-blocking
+```
+
+### Foundation V1 M2A / PR #132 canonical state (final corrections + live re-acceptance)
+
+```text
+PR132_STATUS=MERGED
+PR132_MERGE_SHA=de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68   (= FOUNDATION_V1_RUNTIME_ANCHOR)
+PR132_MERGE_TREE=0174a5c5b2e74c80b904d035b4f8ddc10abbbd69   (= live-accepted head tree ⇒ no post-merge live rerun needed)
+PR132_MERGE_PARENT=3e90f2fbfb60a011ce8a21e189896c06887c1c04
+PR132_PARENT_COUNT=1
+PR132_AUDITED_HEAD=7cdde1915e76d202623bc0b0f1807759c885c123
+PR132_TREE_EQUALS_AUDITED_HEAD_TREE=PASS
+PR132_CHANGED_FILES=23
+PR132_POST_MERGE_MAIN_CI_RUN=31988375993
+PR132_POST_MERGE_MAIN_CI=SUCCESS
+PR132_SOURCE_BRANCH_PRESERVED=YES
+
+ANTHROPIC_REQUEST_ID_PRIMARY=request-id (fallbacks anthropic-request-id, x-request-id; provider-aware extractProviderRequestId)
+MAIN_MODULE_HELPER=apps/api/src/main-module.ts isMainModule
+F5_CLAUDE_BETA_QUERY_POLICY=PRESERVE (CASE A: real Anthropic accepts POST /v1/messages?beta=true)
+QUERY_STRIP_GENERAL_REGEX_REMOVED=YES   QUERY_IN_SEALED_V4=NO (native_endpoint stays the template)
+LIVE_REACCEPTANCE=PASS (real Anthropic non-stream + stream captures with request-id; real query lanes both providers; Claude Code smoke)
+CODEX_FINAL_RESULT=CLEAN on the exact head; CODEX_SUBSTANTIVE_CORRECTION_ROUNDS=0
+FOUNDATION_V1_RUNTIME_FREEZE_READY=YES
+```
+
+### Foundation V1 M3 canonical freeze — D9 / PR-0 promulgation state (this tree)
+
+```text
+FOUNDATION_V1_RUNTIME_ANCHOR=de80664a6d2f6ce9312b4bcc6e27c0ea4eba4e68
+FOUNDATION_V1_DOCUMENTARY_FREEZE_PR=133   (branch docs/foundation-v1-m3-canonical-freeze; frozen head/tree + merge SHA in the external mission record)
+FOUNDATION_V1=DOCUMENTARY_FREEZE_RECORDED_IN_THIS_TREE   (tree-stable: this tree carries the freeze record; the lifecycle step FREEZE_PENDING_M3_MERGE → FROZEN_BASELINE is declared by the external post-merge proof of PR #133, never by this file)
+
+D9_SOURCE_CORPUS_LOCATED=YES
+D9_SOURCE_PROVENANCE=USER_SUPPLIED_V09_PACKAGE
+D9_EXTERNAL_LEDGER=43_OF_43_PASS   PR0_INTERNAL_MANIFEST=26_OF_26_PASS   V09_PHYSICAL_ENTRIES=15   D9_HASH_VERIFICATION=11_OF_11_PASS
+D9_PRIOR_CANONICAL_HASH_LEDGER=NOT_AVAILABLE
+D9_PRESENT_IN_REPOSITORY_MAIN=YES_IN_M3_TREE   (post-merge proof re-runs against main)
+D9_REPOSITORY_PROMULGATION=COMPLETE_IN_M3_TREE
+D9_REAL_MISSING_TARGETS_IN_PR_TREE=0        (0025_…sql:35-37 → spec-v2.1 / ADR-017 / threat-model now resolve; capture.ts:54 "See ADR-017" resolves)
+PR0_STATUS=PROMULGATED_BY_M3                (was DOCUMENTARY_BLOCKED_PENDING_PROMULGATION)
+PR0_D9_V2=COMPLETE_IN_M3_TREE
+
+ADR021_STATUS=ACCEPTED   ADR032_IMPLEMENTATION_STATUS=COMPLETE (EP-11 / PR #126)
+ADR016=CANDIDATE_TARGET_ARCHITECTURE  ADR017=HISTORICAL_PRECURSOR  ADR018=ACCEPTED_DOCTRINE  ADR019=ACCEPTED_TARGET_DECISION
+ADR029=PROPOSED (text reconciled)  ADR030=PROPOSED (text reconciled)  ADR031=ACCEPTED
+SPEC_V2_1=HISTORICAL_PRE_FOUNDATION_RUNTIME   SPEC_V2_2=NAMED_FOLLOW_UP (not authored; no file)
+H1_COVERAGE_MAP=REGENERATED_AT_de80664a (CT-005 covered; STREAM-005 hash correctness; live acceptance separated)
+LEGACY_ROOT_ARTIFACTS=INVENTORIED_DEFERRED_TO_SEPARATE_HYGIENE_PR
+```
+
+Provenance record: [d9-promulgation-manifest.md](./d9-promulgation-manifest.md); ADR
+status per file: [adr/ADR-INDEX.md](./adr/ADR-INDEX.md); documentary navigation:
+[../README.md](../README.md).
+
 ### F4 canonical state
 
 ```text
@@ -404,26 +507,25 @@ F4 is **preventive hardening** — it is NOT a proven cross-request contaminatio
 - The harness is now a permanent regression guard for the asynchronous and transactional work expected in P0.3.
 - The harness cleanup fix tracks complete request Promises, so parked requests cannot obscure the original test failure.
 
-### Separate P1 evidence-integrity register
+### Separate P1 evidence-integrity register — SUPERSEDED BY NARROW RESIDUALS (M3)
 
-- **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** — separate P1
-  evidence-integrity family, outside the F1–F6 + C-2 numbering and
-  outside the narrow EP-11 implementation scope. Subfamily A,
-  `LOCAL_DENY_EVENT_EMITTED_THEN_DROPPED`, currently includes
-  `passthrough.beta_denied` and `tool.validation_blocked`.
-  Subfamily B, `LOCAL_DENY_NO_AUDIT_EVENT_EMITTED`, historically
-  included the `purpose_deprecated_post_sunset` branch; **EP-11
-  (PR #126) removed that specific branch**
-  (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`). The
-  owner-adjudicated decision was promulgated to the repository as
-  ADR-032 in PR #125 and its runtime correction merged in PR #126
-  (superseding the earlier "staged outside the repository" state).
-  EP-11 did **not** remediate the entire P1 family — other
-  local-deny evidence gaps remain; class-wide evidence remediation
-  remains a separate EP
-  (`LOCAL_DENY_EVIDENCE_INCOMPLETENESS=OPEN_SEPARATE_P1`).
+The former class-wide **LOCAL_DENY_EVIDENCE_INCOMPLETENESS** P1 family (Subfamily A
+"emitted then dropped": `passthrough.beta_denied`, `tool.validation_blocked`;
+Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
+**not carried forward as a class** — `OLD_CLASS_WIDE_LOCAL_DENY_LABEL=SUPERSEDED_BY_NARROW_RESIDUALS`
+(source-adjudicated at `de80664a`, freeze record §9):
+
+- Subfamily B's member was **removed by EP-11** (`PURPOSE_DEPRECATED_LOCAL_DENY_BRANCH=CLOSED_BY_EP11`).
+- Subfamily A: since M1 (FB-4) every Native/Governed pre-provider governance block
+  (computer-use floor, `hard_denied` beta, governed matrix `blocked`) emits a **durable
+  blocked v4 capture** in addition to the v1 diagnostic — the block evidence is durable;
+  what remains is (i) the log-only v1 diagnostics being counted as bridge drops
+  (residual **R5**, non-blocking) and (ii) the provider-credential-unresolvable path,
+  which returns 502 with a structured log and no fabricated v4 event (residual **R4**).
+- Evidence-granularity items that used to be argued under this label are registered as
+  R2 (F2 applied-vs-recommended provenance) and R3 (typed unknown-beta provenance).
 
 ### F4 follow-up register (narrow, non-blocking)
 
-- **SEEDORG_FLAKE_CANDIDATE** — root cause: **UNVERIFIED**. Observed symptom: an earlier unrelated integration attempt reported a primary-key prefix collision. Status: follow-up test-harness investigation; priority: does not block F4 closure. `seedOrg` itself is unmodified.
+- **SEEDORG_FLAKE_CANDIDATE** — root cause: **SOURCE-ADJUDICATED (M3)**. Observed symptom: an earlier unrelated integration attempt reported a primary-key prefix collision. The collision domain is the API-key prefix generator and schema, not the fixture: `packages/core-identity/src/api-keys.ts` forms the lookup prefix as `govai_sk_` plus three base64url characters (`PREFIX_LOOKUP_LEN=12`, nominal domain 64³ = 262,144) with no collision retry, and `govai.api_keys.prefix` is the PRIMARY KEY (migration `0005_runtime_patch_1.sql`). No production human/API-key issuance lifecycle exists at the anchor — `generateApiKey()` and every `INSERT INTO govai.api_keys` in the tree are test-only — so the classification is `LATENT_AUTH_LIFECYCLE_DESIGN_RISK`, deferred to the named follow-up `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING` in the R14 human-auth lane; not a Foundation V1 runtime blocker and it does not block F4 closure. `seedOrg` itself is unmodified.
 - **DIRECT_STREAM_REQUEST_ID_HEADER_GAP** — status: **PRE_EXISTING**; introduced by F4: NO; F4-blocking: NO. Direct streaming responses do not carry the `X-GovAI-Request-Id` echo; resolving it is a separate future behavior-and-compatibility decision.
