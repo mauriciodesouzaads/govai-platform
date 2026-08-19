@@ -1,0 +1,105 @@
+/* GovAI design tokens — "Ledger": a technical ledger aesthetic. Dense, sober, functional
+   typography, colour reserved almost entirely for STATUS SEMANTICS rather than decoration.
+   Reconciled from the promulgated UI Master Plan §3.1 / Application Master Plan §7.1.
+
+   LIGHT THEME ONLY in U1. A dark theme is deliberately NOT implemented — but every colour in
+   the application resolves through the custom properties below, so shipping one later is a
+   second token block here, never a component edit. No component may hard-code a colour.
+
+   Colour doctrine (normative — mission §16):
+     ok         green   ONLY for facts actually verified / covered / sealed / succeeded.
+     attention  amber   pending, incomplete, awaiting, needs attention.
+     failure    red     material failure / block / gap.
+     neutral    slate   observation, metadata, a recommendation that was NOT applied.
+     info       blue    in-flight execution, navigational pivots.
+     regulatory violet  RESERVED for the regulatory-evidence axis. No U1 screen uses it; the
+                        token exists so that area cannot later invent an ad-hoc colour and blur
+                        the runtime-vs-regulatory distinction. */
+
+:root {
+  /* Surfaces & structure */
+  --govai-bg-app: #f8fafc;
+  --govai-bg-surface: #ffffff;
+  --govai-bg-inset: #f1f5f9;
+  --govai-border: #e2e8f0;
+  --govai-border-strong: #cbd5e1;
+
+  /* Text */
+  --govai-text-primary: #0f172a;
+  --govai-text-secondary: #475569;
+  --govai-text-tertiary: #94a3b8;
+
+  /* Brand & interaction */
+  --govai-brand: #1e40af;
+  --govai-brand-hover: #1e3a8a;
+  --govai-brand-contrast: #ffffff;
+  --govai-link: #1d4ed8;
+  --govai-focus-ring: #93c5fd;
+
+  /* Semantic status: ok / covered / sealed / verified */
+  --govai-ok-text: #15803d;
+  --govai-ok-bg: #f0fdf4;
+  --govai-ok-border: #bbf7d0;
+
+  /* Semantic status: attention / pending / incomplete */
+  --govai-attention-text: #b45309;
+  --govai-attention-bg: #fffbeb;
+  --govai-attention-border: #fde68a;
+
+  /* Semantic status: failure / block / gap */
+  --govai-failure-text: #b91c1c;
+  --govai-failure-bg: #fef2f2;
+  --govai-failure-border: #fecaca;
+
+  /* Semantic status: neutral / observational / not applied */
+  --govai-neutral-text: #475569;
+  --govai-neutral-bg: #f1f5f9;
+  --govai-neutral-border: #e2e8f0;
+
+  /* Semantic status: info / execution / pivot */
+  --govai-info-text: #1d4ed8;
+  --govai-info-bg: #eff6ff;
+  --govai-info-border: #bfdbfe;
+
+  /* Semantic status: regulatory-evidence axis (reserved; unused in U1) */
+  --govai-regulatory-text: #6d28d9;
+  --govai-regulatory-bg: #f5f3ff;
+  --govai-regulatory-border: #ddd6fe;
+
+  /* Typography. Inter-style UI and JetBrains-Mono-style technical data are realised through
+     robust system stacks: an enterprise evidence product must not depend on fetching a font
+     from a third-party origin at runtime, and no font bytes are bundled for U1. Substituting
+     packaged webfonts later is a change to these two lines only. */
+  --govai-font-ui: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+  --govai-font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+
+  /* Type scale (px): metadata, table cell, base, section, page, tile number, headline number */
+  --govai-text-2xs: 0.6875rem; /* 11 */
+  --govai-text-xs: 0.75rem; /* 12 */
+  --govai-text-sm: 0.8125rem; /* 13 */
+  --govai-text-base: 0.875rem; /* 14 */
+  --govai-text-md: 1rem; /* 16 */
+  --govai-text-lg: 1.125rem; /* 18 */
+  --govai-text-xl: 1.375rem; /* 22 */
+  --govai-text-2xl: 1.75rem; /* 28 */
+
+  /* 4px spacing grid */
+  --govai-space-1: 0.25rem;
+  --govai-space-2: 0.5rem;
+  --govai-space-3: 0.75rem;
+  --govai-space-4: 1rem;
+  --govai-space-6: 1.5rem;
+  --govai-space-8: 2rem;
+
+  /* Radii & elevation. Borders over floating cards; one shadow level, for dialogs only. */
+  --govai-radius-control: 6px;
+  --govai-radius-card: 8px;
+  --govai-radius-pill: 999px;
+  --govai-shadow-dialog: 0 10px 32px rgb(15 23 42 / 18%);
+
+  /* Layout */
+  --govai-content-max: 1440px;
+  --govai-row-height: 2.25rem; /* 36px dense table row */
+}
