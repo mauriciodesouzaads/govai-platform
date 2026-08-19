@@ -59,10 +59,15 @@ const GAP_SCHEMAS: {
 
 export function useEvidenceSummary(
   windowSeconds: number,
+  /** `enabled: false` issues no request at all. The gap views that do not depend on T_seal
+   *  use it: the summary runs several server-side aggregates and spends one of the API's
+   *  shared 100 requests per minute, so a result nobody reads must not be fetched. */
+  options: { enabled?: boolean } = {},
 ): UseQueryResult<z.infer<typeof EvidenceSummaryResponse>> {
   const { client } = useSession();
   return useQuery({
     queryKey: queryKeys.evidenceSummary(windowSeconds),
+    enabled: options.enabled ?? true,
     queryFn: ({ signal }) =>
       client.get('/v1/evidence/summary', {
         query: { window: windowSeconds },

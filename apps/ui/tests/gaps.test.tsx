@@ -11,6 +11,7 @@ import {
   EC3_DROP_BOUND,
   EC4_ROWS,
   ORG_ID,
+  SUMMARY_WITH_GAPS,
   UNOBSERVED_DROP,
 } from './msw/fixtures.js';
 import { CATALOGS } from '../src/lib/i18n/catalogs/index.js';
@@ -245,6 +246,32 @@ describe('gap views — measurement context', () => {
       const context = screen.getByTestId('measurement-context');
       expect(within(context).queryByText(CATALOGS['pt-BR']['window.tSeal'])).toBeNull();
       expect(within(context).queryByText('5 min')).toBeNull();
+      unmount();
+    },
+  );
+
+  it.each([
+    ['ec1', 1],
+    ['ec3seal', 1],
+    ['ec2', 0],
+    ['ec4', 0],
+    ['ec3drop', 0],
+  ] as const)(
+    '%s issues %i summary request(s) — the ones that discard the answer issue none',
+    async (invariant, expected) => {
+      // The summary runs several server-side aggregates and costs one of the API's shared
+      // 100 requests per minute; a result nobody reads must not be fetched.
+      let summaryCalls = 0;
+      server.use(
+        http.get('*/v1/evidence/summary', () => {
+          summaryCalls += 1;
+          return HttpResponse.json(SUMMARY_WITH_GAPS);
+        }),
+      );
+      const { unmount } = renderGaps(invariant);
+      if (invariant === 'ec3drop') await screen.findByTestId('ec3drop-singleton');
+      else await screen.findByRole('table');
+      await waitFor(() => expect(summaryCalls).toBe(expected));
       unmount();
     },
   );

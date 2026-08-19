@@ -212,9 +212,11 @@ function GapsListScreen<I extends ListInvariant>({
   const { t } = i18n;
   const { window: evidenceWindow } = useEvidenceWindow();
   const query = useEvidenceGaps(invariant, evidenceWindow.seconds, GAPS_DEFAULT_LIMIT);
-  // Same query key as the cockpit's, so arriving from a tile costs nothing.
+  // Only the SLO-dependent views need T_seal, so only they fetch it. The query key is the
+  // cockpit's, so arriving from a tile costs nothing at all; on a direct link it costs one
+  // request — and none whatsoever on the views that would discard the answer.
   const sloDependent = SLO_DEPENDENT.has(invariant);
-  const summary = useEvidenceSummary(evidenceWindow.seconds);
+  const summary = useEvidenceSummary(evidenceWindow.seconds, { enabled: sloDependent });
 
   const pages = useMemo(() => query.data?.pages ?? [], [query.data]);
   const items = useMemo(() => pages.flatMap((p) => p.items), [pages]);
