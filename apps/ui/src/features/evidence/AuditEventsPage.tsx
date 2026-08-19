@@ -101,18 +101,34 @@ export function AuditEventsPage() {
       {
         id: 'previous_hmac',
         header: t('audit.column.previousHmac'),
-        cell: ({ row }) =>
-          row.original.previous_hmac === null ? (
-            // A null previous link is the genesis event of the chain, not a broken chain.
+        cell: ({ row }) => {
+          if (row.original.previous_hmac !== null) {
+            return <HashText value={row.original.previous_hmac} label="previous_hmac" />;
+          }
+          // ★ A null previous link is the genesis of the chain ONLY at sequence 1. Anywhere
+          // else it is a link that should exist and does not — precisely the anomaly a
+          // chain-integrity view exists to expose, and calling it "the first event" would
+          // explain away the finding. The schema and the column both permit null
+          // independently of the sequence, so the distinction is made here.
+          if (row.original.sequence_number === 1) {
+            return (
+              <span
+                className="text-[length:var(--govai-text-xs)] text-[var(--govai-text-tertiary)] italic"
+                data-testid="genesis-link"
+              >
+                {t('audit.genesisLink')}
+              </span>
+            );
+          }
+          return (
             <span
-              className="text-[length:var(--govai-text-xs)] text-[var(--govai-text-tertiary)] italic"
-              data-testid="genesis-link"
+              className="text-[length:var(--govai-text-xs)] font-medium text-[var(--govai-failure-text)]"
+              data-testid="broken-link"
             >
-              {t('audit.genesisLink')}
+              {t('audit.brokenLink')}
             </span>
-          ) : (
-            <HashText value={row.original.previous_hmac} label="previous_hmac" />
-          ),
+          );
+        },
       },
       {
         id: 'hmac',

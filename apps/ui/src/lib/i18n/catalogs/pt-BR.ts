@@ -240,6 +240,7 @@ export const ptBR = {
   'audit.column.keyId': 'key_id',
   'audit.column.keyVersion': 'key_version',
   'audit.genesisLink': 'primeiro evento da cadeia (sem elo anterior)',
+  'audit.brokenLink': 'elo anterior ausente fora do início da cadeia — inesperado',
   'audit.empty': 'Nenhum evento nesta cadeia.',
   'audit.keysetNote':
     'A paginação é por chave decrescente (before_seq). A API não devolve cursor: a próxima página parte do menor sequence_number já carregado.',

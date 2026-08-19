@@ -173,6 +173,32 @@ describe('audit chain — row rendering', () => {
     );
   });
 
+  it('flags a missing previous link OUTSIDE the genesis row as an anomaly, not a start', async () => {
+    // A chain-integrity view exists to expose exactly this; labelling it "the first event"
+    // would explain the finding away.
+    server.use(
+      http.get('*/v1/audit-events', () =>
+        HttpResponse.json({
+          chain_id: RUN_CHAIN_ID,
+          events: [
+            auditEvent(3),
+            auditEvent(2, { previous_hmac: null }),
+            auditEvent(1, { previous_hmac: null }),
+          ],
+        }),
+      ),
+    );
+    renderChain();
+    await screen.findByRole('table');
+    expect(screen.getByTestId('broken-link')).toHaveTextContent(
+      CATALOGS['pt-BR']['audit.brokenLink'],
+    );
+    // Sequence 1 keeps the genesis reading — the two states are distinguished, not merged.
+    expect(screen.getByTestId('genesis-link')).toHaveTextContent(
+      CATALOGS['pt-BR']['audit.genesisLink'],
+    );
+  });
+
   it('truncates long hashes but keeps the full value reachable', async () => {
     renderChain();
     const table = await screen.findByRole('table');

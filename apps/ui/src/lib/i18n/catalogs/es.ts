@@ -234,6 +234,7 @@ export const es: Catalog = {
   'audit.column.keyId': 'key_id',
   'audit.column.keyVersion': 'key_version',
   'audit.genesisLink': 'primer evento de la cadena (sin eslabón anterior)',
+  'audit.brokenLink': 'eslabón anterior ausente fuera del inicio de la cadena — inesperado',
   'audit.empty': 'Sin eventos en esta cadena.',
   'audit.keysetNote':
     'La paginación es por clave descendente (before_seq). La API no devuelve cursor: la página siguiente parte del menor sequence_number ya cargado.',

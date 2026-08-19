@@ -11,6 +11,7 @@ import type { ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { createCredentialStore, type CredentialStore } from './credential.js';
 import { createApiClient, type ApiClient } from '../api/client.js';
+import { queryKeys } from '../api/keys.js';
 import { EvidenceSummaryResponse } from '../contract/evidence.js';
 import { ApiError, isApiError } from '../contract/errors.js';
 import { DEFAULT_WINDOW } from '../window.js';
@@ -92,10 +93,15 @@ export function SessionProvider({ children, baseUrl, fetchImpl, store }: Session
         throw new ApiError({ kind: 'unknown', message: 'probe failed' });
       }
       storeRef.current.set(trimmed);
+      // The probe IS a summary read for the default window — the same request the cockpit is
+      // about to make. Seeding the cache with it avoids running the summary's several
+      // server-side aggregates twice and spending two of the API's shared 100 requests per
+      // minute on every sign-in. Seeded AFTER the credential is stored, so nothing clears it.
+      queryClient.setQueryData(queryKeys.evidenceSummary(DEFAULT_WINDOW.seconds), summary);
       setOrgId(summary.org_id);
       setIsAuthenticated(true);
     },
-    [client],
+    [client, queryClient],
   );
 
   const value = useMemo<SessionValue>(

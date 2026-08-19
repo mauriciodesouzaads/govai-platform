@@ -5,10 +5,11 @@ import { QueryClient } from '@tanstack/react-query';
 import { AppRoutes } from '../src/app/routes.js';
 import { renderApp } from './render.js';
 import { server, VALID_KEY } from './msw/server.js';
-import { ORG_ID } from './msw/fixtures.js';
+import { ORG_ID, SUMMARY_WITH_GAPS as SUMMARY_FOR_SEED } from './msw/fixtures.js';
 import { CATALOGS } from '../src/lib/i18n/catalogs/index.js';
 import { createCredentialStore } from '../src/lib/session/credential.js';
 import { queryKeys } from '../src/lib/api/keys.js';
+import { createQueryClient } from '../src/lib/api/query-client.js';
 
 // The session is the security boundary of this application, so its lifecycle is tested through
 // the real router: sign in, navigate, expire, sign out.
@@ -35,6 +36,28 @@ describe('routing requires a session', () => {
     expect(screen.getByTestId('coverage-panel')).toBeInTheDocument();
     // The org id is LEARNED from the authenticated response, never chosen.
     await waitFor(() => expect(screen.getAllByText(ORG_ID).length).toBeGreaterThan(0));
+  });
+
+  it('signing in costs ONE summary read, not two', async () => {
+    // The /enter probe already IS a summary read for the default window; discarding it would
+    // run the endpoint's several aggregates twice and spend two of the shared 100 req/min.
+    let summaryCalls = 0;
+    server.use(
+      http.get('*/v1/evidence/summary', ({ request }) => {
+        if (request.headers.get('x-govai-api-key') !== VALID_KEY) {
+          return HttpResponse.json({ error: 'auth_error', message: 'invalid' }, { status: 401 });
+        }
+        summaryCalls += 1;
+        return HttpResponse.json(SUMMARY_FOR_SEED);
+      }),
+    );
+    // The application's real query client, so its staleTime governs the refetch decision.
+    const { user } = renderApp(<AppRoutes />, {
+      route: '/enter',
+      queryClient: createQueryClient(),
+    });
+    await signInThroughUi(user);
+    await waitFor(() => expect(summaryCalls).toBe(1));
   });
 
   it('exposes no organization selector — the org derives from the credential', async () => {

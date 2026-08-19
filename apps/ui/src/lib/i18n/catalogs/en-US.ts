@@ -231,6 +231,7 @@ export const enUS: Catalog = {
   'audit.column.keyId': 'key_id',
   'audit.column.keyVersion': 'key_version',
   'audit.genesisLink': 'first event of the chain (no previous link)',
+  'audit.brokenLink': 'previous link missing outside the start of the chain — unexpected',
   'audit.empty': 'No events in this chain.',
   'audit.keysetNote':
     'Pagination is descending keyset (before_seq). The API returns no cursor: the next page starts from the smallest sequence_number already loaded.',
