@@ -362,3 +362,38 @@ Notes (NOT corrections):
 - Historical reconciliation sections in this register remain historical and are not
   rewritten; earlier D9/F2/B3 statements in them are HISTORICAL_STATE.
 - Provider beta policy tables were NOT refreshed by M3 (documented as residual R6).
+
+## UI/UX V1 U1 reconciliation (EP-UIUX-V1-U1) — `apps/ui` exists; the lane has started
+
+The `UI_UX_V1_FOUNDATION` lane the M3 freeze recommended has been started, and its first
+milestone (U1 — evidence cockpit) is implemented as `apps/ui`. This is a code movement with a
+minimal documentary reconciliation: **no backend runtime, migration, event-schema, AuditBridge,
+capture-projection or hash-domain change**, so the Foundation V1 runtime anchor `de80664a`
+stands. Corrections applied:
+
+| Document | Was (stale once `apps/ui` exists) | Now (corrected) |
+|---|---|---|
+| `current-state.md` | no interface layer recorded at all; source manifests listed 2 apps and only the root vitest corpus | Status bullet + §1 *Interface layer* (surfaces, honesty vocabulary, i18n, session model, explicit non-claims); manifests list 3 apps and the separate `@govai/ui` suite |
+| `development-roadmap.md` | `NEXT_RECOMMENDED_PRODUCT_LANE=UI_UX_V1_FOUNDATION` / `NEXT_EXECUTED=NO`; section titled "next product lane (recommended, NOT started)" | lane **STARTED**, `UI_UX_V1_U1=IMPLEMENTED_IN_THIS_TREE`, `UI_UX_V1_U2=NOT_STARTED` with its named backend prerequisites (EP-B2, EP-B4) and the other named follow-ups (EP-B7, EP-B1, EP-V1, Playwright); the constraints (R12/R13/R14, claims-policy) are retained verbatim in force |
+| `resume-playbook.md` | "Next recommended product lane … NOT started"; CI described as the **unit** and **integration** jobs | current lane STARTED with U1 implemented and U2 not started; CI described as **unit**, **ui** and **integration** |
+
+Newly registered staleness observed while re-reading the source for U1 (NOT edited — the
+promoted July 2026 plan bodies are preserved under the §16 large-document policy):
+
+| Document | Statement | Classification | Action |
+|---|---|---|---|
+| `plans/GOVAI-UI-MASTER-PLAN-FABLE5…` §2.1 (screen 4) and §9.2; `plans/GOVAI-MASTER-PLAN-APPLICATION-FABLE5…` §3.4 | the capabilities screen shows "em que nível (`policy_governed` vs `passthrough_audited`)" | **STALE_CONTRACT_ASSERTION** — `GET /v1/capabilities` serves `BASELINE_REGISTRY` from `@govai/core-governance`, whose facets carry a NUMERIC governance level 0–3 (ADR-004/ADR-005) and an orthogonal `evidence_strength`. `policy_governed`/`passthrough_audited`, `base_risk_class` and endpoint coverage live in the `@govai/core-types` provider registries, which that route never touches. This family is NOT covered by the M3 promulgation header's known-stale list (a)–(f) | U1 renders the numeric governance level and says so explicitly on the screen; the plan bodies are preserved |
+| same plans, data conventions (`bigint SEMPRE como string decimal`) | stated as a repository-wide convention | **OVERBROAD_AS_STATED** — true for `Ec2GapRow.first_gap_seq` / `gap_count`, but `GET /v1/audit-events` narrows `sequence_number` with `Number()` server-side (`routes/audit-events.ts:84`), so it is a JSON number on that route | the UI mirrors each route's actual type; both are pinned by tests |
+| same plans, §3.3 / §9.3 ("envelope de erro uniforme `{error, …}`") | stated as universal | **INCOMPLETE_AS_STATED** — the 429 body comes from `@fastify/rate-limit` and an unknown path 404s with Fastify's default; neither carries a GovAI `error` code | the UI client normalizes both shapes and keys 429 off the status code |
+| `plans/GOVAI-UI-MASTER-PLAN…` §5.1 / §7.3, F1–F6 "contrato corrigido — pendente do fix" family | UI fields gated behind a `contractFixed` flag | already listed as known-stale family (a) in the M3 promulgation header (F1/F3/F4/F5/F6 + C-2 corrected, F2 closed with residual) | no flag machinery was built: U1 renders no per-request enforcement field, because no route exposes one at this base (EP-B6) |
+
+Notes (NOT corrections):
+
+- EP-UIUX-V1-U1 changes `apps/ui/**`, `pnpm-lock.yaml`, `.github/workflows/ci.yml`, the
+  repository-root `vitest.config.ts` (one `exclude` entry so the node-environment root config
+  does not collect the jsdom UI suite) and the three canonical documents above. No `apps/api`,
+  `apps/audit-sealer`, `packages/**`, migration, schema or D9 artifact is touched.
+- The Foundation V1 residual register (freeze record §6) is unchanged by this movement:
+  R12 (Phase 5 primitives), R13 (tier ↔ governance-profile separation) and R14 (human auth
+  for a production UI) all still stand, and the U1 interface is built to respect them rather
+  than to work around them.

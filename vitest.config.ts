@@ -20,6 +20,10 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       'tests/live/**',
+      // UI/UX V1 U1: @govai/ui ships its own vitest config (jsdom + Testing Library + MSW).
+      // This root config is `environment: 'node'`, so collecting the UI suite here would run
+      // browser tests without a DOM. The CI `ui` job runs them via `pnpm --filter @govai/ui test`.
+      'apps/ui/**',
     ],
     testTimeout: 60_000,
     hookTimeout: 120_000,

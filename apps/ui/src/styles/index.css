@@ -1,0 +1,119 @@
+@import './tokens.css';
+@import 'tailwindcss';
+
+/* Map the GovAI tokens into Tailwind's theme so utilities (bg-surface, text-ok, …) resolve to
+   the SAME custom properties as hand-written CSS. `inline` keeps the generated utilities
+   referencing var(--govai-*), which is what makes a future dark theme a token-only change. */
+@theme inline {
+  --color-app: var(--govai-bg-app);
+  --color-surface: var(--govai-bg-surface);
+  --color-inset: var(--govai-bg-inset);
+  --color-line: var(--govai-border);
+  --color-line-strong: var(--govai-border-strong);
+
+  --color-ink: var(--govai-text-primary);
+  --color-ink-2: var(--govai-text-secondary);
+  --color-ink-3: var(--govai-text-tertiary);
+
+  --color-brand: var(--govai-brand);
+  --color-brand-hover: var(--govai-brand-hover);
+  --color-brand-contrast: var(--govai-brand-contrast);
+  --color-link: var(--govai-link);
+  --color-focus: var(--govai-focus-ring);
+
+  --color-ok: var(--govai-ok-text);
+  --color-ok-bg: var(--govai-ok-bg);
+  --color-ok-line: var(--govai-ok-border);
+  --color-attention: var(--govai-attention-text);
+  --color-attention-bg: var(--govai-attention-bg);
+  --color-attention-line: var(--govai-attention-border);
+  --color-failure: var(--govai-failure-text);
+  --color-failure-bg: var(--govai-failure-bg);
+  --color-failure-line: var(--govai-failure-border);
+  --color-neutral: var(--govai-neutral-text);
+  --color-neutral-bg: var(--govai-neutral-bg);
+  --color-neutral-line: var(--govai-neutral-border);
+  --color-info: var(--govai-info-text);
+  --color-info-bg: var(--govai-info-bg);
+  --color-info-line: var(--govai-info-border);
+
+  --font-ui: var(--govai-font-ui);
+  --font-mono: var(--govai-font-mono);
+
+  --radius-control: var(--govai-radius-control);
+  --radius-card: var(--govai-radius-card);
+  --radius-pill: var(--govai-radius-pill);
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background-color: var(--govai-bg-app);
+  color: var(--govai-text-primary);
+  font-family: var(--govai-font-ui);
+  font-size: var(--govai-text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A single, always-visible focus ring. Never removed — mission §17. */
+:focus-visible {
+  outline: 2px solid var(--govai-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--govai-radius-control);
+}
+
+/* Numeric columns line up; a mis-scanned digit in an evidence table is a real defect. */
+.govai-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.govai-mono {
+  font-family: var(--govai-font-mono);
+  font-size: var(--govai-text-xs);
+}
+
+/* Visible only to assistive technology; used for table captions and live-region status. */
+.govai-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Skip link: hidden until focused, then anchored at the top-left of the viewport. */
+.govai-skip-link {
+  position: absolute;
+  left: var(--govai-space-4);
+  top: -3rem;
+  z-index: 50;
+  background-color: var(--govai-bg-surface);
+  color: var(--govai-brand);
+  border: 1px solid var(--govai-border-strong);
+  border-radius: var(--govai-radius-control);
+  padding: var(--govai-space-2) var(--govai-space-3);
+  transition: top 120ms ease;
+}
+
+.govai-skip-link:focus {
+  top: var(--govai-space-4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
