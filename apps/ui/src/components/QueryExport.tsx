@@ -14,6 +14,7 @@ export function QueryExport({
   endpoint,
   params,
   pageParams,
+  serverContext,
   data,
   fileStem,
 }: {
@@ -25,6 +26,8 @@ export function QueryExport({
    * `data`. Supplying it is what keeps a multi-page export reproducible.
    */
   pageParams?: ExportParams[];
+  /** Server-reported measurement context that was not a request parameter (e.g. T_seal). */
+  serverContext?: ExportParams;
   /** The parsed response(s) exactly as received. */
   data: unknown;
   /** Basename for the downloaded file, e.g. "evidence-summary". */
@@ -40,13 +43,14 @@ export function QueryExport({
       endpoint,
       params,
       ...(pageParams ? { pageParams } : {}),
+      ...(serverContext ? { serverContext } : {}),
       orgId,
       locale,
       exportedAt: new Date().toISOString(),
     }),
     // `exportedAt` must be stamped when the dialog opens, not on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [endpoint, params, pageParams, orgId, locale, open],
+    [endpoint, params, pageParams, serverContext, orgId, locale, open],
   );
 
   const json = useMemo(

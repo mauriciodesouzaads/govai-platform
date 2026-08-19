@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useI18n, type I18nValue } from '../../lib/i18n/I18nProvider.js';
 import { useEvidenceWindow } from '../../app/shell/evidence-window-context.js';
-import { useEvidenceGaps, type GapRowFor } from '../../lib/api/hooks.js';
+import { useEvidenceGaps, useEvidenceSummary, type GapRowFor } from '../../lib/api/hooks.js';
 import { ContextItem, MeasurementContext, PageHeader } from '../../components/PageHeader.js';
 import { DataTable, LoadMore, type U1ColumnDef } from '../../components/DataTable.js';
 import { EmptyState, ErrorState, LoadingSkeleton } from '../../components/states.js';
@@ -29,6 +29,19 @@ import { ec1Columns, ec2Columns, ec3SealColumns, ec4Columns } from './gap-column
 // invariant — there is no cast anywhere between the response schema and the column cells.
 
 type ListInvariant = Exclude<EvidenceInvariant, 'ec3drop'>;
+
+/**
+ * The invariants whose gap POPULATION is defined by the seal SLO. `ec1GapList` and
+ * `ec3SealList` both select captured/sealing rows older than `t_seal_seconds`
+ * (apps/api/src/pipeline/evidence-reports.ts), so a reader who opens one of these views
+ * directly cannot tell why an in-flight row qualifies unless the threshold is on the page.
+ *
+ * The /gaps response does NOT carry `t_seal_seconds` — only /summary does — so these two
+ * views read it from the summary. Arriving from the cockpit that is already cached under the
+ * same window; on a direct link it costs one request. The other invariants do not depend on
+ * it, and showing it there would imply a relevance it does not have.
+ */
+const SLO_DEPENDENT: ReadonlySet<string> = new Set<ListInvariant>(['ec1', 'ec3seal']);
 
 const INVARIANT_LABEL: Record<EvidenceInvariant, MessageKey> = {
   ec1: 'invariant.ec1',
@@ -78,18 +91,23 @@ export function GapsPage() {
 function GapsChrome({
   invariant,
   windowSeconds,
+  tSealSeconds,
   exportData,
   exportPageParams,
   children,
 }: {
   invariant: EvidenceInvariant;
   windowSeconds: number;
+  /** Present only for the SLO-dependent invariants; `null` when the summary read did not
+   *  supply it, which is rendered as an explicit unknown rather than silently omitted. */
+  tSealSeconds?: number | null;
   exportData: unknown;
   /** The offset cursor actually used for each loaded page, in order. */
   exportPageParams?: number[];
   children: ReactNode;
 }) {
   const { t, locale } = useI18n();
+  const showTSeal = tSealSeconds !== undefined;
   return (
     <div className="space-y-[var(--govai-space-4)]">
       <PageHeader
@@ -110,6 +128,9 @@ function GapsChrome({
                     })),
                   }
                 : {})}
+              {...(showTSeal && tSealSeconds !== null
+                ? { serverContext: { t_seal_seconds: tSealSeconds } }
+                : {})}
               data={exportData}
               fileStem={`evidence-gaps-${invariant}`}
             />
@@ -123,6 +144,16 @@ function GapsChrome({
                   label={t('window.selected')}
                   value={formatDurationSeconds(windowSeconds, locale)}
                 />
+                {showTSeal && (
+                  <ContextItem
+                    label={t('window.tSeal')}
+                    value={
+                      tSealSeconds === null
+                        ? t('gaps.nullValue')
+                        : formatDurationSeconds(tSealSeconds, locale)
+                    }
+                  />
+                )}
                 <ContextItem label="invariant" value={invariant} />
               </>
             }
@@ -151,6 +182,9 @@ function GapsListScreen<I extends ListInvariant>({
   const { t } = i18n;
   const { window: evidenceWindow } = useEvidenceWindow();
   const query = useEvidenceGaps(invariant, evidenceWindow.seconds, GAPS_DEFAULT_LIMIT);
+  // Same query key as the cockpit's, so arriving from a tile costs nothing.
+  const sloDependent = SLO_DEPENDENT.has(invariant);
+  const summary = useEvidenceSummary(evidenceWindow.seconds);
 
   const pages = useMemo(() => query.data?.pages ?? [], [query.data]);
   const items = useMemo(() => pages.flatMap((p) => p.items), [pages]);
@@ -160,6 +194,7 @@ function GapsListScreen<I extends ListInvariant>({
     <GapsChrome
       invariant={invariant}
       windowSeconds={pages[0]?.window_seconds ?? evidenceWindow.seconds}
+      {...(sloDependent ? { tSealSeconds: summary.data?.t_seal_seconds ?? null } : {})}
       exportData={query.data ? pages : null}
       {...(query.data ? { exportPageParams: query.data.pageParams } : {})}
     >

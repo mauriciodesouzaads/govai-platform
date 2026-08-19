@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import { CockpitPage } from '../src/features/evidence/CockpitPage.js';
 import { HashText } from '../src/components/HashText.js';
+import { StatusBadge } from '../src/components/StatusBadge.js';
 import { renderApp } from './render.js';
 import { VALID_KEY } from './msw/server.js';
 import { ORG_ID, SUMMARY_WITH_GAPS } from './msw/fixtures.js';
@@ -49,6 +50,27 @@ describe('HashText — bounded by default, complete on demand', () => {
     expect(
       screen.queryByRole('button', { name: new RegExp(CATALOGS['pt-BR']['hash.showFull']) }),
     ).toBeNull();
+  });
+});
+
+describe('StatusBadge — an unrecognized value never hides itself', () => {
+  it('prints the raw value even when the caller suppressed it', () => {
+    // The gap-row `status` and the audit `evidence_strength` are typed as free strings on
+    // purpose, so a NEW backend enum member passes contract validation. Rendering only
+    // "unrecognized value" would hide exactly what an auditor needs to see.
+    renderApp(<StatusBadge domain="capture" value="quarantined_v2" showRaw={false} />);
+    expect(screen.getByTestId('status-raw')).toHaveTextContent('quarantined_v2');
+    expect(screen.getByText(CATALOGS['pt-BR']['status.unknown'])).toBeInTheDocument();
+    expect(screen.getByTestId('status-raw').closest('[data-tone]')).toHaveAttribute(
+      'data-tone',
+      'neutral',
+    );
+  });
+
+  it('still honours showRaw={false} for a value it does recognize', () => {
+    renderApp(<StatusBadge domain="capture" value="sealed" showRaw={false} />);
+    expect(screen.queryByTestId('status-raw')).toBeNull();
+    expect(screen.getByText(CATALOGS['pt-BR']['status.capture.sealed'])).toBeInTheDocument();
   });
 });
 
@@ -144,6 +166,32 @@ describe('query export — only what the API returned, plus non-secret context',
     // Index-aligned with `data`, so page i's parameters describe data[i].
     expect(payload.govai_export.pages).toHaveLength((payload.data as unknown[]).length);
     expect(payload.govai_export.disclaimer).toContain('pages[]');
+  });
+
+  it('records server-reported measurement context separately from request parameters', () => {
+    // T_seal defines the EC-1 / EC-3.seal gap population but is NOT a request parameter, so
+    // it must be recorded without being claimed as one.
+    const payload = buildQueryExport(
+      {
+        endpoint: '/v1/evidence/gaps',
+        params: { invariant: 'ec1', window: 86_400, limit: 100 },
+        serverContext: { t_seal_seconds: 300 },
+        orgId: ORG_ID,
+        locale: 'pt-BR',
+        exportedAt: 'x',
+      },
+      [],
+    );
+    expect(payload.govai_export.server_context).toEqual({ t_seal_seconds: 300 });
+    expect(payload.govai_export.params).not.toHaveProperty('t_seal_seconds');
+  });
+
+  it('omits server_context when the read has none', () => {
+    const payload = buildQueryExport(
+      { endpoint: '/v1/capabilities', params: {}, orgId: ORG_ID, locale: 'es', exportedAt: 'x' },
+      {},
+    );
+    expect(payload.govai_export.server_context).toBeUndefined();
   });
 
   it('reports an unavailable build SHA as null rather than fabricating one', () => {

@@ -63,10 +63,16 @@ export function StatusBadge({
 }) {
   const { t } = useI18n();
   const status = resolveStatus(domain, value);
+  // ★ An UNRECOGNIZED value always shows its raw text, whatever the caller asked for. Several
+  // of these fields are typed as free strings on purpose (the gap-row `status`, the audit
+  // `evidence_strength`), so a new backend enum member passes contract validation and would
+  // otherwise render as a bare "unrecognized value" — hiding exactly the value an auditor
+  // needs in order to see that the backend changed.
+  const renderRaw = showRaw || status.unknown;
   return (
     <ToneBadge tone={status.tone} data-testid={testId}>
       <span>{t(status.messageKey)}</span>
-      {showRaw && (
+      {renderRaw && (
         <code className="govai-mono opacity-70" data-testid="status-raw">
           {status.raw}
         </code>

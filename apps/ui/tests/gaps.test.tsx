@@ -224,6 +224,46 @@ describe('gap views — measurement context', () => {
     expect(within(context).getByText('ec4')).toBeInTheDocument();
   });
 
+  it.each(['ec1', 'ec3seal'] as const)(
+    '%s states T_seal, because the SLO decides which rows are in the list',
+    async (invariant) => {
+      renderGaps(invariant);
+      await screen.findByRole('table');
+      const context = await screen.findByTestId('measurement-context');
+      // The default summary handler reports t_seal_seconds: 300.
+      await waitFor(() => expect(within(context).getByText('5 min')).toBeInTheDocument());
+    },
+  );
+
+  it.each(['ec2', 'ec4', 'ec3drop'] as const)(
+    '%s does NOT state T_seal, because its population does not depend on it',
+    async (invariant) => {
+      // Showing the threshold where it is irrelevant would imply a relevance it does not have.
+      const { unmount } = renderGaps(invariant);
+      if (invariant === 'ec3drop') await screen.findByTestId('ec3drop-singleton');
+      else await screen.findByRole('table');
+      const context = screen.getByTestId('measurement-context');
+      expect(within(context).queryByText(CATALOGS['pt-BR']['window.tSeal'])).toBeNull();
+      expect(within(context).queryByText('5 min')).toBeNull();
+      unmount();
+    },
+  );
+
+  it('exports T_seal as server context, not as a request parameter', async () => {
+    const { user } = renderGaps('ec1');
+    await screen.findByRole('table');
+    await waitFor(() =>
+      expect(within(screen.getByTestId('measurement-context')).getByText('5 min')).toBeInTheDocument(),
+    );
+    await user.click(screen.getByTestId('query-export-open'));
+    const json = (await screen.findByTestId('query-export-json')).textContent ?? '';
+    const parsed = JSON.parse(json) as {
+      govai_export: { params: Record<string, unknown>; server_context?: Record<string, unknown> };
+    };
+    expect(parsed.govai_export.server_context).toEqual({ t_seal_seconds: 300 });
+    expect(parsed.govai_export.params).not.toHaveProperty('t_seal_seconds');
+  });
+
   it('renders in every supported language', async () => {
     for (const locale of ['pt-BR', 'en-US', 'es'] as const) {
       const { unmount } = renderGaps('ec4', locale);

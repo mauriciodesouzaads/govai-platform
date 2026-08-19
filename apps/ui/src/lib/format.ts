@@ -38,16 +38,30 @@ export function formatInteger(value: number | bigint, locale: Locale): string {
   return new Intl.NumberFormat(locale).format(value);
 }
 
+const RATIO_DIGITS = 3;
+
 /**
- * The coverage ratio as a fraction with up to three decimals (0.987), matching how the
- * backend expresses it. Deliberately NOT a percentage: the API's own unit is a ratio, and
- * re-expressing it invites rounding a 0.9996 into a reassuring "100%".
+ * The coverage ratio as a fraction with three decimals, matching how the backend expresses it.
+ * Deliberately NOT a percentage: the API's own unit is a ratio, and re-expressing it invites
+ * rounding a 0.9996 into a reassuring "100%".
+ *
+ * ★ Rounding must never cross a boundary and change the FACT. At three decimals 0.9996 would
+ * print as "1.000" — full coverage — while the panel beside it is simultaneously in an
+ * attention state because covered < total. A ratio that is below 1 therefore renders as
+ * "< 1.000", and a non-zero ratio that would round to zero renders as "> 0.000". The strict
+ * inequality is the honest reading, and it keeps the headline consistent with the exact
+ * covered/total counts printed next to it.
  */
 export function formatRatio(value: number, locale: Locale): string {
-  return new Intl.NumberFormat(locale, {
-    minimumFractionDigits: 3,
-    maximumFractionDigits: 3,
-  }).format(value);
+  const nf = new Intl.NumberFormat(locale, {
+    minimumFractionDigits: RATIO_DIGITS,
+    maximumFractionDigits: RATIO_DIGITS,
+  });
+  const factor = 10 ** RATIO_DIGITS;
+  const rounded = Math.round(value * factor) / factor;
+  if (rounded >= 1 && value < 1) return `< ${nf.format(1)}`;
+  if (rounded <= 0 && value > 0) return `> ${nf.format(0)}`;
+  return nf.format(value);
 }
 
 /** An ISO-8601 UTC instant rendered in the reader's locale and local time zone. Returns null

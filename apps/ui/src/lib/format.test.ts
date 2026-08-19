@@ -56,11 +56,26 @@ describe('locale-aware numbers', () => {
     expect(formatInteger(1543, 'pt-BR')).toBe('1.543');
   });
 
-  it('renders the ratio as a fraction with three decimals, not as a rounded percentage', () => {
-    // 0.9996 must not become "100%".
-    expect(formatRatio(0.9996, 'en-US')).toBe('1.000');
+  it('renders the ratio as a fraction with three decimals', () => {
     expect(formatRatio(0.9928, 'en-US')).toBe('0.993');
     expect(formatRatio(0.9928, 'pt-BR')).toBe('0,993');
+    expect(formatRatio(1, 'en-US')).toBe('1.000');
+    expect(formatRatio(0, 'en-US')).toBe('0.000');
+  });
+
+  it('never rounds an INCOMPLETE ratio up to full coverage', () => {
+    // 9,996 of 10,000 covered is not full coverage, and printing "1.000" beside an attention
+    // state would make the headline contradict the exact counts next to it.
+    expect(formatRatio(0.9996, 'en-US')).toBe('< 1.000');
+    expect(formatRatio(0.99999, 'en-US')).toBe('< 1.000');
+    expect(formatRatio(0.9996, 'pt-BR')).toBe('< 1,000');
+    // The boundary itself still reads exactly.
+    expect(formatRatio(0.9994, 'en-US')).toBe('0.999');
+  });
+
+  it('never rounds a non-zero ratio down to zero', () => {
+    expect(formatRatio(0.0004, 'en-US')).toBe('> 0.000');
+    expect(formatRatio(0.0006, 'en-US')).toBe('0.001');
   });
 
   it('formats a measured drop rate as a percentage with two decimals', () => {

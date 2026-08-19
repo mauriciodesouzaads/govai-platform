@@ -75,7 +75,9 @@ export function CoverageRing({
           dominantBaseline="central"
           textAnchor="middle"
           className="govai-tabular"
-          fontSize={size * 0.22}
+          // A qualified reading ("< 1,000") is longer than a bare one ("0,993"); shrink the
+          // inline type rather than letting it overflow the ring.
+          fontSize={size * (display.length > 5 ? 0.155 : 0.22)}
           fontWeight={600}
           fill="var(--govai-text-primary)"
         >

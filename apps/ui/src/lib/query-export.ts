@@ -29,6 +29,14 @@ export type QueryExportContext = {
    * with several — an artifact that cannot reproduce itself. Omitted for a single response.
    */
   pageParams?: ExportParams[];
+  /**
+   * Measurement context the SERVER reported, which is not a request parameter — currently
+   * `t_seal_seconds`, the SLO threshold that decides which rows belong to the EC-1 and
+   * EC-3.seal gap populations. It is kept out of `params` because putting it there would
+   * claim it was sent; it is kept in the export because a snapshot that omits the threshold
+   * defining its own population cannot be read correctly later.
+   */
+  serverContext?: ExportParams;
   /** The organization id LEARNED from the authenticated response. */
   orgId: string | null;
   locale: Locale;
@@ -48,6 +56,8 @@ export type QueryExport = {
     params: ExportParams;
     /** Present only for a paginated export: one entry per element of `data`, in order. */
     pages?: Array<{ index: number; params: ExportParams }>;
+    /** Server-reported measurement context that was not a request parameter. */
+    server_context?: ExportParams;
   };
   data: unknown;
 };
@@ -79,6 +89,7 @@ export function buildQueryExport(context: QueryExportContext, data: unknown): Qu
       ...(context.pageParams
         ? { pages: context.pageParams.map((params, index) => ({ index, params })) }
         : {}),
+      ...(context.serverContext ? { server_context: context.serverContext } : {}),
     },
     data,
   };
