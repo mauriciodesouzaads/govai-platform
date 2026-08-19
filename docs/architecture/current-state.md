@@ -35,7 +35,7 @@ Counts from `find` at the source commit (`de80664a`) plus the files added by the
 - API route files (`apps/api/src/routes/*`): **18** (17 routes + `_not-implemented.ts`)
 - DB migrations (`apps/api/src/db/migrations/*`): **29** (0001..0030, **missing** 0006; highest `0030_run_idempotency.sql`) — unchanged by M1/M2A/M3
 - test files run by the repository-root vitest config: **209** `*.test.ts` at `de80664a` — **128** unit (under `apps/`+`packages/`; M1 added the content-encoding / native-contract / registry-invariant / transport-encoding / m1-contract suites, M2A added `request-id.test.ts`, `main-module.test.ts` and the two `query-fidelity` suites), **76** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate the default `pnpm test` is **unit-only** (128 files, **1453** tests, reproduced locally at this anchor under Node 24 and again in this tree); `pnpm test:integration` adds the integration files (CI runs both jobs; post-merge main CI run `31988375993` SUCCESS at `de80664a`)
-- test files run by the `@govai/ui` vitest config (NEW in this tree, excluded from the root config because it is `environment: 'node'`): **14** files / **244** tests under `apps/ui/` (7 `*.test.ts` + 7 `*.test.tsx`), executed by the CI `ui` job via `pnpm --filter @govai/ui test`
+- test files run by the `@govai/ui` vitest config (NEW in this tree, excluded from the root config because it is `environment: 'node'`): **14** files / **281** tests under `apps/ui/` (7 `*.test.ts` + 7 `*.test.tsx`), executed by the CI `ui` job via `pnpm --filter @govai/ui test`
 
 ---
 
@@ -69,7 +69,7 @@ Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are
 
 | Item | Status | Evidence / note |
 |---|---|---|
-| `apps/ui` — static React+TS+Vite SPA, no BFF, no SSR | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-UIUX-V1-U1) | consumes the Fastify API directly on the same origin (`base: '/app/'`); `apps/ui/README.md`; 14 files / 244 tests via `pnpm --filter @govai/ui test`; CI `ui` job (typecheck, lint, test, build, bundle secret scan) |
+| `apps/ui` — static React+TS+Vite SPA, no BFF, no SSR | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-UIUX-V1-U1) | consumes the Fastify API directly on the same origin (`base: '/app/'`); `apps/ui/README.md`; 14 files / 281 tests via `pnpm --filter @govai/ui test`; CI `ui` job (typecheck, lint, test, build, bundle secret scan) |
 | U1 surfaces | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `/enter`, `/` (cockpit), `/evidence/gaps/:invariant` (`ec1\|ec2\|ec3seal\|ec3drop\|ec4`), `/audit-events`, `/capabilities` — read-only over the surfaces already listed above; **zero backend change** |
 | Honesty vocabulary (`src/lib/honesty.ts`, `src/lib/vocab.ts`) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | table-driven and tested BEFORE any screen consumes it: EC-6 `pending` never renders as verified; EC-3.drop `observed:false` never renders as "no loss"; a `coverage_ratio` of 1.0 over an empty population renders as out-of-scope, not as full coverage; "blocked" appears if and only if a request returned 403 |
 | Internationalisation | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | pt-BR (default + fallback), en-US, es; catalogs typed `Record<MessageKey, string>` (a missing key is a compile error) plus runtime parity tests and a test that no translation turns a forwarded decision into a blocked/applied/protected one |
