@@ -12,7 +12,7 @@
 > **SOURCE_SHA256:** `de1b4e29dffdf9a57e8933c0202f8371c0bcbac35aca3336deb003ce0f488c31` (owner-supplied source bytes, verified against the 43-entry corpus ledger; see `docs/architecture/d9-promulgation-manifest.md`)
 > **NOTES:** ACCEPTED as doctrine (D6). Operational rule for sharing artifacts; the §6 acceptance criteria (safe packaging script, CI/local forbidden-path check, README documentation) describe the target operating state and are not asserted as implemented by this promulgation — CI runs gitleaks; the safe-package script and README section are not verified present at the Foundation V1 anchor.
 > **BOUNDED CLARIFICATION (M3, applies to this repository):** the repository tracks a secret-free template `.env.example` (used by the README quickstart: `cp .env.example .env`); it is NOT a secret-bearing `.env`/`.env.*` file and is exempt from the §1 prohibition. Consequently the preferred `git archive` artifact (§2) legitimately contains `.env.example`, and the §4 forbidden-path check exempts it explicitly (`-name '.env.*' ! -name '.env.example'`); no `.gitattributes` `export-ignore` rule exists at the anchor and none is required for the template. Real `.env`, `.env.local` and any secret-bearing variant remain forbidden.
-> **BOUNDED CORRECTION OF §4 (M3, Codex review round 3 — P1 + P2):** the original v0.9 §4 commands were `mkdir -p /tmp/govai-artifact-check` / `unzip -q govai-platform-src.zip -d /tmp/govai-artifact-check` / `gitleaks detect --no-git --source /tmp/govai-artifact-check --redact` and `find /tmp/govai-artifact-check -name '.env*' -o -name '.git' -o -name 'node_modules' -o -name 'coverage'`. They were replaced (not merely annotated) because a fixed reusable extraction directory lets a stale extraction survive between runs (`unzip` does not overwrite collisions non-interactively → a new secret could be skipped while gitleaks scans old contents) and because the forbidden-path check covered only 4 of the §1 categories. The corrected §4 extracts into a fresh `mktemp -d` directory with cleanup and checks every §1 category (with the `.env.example` exemption and dump-only database patterns that never match migration SQL). Doctrine intent unchanged; the §6 acceptance criteria remain targets. EDITORIAL (Codex round 4, non-substantive): §3 gained a one-line cwd note — the `tar … govai-platform` operand names the checkout directory, so the command runs from its PARENT directory (unlike §2, which runs inside the repository); no policy or command semantics changed. Codex round 5 (P2, on the round-3 text): the §4 scan is now ONE scoped subshell block so the cleanup trap fires when the block ends (also when pasted interactively) and repeated runs cannot orphan earlier extraction directories; the find expression is unchanged. Codex round 7 (2×P2): the §4 block now exits NON-ZERO when any forbidden path is printed (previously `find` returned 0 even with matches) and adds `*.db` to the local-database patterns; §1 policy unchanged. Codex round 8 (P2): §4 previously accepted an ordinary plain-SQL database export (`backup.sql`, `nightly-prod.sql`, `data.sql`) — the database patterns matched only compressed SQL and names containing `dump`, and such an export need not carry a gitleaks-detectable secret, so a §1-prohibited local database dump could pass the required scan. The block now rejects EVERY extracted `.sql` that is not a tracked source path of the packaged commit (the allowlist is recomputed with `git ls-tree` from `REPO_DIR`, never hard-coded), so `…/migrations/backup.sql` is rejected while the repository's own migration and bootstrap SQL pass; §1 policy unchanged. Codex round 9 (P2, on the round-8 text): path membership alone was still insufficient — §3 packages the WORKING TREE, so a dump written OVER a tracked path (e.g. `infra/postgres/bootstrap.sql`) satisfied a path-only allowlist. The allowlist now carries `%(objectname) %(path)` per tracked `.sql` and each extracted `.sql` must match by BOTH blob id and path (`git hash-object`, which needs no repository), so a locally modified or substituted `.sql` no longer passes; §1 policy unchanged.
+> **BOUNDED CORRECTION OF §4 (M3, Codex review round 3 — P1 + P2):** the original v0.9 §4 commands were `mkdir -p /tmp/govai-artifact-check` / `unzip -q govai-platform-src.zip -d /tmp/govai-artifact-check` / `gitleaks detect --no-git --source /tmp/govai-artifact-check --redact` and `find /tmp/govai-artifact-check -name '.env*' -o -name '.git' -o -name 'node_modules' -o -name 'coverage'`. They were replaced (not merely annotated) because a fixed reusable extraction directory lets a stale extraction survive between runs (`unzip` does not overwrite collisions non-interactively → a new secret could be skipped while gitleaks scans old contents) and because the forbidden-path check covered only 4 of the §1 categories. The corrected §4 extracts into a fresh `mktemp -d` directory with cleanup and checks every §1 category (with the `.env.example` exemption and dump-only database patterns that never match migration SQL). Doctrine intent unchanged; the §6 acceptance criteria remain targets. EDITORIAL (Codex round 4, non-substantive): §3 gained a one-line cwd note — the `tar … govai-platform` operand names the checkout directory, so the command runs from its PARENT directory (unlike §2, which runs inside the repository); no policy or command semantics changed. Codex round 5 (P2, on the round-3 text): the §4 scan is now ONE scoped subshell block so the cleanup trap fires when the block ends (also when pasted interactively) and repeated runs cannot orphan earlier extraction directories; the find expression is unchanged. Codex round 7 (2×P2): the §4 block now exits NON-ZERO when any forbidden path is printed (previously `find` returned 0 even with matches) and adds `*.db` to the local-database patterns; §1 policy unchanged. Codex round 8 (P2): §4 previously accepted an ordinary plain-SQL database export (`backup.sql`, `nightly-prod.sql`, `data.sql`) — the database patterns matched only compressed SQL and names containing `dump`, and such an export need not carry a gitleaks-detectable secret, so a §1-prohibited local database dump could pass the required scan. The block now rejects EVERY extracted `.sql` that is not a tracked source path of the packaged commit (the allowlist is recomputed with `git ls-tree` from `REPO_DIR`, never hard-coded), so `…/migrations/backup.sql` is rejected while the repository's own migration and bootstrap SQL pass; §1 policy unchanged. Codex round 9 (P2, on the round-8 text): path membership alone was still insufficient — §3 packages the WORKING TREE, so a dump written OVER a tracked path (e.g. `infra/postgres/bootstrap.sql`) satisfied a path-only allowlist. The allowlist now carries `%(objectname) %(path)` per tracked `.sql` and each extracted `.sql` must match by BOTH blob id and path (`git hash-object`, which needs no repository), so a locally modified or substituted `.sql` no longer passes; §1 policy unchanged. Codex round 10 (P2, on the round-9 text): every predicate was case-SENSITIVE, so `backup.SQL`, `local.DB` or `prod.PGDUMP` slipped past both the database patterns and the `.sql` sweep on a case-sensitive filesystem. All §4 predicates are now `-iname`; the `.env.example` exemption deliberately stays exact `-name`, so case variants of `.env.*` are rejected while only the tracked template is exempt. §1 policy unchanged.
 > ---
 
 # Artifact Hygiene
@@ -114,14 +114,16 @@ decoration):
   # ANY output = the artifact violates the policy and must not be shared — and the
   # block exits NON-ZERO so an automated invocation (CI, wrapper) fails.
   # `.env.example` (tracked, secret-free template) is the only accepted `.env*`.
+  # Every predicate is case-INSENSITIVE — `backup.SQL` and `local.DB` are dumps too —
+  # except the exemption itself, which stays exact so only the tracked template passes.
   FORBIDDEN="$(find "$CHECK_DIR" \( \
-       -name '.env' -o \( -name '.env.*' ! -name '.env.example' \) \
-    -o -name '.git' -o -name 'node_modules' -o -name 'coverage' \
-    -o -name 'dist' \
-    -o -name '*.tsbuildinfo' -o -name '.DS_Store' -o -name '__MACOSX' -o -name '*.log' \
-    -o -name '*.dump' -o -name '*.pgdump' -o -name '*.backup' \
-    -o -name '*.sql.gz' -o -name '*.sql.bz2' -o -name '*.sql.xz' -o -name '*.sql.zst' \
-    -o -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*dump*.sql' \
+       -iname '.env' -o \( -iname '.env.*' ! -name '.env.example' \) \
+    -o -iname '.git' -o -iname 'node_modules' -o -iname 'coverage' \
+    -o -iname 'dist' \
+    -o -iname '*.tsbuildinfo' -o -iname '.DS_Store' -o -iname '__MACOSX' -o -iname '*.log' \
+    -o -iname '*.dump' -o -iname '*.pgdump' -o -iname '*.backup' \
+    -o -iname '*.sql.gz' -o -iname '*.sql.bz2' -o -iname '*.sql.xz' -o -iname '*.sql.zst' \
+    -o -iname '*.db' -o -iname '*.sqlite' -o -iname '*.sqlite3' -o -iname '*dump*.sql' \
   \) -print)"
 
   # Local database dumps, general case: a plain-SQL export needs neither a
@@ -131,11 +133,13 @@ decoration):
   # and path: content, not a name heuristic, not directory trust
   # (`…/migrations/backup.sql`) and not path trust alone (a dump written over
   # `infra/postgres/bootstrap.sql`). Paths are compared repo-relative (`./` and
-  # §3's `govai-platform/` wrapper stripped); `git hash-object` needs no
-  # repository. `grep` exits 1 when nothing is unauthorized, hence `|| true`.
+  # §3's `govai-platform/` wrapper stripped); `-iname` so `backup.SQL` is swept in
+  # too (the tracked `.sql` are all lower-case, so they still match and still have
+  # to byte-match); `git hash-object` needs no repository. `grep` exits 1 when
+  # nothing is unauthorized, hence `|| true`.
   UNAUTHORIZED_SQL="$(
     cd "$CHECK_DIR"
-    find . -name '*.sql' -print | LC_ALL=C sort | while IFS= read -r f; do
+    find . -iname '*.sql' -print | LC_ALL=C sort | while IFS= read -r f; do
       printf '%s %s\n' "$(git hash-object "$f")" \
         "$(printf '%s' "$f" | sed -e 's|^\./||' -e 's|^govai-platform/||')"
     done | grep -F -x -v -f "$SQL_ALLOW" || true
@@ -159,7 +163,10 @@ script or pasted interactively, and consecutive/concurrent runs never share or
 orphan extraction directories; the block's exit status is the verdict (0 =
 clean; non-zero = gitleaks finding, forbidden path or unauthorized `.sql`), so
 CI/wrappers can rely on it; `-name 'dist'` covers both `dist/` and
-`tests/dist/`; the dump / `.db` / SQLite / compressed-SQL `find` patterns keep
+`tests/dist/`; every predicate is case-insensitive (`-iname`), so `backup.SQL`
+and `local.DB` are caught as readily as their lower-case spellings — the sole
+exception is the `.env.example` exemption, which stays exact so a case variant
+cannot ride it; the dump / `.db` / SQLite / compressed-SQL patterns keep
 rejecting dump-shaped names outright, and the allowlist then rejects every
 remaining `.sql` whose blob id and path are not both in the packaged commit —
 so `apps/api/src/db/migrations/*.sql` and `infra/postgres/bootstrap.sql` pass
