@@ -11,12 +11,19 @@
 //   • an unknown path 404s with Fastify's default `{message, error:'Not Found', statusCode}`
 // The client therefore normalizes BOTH shapes and never assumes a GovAI code is present; the
 // 429 path keys off the HTTP status, not the body.
+//
+// ★ Every object schema here is LOOSE (`z.looseObject`). Zod's default object behaviour strips
+// unknown keys, so an additive backend field would silently disappear from a query export that
+// calls itself "serialized without post-processing" — the export would be a projection while
+// claiming to be the response. Strict schemas would fail the opposite way, breaking the UI on
+// an additive change the backend is entitled to make. Loose validates what the UI depends on
+// and carries everything else through unchanged.
 
 import { z } from 'zod';
 
 /** The GovAI envelope: a machine code plus optional detail. `issues` is Zod's issue array,
  *  passed through verbatim by the 400 handlers. */
-export const GovAIErrorBody = z.object({
+export const GovAIErrorBody = z.looseObject({
   error: z.string(),
   message: z.string().optional(),
   issues: z.array(z.unknown()).optional(),

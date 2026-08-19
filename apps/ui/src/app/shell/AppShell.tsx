@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useI18n } from '../../lib/i18n/I18nProvider.js';
 import { useSession } from '../../lib/session/SessionProvider.js';
 import { uiBuildSha } from '../../lib/query-export.js';
@@ -19,6 +19,13 @@ import { WindowSelector } from './WindowSelector.js';
 //
 // Workroom, regulatory and admin navigation are NOT rendered. Those areas are not part of this
 // delivery, and a disabled menu item promising them would be a promise the product cannot keep.
+//
+// ★ The evidence-window control is rendered ONLY on the routes it actually scopes. `?window=`
+// is a real parameter of /v1/evidence/summary and /v1/evidence/gaps; /v1/audit-events and
+// /v1/capabilities take no window at all. Leaving the selector visible on those screens would
+// let a reader pick "1 h", see events from days earlier, and take a screenshot implying a time
+// scope that was never applied — exactly the kind of misreading this interface exists to
+// prevent. So the control appears where it means something and is absent where it does not.
 
 const NAV = [
   { to: '/', end: true, labelKey: 'app.nav.cockpit' },
@@ -26,10 +33,17 @@ const NAV = [
   { to: '/capabilities', end: false, labelKey: 'app.nav.capabilities' },
 ] as const;
 
+/** The routes whose data is actually scoped by `?window=`. */
+function windowScopesRoute(pathname: string): boolean {
+  return pathname === '/' || pathname.startsWith('/evidence/gaps');
+}
+
 export function AppShell() {
   const { t } = useI18n();
   const { orgId, signOut } = useSession();
+  const { pathname } = useLocation();
   const build = uiBuildSha();
+  const showWindowSelector = windowScopesRoute(pathname);
 
   return (
     <div className="flex min-h-screen flex-col bg-[var(--govai-bg-app)]">
@@ -66,7 +80,7 @@ export function AppShell() {
           </nav>
 
           <div className="ml-auto flex flex-wrap items-center gap-x-[var(--govai-space-4)] gap-y-[var(--govai-space-2)]">
-            <WindowSelector />
+            {showWindowSelector && <WindowSelector />}
             <LanguageSelector />
             {orgId && (
               <span className="text-[length:var(--govai-text-xs)] text-[var(--govai-text-secondary)]">

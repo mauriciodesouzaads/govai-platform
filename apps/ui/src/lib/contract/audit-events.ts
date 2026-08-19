@@ -4,6 +4,13 @@
 // This endpoint exposes chain METADATA and CRYPTOGRAPHIC HASHES only. It never returns the
 // event payload: `canonical_bytes` exists in the table but is not selected (:68-71). Any UI
 // built on it demonstrates integrity, not content.
+//
+// ★ Every object schema here is LOOSE (`z.looseObject`). Zod's default object behaviour strips
+// unknown keys, so an additive backend field would silently disappear from a query export that
+// calls itself "serialized without post-processing" — the export would be a projection while
+// claiming to be the response. Strict schemas would fail the opposite way, breaking the UI on
+// an additive change the backend is entitled to make. Loose validates what the UI depends on
+// and carries everything else through unchanged.
 
 import { z } from 'zod';
 
@@ -25,7 +32,7 @@ export const AUDIT_EVENTS_DEFAULT_LIMIT = 50;
  *
  *  Every hash field arrives as lowercase hex; `previous_hmac` is null on the first event of
  *  a chain (a genesis link, not a break). */
-export const AuditEvent = z.object({
+export const AuditEvent = z.looseObject({
   id: z.string(),
   chain_id: z.string(),
   sequence_number: z.number(),
@@ -49,7 +56,7 @@ export type AuditEvent = z.infer<typeof AuditEvent>;
  *  ★ There is NO server-side next cursor. Pagination is keyset on `before_seq` (strict `<`,
  *  ORDER BY sequence_number DESC), so the client derives the next page parameter from the
  *  LAST row of the current page and stops when a page comes back shorter than `limit`. */
-export const AuditEventsResponse = z.object({
+export const AuditEventsResponse = z.looseObject({
   chain_id: z.string(),
   events: z.array(AuditEvent),
 });

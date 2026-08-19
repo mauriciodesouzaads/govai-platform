@@ -12,6 +12,13 @@
 //   endpoint coverage belong to a DIFFERENT registry (@govai/core-types, in the provider
 //   packages) that this route never touches. The UI therefore renders the numeric governance
 //   level and MUST NOT label it as a provider-surface level.
+//
+// ★ Every object schema here is LOOSE (`z.looseObject`). Zod's default object behaviour strips
+// unknown keys, so an additive backend field would silently disappear from a query export that
+// calls itself "serialized without post-processing" — the export would be a projection while
+// claiming to be the response. Strict schemas would fail the opposite way, breaking the UI on
+// an additive change the backend is entitled to make. Loose validates what the UI depends on
+// and carries everything else through unchanged.
 
 import { z } from 'zod';
 
@@ -44,7 +51,7 @@ export type GovernanceLevel = z.infer<typeof GovernanceLevel>;
 /** capabilities.ts:52-64. `level`/`status` are POST-override (effective); `baseline_status`
  *  is the registry value before the org's downgrade-only override; `override_applied` says
  *  whether an org override row participated at all. */
-export const CapabilityFacetView = z.object({
+export const CapabilityFacetView = z.looseObject({
   id: z.string(),
   level: GovernanceLevel,
   status: CapabilityStatus,
@@ -59,7 +66,7 @@ export type CapabilityFacetView = z.infer<typeof CapabilityFacetView>;
 
 /** capabilities.ts:47-65. `status` is the worst effective status across facets
  *  (capability-resolution.ts:153-159); `baseline_status` is the registry value. */
-export const CapabilityView = z.object({
+export const CapabilityView = z.looseObject({
   id: z.string(),
   provider: z.string(),
   status: CapabilityStatus,
@@ -68,7 +75,7 @@ export const CapabilityView = z.object({
 });
 export type CapabilityView = z.infer<typeof CapabilityView>;
 
-export const CapabilitiesResponse = z.object({
+export const CapabilitiesResponse = z.looseObject({
   org_id: z.string(),
   capabilities: z.array(CapabilityView),
 });

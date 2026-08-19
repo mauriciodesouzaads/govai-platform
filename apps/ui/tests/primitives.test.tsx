@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { CockpitPage } from '../src/features/evidence/CockpitPage.js';
 import { HashText } from '../src/components/HashText.js';
 import { StatusBadge } from '../src/components/StatusBadge.js';
@@ -228,6 +228,23 @@ describe('query export — in the cockpit', () => {
       expect(/dossiê|dossier|expediente/.test(text)).toBe(true);
       expect(/conformidade|compliance|cumplimiento/.test(text)).toBe(true);
     }
+  });
+
+  it('does not carry a stale "copied" into a freshly stamped artifact', async () => {
+    // Reopening restamps `exported_at`, so the clipboard no longer holds what is on screen.
+    const { user } = renderApp(<CockpitPage />, { credential: VALID_KEY });
+    await screen.findByTestId('coverage-panel');
+
+    await user.click(screen.getByTestId('query-export-open'));
+    await screen.findByTestId('query-export-json');
+    await user.click(screen.getByTestId('query-export-copy'));
+    expect(await screen.findByText(CATALOGS['pt-BR']['export.copied'])).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('query-export-json')).toBeNull());
+    await user.click(screen.getByTestId('query-export-open'));
+    await screen.findByTestId('query-export-json');
+    expect(screen.queryByText(CATALOGS['pt-BR']['export.copied'])).toBeNull();
   });
 
   it('offers a download named after the query', async () => {

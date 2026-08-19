@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useI18n } from '../lib/i18n/I18nProvider.js';
 import { useSession } from '../lib/session/SessionProvider.js';
@@ -57,6 +57,14 @@ export function QueryExport({
     () => JSON.stringify(buildQueryExport(context, data), null, 2),
     [context, data],
   );
+
+  // Reopening the dialog stamps a new `exported_at` (and the data may have refetched), so a
+  // stale "copied" would tell the reader that the JSON in front of them is on the clipboard
+  // when the clipboard holds the previous artifact. Keying the reset on `json` covers both a
+  // reopen and a refresh while the dialog is open.
+  useEffect(() => {
+    setCopied('idle');
+  }, [json]);
 
   const onCopy = useCallback(async () => {
     try {

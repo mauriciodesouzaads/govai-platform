@@ -163,6 +163,32 @@ describe('the shell shows only facts it knows', () => {
     expect(screen.getByText(CATALOGS['pt-BR']['app.footer.scope'])).toBeInTheDocument();
   });
 
+  it('shows the evidence-window control ONLY where the endpoint is scoped by it', async () => {
+    // On /audit-events and /capabilities the API takes no `window`; leaving the selector
+    // visible would let a screenshot imply a time scope that was never applied.
+    const { user } = renderApp(<AppRoutes />, { route: '/', credential: VALID_KEY });
+    await screen.findByTestId('coverage-panel');
+    expect(screen.getByTestId('window-selector')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('link', { name: CATALOGS['pt-BR']['app.nav.auditEvents'] }));
+    await screen.findByTestId('audit-metadata-only');
+    expect(screen.queryByTestId('window-selector')).toBeNull();
+
+    await user.click(screen.getByRole('link', { name: CATALOGS['pt-BR']['app.nav.capabilities'] }));
+    await screen.findByTestId('capability-filter');
+    expect(screen.queryByTestId('window-selector')).toBeNull();
+
+    await user.click(screen.getByRole('link', { name: CATALOGS['pt-BR']['app.nav.cockpit'] }));
+    await screen.findByTestId('coverage-panel');
+    expect(screen.getByTestId('window-selector')).toBeInTheDocument();
+  });
+
+  it('keeps the window control on the gap views, which the window does scope', async () => {
+    renderApp(<AppRoutes />, { route: '/evidence/gaps/ec1', credential: VALID_KEY });
+    await screen.findByRole('table');
+    expect(screen.getByTestId('window-selector')).toBeInTheDocument();
+  });
+
   it('states the build stamp explicitly, including when the build did not provide one', async () => {
     renderApp(<AppRoutes />, { route: '/', credential: VALID_KEY });
     await screen.findByTestId('coverage-panel');

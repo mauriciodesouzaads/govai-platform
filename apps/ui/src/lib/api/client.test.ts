@@ -170,6 +170,20 @@ describe('contract validation', () => {
     }
   });
 
+  it('PRESERVES a field the contract does not know, instead of silently dropping it', async () => {
+    // The export calls itself "serialized without post-processing". Zod's default object
+    // behaviour would strip an additive backend field, quietly turning the artifact into a
+    // projection; loose schemas keep it. Rejecting it instead would break the UI on a change
+    // the backend is entitled to make.
+    const Loose = z.looseObject({ ok: z.literal(true) });
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: true, brand_new_evidence_field: { nested: 42 } }),
+    );
+    await expect(
+      client(fetchImpl as unknown as typeof fetch).get('/v1/thing', { schema: Loose }),
+    ).resolves.toEqual({ ok: true, brand_new_evidence_field: { nested: 42 } });
+  });
+
   it('a 200 that is not JSON is a malformed response', async () => {
     const fetchImpl = vi.fn(async () => new Response('not json', { status: 200 }));
     await expect(

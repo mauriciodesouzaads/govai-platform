@@ -6,6 +6,13 @@
 // Mirrored here and NOWHERE else in the UI (mission §13). No business policy is duplicated:
 // these are transport shapes only. When `@govai/api-contract` (EP-B7) exists, this file is
 // replaced by a re-export — the change is mechanical because nothing else mirrors a shape.
+//
+// ★ Every object schema here is LOOSE (`z.looseObject`). Zod's default object behaviour strips
+// unknown keys, so an additive backend field would silently disappear from a query export that
+// calls itself "serialized without post-processing" — the export would be a projection while
+// claiming to be the response. Strict schemas would fail the opposite way, breaking the UI on
+// an additive change the backend is entitled to make. Loose validates what the UI depends on
+// and carries everything else through unchanged.
 
 import { z } from 'zod';
 import { isDecimalDigits } from '../format.js';
@@ -27,28 +34,28 @@ export const MAX_WINDOW_SECONDS = 31_536_000;
 
 /** evidence-reports.ts:66-72 — every count is a JS number (the SQL bigints are already
  *  Number()-narrowed server-side, and these are bounded per-window aggregates). */
-export const EvidenceCounts = z.object({
-  ec1: z.object({
+export const EvidenceCounts = z.looseObject({
+  ec1: z.looseObject({
     total: z.number(),
     sealed: z.number(),
     failed: z.number(),
     stalled_past_slo: z.number(),
   }),
-  ec2: z.object({ chains: z.number(), chains_with_gap: z.number() }),
-  ec3seal: z.object({
+  ec2: z.looseObject({ chains: z.number(), chains_with_gap: z.number() }),
+  ec3seal: z.looseObject({
     native_total: z.number(),
     native_sealed: z.number(),
     native_unsealed_past_slo: z.number(),
   }),
-  ec4: z.object({ provider_invocations: z.number(), without_terminal: z.number() }),
-  ec6: z.object({ chains: z.number(), verified_ok: z.number(), pending: z.number() }),
+  ec4: z.looseObject({ provider_invocations: z.number(), without_terminal: z.number() }),
+  ec6: z.looseObject({ chains: z.number(), verified_ok: z.number(), pending: z.number() }),
 });
 export type EvidenceCounts = z.infer<typeof EvidenceCounts>;
 
 /** evidence-reports.ts:413-429. `observed:false` + `drop_rate:null` is the state the route
  *  ALWAYS produces today (it passes ZERO_DROP_SNAPSHOT, evidence.ts:86,143) — the shape
  *  admits observed:true, so the UI renders both without inventing either. */
-export const DropEstimate = z.object({
+export const DropEstimate = z.looseObject({
   invariant: z.literal('ec3drop'),
   label: z.string(),
   drops: z.number(),
@@ -61,7 +68,7 @@ export type DropEstimate = z.infer<typeof DropEstimate>;
 
 /** evidence-reports.ts:455-464. `note` is rendered VERBATIM — it is the backend's own
  *  explanation of why every chain is pending, and paraphrasing it would soften it. */
-export const ChainVerificationStatus = z.object({
+export const ChainVerificationStatus = z.looseObject({
   invariant: z.literal('ec6'),
   label: z.string(),
   total_chains: z.number(),
@@ -74,20 +81,20 @@ export type ChainVerificationStatus = z.infer<typeof ChainVerificationStatus>;
 
 /** evidence-reports.ts:502-517. `terms[]` and `excluded[]` (with reasons) are first-class
  *  content in the UI, never a tooltip — they are what keeps the ratio honest. */
-export const CoverageRatio = z.object({
+export const CoverageRatio = z.looseObject({
   label: z.string(),
   ratio: z.number(),
   covered: z.number(),
   total: z.number(),
   terms: z.array(
-    z.object({ invariant: z.string(), covered: z.number(), total: z.number() }),
+    z.looseObject({ invariant: z.string(), covered: z.number(), total: z.number() }),
   ),
-  excluded: z.array(z.object({ invariant: z.string(), reason: z.string() })),
+  excluded: z.array(z.looseObject({ invariant: z.string(), reason: z.string() })),
 });
 export type CoverageRatio = z.infer<typeof CoverageRatio>;
 
 /** evidence.ts:88 spreads `{org_id, ...EvidenceSummary}` (evidence-reports.ts:589-596). */
-export const EvidenceSummaryResponse = z.object({
+export const EvidenceSummaryResponse = z.looseObject({
   org_id: z.string(),
   window_seconds: z.number(),
   t_seal_seconds: z.number(),
@@ -102,7 +109,7 @@ export type EvidenceSummaryResponse = z.infer<typeof EvidenceSummaryResponse>;
 
 /** evidence-reports.ts:197-205. `last_error` is the sanitized ≤200-char text (null while
  *  merely stalled) — never a payload. */
-export const Ec1GapRow = z.object({
+export const Ec1GapRow = z.looseObject({
   capture_id: z.string(),
   chain_id: z.string(),
   chain_category: z.string(),
@@ -117,7 +124,7 @@ export type Ec1GapRow = z.infer<typeof Ec1GapRow>;
  *  exceed Number.MAX_SAFE_INTEGER, and the backend deliberately keeps the driver's string.
  *  The regex refinement means a malformed value FAILS the parse (an honest error state)
  *  instead of silently rendering something an auditor would trust. Never Number() these. */
-export const Ec2GapRow = z.object({
+export const Ec2GapRow = z.looseObject({
   chain_id: z.string(),
   first_gap_seq: z.string().refine(isDecimalDigits, 'not a decimal integer string'),
   gap_count: z.string().refine(isDecimalDigits, 'not a decimal integer string'),
@@ -125,7 +132,7 @@ export const Ec2GapRow = z.object({
 export type Ec2GapRow = z.infer<typeof Ec2GapRow>;
 
 /** evidence-reports.ts:302-308. */
-export const Ec3SealRow = z.object({
+export const Ec3SealRow = z.looseObject({
   capture_id: z.string(),
   chain_id: z.string(),
   chain_category: z.string(),
@@ -135,7 +142,7 @@ export const Ec3SealRow = z.object({
 export type Ec3SealRow = z.infer<typeof Ec3SealRow>;
 
 /** evidence-reports.ts:349-357. */
-export const Ec4Row = z.object({
+export const Ec4Row = z.looseObject({
   run_id: z.string(),
   provider_invocation_id: z.string(),
   provider: z.string(),
@@ -149,7 +156,7 @@ export type Ec4Row = z.infer<typeof Ec4Row>;
 /** evidence.ts:154-160. NOTE: unlike /summary this body carries NO `t_seal_seconds` —
  *  the T_seal in scope comes from /summary and nowhere else. */
 function gapsResponse<T extends z.ZodTypeAny>(item: T) {
-  return z.object({
+  return z.looseObject({
     org_id: z.string(),
     invariant: EvidenceInvariant,
     window_seconds: z.number(),

@@ -202,6 +202,24 @@ describe('cockpit — failure states', () => {
   });
 });
 
+describe('cockpit — an additive backend field survives into the export', () => {
+  it('renders normally and carries the unknown field through', async () => {
+    const withNewField = {
+      ...SUMMARY_WITH_GAPS,
+      future_invariant_ec7: { total: 3, covered: 3 },
+    } as unknown as typeof SUMMARY_WITH_GAPS;
+    server.use(http.get('*/v1/evidence/summary', () => HttpResponse.json(withNewField)));
+    const { user } = renderApp(<CockpitPage />, { credential: VALID_KEY });
+    await screen.findByTestId('coverage-panel');
+
+    await user.click(screen.getByTestId('query-export-open'));
+    const json = (await screen.findByTestId('query-export-json')).textContent ?? '';
+    expect(JSON.parse(json).data).toMatchObject({
+      future_invariant_ec7: { total: 3, covered: 3 },
+    });
+  });
+});
+
 describe('cockpit — every language', () => {
   it.each(['pt-BR', 'en-US', 'es'] as const)('renders and stays honest in %s', async (locale) => {
     await renderCockpit(SUMMARY_WITH_GAPS, locale);
