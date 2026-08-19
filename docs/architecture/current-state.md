@@ -9,6 +9,7 @@
 - **EP-11 / ADR-032 provider-truth runtime correction is merged and the ADR file is reconciled:** PR #126 squash `01c05fd6` (runtime), ADR-032 `IMPLEMENTATION_STATUS=COMPLETE` (reconciled by M3; the promulgation-era `PENDING` pointer is historical). See §8 *EP-11 / PR #126 canonical state*.
 - **Provider-native doctrine ACCEPTED (ADR-021)** with an explicit separation between normative doctrine and the currently proven scope; unknown provider semantics pass or are observed by default; the only Native hard floor is provider-hosted computer-use; Phase 5 ask/sandbox/enforce primitives are NOT implemented (recommendation vs applied is honest over HTTP). No universal provider parity is claimed.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring* (wired for the four direct routes; `/v1/runs` chain-authoritative).
+- **The `UI_UX_V1_FOUNDATION` product lane has STARTED, and its first milestone — U1, the evidence cockpit — is implemented in this tree** (`apps/ui`, EP-UIUX-V1-U1). It is a read-only static SPA over the three existing read surfaces (`/v1/evidence/*`, `/v1/audit-events`, `/v1/capabilities`); it changes NO backend behaviour (the Foundation V1 runtime anchor is unchanged) and it makes no capability claim the runtime does not support. See §1 *Interface layer*. Production human auth/session/API-key lifecycle is still absent (residual R14), U2 is not started, and there is no governance-settings, Phase-5-enforcement, Workroom, regulatory or admin UI.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
 
@@ -30,9 +31,11 @@ Counts from `find` at the source commit (`de80664a`) plus the files added by the
 - architecture docs (`docs/architecture/**.md`): **104** in the M3 tree (67 at `de80664a`; M3 added the promulgated corpus, the freeze record, the ADR index and the D9 promulgation manifest)
 - regulatory docs (`docs/architecture/regulatory/*.md`): **20** (18–25 series present; **no** 26–30 files exist)
 - ADR decision records (`docs/architecture/adr/ADR-[0-9][0-9][0-9]-*.md`): **31** (ADR-001..014 + ADR-016..032; ADR-015 reserved/cancelled; the generated `adr/ADR-INDEX.md` is not a decision record and is excluded from this count — the directory holds 32 `.md` files — see [adr/ADR-INDEX.md](./adr/ADR-INDEX.md); ADR-016..019 and ADR-029..031 promulgated by M3; status per file: 27 accepted-family, 1 candidate target (016), 1 historical precursor (017), 2 Proposed (029, 030))
+- workspace apps: **3** — `apps/api`, `apps/audit-sealer` and (new in this tree) `apps/ui`; packages: **13** (unchanged)
 - API route files (`apps/api/src/routes/*`): **18** (17 routes + `_not-implemented.ts`)
 - DB migrations (`apps/api/src/db/migrations/*`): **29** (0001..0030, **missing** 0006; highest `0030_run_idempotency.sql`) — unchanged by M1/M2A/M3
-- test files (`*.test.ts`): **209** on disk — **128** unit (under `apps/`+`packages/`; M1 added the content-encoding / native-contract / registry-invariant / transport-encoding / m1-contract suites, M2A added `request-id.test.ts`, `main-module.test.ts` and the two `query-fidelity` suites), **76** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate the default `pnpm test` is **unit-only** (128 files, **1453** tests, reproduced locally at this anchor under Node 24); `pnpm test:integration` adds the integration files (CI runs both jobs; post-merge main CI run `31988375993` SUCCESS at `de80664a`)
+- test files run by the repository-root vitest config: **209** `*.test.ts` at `de80664a` — **128** unit (under `apps/`+`packages/`; M1 added the content-encoding / native-contract / registry-invariant / transport-encoding / m1-contract suites, M2A added `request-id.test.ts`, `main-module.test.ts` and the two `query-fidelity` suites), **76** under `tests/integration/`, **5** under `tests/live/` (live-gated, always excluded). Since the PR #116 `GOVAI_INTEGRATION` config gate the default `pnpm test` is **unit-only** (128 files, **1453** tests, reproduced locally at this anchor under Node 24 and again in this tree); `pnpm test:integration` adds the integration files (CI runs both jobs; post-merge main CI run `31988375993` SUCCESS at `de80664a`)
+- test files run by the `@govai/ui` vitest config (NEW in this tree, excluded from the root config because it is `environment: 'node'`): **14** files / **244** tests under `apps/ui/` (7 `*.test.ts` + 7 `*.test.tsx`), executed by the CI `ui` job via `pnpm --filter @govai/ui test`
 
 ---
 
@@ -61,6 +64,20 @@ All surfaces registered in `apps/api/src/server.ts:162-182` (the direct-route id
 | Evidence read API (`/v1/evidence`) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-008D) | `routes/evidence.ts` (`:166`) | `pipeline/evidence-reports.ts` (EC summary + gap lists) | `tests/integration/evidence-reports.test.ts`, `evidence-cockpit.test.ts` | read-only, RLS-scoped (the auditor IS the tenant — per-org view, no cross-tenant operator role); `/gaps` enum `ec1\|ec2\|ec3seal\|ec3drop\|ec4`; EC-5 deferred | real EC-5 (separate Option-A EP) |
 
 Workroom Phases 5 (tool invocations), 6 (UI), 7 (external autonomous agents) are `DOCUMENTED_TARGET_ONLY`. Workroom is **not complete**.
+
+### Interface layer (`apps/ui`) — UI/UX V1, milestone U1
+
+| Item | Status | Evidence / note |
+|---|---|---|
+| `apps/ui` — static React+TS+Vite SPA, no BFF, no SSR | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED (EP-UIUX-V1-U1) | consumes the Fastify API directly on the same origin (`base: '/app/'`); `apps/ui/README.md`; 14 files / 244 tests via `pnpm --filter @govai/ui test`; CI `ui` job (typecheck, lint, test, build, bundle secret scan) |
+| U1 surfaces | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | `/enter`, `/` (cockpit), `/evidence/gaps/:invariant` (`ec1\|ec2\|ec3seal\|ec3drop\|ec4`), `/audit-events`, `/capabilities` — read-only over the surfaces already listed above; **zero backend change** |
+| Honesty vocabulary (`src/lib/honesty.ts`, `src/lib/vocab.ts`) | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | table-driven and tested BEFORE any screen consumes it: EC-6 `pending` never renders as verified; EC-3.drop `observed:false` never renders as "no loss"; a `coverage_ratio` of 1.0 over an empty population renders as out-of-scope, not as full coverage; "blocked" appears if and only if a request returned 403 |
+| Internationalisation | IMPLEMENTED_RUNTIME_SOURCE_AND_TEST_VERIFIED | pt-BR (default + fallback), en-US, es; catalogs typed `Record<MessageKey, string>` (a missing key is a compile error) plus runtime parity tests and a test that no translation turns a forwarded decision into a blocked/applied/protected one |
+| Session model | `DEVELOPMENT_CONTROLLED_PILOT_FOUNDATION` — **NOT production human auth** | the org API key is validated by a real authenticated read and held in ONE in-memory variable; never in localStorage/sessionStorage/IndexedDB/cookie/URL/router state/query key/log/DOM; a tab reload ends the session; sign-out also clears the query cache. Residual **R14** (human auth/session/API-key lifecycle) is unchanged |
+| UI shell identity display | read-only, and only what a response carries | the shell shows the `org_id` learned from the authenticated response and nothing else — **no role, tier or operational-mode badge**, because no route serializes them and there is no `/v1/me` (named follow-up EP-B2). This also keeps commercial tier and governance profile separate (residual **R13**) |
+| Not in U1 | `NOT_STARTED` | no workroom, regulatory, admin, run-playground, governance-settings or user-management route — not even a disabled navigation item |
+
+Explicit non-claims of this layer: it does not represent `ask` as a human having been asked, `sandbox_required` as a sandbox having been created, or any recommendation as an applied block (Phase 5 primitives do not exist — residual R12); it does not present the regulatory record as runtime enforcement; it does not render EC-6 `pending` as verified; it does not present metadata/hash evidence as plaintext content; and it makes no certification or compliance claim (`claims-policy.md`).
 
 ---
 

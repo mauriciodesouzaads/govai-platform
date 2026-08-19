@@ -46,8 +46,15 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
 - **AuditBridge runtime-to-evidence wiring (ADR-027/028) — IMPLEMENTED (PR-B / EP-004):** all four direct governed/passthrough routes dispatch into the B0/B1 capture outbox behind the ingress identity hook (I3/I4 proven).
 - **B3 AuditSealer runner — AUTHORIZED + IMPLEMENTED (EP-006, `apps/audit-sealer`)**, S0–S11 integration-tested; deployable packaging shipped (EP-SEALER-DEPLOY, PR #117).
 - Evidence completeness layer (EP-008A/B/C/D + EP-OBS-*): views, drop/capture counters, stream terminal completeness, EC reports + RLS-scoped `/v1/evidence` read API, gauges behind `govai_evidence_enumerator` (INV-1), OTLP collector stack.
-- The repository CI workflow executes the **unit** and **integration** jobs
-  (PR #116 `GOVAI_INTEGRATION` config gate); successful exact-head CI is
+- **UI/UX V1 U1 — IMPLEMENTED (`apps/ui`).** A static React+TS+Vite SPA over the
+  three existing read surfaces (`/v1/evidence/*`, `/v1/audit-events`,
+  `/v1/capabilities`); zero backend change. Its honesty vocabulary is
+  table-driven and tested (EC-6 pending is never verified; an unobserved
+  EC-3.drop is never "no loss"; a 1.0 ratio over an empty population is never
+  full coverage; "blocked" only for a real 403). pt-BR/en-US/es.
+- The repository CI workflow executes the **unit**, **ui** and **integration** jobs
+  (PR #116 `GOVAI_INTEGRATION` config gate; the `ui` job added by EP-UIUX-V1-U1);
+  successful exact-head CI is
   mandatory under the GovAI development/merge protocol. **Do not infer
   GitHub branch-protection enforcement from workflow existence** —
   `CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
@@ -96,7 +103,7 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
 
 - **Foundation V1 residual register** — R1–R16 in [foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 (evidence-granularity R1–R4, diagnostics noise R5, beta snapshot R6, real EC-5 R7, P0.3-C liveness window R8, branch protection R9, broader parity R10, Workroom 5–7 R11, Phase 5 primitives R12, tier/profile separation R13, human auth for a production UI R14, SPEC v2.2 R15, legacy docs-root hygiene R16). None is a runtime blocker; none may be silently erased (anti-evaporation clause §7 for schema residuals).
 - **Runtime hard-deny enforcement** beyond the computer-use floor and the governed matrix `blocked` outcome is not implemented (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only; Phase 5).
-- **Next recommended product lane:** `UI_UX_V1_FOUNDATION` (see development-roadmap.md) — NOT started; requires human auth/session/key lifecycle for a production release; must not represent ask/sandbox/enforcement as applied.
+- **Current product lane:** `UI_UX_V1_FOUNDATION` — **STARTED**. **U1 (evidence cockpit, `apps/ui`) is implemented**; **U2 (workroom console) is NOT started** and is gated on EP-B2 (`GET /v1/me`) and EP-B4 (workroom participants). A production human release still requires the human auth / session / API-key lifecycle that does not exist (residual R14) — the U1 session is an explicitly labelled development / controlled-pilot mechanism, not production auth. No UI may represent ask/sandbox/enforcement as applied (R12) or couple commercial tier to governance profile (R13). See development-roadmap.md and current-state.md §1 *Interface layer*.
 - Untouched documentary follow-ups: `source-spec.md` ADP-canonical declaration (owner gate), ADR-022–027 status-line normalization, `workroom-governance-room.md`/`governance-philosophy.md`/`contracts/*` prepends, two `tests/live/*` comments, legacy `docs/` root artifacts (see stale-docs-register.md, M3 section).
 
 ---

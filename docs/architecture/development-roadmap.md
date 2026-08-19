@@ -85,7 +85,7 @@ F2_FOUNDATION_STATUS=CLOSED_WITH_RESIDUAL
 PR0_D9_V2=COMPLETE_IN_M3_TREE
 FOUNDATION_V1=DOCUMENTARY_FREEZE_RECORDED_IN_THIS_TREE   (tree-stable; lifecycle: FREEZE_PENDING_M3_MERGE while PR #133 is open → FROZEN_BASELINE once the external post-merge proof passes — declared by the external mission record, not by this file)
 P0_TRUTH_AND_INTEGRITY_PROGRAM=CLOSED_AT_FOUNDATION_V1_FREEZE
-NEXT_RECOMMENDED_PRODUCT_LANE=UI_UX_V1_FOUNDATION   (do NOT start inside M3)
+NEXT_RECOMMENDED_PRODUCT_LANE=UI_UX_V1_FOUNDATION   (do NOT start inside M3; STARTED afterwards — see the lane section below)
 ```
 
 Operational note (not a blocker): the P0.3-C
@@ -140,26 +140,50 @@ pending — `apps/api/src/db/migrations/0025_audit_capture_outbox_foundation.sql
 promulgated files. Future D9 doctrine changes require a dedicated
 architecture/doctrine movement (M3 was that movement for the initial promulgation).
 
-## Foundation V1 → next product lane (recommended, NOT started)
+## UI/UX V1 Foundation — STARTED; U1 complete in this tree
 
 ```text
-NEXT_RECOMMENDED_PRODUCT_LANE=UI_UX_V1_FOUNDATION
-NEXT_EXECUTED=NO
+CURRENT_PRODUCT_LANE=UI_UX_V1_FOUNDATION
+UI_UX_V1_U1=IMPLEMENTED_IN_THIS_TREE     (EP-UIUX-V1-U1; apps/ui)
+UI_UX_V1_U2=NOT_STARTED
+BACKEND_RUNTIME_CHANGE=NONE              (Foundation V1 runtime anchor unchanged)
 ```
 
-Initial architecture direction only (from the July 2026 UI plans, reconciled to
-Foundation V1 — see `plans/GOVAI-UI-MASTER-PLAN…` header, `plans/GOVAI-UI-ARCHITECTURE-CONSULT…`,
-and foundation-v1-freeze.md §11):
+**U1 — Evidence Cockpit (done).** `apps/ui` is a static React + TypeScript + Vite SPA
+consuming the Fastify API directly (no BFF, no SSR), served under `/app/` on the same
+origin. Its surfaces are `/enter`, the evidence cockpit, the five per-invariant gap views,
+the audit chain and the capability matrix — all read-only over routes that already existed.
+The honesty vocabulary (`src/lib/honesty.ts`, `src/lib/vocab.ts`) is table-driven and tested
+before any screen uses it; pt-BR/en-US/es ship from the first commit. CI gains a `ui` job
+(typecheck, lint, test, build, plus a secret scan of the built bundle). See
+current-state.md §1 *Interface layer* and `apps/ui/README.md`.
+
+**U2 — Workroom console (not started).** Its backend prerequisites are named and
+unadjudicated: **EP-B2** (`GET /v1/me` — without it no UI can show roles, tier or
+operational mode, and U1 correctly shows none) and **EP-B4**
+(`GET /v1/workrooms/:id/participants` — without it there is no roster and no
+separation-of-duties UX).
+
+Other named follow-ups the U1 tree deliberately does not do: **EP-B7**
+(`@govai/api-contract`, so route schemas stop being mirrored in the UI), **EP-B1**
+(per-key rate limiting — the API's 100 req/min is per process and global), **EP-V1**
+(persisted chain verification, the honest CTA behind EC-6's permanent `pending`), and a
+Playwright browser suite.
+
+Constraints that continue to hold for every later milestone (from the July 2026 UI plans
+reconciled to Foundation V1 — see `plans/GOVAI-UI-MASTER-PLAN…` header,
+`plans/GOVAI-UI-ARCHITECTURE-CONSULT…`, and foundation-v1-freeze.md §11):
 
 - conversational / native streaming UX → the direct native/governed provider routes;
 - durable work, replay, workrooms → `/v1/runs` (+ `X-GovAI-Run-Idempotency-Key`);
-- evidence views → `/v1/evidence`, `/v1/audit-events`;
-- constraints that must hold: a production human UI requires a human auth /
-  session / API-key lifecycle (none exists — residual R14); governance settings
-  and high-risk agentic UX cannot pretend ask/sandbox/enforce primitives exist
-  (they do not — R12) or couple commercial tier to governance profile (R13);
-  simple interactive chat may use direct native/governed streaming; a UI must not
-  represent ask/sandbox/enforcement as applied. Claims follow
+- evidence views → `/v1/evidence`, `/v1/audit-events` (U1);
+- a production human release still requires a human auth / session / API-key lifecycle
+  (none exists — residual R14); the U1 session is an explicitly labelled
+  development / controlled-pilot mechanism, not production auth;
+- governance settings and high-risk agentic UX cannot pretend ask/sandbox/enforce
+  primitives exist (they do not — R12) or couple commercial tier to governance profile
+  (R13);
+- a UI must not represent ask/sandbox/enforcement as applied. Claims follow
   `claims-policy.md`.
 
 ---
