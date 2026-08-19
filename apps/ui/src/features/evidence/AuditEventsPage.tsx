@@ -157,6 +157,14 @@ export function AuditEventsPage() {
             <QueryExport
               endpoint="/v1/audit-events"
               params={{ chain_category: category, limit: AUDIT_EVENTS_DEFAULT_LIMIT }}
+              // The first page carries no bound; each later page carries the before_seq the
+              // client derived from the previous one. Recording them is what lets a reader
+              // reproduce exactly which request produced which page.
+              pageParams={query.data.pageParams.map((beforeSeq) => ({
+                chain_category: category,
+                limit: AUDIT_EVENTS_DEFAULT_LIMIT,
+                ...(beforeSeq === undefined ? {} : { before_seq: beforeSeq }),
+              }))}
               data={pages}
               fileStem={`audit-events-${category}`}
             />

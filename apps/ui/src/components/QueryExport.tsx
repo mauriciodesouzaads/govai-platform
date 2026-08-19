@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useI18n } from '../lib/i18n/I18nProvider.js';
 import { useSession } from '../lib/session/SessionProvider.js';
-import { buildQueryExport, type QueryExportContext } from '../lib/query-export.js';
+import { buildQueryExport, type ExportParams, type QueryExportContext } from '../lib/query-export.js';
 
 // "Export this query (JSON)" — the low-risk evidence primitive.
 //
@@ -13,11 +13,18 @@ import { buildQueryExport, type QueryExportContext } from '../lib/query-export.j
 export function QueryExport({
   endpoint,
   params,
+  pageParams,
   data,
   fileStem,
 }: {
   endpoint: string;
-  params: Record<string, string | number | undefined>;
+  /** Parameters shared by every request behind this export. */
+  params: ExportParams;
+  /**
+   * For a paginated screen: the complete parameter set of each loaded page, in the order of
+   * `data`. Supplying it is what keeps a multi-page export reproducible.
+   */
+  pageParams?: ExportParams[];
   /** The parsed response(s) exactly as received. */
   data: unknown;
   /** Basename for the downloaded file, e.g. "evidence-summary". */
@@ -29,10 +36,17 @@ export function QueryExport({
   const [open, setOpen] = useState(false);
 
   const context: QueryExportContext = useMemo(
-    () => ({ endpoint, params, orgId, locale, exportedAt: new Date().toISOString() }),
+    () => ({
+      endpoint,
+      params,
+      ...(pageParams ? { pageParams } : {}),
+      orgId,
+      locale,
+      exportedAt: new Date().toISOString(),
+    }),
     // `exportedAt` must be stamped when the dialog opens, not on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [endpoint, params, orgId, locale, open],
+    [endpoint, params, pageParams, orgId, locale, open],
   );
 
   const json = useMemo(

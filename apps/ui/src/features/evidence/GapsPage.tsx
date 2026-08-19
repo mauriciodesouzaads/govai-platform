@@ -79,11 +79,14 @@ function GapsChrome({
   invariant,
   windowSeconds,
   exportData,
+  exportPageParams,
   children,
 }: {
   invariant: EvidenceInvariant;
   windowSeconds: number;
   exportData: unknown;
+  /** The offset cursor actually used for each loaded page, in order. */
+  exportPageParams?: number[];
   children: ReactNode;
 }) {
   const { t, locale } = useI18n();
@@ -97,6 +100,16 @@ function GapsChrome({
             <QueryExport
               endpoint="/v1/evidence/gaps"
               params={{ invariant, window: windowSeconds, limit: GAPS_DEFAULT_LIMIT }}
+              {...(exportPageParams
+                ? {
+                    pageParams: exportPageParams.map((cursor) => ({
+                      invariant,
+                      window: windowSeconds,
+                      limit: GAPS_DEFAULT_LIMIT,
+                      cursor,
+                    })),
+                  }
+                : {})}
               data={exportData}
               fileStem={`evidence-gaps-${invariant}`}
             />
@@ -148,6 +161,7 @@ function GapsListScreen<I extends ListInvariant>({
       invariant={invariant}
       windowSeconds={pages[0]?.window_seconds ?? evidenceWindow.seconds}
       exportData={query.data ? pages : null}
+      {...(query.data ? { exportPageParams: query.data.pageParams } : {})}
     >
       {query.isPending && <LoadingSkeleton rows={6} />}
       {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}
@@ -191,6 +205,7 @@ function DropScreen() {
       invariant="ec3drop"
       windowSeconds={pages[0]?.window_seconds ?? evidenceWindow.seconds}
       exportData={query.data ? pages : null}
+      {...(query.data ? { exportPageParams: query.data.pageParams } : {})}
     >
       {query.isPending && <LoadingSkeleton rows={3} />}
       {query.isError && <ErrorState error={query.error} onRetry={() => void query.refetch()} />}

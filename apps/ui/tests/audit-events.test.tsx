@@ -116,6 +116,38 @@ describe('audit chain — keyset pagination', () => {
     expect(seen).toEqual([null, '51']);
   });
 
+  it('the export records the before_seq of EVERY loaded page, not just the first', async () => {
+    server.use(
+      http.get('*/v1/audit-events', ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        const limit = Number(params.get('limit') ?? '50');
+        const before = params.get('before_seq');
+        const highest = before === null ? 100 : Number(before) - 1;
+        const events = [];
+        for (let seq = highest; seq >= 1 && events.length < limit; seq -= 1) {
+          events.push(auditEvent(seq));
+        }
+        return HttpResponse.json({ chain_id: RUN_CHAIN_ID, events });
+      }),
+    );
+    const { user } = renderChain();
+    await screen.findByRole('table');
+    await user.click(screen.getByTestId('load-more'));
+    await waitFor(() => expect(screen.getByTestId('rows-loaded')).toHaveTextContent('100'));
+
+    await user.click(screen.getByTestId('query-export-open'));
+    const json = (await screen.findByTestId('query-export-json')).textContent ?? '';
+    const parsed = JSON.parse(json) as {
+      govai_export: { pages?: Array<{ index: number; params: Record<string, unknown> }> };
+      data: unknown[];
+    };
+    expect(parsed.govai_export.pages).toEqual([
+      { index: 0, params: { chain_category: 'run', limit: 50 } },
+      { index: 1, params: { chain_category: 'run', limit: 50, before_seq: 51 } },
+    ]);
+    expect(parsed.govai_export.pages).toHaveLength(parsed.data.length);
+  });
+
   it('ends the list when a page comes back shorter than the limit', async () => {
     renderChain(); // the default handler returns 5 events for a limit of 50
     await screen.findByRole('table');

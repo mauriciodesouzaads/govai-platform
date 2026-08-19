@@ -84,6 +84,9 @@ export function ErrorState({
   const { t } = useI18n();
   const code = isApiError(error) ? error.code : null;
   const status = isApiError(error) ? error.status : null;
+  // When the server advertised how long to wait, say so: the client deliberately did not
+  // retry inside that window, so the reader needs the number.
+  const retryAfter = isApiError(error) ? error.retryAfterSeconds : null;
   return (
     <div
       role="alert"
@@ -94,11 +97,15 @@ export function ErrorState({
       <p className="mt-[var(--govai-space-2)] max-w-prose text-[var(--govai-text-primary)]">
         {t(errorMessageKey(error))}
       </p>
-      {(status !== null || code !== null) && (
+      {(status !== null || code !== null || retryAfter !== null) && (
         <p className="mt-[var(--govai-space-2)] govai-mono text-[var(--govai-text-secondary)]">
-          {status !== null ? `HTTP ${status}` : ''}
-          {status !== null && code !== null ? ' · ' : ''}
-          {code ?? ''}
+          {[
+            status !== null ? `HTTP ${status}` : null,
+            code,
+            retryAfter !== null ? `retry-after: ${retryAfter}s` : null,
+          ]
+            .filter((part): part is string => part !== null)
+            .join(' · ')}
         </p>
       )}
       {children}

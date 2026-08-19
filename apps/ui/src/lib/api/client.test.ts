@@ -195,6 +195,7 @@ describe('bounded 429 handling', () => {
   });
 
   it('gives up after a bounded number of attempts and reports rate_limited', async () => {
+    // retry-after 1s is within the patience bound, so this exercises the retry path itself.
     const fetchImpl = vi.fn(
       async () => new Response('{}', { status: 429, headers: { 'retry-after': '1' } }),
     );
@@ -205,13 +206,55 @@ describe('bounded 429 handling', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
-  it('honours Retry-After over the exponential schedule, capped', () => {
+  it('grows the blind schedule and caps it, when the server advertised nothing', () => {
     expect(rateLimitDelayMs(0, null)).toBe(500);
     expect(rateLimitDelayMs(1, null)).toBe(1_000);
     expect(rateLimitDelayMs(2, null)).toBe(2_000);
     expect(rateLimitDelayMs(9, null)).toBe(8_000);
+  });
+
+  it('honours an advertised Retry-After EXACTLY, never shortening it', () => {
+    // Shortening the server's instruction would retry inside the window it just closed.
     expect(rateLimitDelayMs(0, 3)).toBe(3_000);
-    expect(rateLimitDelayMs(0, 3_600)).toBe(8_000);
+    expect(rateLimitDelayMs(2, 5)).toBe(5_000);
+    expect(rateLimitDelayMs(0, 8)).toBe(8_000);
+  });
+
+  it('refuses to retry when the advertised wait exceeds what this client will block for', () => {
+    // null = do not retry. The alternative — three doomed 8s retries inside a 60s window —
+    // burns the shared budget and still ends in an error.
+    expect(rateLimitDelayMs(0, 60)).toBeNull();
+    expect(rateLimitDelayMs(0, 3_600)).toBeNull();
+  });
+
+  it('surfaces a long Retry-After immediately, with the advertised wait and NO extra requests', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('{}', { status: 429, headers: { 'retry-after': '60' } }),
+    );
+    await expect(
+      client(fetchImpl as unknown as typeof fetch).get('/v1/thing', { schema: Schema }),
+    ).rejects.toMatchObject({ kind: 'rate_limited', status: 429, retryAfterSeconds: 60 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('still retries a short advertised wait, and succeeds', async () => {
+    const slept: number[] = [];
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response('{}', { status: 429, headers: { 'retry-after': '2' } })
+        : jsonResponse({ ok: true });
+    });
+    const c = createApiClient({
+      getCredential: () => KEY,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    await expect(c.get('/v1/thing', { schema: Schema })).resolves.toEqual({ ok: true });
+    expect(slept).toEqual([2_000]);
   });
 
   it('parses both Retry-After forms and rejects anything else', () => {

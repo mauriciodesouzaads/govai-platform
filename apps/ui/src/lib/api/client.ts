@@ -19,8 +19,16 @@
 import type { z } from 'zod';
 import { ApiError, GovAIErrorBody, kindForStatus } from '../contract/errors.js';
 
-/** Bounded 429 policy. Four attempts total; the delay grows 500ms → 1s → 2s (capped at 8s)
- *  unless the server sent a usable Retry-After, which always wins. */
+/**
+ * Bounded 429 policy. At most four attempts; without a `Retry-After` the delay grows
+ * 500ms → 1s → 2s, capped at 8s.
+ *
+ * `Retry-After` is an INSTRUCTION, not a hint to shorten. Capping it would retry inside the
+ * window the server just told us to stay out of — three doomed requests against a limit that
+ * is already saturated, and still an error at the end. So an advertised wait we can afford is
+ * honoured exactly, and one we cannot is not retried at all: the 429 surfaces immediately,
+ * carrying the advertised wait so the screen can state how long the reader must wait.
+ */
 const RATE_LIMIT_MAX_ATTEMPTS = 4;
 const RATE_LIMIT_BASE_DELAY_MS = 500;
 const RATE_LIMIT_MAX_DELAY_MS = 8_000;
@@ -83,11 +91,18 @@ export function parseRetryAfter(header: string | null, nowMs: number): number | 
   return Math.max(0, Math.ceil((at - nowMs) / 1000));
 }
 
-/** Exponential backoff with the Retry-After override. Exported so the policy is testable
- *  without driving a real request. */
-export function rateLimitDelayMs(attempt: number, retryAfterSeconds: number | null): number {
+/**
+ * How long to wait before the next 429 attempt, or `null` for "do not retry" — the server
+ * asked for longer than this client is willing to block. Exported so the policy is testable
+ * without driving a real request.
+ */
+export function rateLimitDelayMs(
+  attempt: number,
+  retryAfterSeconds: number | null,
+): number | null {
   if (retryAfterSeconds !== null) {
-    return Math.min(retryAfterSeconds * 1000, RATE_LIMIT_MAX_DELAY_MS);
+    const advertisedMs = retryAfterSeconds * 1000;
+    return advertisedMs > RATE_LIMIT_MAX_DELAY_MS ? null : advertisedMs;
   }
   return Math.min(RATE_LIMIT_BASE_DELAY_MS * 2 ** attempt, RATE_LIMIT_MAX_DELAY_MS);
 }
@@ -134,11 +149,16 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
 
       if (response.status === 429 && attempt < RATE_LIMIT_MAX_ATTEMPTS - 1) {
         const retryAfter = parseRetryAfter(response.headers.get('retry-after'), Date.now());
-        await sleep(rateLimitDelayMs(attempt, retryAfter));
-        if (options.signal?.aborted) {
-          throw new DOMException('aborted', 'AbortError');
+        const delayMs = rateLimitDelayMs(attempt, retryAfter);
+        if (delayMs !== null) {
+          await sleep(delayMs);
+          if (options.signal?.aborted) {
+            throw new DOMException('aborted', 'AbortError');
+          }
+          continue;
         }
-        continue;
+        // Advertised wait exceeds what we will block for: fall through and report the 429
+        // with `retryAfterSeconds`, rather than retrying inside the blocked window.
       }
 
       if (!response.ok) {

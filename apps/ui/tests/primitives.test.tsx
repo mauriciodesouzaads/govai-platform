@@ -104,6 +104,48 @@ describe('query export — only what the API returned, plus non-secret context',
     expect(serialized).not.toMatch(/cookie/i);
   });
 
+  it('omits the pages block entirely for an unpaginated read', () => {
+    const payload = buildQueryExport(
+      {
+        endpoint: '/v1/evidence/summary',
+        params: { window: 86_400 },
+        orgId: ORG_ID,
+        locale: 'pt-BR',
+        exportedAt: 'x',
+      },
+      SUMMARY_WITH_GAPS,
+    );
+    expect(payload.govai_export.pages).toBeUndefined();
+  });
+
+  it('records the COMPLETE parameter set of every page of a paginated export', () => {
+    // Without this the artifact would label several requests with the first one's parameters
+    // and could not reproduce which request produced which page.
+    const payload = buildQueryExport(
+      {
+        endpoint: '/v1/audit-events',
+        params: { chain_category: 'run', limit: 50 },
+        pageParams: [
+          { chain_category: 'run', limit: 50 },
+          { chain_category: 'run', limit: 50, before_seq: 51 },
+          { chain_category: 'run', limit: 50, before_seq: 1 },
+        ],
+        orgId: ORG_ID,
+        locale: 'pt-BR',
+        exportedAt: 'x',
+      },
+      [{ events: [] }, { events: [] }, { events: [] }],
+    );
+    expect(payload.govai_export.pages).toEqual([
+      { index: 0, params: { chain_category: 'run', limit: 50 } },
+      { index: 1, params: { chain_category: 'run', limit: 50, before_seq: 51 } },
+      { index: 2, params: { chain_category: 'run', limit: 50, before_seq: 1 } },
+    ]);
+    // Index-aligned with `data`, so page i's parameters describe data[i].
+    expect(payload.govai_export.pages).toHaveLength((payload.data as unknown[]).length);
+    expect(payload.govai_export.disclaimer).toContain('pages[]');
+  });
+
   it('reports an unavailable build SHA as null rather than fabricating one', () => {
     const payload = buildQueryExport(
       { endpoint: '/v1/capabilities', params: {}, orgId: null, locale: 'pt-BR', exportedAt: 'x' },

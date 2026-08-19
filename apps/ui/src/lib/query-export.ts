@@ -13,11 +13,22 @@
 
 import type { Locale } from './i18n/locales.js';
 
+export type ExportParams = Record<string, string | number | undefined>;
+
 export type QueryExportContext = {
   /** The API path this data came from, e.g. `/v1/evidence/summary`. */
   endpoint: string;
-  /** The query parameters actually sent. Never a header, never a credential. */
-  params: Record<string, string | number | undefined>;
+  /**
+   * The parameters shared by every request behind this export. Never a header, never a
+   * credential. For an unpaginated read this IS the complete parameter set.
+   */
+  params: ExportParams;
+  /**
+   * For a paginated export: the COMPLETE parameter set of each request, index-aligned with
+   * `data`. Without it a multi-page export would claim one parameter set for pages fetched
+   * with several — an artifact that cannot reproduce itself. Omitted for a single response.
+   */
+  pageParams?: ExportParams[];
   /** The organization id LEARNED from the authenticated response. */
   orgId: string | null;
   locale: Locale;
@@ -34,15 +45,18 @@ export type QueryExport = {
     locale: Locale;
     ui_build_sha: string | null;
     endpoint: string;
-    params: Record<string, string | number | undefined>;
+    params: ExportParams;
+    /** Present only for a paginated export: one entry per element of `data`, in order. */
+    pages?: Array<{ index: number; params: ExportParams }>;
   };
   data: unknown;
 };
 
 const DISCLAIMER =
-  'Query export: the response this browser received for the stated endpoint and parameters, ' +
-  'serialized without post-processing. It is not a compliance report, not a certification ' +
-  'artifact and not a legal dossier.';
+  'Query export: the response(s) this browser received for the stated endpoint and ' +
+  'parameters, serialized without post-processing. When more than one page was loaded, ' +
+  '`pages[]` records the complete parameter set of each request, in the order of `data`. ' +
+  'It is not a compliance report, not a certification artifact and not a legal dossier.';
 
 /** The build SHA is a public, non-secret build-time value (see .env.example); null when the
  *  build did not provide one — an explicit absence, never a fabricated value. */
@@ -62,6 +76,9 @@ export function buildQueryExport(context: QueryExportContext, data: unknown): Qu
       ui_build_sha: uiBuildSha(),
       endpoint: context.endpoint,
       params: context.params,
+      ...(context.pageParams
+        ? { pages: context.pageParams.map((params, index) => ({ index, params })) }
+        : {}),
     },
     data,
   };

@@ -76,7 +76,7 @@ export function useEvidenceGaps<I extends EvidenceInvariant>(
   invariant: I,
   windowSeconds: number,
   limit: number = GAPS_DEFAULT_LIMIT,
-): UseInfiniteQueryResult<{ pages: GapsResponse<GapRowFor[I]>[] }> {
+): UseInfiniteQueryResult<{ pages: GapsResponse<GapRowFor[I]>[]; pageParams: number[] }> {
   const { client } = useSession();
   const schema = GAP_SCHEMAS[invariant];
   return useInfiniteQuery({
@@ -96,7 +96,10 @@ export function useEvidenceGaps<I extends EvidenceInvariant>(
 export function useAuditEvents(
   chainCategory: ChainCategory,
   limit: number = AUDIT_EVENTS_DEFAULT_LIMIT,
-): UseInfiniteQueryResult<{ pages: z.infer<typeof AuditEventsResponse>[] }> {
+): UseInfiniteQueryResult<{
+  pages: z.infer<typeof AuditEventsResponse>[];
+  pageParams: Array<number | undefined>;
+}> {
   const { client } = useSession();
   const adapter = keysetAdapter(limit);
   return useInfiniteQuery({
