@@ -287,6 +287,8 @@ function Ec1Tile({ summary }: { summary: Summary }) {
           failure: countBadge(t('ec1.failed'), formatInteger(ec1.failed, locale)),
           attention: countBadge(t('ec1.stalled'), formatInteger(ec1.stalled_past_slo, locale)),
           neutral: t('ec1.empty'),
+          // Captures exist but none has sealed yet: in flight, and explicitly not a pass.
+          info: t('seal.inFlightNoneSealed'),
         },
         countBadge(t('ec1.sealed'), formatInteger(ec1.sealed, locale)),
       )}
@@ -353,6 +355,7 @@ function Ec3SealTile({ summary }: { summary: Summary }) {
             formatInteger(ec3.native_unsealed_past_slo, locale),
           ),
           neutral: t('ec3seal.empty'),
+          info: t('seal.inFlightNoneSealed'),
         },
         countBadge(t('ec3seal.sealed'), formatInteger(ec3.native_sealed, locale)),
       )}

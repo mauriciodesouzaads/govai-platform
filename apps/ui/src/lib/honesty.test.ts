@@ -179,6 +179,20 @@ describe('per-invariant tones', () => {
     expect(ec1Tone({ total: 0, sealed: 0, failed: 0, stalled_past_slo: 0 })).toBe('neutral');
   });
 
+  it('EC-1: a window whose captures are ALL still in flight is not a pass', () => {
+    // Every row `captured`/`sealing` and none of them late yet: failed and stalled are both
+    // zero, but nothing has sealed, so there is no positive fact to be green about — and the
+    // tile's own badge would read "sealed: 0" beside the colour.
+    expect(ec1Tone({ total: 5, sealed: 0, failed: 0, stalled_past_slo: 0 })).toBe('info');
+    expect(ec1Tone({ total: 5, sealed: 0, failed: 0, stalled_past_slo: 0 })).not.toBe('ok');
+  });
+
+  it('EC-1: green needs at least one sealed capture AND no gap', () => {
+    expect(ec1Tone({ total: 5, sealed: 1, failed: 0, stalled_past_slo: 0 })).toBe('ok');
+    // A single failure or stall still outranks the sealed evidence.
+    expect(ec1Tone({ total: 5, sealed: 4, failed: 1, stalled_past_slo: 0 })).toBe('failure');
+  });
+
   it('EC-2: a sequence hole is a material gap', () => {
     expect(ec2Tone({ chains: 12, chains_with_gap: 1 })).toBe('failure');
     expect(ec2Tone({ chains: 12, chains_with_gap: 0 })).toBe('ok');
@@ -194,6 +208,18 @@ describe('per-invariant tones', () => {
     );
     expect(ec3SealTone({ native_total: 0, native_sealed: 0, native_unsealed_past_slo: 0 })).toBe(
       'neutral',
+    );
+  });
+
+  it('EC-3.seal: all-in-flight native captures are not a pass either', () => {
+    expect(ec3SealTone({ native_total: 4, native_sealed: 0, native_unsealed_past_slo: 0 })).toBe(
+      'info',
+    );
+    expect(
+      ec3SealTone({ native_total: 4, native_sealed: 0, native_unsealed_past_slo: 0 }),
+    ).not.toBe('ok');
+    expect(ec3SealTone({ native_total: 4, native_sealed: 1, native_unsealed_past_slo: 0 })).toBe(
+      'ok',
     );
   });
 

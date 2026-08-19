@@ -167,8 +167,11 @@ separation-of-duties UX).
 Other named follow-ups the U1 tree deliberately does not do: **EP-B7**
 (`@govai/api-contract`, so route schemas stop being mirrored in the UI), **EP-B1**
 (per-key rate limiting — the API's 100 req/min is per process and global), **EP-V1**
-(persisted chain verification, the honest CTA behind EC-6's permanent `pending`), and a
-Playwright browser suite.
+(persisted chain verification, the honest CTA behind EC-6's permanent `pending`), a
+Playwright browser suite, and **EP-UI-DEPLOY** — CI builds, scans and uploads
+`apps/ui/dist`, but nothing yet packages it for serving (no UI image, no reverse-proxy
+configuration for the `/app/` + `/v1/*` same-origin topology), which is its own movement on
+the pattern `EP-SEALER-DEPLOY` established.
 
 Constraints that continue to hold for every later milestone (from the July 2026 UI plans
 reconciled to Foundation V1 — see `plans/GOVAI-UI-MASTER-PLAN…` header,

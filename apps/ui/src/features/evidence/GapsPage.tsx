@@ -92,29 +92,38 @@ function GapsChrome({
   invariant,
   windowSeconds,
   tSealSeconds,
+  tSealUnavailable = false,
+  onRetryTSeal,
   exportData,
   exportPageParams,
   children,
 }: {
   invariant: EvidenceInvariant;
   windowSeconds: number;
-  /** Present only for the SLO-dependent invariants; `null` when the summary read did not
-   *  supply it, which is rendered as an explicit unknown rather than silently omitted. */
+  /** Present only for the SLO-dependent invariants; `null` while it is not yet known. */
   tSealSeconds?: number | null;
+  /** The summary read FAILED, so the threshold that selected these rows is unknown. */
+  tSealUnavailable?: boolean;
+  onRetryTSeal?: () => void;
   exportData: unknown;
   /** The offset cursor actually used for each loaded page, in order. */
   exportPageParams?: number[];
   children: ReactNode;
 }) {
   const { t, locale } = useI18n();
-  const showTSeal = tSealSeconds !== undefined;
+  const showTSeal = tSealSeconds !== undefined || tSealUnavailable;
+  // ★ An export of an SLO-dependent list without its threshold is an artifact that cannot be
+  // read correctly later — the same defect as omitting it from the screen. So while T_seal is
+  // unknown the export is withheld and the reason is stated, rather than quietly producing an
+  // incomplete snapshot. The rows themselves stay visible: they are real data.
+  const exportBlocked = tSealUnavailable || (showTSeal && (tSealSeconds ?? null) === null);
   return (
     <div className="space-y-[var(--govai-space-4)]">
       <PageHeader
         title={t(INVARIANT_LABEL[invariant])}
         description={t('gaps.title')}
         actions={
-          exportData ? (
+          exportData && !exportBlocked ? (
             <QueryExport
               endpoint="/v1/evidence/gaps"
               params={{ invariant, window: windowSeconds, limit: GAPS_DEFAULT_LIMIT }}
@@ -148,7 +157,7 @@ function GapsChrome({
                   <ContextItem
                     label={t('window.tSeal')}
                     value={
-                      tSealSeconds === null
+                      tSealSeconds === null || tSealSeconds === undefined
                         ? t('gaps.nullValue')
                         : formatDurationSeconds(tSealSeconds, locale)
                     }
@@ -163,6 +172,27 @@ function GapsChrome({
       <Link className="inline-block text-[var(--govai-link)] underline underline-offset-2" to="/">
         {t('gaps.backToCockpit')}
       </Link>
+      {tSealUnavailable && (
+        <div
+          role="alert"
+          className="rounded-[var(--govai-radius-card)] border border-[var(--govai-attention-border)] bg-[var(--govai-attention-bg)] p-[var(--govai-space-4)]"
+          data-testid="tseal-unavailable"
+        >
+          <p className="max-w-prose text-[var(--govai-text-primary)]">
+            {t('gaps.tSealUnavailable')}
+          </p>
+          {onRetryTSeal && (
+            <button
+              type="button"
+              onClick={onRetryTSeal}
+              className="mt-[var(--govai-space-3)] rounded-[var(--govai-radius-control)] border border-[var(--govai-border-strong)] bg-[var(--govai-bg-surface)] px-[var(--govai-space-3)] py-[var(--govai-space-1)] hover:bg-[var(--govai-bg-inset)]"
+              data-testid="tseal-retry"
+            >
+              {t('state.error.retry')}
+            </button>
+          )}
+        </div>
+      )}
       {children}
     </div>
   );
@@ -194,7 +224,13 @@ function GapsListScreen<I extends ListInvariant>({
     <GapsChrome
       invariant={invariant}
       windowSeconds={pages[0]?.window_seconds ?? evidenceWindow.seconds}
-      {...(sloDependent ? { tSealSeconds: summary.data?.t_seal_seconds ?? null } : {})}
+      {...(sloDependent
+        ? {
+            tSealSeconds: summary.data?.t_seal_seconds ?? null,
+            tSealUnavailable: summary.isError,
+            onRetryTSeal: () => void summary.refetch(),
+          }
+        : {})}
       exportData={query.data ? pages : null}
       {...(query.data ? { exportPageParams: query.data.pageParams } : {})}
     >

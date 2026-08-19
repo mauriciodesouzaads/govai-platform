@@ -138,6 +138,7 @@ export const enUS: Catalog = {
   'ec1.failed': 'failed',
   'ec1.stalled': 'stalled past T_seal',
   'ec1.empty': 'No captures in this window.',
+  'seal.inFlightNoneSealed': 'none sealed yet — in flight',
 
   'ec2.chains': 'chains',
   'ec2.withGap': 'with a sequence gap',
@@ -202,6 +203,8 @@ export const enUS: Catalog = {
     'Sequence numbers arrive as decimal strings because they can exceed JavaScript’s safe integer. They are shown digit for digit, with no conversion.',
   'gaps.unreadableValue': 'unreadable value',
   'gaps.nullValue': '—',
+  'gaps.tSealUnavailable':
+    'T_seal could not be read: the summary request failed. This invariant selects its rows by that threshold, so the rows below stay visible but the export is unavailable until the threshold is known.',
 
   // --- audit events -----------------------------------------------------------------------
   'audit.title': 'Audit chain',

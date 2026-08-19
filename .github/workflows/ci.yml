@@ -75,6 +75,17 @@ jobs:
             echo "::error::credential-shaped string found in apps/ui/dist"; exit 1
           fi
           echo "apps/ui/dist clean"
+      # Keep the exact bytes the step above scanned, instead of discarding them with the
+      # runner: a reviewer can then inspect the artifact this gate actually passed. This is
+      # NOT a release step — packaging the bundle as a deploy unit (image + reverse-proxy
+      # config, the pattern EP-SEALER-DEPLOY established) is a separate movement.
+      - name: upload the built UI bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: govai-ui-dist
+          path: apps/ui/dist
+          if-no-files-found: error
+          retention-days: 14
 
   # The strong gate (branch protection requires this job on main): full suite with testcontainers
   # Postgres. GOVAI_INTEGRATION=1 ⇒ vitest includes tests/integration/** (unit + integration).

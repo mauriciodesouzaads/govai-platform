@@ -115,12 +115,22 @@ export function enforcementLabel(input: EnforcementInput): HonestyVerdict {
 // 2. Evidence-invariant tones
 // ---------------------------------------------------------------------------------------
 
-/** EC-1 — a failed capture is a material gap (red); a stalled one needs attention (amber);
- *  an empty window is neutral, because nothing was measured. */
+/**
+ * EC-1 — a failed capture is a material gap (red); one stalled past T_seal needs attention
+ * (amber); an empty window is neutral, because nothing was measured.
+ *
+ * ★ The `sealed === 0` branch is the one that matters. A fresh window can hold captures that
+ * are all still `captured`/`sealing` and none of them late yet: `failed` and
+ * `stalled_past_slo` are both zero, so an "absence of problems" rule would paint the tile
+ * green beside a badge reading "sealed: 0". Nothing has been sealed — there is no positive
+ * assertion to be green about. That state is IN FLIGHT (info), which is neither a pass nor a
+ * problem. Green requires at least one sealed capture and no gap.
+ */
 export function ec1Tone(ec1: EvidenceCounts['ec1']): Tone {
   if (ec1.failed > 0) return 'failure';
   if (ec1.stalled_past_slo > 0) return 'attention';
   if (ec1.total === 0) return 'neutral';
+  if (ec1.sealed === 0) return 'info';
   return 'ok';
 }
 
@@ -131,11 +141,15 @@ export function ec2Tone(ec2: EvidenceCounts['ec2']): Tone {
   return 'ok';
 }
 
-/** EC-3.seal — native captures still unsealed past the SLO need attention; they are not yet
- *  a failure (the sealer may still advance them). */
+/**
+ * EC-3.seal — native captures still unsealed past the SLO need attention; they are not yet a
+ * failure (the sealer may still advance them). Same in-flight rule as EC-1: a window whose
+ * native captures are all young and none sealed yet is `info`, not a pass.
+ */
 export function ec3SealTone(ec3seal: EvidenceCounts['ec3seal']): Tone {
   if (ec3seal.native_unsealed_past_slo > 0) return 'attention';
   if (ec3seal.native_total === 0) return 'neutral';
+  if (ec3seal.native_sealed === 0) return 'info';
   return 'ok';
 }
 

@@ -9,6 +9,7 @@ import {
   EC3_DROP_BOUND,
   EC6_EXCLUSION_REASON,
   EC6_NOTE,
+  SUMMARY_ALL_IN_FLIGHT,
   SUMMARY_EMPTY,
   SUMMARY_FULLY_COVERED,
   SUMMARY_WITH_GAPS,
@@ -147,6 +148,18 @@ describe('cockpit — tones follow the facts', () => {
     expect(screen.getByTestId('tile-ec2')).toHaveAttribute('data-tone', 'failure');
     expect(screen.getByTestId('tile-ec3seal')).toHaveAttribute('data-tone', 'attention');
     expect(screen.getByTestId('tile-ec4')).toHaveAttribute('data-tone', 'attention');
+  });
+
+  it('a window with captures but NOTHING sealed is in-flight, never green', async () => {
+    // The tile would otherwise read green beside a badge saying "sealed: 0".
+    await renderCockpit(SUMMARY_ALL_IN_FLIGHT);
+    for (const id of ['tile-ec1', 'tile-ec3seal']) {
+      expect(screen.getByTestId(id)).toHaveAttribute('data-tone', 'info');
+      expect(screen.getByTestId(id)).not.toHaveAttribute('data-tone', 'ok');
+    }
+    expect(
+      screen.getAllByText(CATALOGS['pt-BR']['seal.inFlightNoneSealed']).length,
+    ).toBeGreaterThan(0);
   });
 
   it('a fully covered window is green — but EC-6 still is not', async () => {

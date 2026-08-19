@@ -140,6 +140,35 @@ export const SUMMARY_FULLY_COVERED = {
   },
 };
 
+/** A live window whose captures are all still in flight: nothing failed, nothing late — and
+ *  nothing sealed. The state a naive "no problems" rule would paint green. */
+export const SUMMARY_ALL_IN_FLIGHT = {
+  ...SUMMARY_WITH_GAPS,
+  counts: {
+    ec1: { total: 5, sealed: 0, failed: 0, stalled_past_slo: 0 },
+    ec2: { chains: 1, chains_with_gap: 0 },
+    ec3seal: { native_total: 5, native_sealed: 0, native_unsealed_past_slo: 0 },
+    ec4: { provider_invocations: 0, without_terminal: 0 },
+    ec6: { chains: 1, verified_ok: 0, pending: 1 },
+  },
+  coverage_ratio: {
+    label: 'coverage_ratio',
+    ratio: 1,
+    covered: 6,
+    total: 6,
+    terms: [
+      { invariant: 'ec1', covered: 5, total: 5 },
+      { invariant: 'ec2', covered: 1, total: 1 },
+      { invariant: 'ec3seal', covered: 5, total: 5 },
+      { invariant: 'ec4', covered: 0, total: 0 },
+    ],
+    excluded: [
+      { invariant: 'ec6', reason: EC6_EXCLUSION_REASON },
+      { invariant: 'ec3drop', reason: EC3DROP_EXCLUSION_REASON },
+    ],
+  },
+};
+
 export const EC1_ROWS = [
   {
     capture_id: '8b0c9a1e-1f3d-4c2b-9a77-0d1e2f3a4b5c',

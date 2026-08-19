@@ -249,6 +249,34 @@ describe('gap views — measurement context', () => {
     },
   );
 
+  it('an SLO-dependent view whose T_seal read FAILED says so and withholds the export', async () => {
+    // The rows are real and stay visible, but an export without the threshold that selected
+    // them would be an artifact nobody can read correctly later.
+    server.use(
+      http.get('*/v1/evidence/summary', () =>
+        HttpResponse.json({ error: 'internal' }, { status: 500 }),
+      ),
+    );
+    renderGaps('ec1');
+    await screen.findByRole('table');
+    const alert = await screen.findByTestId('tseal-unavailable');
+    expect(alert).toHaveTextContent(CATALOGS['pt-BR']['gaps.tSealUnavailable']);
+    expect(screen.queryByTestId('query-export-open')).toBeNull();
+    expect(screen.getByTestId('tseal-retry')).toBeInTheDocument();
+  });
+
+  it('a failed T_seal read does NOT withhold the export on views it does not scope', async () => {
+    server.use(
+      http.get('*/v1/evidence/summary', () =>
+        HttpResponse.json({ error: 'internal' }, { status: 500 }),
+      ),
+    );
+    renderGaps('ec4');
+    await screen.findByRole('table');
+    expect(screen.queryByTestId('tseal-unavailable')).toBeNull();
+    expect(screen.getByTestId('query-export-open')).toBeInTheDocument();
+  });
+
   it('exports T_seal as server context, not as a request parameter', async () => {
     const { user } = renderGaps('ec1');
     await screen.findByRole('table');

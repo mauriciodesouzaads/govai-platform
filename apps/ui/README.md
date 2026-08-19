@@ -186,3 +186,8 @@ Requires Node 24 and pnpm 10.33.2, like the rest of the monorepo.
 - **EP-V1 persisted chain verification** — the honest CTA behind EC-6's permanent `pending`.
 - **Playwright end-to-end** — the component and data-layer suites run in CI today; a browser
   suite against the local stack is registered as a U1 follow-up rather than scope-expanded here.
+- **`EP-UI-DEPLOY` — the deployable unit.** CI builds, scans and now uploads `apps/ui/dist`,
+  but nothing in the repository yet packages it for serving: there is no UI image and no
+  reverse-proxy configuration for the `/app/` + `/v1/*` same-origin topology this README
+  describes. That packaging is its own movement, on the pattern `EP-SEALER-DEPLOY`
+  established for the audit sealer — deliberately not folded into U1.

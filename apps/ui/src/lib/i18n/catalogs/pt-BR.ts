@@ -147,6 +147,7 @@ export const ptBR = {
   'ec1.failed': 'falhas',
   'ec1.stalled': 'estagnadas além do T_seal',
   'ec1.empty': 'Nenhuma captura nesta janela.',
+  'seal.inFlightNoneSealed': 'nenhuma selada ainda — em trânsito',
 
   'ec2.chains': 'cadeias',
   'ec2.withGap': 'com lacuna de sequência',
@@ -211,6 +212,8 @@ export const ptBR = {
     'Os números de sequência chegam como cadeias decimais porque podem exceder o inteiro seguro do JavaScript. São exibidos dígito a dígito, sem conversão.',
   'gaps.unreadableValue': 'valor ilegível',
   'gaps.nullValue': '—',
+  'gaps.tSealUnavailable':
+    'Não foi possível ler o T_seal: a leitura do resumo falhou. Este invariante seleciona linhas por esse limiar, então as linhas abaixo continuam visíveis mas a exportação fica indisponível até o limiar ser conhecido.',
 
   // --- audit events -----------------------------------------------------------------------
   'audit.title': 'Cadeia de auditoria',

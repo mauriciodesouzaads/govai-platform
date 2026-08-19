@@ -140,6 +140,7 @@ export const es: Catalog = {
   'ec1.failed': 'fallidas',
   'ec1.stalled': 'estancadas más allá del T_seal',
   'ec1.empty': 'Sin capturas en esta ventana.',
+  'seal.inFlightNoneSealed': 'ninguna sellada aún — en tránsito',
 
   'ec2.chains': 'cadenas',
   'ec2.withGap': 'con brecha de secuencia',
@@ -204,6 +205,8 @@ export const es: Catalog = {
     'Los números de secuencia llegan como cadenas decimales porque pueden superar el entero seguro de JavaScript. Se muestran dígito a dígito, sin conversión.',
   'gaps.unreadableValue': 'valor ilegible',
   'gaps.nullValue': '—',
+  'gaps.tSealUnavailable':
+    'No fue posible leer el T_seal: la lectura del resumen falló. Este invariante selecciona sus filas por ese umbral, así que las filas de abajo siguen visibles pero la exportación no está disponible hasta conocer el umbral.',
 
   // --- audit events -----------------------------------------------------------------------
   'audit.title': 'Cadena de auditoría',
