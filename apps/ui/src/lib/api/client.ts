@@ -300,13 +300,36 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
       throw new ApiError({ kind: 'network', message: 'request did not reach the GovAI API' });
     }
 
-    if (response.status === 401) {
-      await notifyUnauthorizedIfGovAI(response.clone(), config.onUnauthorized, authScope);
+    // ── A non-2xx body is NEVER a stream ────────────────────────────────────────────────
+    // It is a bounded error payload the caller renders, so it is read ONCE, here, under the
+    // bound — and the caller is handed the text rather than a body.
+    //
+    // ★ WHY NOT `response.clone()`. Cloning TEES the body: draining one branch pulls from the
+    // source and queues every chunk into the other, unread branch. Reading a clone with
+    // `.json()` to decide whether a 401 is GovAI's own therefore buffers the WHOLE body, twice,
+    // before this function returns — on precisely the provider-controlled error responses the
+    // bounded reader exists to contain. A hostile or merely enormous 401 (an intermediary's
+    // HTML error page, a proxy that never stops writing) would hang the console with the bound
+    // sitting unused two lines below. One bounded read, no tee, no second copy.
+    if (!response.ok) {
+      const text = await readBoundedText(response, DEFAULT_ERROR_BODY_MAX_BYTES);
+      if (response.status === 401) {
+        notifyUnauthorizedFromText(text, config.onUnauthorized, authScope);
+      }
+      return {
+        status: response.status,
+        ok: false,
+        headers: response.headers,
+        // Already consumed, and consumed under the bound. Saying `null` is the truth.
+        body: null,
+        readBoundedText: async (maxBytes = DEFAULT_ERROR_BODY_MAX_BYTES) =>
+          maxBytes < text.length ? text.slice(0, maxBytes) : text,
+      };
     }
 
     return {
       status: response.status,
-      ok: response.ok,
+      ok: true,
       headers: response.headers,
       body: response.body,
       readBoundedText: (maxBytes = DEFAULT_ERROR_BODY_MAX_BYTES) =>
@@ -349,26 +372,32 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
   return out;
 }
 
-/** Parse a 401 body far enough to decide whether GovAI itself rejected the session. */
-async function notifyUnauthorizedIfGovAI(
-  response: Response,
+/**
+ * Decide, from ALREADY-BOUNDED text, whether a 401 is GovAI rejecting the session.
+ *
+ * Takes text rather than a Response on purpose: the caller has already read the body once,
+ * under the bound, and there is no second read and no clone to be had. A body truncated at the
+ * bound simply fails to parse, which resolves to "not a GovAI envelope" — the safe direction,
+ * because it keeps the reader signed in rather than ending a session on an unreadable payload.
+ */
+function notifyUnauthorizedFromText(
+  text: string,
   onUnauthorized: (() => void) | undefined,
   authScope: AuthScope,
-): Promise<void> {
+): void {
   if (!onUnauthorized) return;
   if (authScope === 'govai') {
     onUnauthorized();
     return;
   }
-  const code = await govaiErrorCode(response);
-  if (code === 'auth_error') onUnauthorized();
+  if (govaiErrorCodeFromText(text) === 'auth_error') onUnauthorized();
 }
 
-/** The GovAI machine code carried by a response body, or null when the body is not a GovAI
- *  envelope (a provider error object, HTML from a proxy, an empty body). */
-async function govaiErrorCode(response: Response): Promise<string | null> {
+/** The GovAI machine code carried by a body, or null when it is not a GovAI envelope (a
+ *  provider error object, HTML from a proxy, an empty or truncated body). */
+function govaiErrorCodeFromText(text: string): string | null {
   try {
-    const body: unknown = await response.json();
+    const body: unknown = JSON.parse(text);
     const envelope = GovAIErrorBody.safeParse(body);
     return envelope.success ? envelope.data.error : null;
   } catch {

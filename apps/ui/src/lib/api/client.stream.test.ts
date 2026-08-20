@@ -246,6 +246,87 @@ describe('★ a relayed PROVIDER 401 does not end the GovAI session', () => {
   });
 });
 
+describe('★ a provider-controlled error body cannot exhaust this browser', () => {
+  /** A body that never ends, counting how many chunks were actually pulled. */
+  function endlessBody(counter: { pulled: number }, headers: Record<string, string> = {}) {
+    const chunk = new TextEncoder().encode('x'.repeat(1024));
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        pull(c) {
+          counter.pulled += 1;
+          // A runaway guard for the TEST itself: if the bound were broken this would spin
+          // forever, and a hung suite is a worse signal than a failed assertion.
+          if (counter.pulled > 5_000) return void c.close();
+          c.enqueue(chunk);
+        },
+      }),
+      { status: 401, headers: { 'content-type': 'application/json', ...headers } },
+    );
+  }
+
+  it('does not read an unbounded 401 body while deciding whether the session ended', async () => {
+    // ★ REGRESSION. Deciding this with `response.clone().json()` TEES the body: draining the
+    // clone queues every chunk into the unread original too, so the whole payload is buffered
+    // twice before `stream()` returns — with the 16 KiB bound sitting unused. A hostile or
+    // merely enormous 401 would hang the console on exactly the provider-controlled response
+    // the bounded reader exists to contain.
+    const counter = { pulled: 0 };
+    const onUnauthorized = vi.fn();
+    const fetchImpl = vi.fn(async () => endlessBody(counter));
+    const result = await client(fetchImpl as unknown as typeof fetch, { onUnauthorized }).stream(
+      '/passthrough/openai/v1/responses',
+      { body: {}, authScope: 'provider-native' },
+    );
+    // It RETURNS — that is half the assertion.
+    expect(result.status).toBe(401);
+    // And it read only enough to reach the bound, not the whole never-ending stream.
+    expect(counter.pulled).toBeLessThan(64); // 16 KiB / 1 KiB chunks, plus slack
+    // A body that could not be parsed is not a GovAI envelope, so the session survives.
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('still ends the session when a bounded 401 body does carry the GovAI envelope', async () => {
+    const onUnauthorized = vi.fn();
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'auth_error', message: 'invalid api key' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    await client(fetchImpl as unknown as typeof fetch, { onUnauthorized }).stream('/x', {
+      body: {},
+      authScope: 'provider-native',
+    });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a non-2xx body as consumed rather than handing over a half-read stream', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: { type: 'invalid_request_error' } }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    const result = await client(fetchImpl as unknown as typeof fetch).stream('/x', { body: {} });
+    expect(result.ok).toBe(false);
+    expect(result.body).toBeNull();
+    // The text the caller renders is the one already read — no second pass over the body.
+    expect(JSON.parse(await result.readBoundedText())).toEqual({
+      error: { type: 'invalid_request_error' },
+    });
+  });
+
+  it('honours a caller-supplied bound smaller than what was read', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('x'.repeat(500), { status: 500 }),
+    );
+    const result = await client(fetchImpl as unknown as typeof fetch).stream('/x', { body: {} });
+    expect(await result.readBoundedText(10)).toHaveLength(10);
+  });
+});
+
 describe('the response is handed over raw, so the console can render provider truth', () => {
   it('exposes status, headers and the byte stream without interpreting them', async () => {
     const fetchImpl = vi.fn(async () =>
@@ -272,6 +353,9 @@ describe('the response is handed over raw, so the console can render provider tr
     const result = await client(fetchImpl as unknown as typeof fetch).stream('/x', { body: {} });
     const text = await result.readBoundedText(1024);
     expect(text.length).toBeLessThanOrEqual(1024);
+    // The 200 kB payload never reached memory whole: the non-2xx path already stopped at the
+    // default bound before this call narrowed it further.
+    expect(text.length).toBeLessThan(huge.length);
   });
 
   it('serializes the provider-native body it was given, unchanged', async () => {
