@@ -227,6 +227,40 @@ describe('★ a relayed PROVIDER 401 does not end the GovAI session', () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 
+  it('★ bounds a provider-relayed error body on the GET path too', async () => {
+    // ★ REGRESSION. Model discovery runs the moment `/ai` opens and relays PROVIDER error
+    // bodies verbatim, so `toApiError` reading with `response.json()` was an unbounded,
+    // provider-controlled read on the path that greets the reader. A never-ending error body
+    // would hang the model query with the streaming side already bounded.
+    let pulls = 0;
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(c) {
+              pulls += 1;
+              if (pulls > 5_000) return void c.close(); // test-only runaway guard
+              c.enqueue(new TextEncoder().encode('x'.repeat(1024)));
+            },
+          }),
+          { status: 500, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    await expect(
+      Promise.race([
+        client(fetchImpl as unknown as typeof fetch).get('/passthrough/openai/v1/models', {
+          schema: z.object({}),
+          authScope: 'provider-native',
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('get() hung on an unbounded provider error body')), 3000),
+        ),
+      ]),
+    ).rejects.toMatchObject({ kind: 'server' });
+    // It stopped at the bound rather than draining the endless stream.
+    expect(pulls).toBeLessThan(64);
+  });
+
   it('applies the same rule to a provider-native GET', async () => {
     const onUnauthorized = vi.fn();
     const fetchImpl = vi.fn(
@@ -316,6 +350,40 @@ describe('★ a provider-controlled error body cannot exhaust this browser', () 
     expect(JSON.parse(await result.readBoundedText())).toEqual({
       error: { type: 'invalid_request_error' },
     });
+  });
+
+  it('★ returns when the body lands EXACTLY on the bound and then goes quiet', async () => {
+    // ★ REGRESSION, and a lesson about how the previous test was too kind. It fed 1 KiB chunks
+    // that sailed PAST 16 KiB, so a strict `read > maxBytes` was reached and the loop broke.
+    // A body that supplies exactly the bound and then holds the connection open leaves `>`
+    // false, and the next `read()` never resolves: the limit is reached and never acted on.
+    const BOUND = 16 * 1024;
+    let pulls = 0;
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(c) {
+              pulls += 1;
+              if (pulls === 1) {
+                c.enqueue(new TextEncoder().encode('x'.repeat(BOUND)));
+                return;
+              }
+              // Silence: never enqueue, never close. Exactly what an open connection does.
+              return new Promise<void>(() => undefined);
+            },
+          }),
+          { status: 500, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const result = await Promise.race([
+      client(fetchImpl as unknown as typeof fetch).stream('/x', { body: {} }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('stream() hung on a body that landed on the bound')), 3000),
+      ),
+    ]);
+    expect(result.status).toBe(500);
+    expect(await result.readBoundedText()).toHaveLength(BOUND);
   });
 
   it('honours a caller-supplied bound smaller than what was read', async () => {

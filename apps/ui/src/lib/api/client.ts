@@ -358,8 +358,13 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
       if (done) break;
       if (!value) continue;
       read += value.byteLength;
-      if (read > maxBytes) {
-        out += decoder.decode(value.subarray(0, Math.max(0, value.byteLength - (read - maxBytes))));
+      // ★ `>=`, NOT `>`. A body that supplies exactly `maxBytes` and then holds the connection
+      // open would leave a strict `>` false, and the next `read()` would wait forever — the
+      // bound would be reached and never acted on. Reaching the limit is the stop condition;
+      // exceeding it is just the common way of reaching it.
+      if (read >= maxBytes) {
+        const keep = Math.max(0, value.byteLength - (read - maxBytes));
+        out += decoder.decode(value.subarray(0, keep));
         break;
       }
       out += decoder.decode(value, { stream: true });
@@ -416,9 +421,18 @@ async function toApiError(
 
   // The body is best-effort: 429 and the framework 404 do not carry a GovAI code, and a
   // proxy may return HTML. A missing code must never turn into a thrown parse error.
+  //
+  // ★ READ IT BOUNDED. `response.json()` reads to completion, and since model discovery
+  // (`GET /passthrough/*/v1/models`) relays PROVIDER error bodies verbatim, that is an
+  // unbounded, provider-controlled read on the path that runs when `/ai` opens: a huge or
+  // never-ending provider error would hang the model query or exhaust memory. The same policy
+  // the streaming path uses applies here — one bounded read, then parse. A body truncated at
+  // the bound simply fails to parse, which yields `code: null`, which is exactly the
+  // "no GovAI code present" case this block already handles.
   try {
-    const body: unknown = await response.json();
-    const envelope = GovAIErrorBody.safeParse(body);
+    const envelope = GovAIErrorBody.safeParse(
+      JSON.parse(await readBoundedText(response, DEFAULT_ERROR_BODY_MAX_BYTES)) as unknown,
+    );
     if (envelope.success) {
       code = envelope.data.error;
       issues = envelope.data.issues ?? null;
