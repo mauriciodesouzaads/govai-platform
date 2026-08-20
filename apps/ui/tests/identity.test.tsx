@@ -182,14 +182,18 @@ describe('the identity affordance is read-only', () => {
     expect(within(details).queryAllByRole('link')).toHaveLength(0);
   });
 
-  it('adds no navigation: the shell still offers exactly the three U1 areas', async () => {
+  it('adds no navigation of its own: the shell offers exactly the implemented areas', async () => {
+    // ★ The point of this assertion is that the IDENTITY affordance adds nothing to the
+    // navigation, not that the navigation is frozen forever. U1.5 added one item — /ai, a
+    // screen that exists — and the list is still exhaustive and still contains nothing the
+    // backend cannot serve.
     await renderAuthenticated();
     const nav = screen.getByRole('navigation', { name: CATALOGS['pt-BR']['app.nav.label'] });
     expect(
       within(nav)
         .getAllByRole('link')
         .map((a) => a.getAttribute('href')),
-    ).toEqual(['/', '/audit-events', '/capabilities']);
+    ).toEqual(['/ai', '/', '/audit-events', '/capabilities']);
   });
 });
 

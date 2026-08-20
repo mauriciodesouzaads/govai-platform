@@ -117,3 +117,71 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* Assistant answer typography.
+   Tailwind's preflight strips heading and list styling, which is right for an application
+   shell and wrong for prose the model wrote: an answer whose numbered list renders as
+   unindented paragraphs is harder to read than the raw Markdown. These rules are scoped to
+   `.govai-answer` so they cannot leak into the evidence screens, and they use the same tokens
+   as everything else — no new colours, no new type scale. */
+.govai-answer > :first-child {
+  margin-top: 0;
+}
+
+.govai-answer > :last-child {
+  margin-bottom: 0;
+}
+
+.govai-answer p,
+.govai-answer ul,
+.govai-answer ol {
+  margin: var(--govai-space-3) 0;
+}
+
+.govai-answer h1,
+.govai-answer h2,
+.govai-answer h3,
+.govai-answer h4 {
+  margin: var(--govai-space-4) 0 var(--govai-space-2);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.govai-answer h1 {
+  font-size: var(--govai-text-lg);
+}
+
+.govai-answer h2 {
+  font-size: var(--govai-text-md);
+}
+
+.govai-answer h3,
+.govai-answer h4 {
+  font-size: var(--govai-text-base);
+}
+
+.govai-answer ul {
+  list-style: disc;
+  padding-left: var(--govai-space-6);
+}
+
+.govai-answer ol {
+  list-style: decimal;
+  padding-left: var(--govai-space-6);
+}
+
+.govai-answer li {
+  margin: var(--govai-space-1) 0;
+}
+
+.govai-answer hr {
+  margin: var(--govai-space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--govai-border);
+}
+
+/* A long unbroken token (a URL, a hash) must not push the conversation column wide. */
+.govai-answer p,
+.govai-answer li {
+  overflow-wrap: anywhere;
+}

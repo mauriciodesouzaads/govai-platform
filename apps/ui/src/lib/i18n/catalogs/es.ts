@@ -9,7 +9,8 @@ export const es: Catalog = {
   // --- application chrome -----------------------------------------------------------------
   'app.name': 'GovAI',
   'app.skipToContent': 'Ir al contenido principal',
-  'app.nav.label': 'Navegación de evidencia',
+  'app.nav.label': 'Navegación principal',
+  'app.nav.ai': 'AI Console',
   'app.nav.cockpit': 'Panel',
   'app.nav.gaps': 'Brechas',
   'app.nav.auditEvents': 'Cadena de auditoría',
@@ -18,7 +19,7 @@ export const es: Catalog = {
   'app.footer.buildUnavailable': 'no informado',
   'app.footer.org': 'Organización',
   'app.footer.scope':
-    'Interfaz de lectura de evidencia (U1). Workrooms, regulatorio y administración no forman parte de esta entrega.',
+    'Lectura de evidencia y conversación provider-native (U1 + U1.5). Workrooms, regulatorio y administración no forman parte de esta entrega.',
 
   // --- session ----------------------------------------------------------------------------
   'session.org': 'Organización',
@@ -331,6 +332,149 @@ export const es: Catalog = {
   'enforcement.passthrough': 'Passthrough — observado; nunca aplica política',
   'enforcement.note':
     'Una decisión se presenta como bloqueo solo cuando la petición devolvió realmente un 403. Las recomendaciones reenviadas se describen como reenviadas.',
+
+
+  // --- ★ AI Console (UI/UX V1 U1.5) -------------------------------------------------------
+  // ★ COPIA NORMATIVA — véase el catálogo pt-BR para la regla. Una traducción puede debilitar
+  // una afirmación y nunca fortalecerla: reenviado nunca se convierte en bloqueado ni en
+  // aplicado, un resultado no confirmado nunca se convierte en fallo ni en éxito, ninguna
+  // cadena afirma que se capturó evidencia, y la correlación exacta turno↔evento de auditoría
+  // se declara no disponible.
+  'ai.title': 'AI Console',
+  'ai.lead':
+    'Converse con los proveedores por las rutas provider-native de GovAI. La respuesta es del proveedor; el recibo junto a ella muestra solo lo que este navegador pudo observar.',
+  'ai.scopeNote':
+    'Esta entrega expone únicamente conversación en texto. Herramientas, búsqueda web, archivos, imágenes, agentes y prompt de sistema no forman parte de AI Console V1, aunque el proveedor los admita.',
+
+  // controls
+  'ai.controls.label': 'Configuración de la conversación',
+  'ai.provider': 'Proveedor',
+  'ai.provider.openai': 'OpenAI',
+  'ai.provider.anthropic': 'Anthropic',
+  'ai.mode': 'Modo',
+  'ai.mode.native': 'Nativo / Auditado',
+  'ai.mode.governed': 'Gobernado',
+  'ai.surface': 'Superficie de API',
+  'ai.surface.responses': 'Responses',
+  'ai.surface.chatCompletions': 'Chat Completions',
+  'ai.surface.messages': 'Messages',
+  'ai.advanced': 'Avanzado',
+  'ai.maxTokens': 'max_tokens',
+  'ai.maxTokens.hint':
+    'La API Messages de Anthropic exige max_tokens. Es el techo de generación enviado al proveedor.',
+  'ai.locked':
+    'Proveedor, modo, superficie y modelo quedan fijos tras el primer envío. Para cambiarlos, inicie una nueva conversación.',
+  'ai.newConversation': 'Nueva conversación',
+
+  // model discovery
+  'ai.model': 'Modelo',
+  'ai.model.placeholder': 'id del modelo, tal como lo nombra el proveedor',
+  'ai.model.hint':
+    'Las sugerencias provienen del listado del propio proveedor. Aparecer en la lista no garantiza soporte en toda superficie de API; el proveedor sigue siendo la autoridad y el id que escriba se envía exactamente como está.',
+  'ai.model.loading': 'Cargando el listado del proveedor…',
+  'ai.model.listEmpty': 'El proveedor no devolvió ningún modelo. Escriba el id manualmente.',
+  'ai.model.listUnavailable':
+    'No se pudo leer el listado del proveedor. Escriba el id del modelo manualmente.',
+  'ai.model.listCredential':
+    'GovAI no pudo resolver una credencial de proveedor para esta organización. Escriba el id del modelo manualmente.',
+  'ai.model.listRejected':
+    'El proveedor rechazó la credencial de esta organización al listar modelos. Escriba el id del modelo manualmente.',
+  'ai.model.listRateLimited':
+    'Límite de peticiones alcanzado al listar modelos. Escriba el id del modelo manualmente.',
+
+  // transcript
+  'ai.memoryOnly.label': 'Dónde vive esta conversación',
+  'ai.memoryOnly':
+    'La interfaz de GovAI no persiste esta transcripción: existe solo en la memoria de esta pestaña y desaparece al recargar, al salir de /ai o al cerrar la sesión. Esto no es una afirmación sobre el proveedor — el tratamiento de datos del lado del proveedor sigue la configuración del proveedor y de la cuenta.',
+  'ai.conversation.label': 'Conversación',
+  'ai.empty.title': 'Todavía no hay mensajes',
+  'ai.empty.description':
+    'Elija proveedor, modo, superficie y modelo, y envíe el primer mensaje. A partir de ahí esa identidad de transporte queda fija en esta conversación.',
+  'ai.you': 'Usted',
+  'ai.assistant': 'Asistente',
+  'ai.generating': 'Generando…',
+
+  // composer
+  'ai.composer.label': 'Mensaje',
+  'ai.composer.placeholder': 'Pregunte lo que quiera…',
+  'ai.composer.hint': 'Enter envía. Shift+Enter inserta un salto de línea.',
+  'ai.composer.largeInput':
+    'Este mensaje es muy grande; el límite de contexto lo define el proveedor.',
+  'ai.send': 'Enviar',
+  'ai.stop': 'Detener',
+  'ai.retry': 'Reintentar — nueva llamada al proveedor',
+  'ai.retry.note':
+    'Reintentar dispara una NUEVA llamada al proveedor, que puede facturarse otra vez. La interfaz de GovAI nunca repite automáticamente un POST al proveedor.',
+
+  // per-attempt annotations
+  'ai.refusal': 'Rechazo del modelo',
+  'ai.unsupportedOutput':
+    'El flujo trajo contenido que esta consola no renderiza (por ejemplo, una llamada a herramienta o un bloque no textual). No se convirtió en texto.',
+  'ai.contextExcluded':
+    'Esta respuesta no entra automáticamente en el contexto de los mensajes siguientes: el proveedor no la completó.',
+  'ai.code.copy': 'Copiar',
+  'ai.code.copied': 'Copiado',
+
+  // turn states
+  'ai.state.submitting': 'Enviando',
+  'ai.state.streaming': 'Transmitiendo',
+  'ai.state.completed': 'Completado por el proveedor',
+  'ai.state.stopped': 'Detenido por usted',
+  'ai.state.stopped.note':
+    'Este navegador canceló la petición. El texto parcial de arriba es lo que llegó; lo que el proveedor hizo después no se informa en esta respuesta.',
+  'ai.state.blocked': 'Bloqueado (403) antes del proveedor',
+  'ai.state.blocked.note':
+    'GovAI devolvió 403 y no llamó al proveedor en esta petición.',
+  'ai.state.providerError': 'Error del proveedor',
+  'ai.state.providerError.note': 'El proveedor respondió con un error. Lo que dijo está abajo.',
+  'ai.state.rateLimited': 'Límite de peticiones',
+  'ai.state.rateLimited.note':
+    'Límite de peticiones alcanzado. No se repitió nada automáticamente: un POST al proveedor puede haberse ejecutado y facturado ya.',
+  'ai.state.credentialUnavailable': 'Credencial de proveedor no disponible',
+  'ai.state.credentialUnavailable.note':
+    'GovAI no pudo resolver una credencial de proveedor para esta organización, por lo que no llamó al proveedor. Es una condición de configuración, que resuelve quien administra la organización.',
+  'ai.state.networkError': 'Resultado no confirmado',
+  'ai.state.networkError.note':
+    'La petición salió de este navegador y no llegó ninguna respuesta. Este navegador no puede saber si el proveedor ejecutó la llamada, así que no se repitió nada automáticamente.',
+  'ai.state.unknownOutcome': 'Resultado no confirmado',
+  'ai.state.unknownOutcome.note':
+    'El flujo terminó sin el marcador terminal del proveedor. El texto de arriba es lo que llegó; este navegador no puede afirmar que la respuesta esté completa.',
+  'ai.state.retryAfter': 'espere {seconds}s antes de intentarlo de nuevo',
+  'ai.error.providerSaid': 'El proveedor respondió',
+
+  // interaction receipt
+  'ai.receipt.title': 'Recibo de la interacción',
+  'ai.receipt.provider': 'Proveedor',
+  'ai.receipt.model': 'Modelo enviado',
+  'ai.receipt.surface': 'Superficie de API',
+  'ai.receipt.mode': 'Modo GovAI',
+  'ai.receipt.endpoint': 'Ruta GovAI',
+  'ai.receipt.status': 'HTTP',
+  'ai.receipt.noResponse': 'no se recibió respuesta',
+  'ai.receipt.termination': 'Cierre',
+  'ai.receipt.stopReason': 'stop_reason del proveedor',
+  'ai.receipt.providerRequestId': 'Request id del proveedor',
+  'ai.receipt.providerMessageId': 'Id del mensaje en el proveedor',
+  'ai.receipt.notExposed': 'no expuesto en esta respuesta',
+  'ai.receipt.duration': 'Duración observada por el navegador',
+  'ai.receipt.governance': 'Gobernanza',
+  'ai.receipt.governance.nativeSurface':
+    'La superficie Nativa / Auditada no resuelve ninguna decisión de gobernanza por petición y no devuelve ninguna al navegador. Aquí no se deduce nada.',
+  'ai.receipt.governance.absentOnResponse':
+    'Esta respuesta no trajo ninguna de las cabeceras de gobernanza de GovAI.',
+  'ai.receipt.capabilityLevel': 'capability_level',
+  'ai.receipt.riskClass': 'effective_risk_class',
+  'ai.receipt.recommendation': 'Recomendación',
+  'ai.receipt.applied': 'Aplicado realmente',
+  'ai.receipt.applied.forwarded': 'Reenviado al proveedor',
+  'ai.receipt.applied.blocked': 'Bloqueado (403)',
+  'ai.receipt.governanceNote': 'Cómo leerlo',
+  'ai.receipt.recommendationVsApplied':
+    'Recomendación es lo que indicó la matriz de enforcement. Aplicado realmente es lo que ejecutó el runtime. Reenviado significa que la petición llegó al proveedor: no se consultó a nadie, no se creó ningún sandbox y no se impidió nada.',
+  'ai.receipt.correlationCaveat':
+    'La correlación exacta entre este turno y un evento de auditoría concreto no la expone la API actual, y esta consola no la estima. Abra Evidencia y Cadena de auditoría para ver lo que se registró.',
+  'ai.receipt.openEvidence': 'Abrir Evidencia',
+  'ai.receipt.openAudit': 'Abrir Cadena de auditoría',
 
   // --- unknown-value fallback -------------------------------------------------------------
   'status.unknown': 'valor no reconocido',
