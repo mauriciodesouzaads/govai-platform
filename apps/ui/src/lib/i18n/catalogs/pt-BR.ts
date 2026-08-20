@@ -54,6 +54,7 @@ export const ptBR = {
     'Autenticação humana de produção: não implementada. Não existe conta de usuário, senha, sessão persistente nem ciclo de vida de chave.',
   'identity.serverAuthoritative':
     'Todos estes valores vêm do servidor (GET /v1/me) a cada autenticação. Esta interface não os deduz, não os edita e não os guarda como autoridade.',
+
   // --- /enter -----------------------------------------------------------------------------
   'enter.title': 'Entrar',
   'enter.lead':
@@ -325,6 +326,7 @@ export const ptBR = {
 
   // --- status vocabulary: principal type --------------------------------------------------
   'status.principalType.api_key': 'chave de API da organização (piloto controlado)',
+
   // --- ★ NORMATIVE: enforcement honesty vocabulary ----------------------------------------
   // Forwarded means the request reached the provider. None of these may be translated into a
   // word that suggests the request was stopped, protected, redacted or that a declared effect

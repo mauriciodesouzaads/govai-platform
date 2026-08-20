@@ -45,6 +45,7 @@ export const es: Catalog = {
     'Autenticación humana de producción: no implementada. No existe cuenta de usuario, contraseña, sesión persistente ni ciclo de vida de clave.',
   'identity.serverAuthoritative':
     'Todos estos valores vienen del servidor (GET /v1/me) en cada autenticación. Esta interfaz no los deduce, no los edita y no los guarda como autoridad.',
+
   // --- /enter -----------------------------------------------------------------------------
   'enter.title': 'Entrar',
   'enter.lead':
@@ -316,6 +317,7 @@ export const es: Catalog = {
 
   // --- status vocabulary: principal type --------------------------------------------------
   'status.principalType.api_key': 'clave de API de la organización (piloto controlado)',
+
   // --- ★ NORMATIVE: enforcement honesty vocabulary ----------------------------------------
   'enforcement.observe': 'Observado — reenviado al proveedor',
   'enforcement.warn': 'Alerta registrada — reenviado al proveedor',

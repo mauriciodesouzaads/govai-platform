@@ -44,6 +44,7 @@ export const enUS: Catalog = {
     'Production human authentication: not implemented. There is no user account, no password, no persistent session and no key lifecycle.',
   'identity.serverAuthoritative':
     'Every value here comes from the server (GET /v1/me) at each authentication. This interface does not infer them, does not edit them and does not hold them as authority.',
+
   // --- /enter -----------------------------------------------------------------------------
   'enter.title': 'Sign in',
   'enter.lead':
@@ -313,6 +314,7 @@ export const enUS: Catalog = {
 
   // --- status vocabulary: principal type --------------------------------------------------
   'status.principalType.api_key': 'organization API key (controlled pilot)',
+
   // --- ★ NORMATIVE: enforcement honesty vocabulary ----------------------------------------
   'enforcement.observe': 'Observed — forwarded to the provider',
   'enforcement.warn': 'Warning recorded — forwarded to the provider',
