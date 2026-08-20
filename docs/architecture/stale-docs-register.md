@@ -456,7 +456,7 @@ Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1 r
 
 | Document | Was (stale once `/ai` exists) | Now (corrected) |
 |---|---|---|
-| `current-state.md` §1 | "U1.5 (AI Console) and U2 (Workroom) are not started"; interface layer titled "milestone U1"; 15 UI files / 324 UI tests | U1.5 recorded with its route, its six provider×mode combinations, its memory-only transcript, its no-auto-retry policy, its receipt limits and its two open backend findings; 31 UI files / 682 UI tests; the acceptance harness named as operator-driven and excluded from both vitest configs |
+| `current-state.md` §1 | "U1.5 (AI Console) and U2 (Workroom) are not started"; interface layer titled "milestone U1"; 15 UI files / 324 UI tests | U1.5 recorded with its route, its six provider×mode combinations, its memory-only transcript, its no-auto-retry policy, its receipt limits and its two open backend findings; 31 UI files / 689 UI tests; the acceptance harness named as operator-driven and excluded from both vitest configs |
 | `development-roadmap.md` | `UI_UX_V1_U1_5_AI_CONSOLE=NOT_STARTED`; "U1.5 — AI Console (not started)" | implemented, with `BACKEND_RUNTIME_CHANGE=NONE` and the two open findings stated as backend work this movement was not authorized to do |
 | `resume-playbook.md` §3 | "U1.5 (AI Console) is NOT started" | implemented, with the Anthropic browser blocker named so the next session does not rediscover it |
 | `apps/ui/README.md` | described a read-only evidence interface | an AI Console section: the routes it drives, what the receipt may and may not say, and the non-goals |

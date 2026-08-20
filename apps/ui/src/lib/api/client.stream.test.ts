@@ -418,6 +418,54 @@ describe('★ a provider-controlled error body cannot exhaust this browser', () 
     expect(await result.readBoundedText()).toHaveLength(BOUND);
   });
 
+  it('★ bounds a SUCCESSFUL provider-controlled body too', async () => {
+    // ★ REGRESSION. The error paths were bounded first, which left the 2xx read — the one that
+    // actually runs when /ai opens — as the last unbounded provider-controlled body. A
+    // never-ending 200 model list would hang the screen before it rendered.
+    let pulls = 0;
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(c) {
+              pulls += 1;
+              if (pulls > 20_000) return void c.close(); // test-only runaway guard
+              c.enqueue(new TextEncoder().encode('x'.repeat(1024)));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    await expect(
+      Promise.race([
+        client(fetchImpl as unknown as typeof fetch).get('/passthrough/anthropic/v1/models', {
+          schema: z.object({}),
+          authScope: 'provider-native',
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('get() hung on an unbounded 2xx provider body')), 5000),
+        ),
+      ]),
+      // Truncated at the bound, so it is no longer valid JSON — reported as a contract
+      // mismatch rather than as a hung tab.
+    ).rejects.toMatchObject({ kind: 'malformed_response' });
+    // 2 MiB of 1 KiB chunks, and not one byte more.
+    expect(pulls).toBeLessThanOrEqual(2 * 1024 + 2);
+  });
+
+  it('leaves a GovAI-scoped 2xx read unbounded, so a legitimate page is never truncated', async () => {
+    // GovAI's own responses are first-party and sized by the route's own `limit`; imposing a
+    // ceiling there would turn a large but legitimate evidence page into a contract error.
+    const big = JSON.stringify({ ok: true, filler: 'x'.repeat(3 * 1024 * 1024) });
+    const fetchImpl = vi.fn(
+      async () => new Response(big, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const parsed = await client(fetchImpl as unknown as typeof fetch).get('/v1/evidence/gaps', {
+      schema: z.looseObject({ ok: z.boolean() }),
+    });
+    expect(parsed.ok).toBe(true);
+  });
+
   it('honours a caller-supplied bound smaller than what was read', async () => {
     const fetchImpl = vi.fn(
       async () => new Response('x'.repeat(500), { status: 500 }),

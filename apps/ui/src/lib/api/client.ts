@@ -185,6 +185,22 @@ const defaultSleep = (ms: number): Promise<void> =>
  *  with anything; the console renders bounded, whitelisted fields and never a raw dump. */
 const DEFAULT_ERROR_BODY_MAX_BYTES = 16 * 1024;
 
+/**
+ * Ceiling on a SUCCESSFUL body whose content is provider-controlled (`authScope:
+ * 'provider-native'` — today, model discovery).
+ *
+ * `response.json()` reads to completion, so an enormous or never-ending 2xx from a provider or
+ * an intermediary would hang the screen that issues it — and model discovery runs the moment
+ * `/ai` opens. GovAI's OWN reads are left unbounded on purpose: their size is governed by the
+ * route's own `limit`, they are first-party, and imposing a ceiling there would risk truncating
+ * a legitimate evidence page into a contract error.
+ *
+ * 2 MiB is roughly ten thousand model entries — far above any real listing (the live
+ * acceptance saw 124 from OpenAI and 10 from Anthropic) and far below anything that could
+ * exhaust a tab.
+ */
+const PROVIDER_NATIVE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+
 export function createApiClient(config: ApiClientConfig): ApiClient {
   const baseUrl = normalizeBaseUrl(config.baseUrl ?? '');
   const doFetch = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -246,7 +262,12 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
 
       let body: unknown;
       try {
-        body = await response.json();
+        // A provider-controlled 2xx is read under a bound; GovAI's own is not. See
+        // PROVIDER_NATIVE_BODY_MAX_BYTES.
+        body =
+          authScope === 'provider-native'
+            ? JSON.parse(await readBoundedText(response, PROVIDER_NATIVE_BODY_MAX_BYTES))
+            : await response.json();
       } catch {
         throw new ApiError({
           kind: 'malformed_response',

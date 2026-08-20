@@ -24,14 +24,23 @@
 import { z } from 'zod';
 import type { ProviderId } from './types.js';
 
-/** OpenAI: `{ object: 'list', data: [{ id, object, created, owned_by }] }`. */
+/** OpenAI: `{ object: 'list', data: [{ id, object, created, owned_by }] }`. Not paginated. */
 export const OpenAIModelList = z.looseObject({
   data: z.array(z.looseObject({ id: z.string() })),
 });
 
-/** Anthropic: `{ data: [{ type:'model', id, display_name, created_at }], has_more, … }`. */
+/**
+ * Anthropic: `{ data: [{ type:'model', id, display_name, created_at }], has_more, last_id }`.
+ *
+ * ★ PAGINATED, and `has_more` / `last_id` are read rather than discarded. The endpoint defaults
+ * to 20 entries per page, so an account with more models than that would have had every model
+ * after the first page silently missing from the suggestions — a listing that presents itself
+ * as "the provider's own" while quietly showing part of it.
+ */
 export const AnthropicModelList = z.looseObject({
   data: z.array(z.looseObject({ id: z.string(), display_name: z.string().optional() })),
+  has_more: z.boolean().optional(),
+  last_id: z.string().nullish(),
 });
 
 /** What the picker renders. `label` is the provider's own display name when it published one. */
@@ -49,18 +58,51 @@ export function modelsPath(provider: ProviderId): string {
   return `/passthrough/${provider}/v1/models`;
 }
 
+/** The largest page Anthropic's models endpoint accepts (documented range 1..1000). Asking for
+ *  the maximum means a realistic account is one request, not a walk. */
+export const ANTHROPIC_MODELS_PAGE_SIZE = 1000;
+
+/**
+ * A hard ceiling on pages followed, so a provider that always answers `has_more: true` cannot
+ * spin the screen that opens `/ai`. Well past any real account at the page size above; if it is
+ * ever hit, the suggestions are simply a prefix and the reader can still type an id, which is
+ * the same position they are in when discovery fails outright.
+ */
+export const MODEL_PAGE_LIMIT = 5;
+
+/** Query parameters for one discovery page. OpenAI's endpoint is not paginated and takes none. */
+export function modelsQuery(
+  provider: ProviderId,
+  afterId?: string,
+): Record<string, string | number | undefined> | undefined {
+  if (provider !== 'anthropic') return undefined;
+  return { limit: ANTHROPIC_MODELS_PAGE_SIZE, ...(afterId ? { after_id: afterId } : {}) };
+}
+
+/** Whether another page should be requested, and the cursor for it. */
+export function nextPageCursor(response: ModelListResponse): string | null {
+  const paged = response as z.infer<typeof AnthropicModelList>;
+  if (paged.has_more !== true) return null;
+  const last = paged.last_id ?? paged.data[paged.data.length - 1]?.id;
+  return typeof last === 'string' && last.length > 0 ? last : null;
+}
+
 export function modelListSchema(provider: ProviderId): z.ZodType<ModelListResponse> {
   return provider === 'openai' ? OpenAIModelList : AnthropicModelList;
 }
 
 /**
- * Normalize a provider list into the picker's shape, sorted by id so the order is stable and
- * does not depend on a provider's pagination order changing under the reader.
+ * Normalize one or more provider pages into the picker's shape, sorted by id so the order is
+ * stable and does not depend on a provider's pagination order changing under the reader.
+ * De-duplicates across pages: a cursor walk can legitimately overlap.
  */
-export function toProviderModels(response: ModelListResponse): ProviderModel[] {
+export function toProviderModels(
+  response: ModelListResponse | readonly ModelListResponse[],
+): ProviderModel[] {
+  const pages = Array.isArray(response) ? response : [response as ModelListResponse];
   const seen = new Set<string>();
   const out: ProviderModel[] = [];
-  for (const entry of response.data) {
+  for (const entry of pages.flatMap((p) => p.data)) {
     const id = entry.id.trim();
     if (id.length === 0 || seen.has(id)) continue;
     seen.add(id);

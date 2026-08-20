@@ -18,9 +18,13 @@ import { contextForTurn, type ConversationConfig } from './conversation/types.js
 import type { ContextMessage } from './providers/types.js';
 import { findAdapter } from './providers/registry.js';
 import {
+  MODEL_PAGE_LIMIT,
   modelListSchema,
   modelsPath,
+  modelsQuery as modelsQuery_,
+  nextPageCursor,
   toProviderModels,
+  type ModelListResponse,
   type ProviderModel,
 } from './providers/models.js';
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from './providers/anthropic-messages.js';
@@ -97,13 +101,31 @@ export function AiConsolePage() {
   const provider = state.config.provider;
   const modelsQuery = useQuery({
     queryKey: queryKeys.providerModels(provider),
-    queryFn: ({ signal }) =>
-      client.get(modelsPath(provider), {
-        schema: modelListSchema(provider),
-        signal,
-        // A rejected PROVIDER key relays as a 401; it must not end the GovAI session.
-        authScope: 'provider-native',
-      }),
+    queryFn: async ({ signal }) => {
+      // ★ FOLLOW THE PROVIDER'S CURSOR. Anthropic's models endpoint pages (20 by default), so
+      // reading one page and stopping would present a partial listing as "the provider's own"
+      // — with every model past the first page silently missing. Asking for the maximum page
+      // size makes a realistic account a single request; the loop exists for the case where it
+      // is not, and it is bounded so a provider that always says `has_more` cannot spin the
+      // screen that opens /ai. OpenAI's endpoint is not paginated and takes no parameters.
+      const pages: ModelListResponse[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < MODEL_PAGE_LIMIT; page += 1) {
+        const query = modelsQuery_(provider, cursor);
+        const response = await client.get(modelsPath(provider), {
+          schema: modelListSchema(provider),
+          signal,
+          ...(query ? { query } : {}),
+          // A rejected PROVIDER key relays as a 401; it must not end the GovAI session.
+          authScope: 'provider-native',
+        });
+        pages.push(response);
+        const next = nextPageCursor(response);
+        if (next === null) break;
+        cursor = next;
+      }
+      return pages;
+    },
     // A provider's model list does not change minute to minute, and the API's shared
     // rate limit is better spent on conversation.
     staleTime: 5 * 60_000,

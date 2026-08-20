@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ANTHROPIC_MODELS_PAGE_SIZE,
   AnthropicModelList,
   filterModels,
   modelListSchema,
   modelsPath,
+  modelsQuery,
+  nextPageCursor,
   OpenAIModelList,
   toProviderModels,
 } from './models.js';
@@ -72,6 +75,51 @@ describe('normalizing a provider listing', () => {
   it('sorts by id, so the order does not shift with the provider’s pagination', () => {
     const parsed = OpenAIModelList.parse({ data: [{ id: 'c' }, { id: 'a' }, { id: 'b' }] });
     expect(toProviderModels(parsed).map((m) => m.id)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('★ the Anthropic listing is paginated, and the cursor is followed', () => {
+  it('asks for the largest page the endpoint accepts, and only for Anthropic', () => {
+    // OpenAI's endpoint is not paginated and takes no parameters.
+    expect(modelsQuery('openai')).toBeUndefined();
+    expect(modelsQuery('anthropic')).toEqual({ limit: ANTHROPIC_MODELS_PAGE_SIZE });
+    expect(modelsQuery('anthropic', 'model-x')).toEqual({
+      limit: ANTHROPIC_MODELS_PAGE_SIZE,
+      after_id: 'model-x',
+    });
+  });
+
+  it('★ reports a next cursor while has_more is true', () => {
+    // REGRESSION. Reading one page and stopping would present a PARTIAL listing as "the
+    // provider's own" — every model past the first page silently missing from the suggestions.
+    const page = AnthropicModelList.parse({
+      data: [{ type: 'model', id: 'a' }, { type: 'model', id: 'b' }],
+      has_more: true,
+      last_id: 'b',
+      first_id: 'a',
+    });
+    expect(nextPageCursor(page)).toBe('b');
+  });
+
+  it('stops when has_more is false, absent, or the page is empty', () => {
+    expect(
+      nextPageCursor(AnthropicModelList.parse({ data: [{ id: 'a' }], has_more: false, last_id: 'a' })),
+    ).toBeNull();
+    expect(nextPageCursor(AnthropicModelList.parse({ data: [{ id: 'a' }] }))).toBeNull();
+    expect(nextPageCursor(AnthropicModelList.parse({ data: [], has_more: true }))).toBeNull();
+    // OpenAI's shape carries no pagination at all.
+    expect(nextPageCursor(OpenAIModelList.parse({ data: [{ id: 'a' }] }))).toBeNull();
+  });
+
+  it('falls back to the last entry when the provider omits last_id', () => {
+    const page = AnthropicModelList.parse({ data: [{ id: 'a' }, { id: 'z' }], has_more: true });
+    expect(nextPageCursor(page)).toBe('z');
+  });
+
+  it('merges pages, de-duplicating across an overlapping cursor walk', () => {
+    const p1 = AnthropicModelList.parse({ data: [{ id: 'b' }, { id: 'c' }], has_more: true, last_id: 'c' });
+    const p2 = AnthropicModelList.parse({ data: [{ id: 'c' }, { id: 'a' }], has_more: false });
+    expect(toProviderModels([p1, p2]).map((m) => m.id)).toEqual(['a', 'b', 'c']);
   });
 });
 
