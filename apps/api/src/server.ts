@@ -9,6 +9,7 @@ import { startTelemetry } from '@govai/observability';
 import { createPool } from './db/client.js';
 import { healthRoute } from './routes/health.js';
 import { capabilitiesRoute } from './routes/capabilities.js';
+import { meRoute } from './routes/me.js';
 import { runsRoute } from './routes/runs.js';
 import { auditEventsRoute } from './routes/audit-events.js';
 import { evidenceRoute } from './routes/evidence.js';
@@ -161,6 +162,7 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
 
   await app.register(healthRoute);
   await app.register(capabilitiesRoute);
+  await app.register(meRoute);
   await app.register(runsRoute);
   await app.register(auditEventsRoute);
   await app.register(evidenceRoute);
