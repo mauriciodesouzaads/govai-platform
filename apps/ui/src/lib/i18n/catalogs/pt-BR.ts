@@ -430,6 +430,7 @@ export const ptBR = {
     'Esta resposta não entra automaticamente no contexto das próximas mensagens: ela não foi concluída pelo provedor.',
   'ai.contextExcluded.outOfOrder':
     'Esta resposta não entra automaticamente no contexto das próximas mensagens: ela veio de uma nova tentativa de um turno anterior, e as mensagens seguintes já haviam sido respondidas sem ela. Enviá-la apresentaria ao modelo uma conversa que nunca aconteceu.',
+  'ai.markdown.imageBlocked': 'imagem não carregada',
   'ai.code.copy': 'Copiar',
   'ai.code.copied': 'Copiado',
 

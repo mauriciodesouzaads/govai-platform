@@ -409,6 +409,7 @@ export const enUS: Catalog = {
     'This answer is not automatically included in the context of later messages: the provider did not complete it.',
   'ai.contextExcluded.outOfOrder':
     'This answer is not automatically included in the context of later messages: it came from retrying an earlier turn, and the messages after it had already been answered without it. Sending it would present the model with a conversation that never happened.',
+  'ai.markdown.imageBlocked': 'image not loaded',
   'ai.code.copy': 'Copy',
   'ai.code.copied': 'Copied',
 

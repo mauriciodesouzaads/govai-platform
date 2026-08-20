@@ -414,6 +414,7 @@ export const es: Catalog = {
     'Esta respuesta no entra automáticamente en el contexto de los mensajes siguientes: el proveedor no la completó.',
   'ai.contextExcluded.outOfOrder':
     'Esta respuesta no entra automáticamente en el contexto de los mensajes siguientes: proviene de reintentar un turno anterior, y los mensajes posteriores ya se habían respondido sin ella. Enviarla presentaría al modelo una conversación que nunca ocurrió.',
+  'ai.markdown.imageBlocked': 'imagen no cargada',
   'ai.code.copy': 'Copiar',
   'ai.code.copied': 'Copiado',
 
