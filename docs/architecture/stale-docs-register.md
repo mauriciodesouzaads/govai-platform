@@ -444,3 +444,49 @@ Notes (NOT corrections):
   tier is rendered only in an account/details affordance, explicitly qualified as commercial and
   explicitly denied as a security/governance/policy level; and `principal_type` exists precisely
   so a controlled-pilot org credential is never presented as a human login.
+
+---
+
+## UI/UX V1 U1.5 reconciliation (EP-UIUX-V1-U1.5-AI-CONSOLE-01) — the AI Console exists
+
+`/ai` is implemented (`apps/ui/src/features/ai/**`, route table `apps/ui/src/app/routes.tsx`).
+**`BACKEND_RUNTIME_CHANGE=NONE`** — no route, no migration, no schema object, no event schema,
+no AuditBridge or capture-projection change, no provider or governance behaviour change. The
+Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1 runtime.
+
+| Document | Was (stale once `/ai` exists) | Now (corrected) |
+|---|---|---|
+| `current-state.md` §1 | "U1.5 (AI Console) and U2 (Workroom) are not started"; interface layer titled "milestone U1"; 15 UI files / 324 UI tests | U1.5 recorded with its route, its six provider×mode combinations, its memory-only transcript, its no-auto-retry policy, its receipt limits and its two open backend findings; 31 UI files / 669 UI tests; the acceptance harness named as operator-driven and excluded from both vitest configs |
+| `development-roadmap.md` | `UI_UX_V1_U1_5_AI_CONSOLE=NOT_STARTED`; "U1.5 — AI Console (not started)" | implemented, with `BACKEND_RUNTIME_CHANGE=NONE` and the two open findings stated as backend work this movement was not authorized to do |
+| `resume-playbook.md` §3 | "U1.5 (AI Console) is NOT started" | implemented, with the Anthropic browser blocker named so the next session does not rediscover it |
+| `apps/ui/README.md` | described a read-only evidence interface | an AI Console section: the routes it drives, what the receipt may and may not say, and the non-goals |
+
+### ★ New findings, source-proven during the U1.5 live acceptance — OPEN, backend-owned
+
+Neither is fixed here: both sit in `packages/provider-*`, which the dispatch governs with
+`PROVIDER_ROUTE_SEMANTICS_CHANGE=FORBIDDEN_UNLESS_A_REAL_BLOCKER_IS_SOURCE_PROVEN_AND_OWNER_ADJUDICATES`.
+The blockers are source-proven; the adjudication is the owner's.
+
+| Finding | Severity | Evidence | Why the UI cannot fix it |
+|---|---|---|---|
+| **`AI-CONSOLE-ORIGIN-RELAY-01`** — the direct provider routes relay the browser's `Origin` header upstream | **P0 for the Anthropic surface**; latent for OpenAI | `buildOutboundHeaders` in `packages/provider-anthropic/src/routes/register-passthrough.ts` (and its OpenAI twin) copies every inbound header except `HOP_BY_HOP` ∪ `STRIP_INBOUND_AUTH`; `origin` is in neither set, in either package. Measured against the running API with the same body four ways: **baseline → 200**, **+`Origin` → 401** `{"type":"error","error":{"type":"authentication_error","message":"CORS requests must set 'anthropic-dangerous-direct-browser-access' header"}}`, **+`Referer` only → 200**, **+`Sec-Fetch-Mode` only → 200**. Only `Origin` triggers it | `Origin` is a forbidden header name: page JavaScript can neither remove nor alter it, and the browser sends it on same-origin POSTs too. The only other route would be for the console to send `anthropic-dangerous-direct-browser-access`, which asserts that the provider key is exposed to the browser — the exact opposite of GovAI's architecture, and a false statement. The fix belongs on the server→provider hop: `Origin` describes the browser↔GovAI hop and has no meaning for a server-side call |
+| **`AI-CONSOLE-RESPONSES-DLP-GAP-01`** — the governed OpenAI Responses DLP pre-scan skips role-shaped `input[]` items | P1 (governance) | `extractOpenAIResponsesText` (`packages/provider-openai/src/governed/extract-text.ts`) hands `input[]` to `pushParts`, which acts only on items whose `type` is `text` / `input_text` / `message`. An item identified by `role` alone matches none, so it is never descended into. Measured with the same CPF: `input: "…"` → **C/enforce**; `[{type:'message', …}]` → **C/enforce**; `[{role, content:"…"}]` → **A/observe**; `[{role, content:[{type:'input_text'}]}]` → **A/observe**. Chat Completions and Anthropic Messages scan a plain string correctly | The console avoids its own exposure by sending fully-qualified typed user items (`apps/ui/src/features/ai/providers/openai-responses.ts`, with a regression test), because the alternative was shipping a Governed mode that scans nothing on its default OpenAI surface. That protects this client only — every other caller using the provider-documented shorthand still gets no scan |
+| **`UI-DEV-PROXY-STREAM-CLOSE-01`** — the Vite DEV proxy does not propagate an abnormal upstream close | dev-only, non-blocking | With an upstream that truncates a stream mid-flight: **direct to GovAI → `curl` exit 18** ("transfer closed with outstanding read data remaining") after ~11 s, i.e. GovAI correctly ends the downstream response and records `stream_outcome: upstream_error`; **through the Vite proxy → `curl` exit 28**, the connection held open to the 30 s timeout. A normal stream closes correctly through the same proxy (exit 0) | GovAI behaves correctly; the dev server does not. In `pnpm dev` a truncated stream leaves a turn showing "Generating…" until the reader presses Stop. The production reverse proxy does not exist yet (**EP-UI-DEPLOY**), so whichever one is chosen must be verified to propagate an abnormal upstream close — added to that EP's acceptance rather than guessed at here |
+
+### `UI-DEV-PROXY-503-01` — what this acceptance did and did not establish
+
+Every 503 observed during the U1.5 acceptance coincided with an upstream that was **deliberately
+stopped** (the API was restarted between runs, and once killed on purpose to test the rule that
+a proxy 503 must not trigger an automatic retry — it did not; the browser network log shows the
+503 and the 502 each exactly once, with no following request). With the upstream up, **0 of 11**
+provider POSTs and 0 model-discovery GETs returned 503. That is NOT a root cause for the
+historical B2 observation, which was seen on GETs with the API believed up. `ROOT_CAUSE`
+therefore remains **NOT_PROVEN**, and StrictMode is still not claimed as the explanation.
+
+### Unchanged by this movement
+
+`AUTH-READ-CACHE-01` stays **OPEN_DEPLOYMENT_BLOCKER** and `EP_UI_DEPLOY` stays
+**BLOCKED_UNTIL_CACHE_CLASS_ADJUDICATED**. U1.5 deliberately did not broaden into that class; it
+adds one more authenticated GET surface to it, the provider `GET /v1/models` reads, which the
+same eventual route/proxy policy must cover. Residuals R12, R13 and R14 are untouched, and the
+Foundation V1 freeze record is not edited.

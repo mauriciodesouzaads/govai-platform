@@ -146,7 +146,7 @@ architecture/doctrine movement (M3 was that movement for the initial promulgatio
 CURRENT_PRODUCT_LANE=UI_UX_V1_FOUNDATION
 UI_UX_V1_U1=IMPLEMENTED_IN_THIS_TREE     (EP-UIUX-V1-U1; apps/ui)
 UI_UX_V1_B2=IMPLEMENTED_IN_THIS_TREE     (EP-UIUX-V1-B2; GET /v1/me + UI identity)
-UI_UX_V1_U1_5_AI_CONSOLE=NOT_STARTED
+UI_UX_V1_U1_5_AI_CONSOLE=IMPLEMENTED_IN_THIS_TREE  (EP-UIUX-V1-U1.5; apps/ui /ai; ZERO backend change)
 UI_UX_V1_U2=NOT_STARTED
 EP_B4_PARTICIPANTS=NOT_STARTED
 PRODUCTION_HUMAN_AUTH=NOT_IMPLEMENTED    (residual R14)
@@ -179,9 +179,31 @@ account/details affordance where tier carries an explicit commercial/account qua
 header cluster). `principal_type` exists so the controlled-pilot credential is never presented
 as a human login: production human auth remains **R14**, unimplemented.
 
-**U1.5 — AI Console (not started).** The standalone provider-native conversational surface over
-the existing OpenAI/Anthropic passthrough/governed routes. EP-B2 was its shared identity
-prerequisite and is now met.
+**U1.5 — AI Console (implemented in this tree).** The standalone provider-native conversational
+surface at `/ai`, over the six already-registered OpenAI/Anthropic passthrough+governed routes.
+`BACKEND_RUNTIME_CHANGE=NONE`: no route, no migration, no event schema, no governance semantics.
+The transcript is memory-only by construction, a provider POST is never retried automatically,
+and the Interaction Receipt states only browser-provable facts — no audit event id, no evidence
+claim, no per-request governance on the Native surface.
+
+Two findings its LIVE acceptance produced are OPEN, belong to the backend, and are NOT fixed by
+this movement (`PROVIDER_ROUTE_SEMANTICS_CHANGE` requires owner adjudication):
+
+- **`AI-CONSOLE-ORIGIN-RELAY-01` (blocks the Anthropic surface for any browser client).** Both
+  provider packages forward every inbound header that is not hop-by-hop or auth, and `origin`
+  is in neither list — so a browser's `Origin` reaches the provider. Anthropic reads that as a
+  direct browser call and answers 401 `"CORS requests must set
+  'anthropic-dangerous-direct-browser-access' header"`. OpenAI tolerates the same relay today,
+  which makes this latent there rather than absent. There is no UI-side fix: a page cannot
+  remove its own `Origin`, and setting the Anthropic beta header would assert a direct browser
+  access that is precisely not what GovAI does. The fix is header hygiene on the server→provider
+  hop.
+- **`AI-CONSOLE-RESPONSES-DLP-GAP-01` (governed DLP).** `extractOpenAIResponsesText` descends
+  only into `input[]` items with an explicit `type`; a role-shaped item is skipped whether its
+  content is a string or parts, so those requests reach the provider with no DLP pre-scan and
+  `enforcement_decision: observe`. Chat Completions and Anthropic Messages are unaffected. The
+  console works around its own exposure by sending fully-qualified typed user items — the gap
+  itself remains for every other caller.
 
 **U2 — Workroom console (not started).** One backend prerequisite remains named and
 unadjudicated: **EP-B4** (`GET /v1/workrooms/:id/participants` — without it there is no roster
