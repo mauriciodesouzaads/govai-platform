@@ -45,6 +45,21 @@ function extractApiKey(req: FastifyRequest): string | undefined {
 
 export async function meRoute(app: FastifyInstance): Promise<void> {
   app.get('/v1/me', async (req: FastifyRequest, reply: FastifyReply) => {
+    // ★ `no-store`, on EVERY response of this route. RFC 9111 §3.5 forbids a shared cache from
+    // storing a response to a request that carried `Authorization` — but the credential this
+    // API actually leads with is `x-govai-api-key`, an ordinary header no cache treats as
+    // special. A `GET /v1/me` is therefore, to a caching proxy, a plain GET whose body happens
+    // to be one tenant's identity; keyed on the URL alone it could be replayed to the next
+    // tenant. Nothing in the repository deploys such a cache today — the same-origin reverse
+    // proxy of EP-UI-DEPLOY does not exist yet — which is exactly why the header belongs here
+    // now, rather than in the memory of whoever writes that proxy config later.
+    //
+    // NOTE (registered, deliberately NOT fixed here): the four other authenticated read
+    // surfaces — `/v1/evidence/summary`, `/v1/evidence/gaps`, `/v1/audit-events`,
+    // `/v1/capabilities` — carry the same exposure and set no cache header either. That is a
+    // class fix across route files this movement was not scoped to touch; it is named in
+    // docs/architecture/stale-docs-register.md rather than silently half-applied.
+    reply.header('cache-control', 'no-store');
     const client = await app.govai.pool.connect();
     try {
       let identity;

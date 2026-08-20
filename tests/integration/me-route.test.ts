@@ -88,6 +88,13 @@ async function injectBearer(url: string, token: string) {
   return { statusCode: res.statusCode, body: JSON.parse(res.body) as unknown, rawBody: res.body };
 }
 
+/** Raw inject that keeps the response headers. */
+async function injectRaw(apiKey: string | undefined) {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers['x-govai-api-key'] = apiKey;
+  return stack.app.inject({ method: 'GET', url: '/v1/me', headers });
+}
+
 describe('GET /v1/me — the projection is true', () => {
   let org: SeededOrg;
 
@@ -295,6 +302,19 @@ describe('GET /v1/me — the route is read-only', () => {
       expect(res.statusCode, `${method} /v1/me`).toBe(404);
       expect(res.rawBody).not.toContain('principal_type');
     }
+  });
+
+  it('ME-16 — every response is uncacheable, including the 401', async () => {
+    // `x-govai-api-key` is not `Authorization`, so RFC 9111 §3.5's shared-cache prohibition
+    // does not apply: without this header a proxy could key one tenant's identity on the URL
+    // alone and replay it to the next.
+    const org = await seedOrg(stack);
+    const ok = await injectRaw(org.api_key);
+    expect(ok.statusCode).toBe(200);
+    expect(ok.headers['cache-control']).toBe('no-store');
+    const denied = await injectRaw(undefined);
+    expect(denied.statusCode).toBe(401);
+    expect(denied.headers['cache-control']).toBe('no-store');
   });
 
   it('ME-15 — an unauthenticated read never reaches the database identity path', async () => {
