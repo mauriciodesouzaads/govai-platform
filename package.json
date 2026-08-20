@@ -17,7 +17,8 @@
     "test:live": "GOVAI_LIVE_TESTS=1 vitest run --config vitest.live.config.ts",
     "test:obs": "vitest run --config vitest.live.config.ts tests/live/observability-collector.test.ts",
     "test:user-e2e": "vitest run --config vitest.live.config.ts tests/live/user-e2e.test.ts",
-    "acceptance:ai-console": "tsx tests/acceptance/ai-console/run.ts"
+    "acceptance:ai-console": "tsx tests/acceptance/ai-console/run.ts",
+    "acceptance:ai-console:live": "tsx tests/acceptance/ai-console/run.ts live"
   },
   "devDependencies": {
     "@types/node": "24.10.0",

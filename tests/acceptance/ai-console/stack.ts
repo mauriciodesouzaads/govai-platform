@@ -27,9 +27,23 @@ import { startLoopbackProvider, type LoopbackHandle } from './loopback-provider.
 
 export const API_PORT = 8080;
 
+/**
+ * `hermetic` points the provider routes at the local loopback upstream. `live` leaves
+ * `GOVAI_PROVIDER_BASE_URL` UNSET, which is what makes each provider plugin fall back to its
+ * own real base URL (`https://api.openai.com` / `https://api.anthropic.com`) — a single env var
+ * cannot address two providers, and the absence of it is the only way to reach both.
+ *
+ * ★ Live mode COSTS REAL MONEY. It refuses to start without both provider keys, it never
+ * prints them, and it provisions them through the canonical admin route rather than reaching
+ * into the database.
+ */
+export type AcceptanceMode = 'hermetic' | 'live';
+
 export type AcceptanceStack = {
   db: TestDb;
-  provider: LoopbackHandle;
+  mode: AcceptanceMode;
+  /** Null in live mode: there is no loopback, the real providers answer. */
+  provider: LoopbackHandle | null;
   app: FastifyInstance;
   env: GovAIEnv;
   org: {
@@ -57,9 +71,18 @@ export type AcceptanceStack = {
 const ORG_TIER = 'business';
 const ORG_MODE = 'production';
 
-export async function startAcceptanceStack(): Promise<AcceptanceStack> {
+export async function startAcceptanceStack(
+  mode: AcceptanceMode = 'hermetic',
+): Promise<AcceptanceStack> {
+  // Fail BEFORE spending a container on a run that cannot work.
+  if (mode === 'live' && !(process.env['OPENAI_API_KEY'] && process.env['ANTHROPIC_API_KEY'])) {
+    throw new Error(
+      'live acceptance needs OPENAI_API_KEY and ANTHROPIC_API_KEY in the environment ' +
+        '(they are never printed, never written to disk and never committed)',
+    );
+  }
   const db = await startPostgres();
-  const provider = await startLoopbackProvider();
+  const provider = mode === 'hermetic' ? await startLoopbackProvider() : null;
   const seed = freshSeedHex();
 
   const env = {
@@ -86,8 +109,10 @@ export async function startAcceptanceStack(): Promise<AcceptanceStack> {
     OTEL_TRACES_SAMPLER_ARG: 1.0,
     EVIDENCE_T_SEAL_SECONDS: 0,
     EVIDENCE_DEFAULT_WINDOW_SECONDS: 86_400,
-    GOVAI_LIVE_TESTS: false,
-    GOVAI_PROVIDER_BASE_URL: provider.baseUrl,
+    GOVAI_LIVE_TESTS: mode === 'live',
+    // ★ UNSET in live mode. One env var cannot name two providers, and each plugin falls back
+    // to its own real base URL exactly when this is absent.
+    GOVAI_PROVIDER_BASE_URL: provider ? provider.baseUrl : undefined,
     GOVAI_ALLOW_PLANNED_CAPABILITY_EXECUTION: false,
     GOVAI_PROVIDER_DISPATCH_TIMEOUT_MS: 300_000,
     RUN_DISPATCH_RECOVERY_ENABLED: false,
@@ -98,11 +123,20 @@ export async function startAcceptanceStack(): Promise<AcceptanceStack> {
   } as GovAIEnv;
 
   const app = await buildServer({ env });
-  const org = await seedAcceptanceOrg(db, seed);
+  const org = await seedAcceptanceOrg(db, seed, mode);
   await app.listen({ host: env.API_HOST, port: API_PORT });
+
+  // ★ LIVE credentials go in through the CANONICAL ADMIN ROUTE, with the admin key, over HTTP
+  // — the same path an operator uses. Seeding them straight into the table would skip the
+  // route's RBAC, its audit event and its KMS envelope call, which is most of what makes the
+  // credential path worth exercising at all.
+  if (mode === 'live') {
+    await provisionLiveCredentials(org.admin_api_key);
+  }
 
   return {
     db,
+    mode,
     provider,
     app,
     env,
@@ -110,10 +144,37 @@ export async function startAcceptanceStack(): Promise<AcceptanceStack> {
     close: async () => {
       db.shuttingDown.value = true;
       await app.close().catch(() => undefined);
-      await provider.close().catch(() => undefined);
+      await provider?.close().catch(() => undefined);
       await stopPostgres(db);
     },
   };
+}
+
+/**
+ * Provision the real provider keys through `POST /v1/admin/provider-credentials`.
+ *
+ * The plaintext is read from the environment, handed to the route, and never logged, never
+ * echoed and never returned — the route answers with prefix/last4 metadata only, and even that
+ * is not printed here.
+ */
+async function provisionLiveCredentials(adminApiKey: string): Promise<void> {
+  for (const [provider, envKey] of [
+    ['openai', 'OPENAI_API_KEY'],
+    ['anthropic', 'ANTHROPIC_API_KEY'],
+  ] as const) {
+    const apiKey = process.env[envKey];
+    /* c8 ignore next -- startAcceptanceStack already refused to start without both */
+    if (!apiKey) throw new Error(`${envKey} is required for live acceptance`);
+    const res = await fetch(`http://127.0.0.1:${String(API_PORT)}/v1/admin/provider-credentials`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': adminApiKey },
+      body: JSON.stringify({ provider, api_key: apiKey, reason: 'ai-console live acceptance' }),
+    });
+    if (!res.ok) {
+      // Status only. The response body could echo request detail, and this is a credential path.
+      throw new Error(`provisioning the ${provider} credential failed with HTTP ${String(res.status)}`);
+    }
+  }
 }
 
 /**
@@ -124,7 +185,11 @@ export async function startAcceptanceStack(): Promise<AcceptanceStack> {
  * because it is convenient is exactly the shortcut that turns an acceptance topology into a
  * production habit.
  */
-async function seedAcceptanceOrg(db: TestDb, seed: string): Promise<AcceptanceStack['org']> {
+async function seedAcceptanceOrg(
+  db: TestDb,
+  seed: string,
+  mode: AcceptanceMode,
+): Promise<AcceptanceStack['org']> {
   const orgId = randomUUID();
   const userId = randomUUID();
   const operator = await generateApiKey();
@@ -154,8 +219,17 @@ async function seedAcceptanceOrg(db: TestDb, seed: string): Promise<AcceptanceSt
     c.release();
   }
 
-  // Real tenant provider credentials, through the real KMS envelope path. The plaintext is a
-  // placeholder: the loopback upstream never checks it, and nothing real is ever stored here.
+  // Hermetic mode seeds placeholder tenant credentials through the real KMS envelope path — the
+  // loopback never checks them, and nothing real is ever stored. LIVE mode provisions the real
+  // keys afterwards, through the admin ROUTE (see provisionLiveCredentials).
+  if (mode === 'live') {
+    return {
+      org_id: orgId,
+      user_id: userId,
+      operator_api_key: operator.plaintext,
+      admin_api_key: admin.plaintext,
+    };
+  }
   const kms = new DevKms(seed);
   for (const provider of ['openai', 'anthropic'] as const) {
     const client = await db.appPool.connect();

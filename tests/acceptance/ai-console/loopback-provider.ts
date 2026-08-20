@@ -47,19 +47,43 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * The text of the last user turn, whatever provider-native shape it arrived in.
+ *
+ * `content` is a string on Chat Completions and Anthropic Messages, and an array of typed
+ * parts on Responses (the console sends the fully-qualified item so GovAI's governed DLP can
+ * read it — see providers/openai-responses.ts). Reading only the string form would silently
+ * stop recognising the behaviour markers on exactly one surface, which is how a fixture ends
+ * up quietly testing less than it claims.
+ */
+function textOfContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => {
+      if (typeof part !== 'object' || part === null) return '';
+      const text = (part as Record<string, unknown>)['text'];
+      return typeof text === 'string' ? text : '';
+    })
+    .join(' ');
+}
+
 function promptOf(body: string): string {
   try {
     const parsed = JSON.parse(body) as Record<string, unknown>;
-    // Responses uses `input`, the other two use `messages`.
+    // Responses uses `input` (a string, or an array of items); the other two use `messages`.
     const input = parsed['input'];
-    if (Array.isArray(input)) {
+    if (typeof input === 'string') return input;
+    if (Array.isArray(input) && input.length > 0) {
       const last = input[input.length - 1] as { content?: unknown } | undefined;
-      if (typeof last?.content === 'string') return last.content;
+      const text = textOfContent(last?.content);
+      if (text.length > 0) return text;
     }
     const messages = parsed['messages'];
-    if (Array.isArray(messages)) {
+    if (Array.isArray(messages) && messages.length > 0) {
       const last = messages[messages.length - 1] as { content?: unknown } | undefined;
-      if (typeof last?.content === 'string') return last.content;
+      const text = textOfContent(last?.content);
+      if (text.length > 0) return text;
     }
   } catch {
     /* not JSON we can inspect */
@@ -290,7 +314,17 @@ export async function startLoopbackProvider(port = 8099): Promise<LoopbackHandle
       if (prompt.includes(MARKERS.midFlight)) {
         // Deliver a little, then kill the socket with no terminal event — the outcome the UI
         // must classify as UNCONFIRMED rather than as a finished answer.
-        await writeFragmented(res, frames.slice(0, Math.floor(frames.length / 3)), { sliceBytes: 5 });
+        //
+        // ★ The delay and the pause before `destroy()` are load-bearing. Writing every slice in
+        // one tick and destroying immediately leaves the bytes in Node's buffer, so the socket
+        // dies before ANY of them reach GovAI — which makes `fetch` reject pre-header and
+        // exercises a completely different path (a 502/500 from the route, classified as a
+        // provider error). To test a MID-FLIGHT cut, the bytes have to actually be on the wire.
+        await writeFragmented(res, frames.slice(0, Math.floor(frames.length / 3)), {
+          sliceBytes: 5,
+          delayMs: 15,
+        });
+        await sleep(200);
         res.destroy();
         return;
       }
