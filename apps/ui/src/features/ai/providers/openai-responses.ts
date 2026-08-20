@@ -147,6 +147,49 @@ function incompleteReason(payload: Record<string, unknown> | null): string | nul
   return typeof reason === 'string' && reason.length > 0 ? reason : null;
 }
 
+/**
+ * A USER turn, as a fully-qualified input message item.
+ *
+ * ★ WHY THE VERBOSE FORM. The API accepts a shorthand — `{ role, content: "text" }` — and that
+ * is what the provider's conversation-state guide shows. This console sends the fully-qualified
+ * typed item instead, because GovAI's governed DLP pre-scan can only read the typed one:
+ * `extractOpenAIResponsesText` (packages/provider-openai/src/governed/extract-text.ts) walks
+ * `input[]` and descends only into items carrying an explicit `type` of `message` /
+ * `input_text` / `text`. An item identified by `role` alone is skipped whether its content is a
+ * string or an array of parts, so a governed Responses request built the shorthand way is
+ * forwarded with NO DLP scan, base risk A and `enforcement_decision: observe`.
+ *
+ * Measured against the running API at this base, with the same CPF in every body:
+ *
+ *   input: "…"                                                    → risk C, enforce
+ *   input: [{type:'message', role, content:[{type:'input_text'}]}] → risk C, enforce
+ *   input: [{role, content: "…"}]                                 → risk A, observe   ✗
+ *   input: [{role, content:[{type:'input_text', …}]}]              → risk A, observe   ✗
+ *
+ * The same CPF through Chat Completions or Anthropic Messages resolves to risk C / `enforce`,
+ * so the shorthand would have made this console's DEFAULT OpenAI surface the one place where
+ * governed mode quietly scans nothing. Choosing the typed form is not a workaround hidden in
+ * the UI: it is the canonical provider form, it costs nothing, and the underlying extractor gap
+ * is reported as its own finding rather than being papered over — see the mission record and
+ * the follow-up named in docs/architecture/stale-docs-register.md.
+ */
+function userItem(text: string): Record<string, unknown> {
+  return { type: 'message', role: 'user', content: [{ type: 'input_text', text }] };
+}
+
+/**
+ * An ASSISTANT turn from local history, in the shorthand form.
+ *
+ * Deliberately NOT the typed form. A typed assistant item must use `output_text` content parts
+ * (an assistant message is not user input), and `output_text` is not in the extractor's
+ * allowlist either — so assistant history is unscannable on this surface in EVERY shape, and
+ * the verbose form would buy nothing while adding a shape whose validity for a locally
+ * reconstructed item this console cannot verify. The shorthand is documented and unambiguous.
+ */
+function assistantItem(text: string): Record<string, unknown> {
+  return { role: 'assistant', content: text };
+}
+
 export const openaiResponsesAdapter: ProviderAdapter = {
   provider: 'openai',
   surface: 'responses',
@@ -155,8 +198,8 @@ export const openaiResponsesAdapter: ProviderAdapter = {
   buildBody: (input: BuildBodyInput) => ({
     model: input.model,
     input: [
-      ...input.history.map((m) => ({ role: m.role, content: m.text })),
-      { role: 'user', content: input.prompt },
+      ...input.history.map((m) => (m.role === 'user' ? userItem(m.text) : assistantItem(m.text))),
+      userItem(input.prompt),
     ],
     stream: true,
     // See the header: no provider-side response object, no reasoning items requested.

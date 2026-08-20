@@ -31,13 +31,39 @@ describe('request body', () => {
     expect(body).toEqual({
       model: 'a-model',
       input: [
-        { role: 'user', content: 'first' },
+        // ★ USER turns go as fully-qualified typed items — the only shape GovAI's governed DLP
+        // extractor descends into. See the adapter for the measured table.
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first' }] },
+        // Assistant history stays in the shorthand: it is unscannable on this surface in every
+        // shape, so the verbose form would buy nothing.
         { role: 'assistant', content: 'answer' },
-        { role: 'user', content: 'second' },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'second' }] },
       ],
       stream: true,
       store: false,
     });
+  });
+
+  it('★ sends every user turn in the shape the governed DLP pre-scan can actually read', () => {
+    // A regression guard with a specific failure in mind: reverting a user item to the
+    // `{ role, content: "…" }` shorthand is silent — the request still succeeds, the answer
+    // still streams, and the ONLY visible consequence is that governed mode stops escalating
+    // risk from the user's own text. Nothing else in the suite would notice.
+    const body = openaiResponsesAdapter.buildBody({
+      model: 'm',
+      history: [{ role: 'user', text: 'earlier question' }],
+      prompt: 'now',
+      maxTokens: 2048,
+    });
+    const items = body['input'] as Array<Record<string, unknown>>;
+    const userItems = items.filter((i) => i['role'] === 'user');
+    expect(userItems).toHaveLength(2);
+    for (const item of userItems) {
+      expect(item['type']).toBe('message');
+      expect(item['content']).toEqual([
+        { type: 'input_text', text: expect.any(String) as unknown as string },
+      ]);
+    }
   });
 
   it('never requests encrypted reasoning content', () => {
