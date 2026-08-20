@@ -51,7 +51,13 @@ function AttemptBody({ attempt, isLast }: { attempt: Attempt; isLast: boolean })
   const label = STATE_LABEL[attempt.state];
   const noteKey = STATE_NOTE[attempt.state];
   const streaming = attempt.state === 'submitting' || attempt.state === 'streaming';
-  const excludedFromContext = !streaming && !commitsContext(attempt.state);
+  // Two different reasons an answer stays out of the context, and the reader is told which:
+  // the provider did not finish it, or it is a retry of an earlier turn whose successors were
+  // already answered without it.
+  const completed = commitsContext(attempt.state);
+  const excludedBecauseUnfinished = !streaming && !completed;
+  const excludedBecauseOutOfOrder = completed && !attempt.eligibleForContext;
+  const excludedFromContext = excludedBecauseUnfinished || excludedBecauseOutOfOrder;
 
   return (
     <div
@@ -128,8 +134,9 @@ function AttemptBody({ attempt, isLast }: { attempt: Attempt; isLast: boolean })
         <p
           className="mt-[var(--govai-space-2)] max-w-prose text-[length:var(--govai-text-xs)] text-[var(--govai-text-secondary)]"
           data-testid="attempt-context-excluded"
+          data-context-excluded-reason={excludedBecauseOutOfOrder ? 'out-of-order' : 'unfinished'}
         >
-          {t('ai.contextExcluded')}
+          {t(excludedBecauseOutOfOrder ? 'ai.contextExcluded.outOfOrder' : 'ai.contextExcluded')}
         </p>
       )}
 

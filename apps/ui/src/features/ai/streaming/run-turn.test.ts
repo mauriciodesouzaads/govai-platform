@@ -220,6 +220,65 @@ describe('stop', () => {
     expect(result.text).toBe('Hello');
   });
 
+  it('★ a terminal marker OUTRANKS a later abort: a finished answer is never relabelled stopped', async () => {
+    // A provider can send its terminal event and hold the connection open afterwards, so Stop
+    // is still on screen when the answer is visibly complete. Letting the abort win there would
+    // relabel a completed, billed execution as "stopped by you" — a wrong receipt, and an answer
+    // dropped from later context for a failure that did not happen.
+    const controller = new AbortController();
+    const { result } = await run(
+      {
+        // The terminal arrives, then more frames keep the stream alive.
+        chunks: [
+          ...RESPONSES_OK,
+          'data: {"type":"response.output_item.done"}\n\n',
+          'data: {"type":"response.output_item.done"}\n\n',
+        ],
+      },
+      {
+        signal: controller.signal,
+        // ★ The abort has to land AFTER the terminal frame has been folded in — that is the
+        // whole scenario. `onText` fires once per frame, so counting them puts the abort
+        // exactly where a reader's late Stop click would land: on a stream whose answer is
+        // already complete but whose socket is still open.
+        onText: (() => {
+          let frames = 0;
+          return () => {
+            frames += 1;
+            if (frames >= 3) controller.abort(); // created, delta, completed
+          };
+        })(),
+      },
+    );
+    expect(result.state).toBe('completed');
+    expect(result.text).toBe('Hello');
+    expect(result.receipt.state).toBe('completed');
+  });
+
+  it('★ a terminal ERROR also outranks a later abort', async () => {
+    const controller = new AbortController();
+    const { result } = await run(
+      {
+        chunks: [
+          'data: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+          'data: {"type":"response.failed","response":{"error":{"code":"server_error"}}}\n\n',
+          'data: {"type":"response.output_item.done"}\n\n',
+        ],
+      },
+      {
+        signal: controller.signal,
+        onText: (() => {
+          let frames = 0;
+          return () => {
+            frames += 1;
+            if (frames >= 2) controller.abort(); // delta, failed
+          };
+        })(),
+      },
+    );
+    expect(result.state).toBe('provider_error');
+  });
+
   it('reports stopped when the abort lands before any response', async () => {
     const controller = new AbortController();
     controller.abort();

@@ -57,9 +57,10 @@ export function initialConversationState(config: ConversationConfig): Conversati
   return { config, locked: false, turns: [], inFlight: null };
 }
 
-function newAttempt(id: string): Attempt {
+function newAttempt(id: string, eligibleForContext: boolean): Attempt {
   return {
     id,
+    eligibleForContext,
     state: 'submitting',
     text: '',
     refusal: null,
@@ -114,7 +115,8 @@ export function conversationReducer(
       const turn: Turn = {
         id: action.turnId,
         userText: action.userText,
-        attempts: [newAttempt(action.attemptId)],
+        // A new turn is always the latest one, so its answer can always join the history.
+        attempts: [newAttempt(action.attemptId, true)],
       };
       return {
         ...state,
@@ -129,10 +131,16 @@ export function conversationReducer(
       if (index === -1) return state;
       const turn = state.turns[index] as Turn;
       const turns = [...state.turns];
+      // ★ A retry of the LAST turn can still join the history; a retry of an EARLIER one cannot,
+      // because the turns after it were answered without it (see Attempt.eligibleForContext).
+      const isLatestTurn = index === state.turns.length - 1;
       // A retry APPENDS an attempt. The failed one stays visible: the reader saw it, and
       // deleting the evidence of a failure the moment it is retried is how a product starts
       // looking more reliable than it is.
-      turns[index] = { ...turn, attempts: [...turn.attempts, newAttempt(action.attemptId)] };
+      turns[index] = {
+        ...turn,
+        attempts: [...turn.attempts, newAttempt(action.attemptId, isLatestTurn)],
+      };
       return {
         ...state,
         turns,

@@ -197,6 +197,66 @@ describe('★ a retry reproduces the conversation as it stood BEFORE that turn',
     expect(currentAttempt(state)?.id).toBe('a2');
   });
 
+  it('★ a retry of an EARLIER turn is shown but never becomes context', () => {
+    // The branch that never existed. Turn 3 was answered WITHOUT turn 2's answer, so a later
+    // request carrying all three would tell the model it once said things in an order it never
+    // said them in. The retried answer stays on screen; it just does not travel.
+    const state = run([
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'q1' },
+      settle('t1', 'a1', 'completed', 'answer 1'),
+      { type: 'send', turnId: 't2', attemptId: 'a2', userText: 'q2' },
+      settle('t2', 'a2', 'network_error', ''),
+      { type: 'send', turnId: 't3', attemptId: 'a3', userText: 'q3' },
+      settle('t3', 'a3', 'completed', 'answer 3'),
+      // Now go back and retry turn 2 — successfully.
+      { type: 'retry', turnId: 't2', attemptId: 'a2b' },
+      settle('t2', 'a2b', 'completed', 'answer 2 at last'),
+    ]);
+
+    const retried = lastAttempt(state.turns[1]!);
+    expect(retried?.state).toBe('completed');
+    expect(retried?.text).toBe('answer 2 at last');
+    // Visible to the reader…
+    expect(retried?.eligibleForContext).toBe(false);
+    // …and absent from what a fourth turn would send.
+    expect(contextForTurn(state.turns, 3)).toEqual([
+      { role: 'user', text: 'q1' },
+      { role: 'assistant', text: 'answer 1' },
+      { role: 'user', text: 'q3' },
+      { role: 'assistant', text: 'answer 3' },
+    ]);
+  });
+
+  it('a retry of the LAST turn still becomes context, because nothing came after it', () => {
+    const state = run([
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'q1' },
+      settle('t1', 'a1', 'provider_error', ''),
+      { type: 'retry', turnId: 't1', attemptId: 'a1b' },
+      settle('t1', 'a1b', 'completed', 'answer 1'),
+    ]);
+    expect(lastAttempt(state.turns[0]!)?.eligibleForContext).toBe(true);
+    expect(contextForTurn(state.turns, 1)).toEqual([
+      { role: 'user', text: 'q1' },
+      { role: 'assistant', text: 'answer 1' },
+    ]);
+  });
+
+  it('never truncates the later turns to make room for an old retry', () => {
+    // The other way to solve the branch problem is to delete what came after. This product does
+    // not destroy what happened, so the count must not move.
+    const state = run([
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'q1' },
+      settle('t1', 'a1', 'stopped', 'partial'),
+      { type: 'send', turnId: 't2', attemptId: 'a2', userText: 'q2' },
+      settle('t2', 'a2', 'completed', 'answer 2'),
+      { type: 'retry', turnId: 't1', attemptId: 'a1b' },
+      settle('t1', 'a1b', 'completed', 'answer 1 at last'),
+    ]);
+    expect(state.turns).toHaveLength(2);
+    expect(lastAttempt(state.turns[1]!)?.text).toBe('answer 2');
+    expect(state.turns[0]?.attempts).toHaveLength(2);
+  });
+
   it('ignores a retry for a turn that does not exist', () => {
     const state = oneTurn('provider_error');
     expect(conversationReducer(state, { type: 'retry', turnId: 'nope', attemptId: 'x' })).toBe(

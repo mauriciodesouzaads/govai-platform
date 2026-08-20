@@ -283,6 +283,70 @@ describe('★ context is committed only by a completed answer', () => {
   });
 });
 
+describe('★ retrying an EARLIER turn does not fabricate a conversation branch', () => {
+  it('shows the retried answer, labels why it is not context, and leaves it out of the request', async () => {
+    const log = newCallLog();
+    let failFirst = true;
+    server.use(
+      http.post(`*${PATHS.openaiResponsesNative}`, async ({ request }) => {
+        log.calls.push({
+          path: PATHS.openaiResponsesNative,
+          body: await request.clone().json(),
+          apiKey: request.headers.get('x-govai-api-key'),
+        });
+        // The FIRST send fails; every later one succeeds. That is what lets the reader answer
+        // turn 2 and only then go back and retry turn 1.
+        if (failFirst) {
+          failFirst = false;
+          return HttpResponse.json({ error: { type: 'server_error' } }, { status: 500 });
+        }
+        const chunks = responsesScript('an answer');
+        const encoder = new TextEncoder();
+        let i = 0;
+        return new HttpResponse(
+          new ReadableStream<Uint8Array>({
+            pull(c) {
+              if (i >= chunks.length) return void c.close();
+              c.enqueue(encoder.encode(chunks[i] as string));
+              i += 1;
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }),
+      ...defaultModelHandlers(),
+    );
+    const { user } = renderApp(<AiConsolePage />, { route: '/ai', credential: VALID_KEY });
+    await chooseModel(user, 'a-model');
+
+    await send(user, 'first question');
+    await screen.findByTestId('retry-turn'); // turn 1 failed
+    await send(user, 'second question');
+    await waitFor(() => expect(screen.getAllByText('an answer')).toHaveLength(1)); // turn 2 answered
+
+    // Now go back and retry turn 1 — successfully.
+    await user.click(screen.getByTestId('retry-turn'));
+    await waitFor(() => expect(screen.getAllByText('an answer')).toHaveLength(2));
+
+    // The retried answer is on screen, with the OUT-OF-ORDER reason, not the unfinished one.
+    const notes = screen.getAllByTestId('attempt-context-excluded');
+    const outOfOrder = notes.filter(
+      (n) => n.getAttribute('data-context-excluded-reason') === 'out-of-order',
+    );
+    expect(outOfOrder).toHaveLength(1);
+    expect(outOfOrder[0]).toHaveTextContent(T['ai.contextExcluded.outOfOrder']);
+
+    // And a third message carries turn 2's pair only — never the retried turn-1 answer.
+    await send(user, 'third question');
+    await waitFor(() => expect(log.calls).toHaveLength(4));
+    expect((log.calls[3]?.body as { input: unknown }).input).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'second question' }] },
+      { role: 'assistant', content: 'an answer' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'third question' }] },
+    ]);
+  });
+});
+
 describe('★ Stop', () => {
   it('aborts the stream, keeps the partial text, and says who stopped it', async () => {
     const log = newCallLog();

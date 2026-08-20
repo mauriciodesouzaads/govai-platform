@@ -412,6 +412,8 @@ export const es: Catalog = {
     'El flujo trajo contenido que esta consola no renderiza (por ejemplo, una llamada a herramienta o un bloque no textual). No se convirtió en texto.',
   'ai.contextExcluded':
     'Esta respuesta no entra automáticamente en el contexto de los mensajes siguientes: el proveedor no la completó.',
+  'ai.contextExcluded.outOfOrder':
+    'Esta respuesta no entra automáticamente en el contexto de los mensajes siguientes: proviene de reintentar un turno anterior, y los mensajes posteriores ya se habían respondido sin ella. Enviarla presentaría al modelo una conversación que nunca ocurrió.',
   'ai.code.copy': 'Copiar',
   'ai.code.copied': 'Copiado',
 

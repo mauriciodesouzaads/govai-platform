@@ -407,6 +407,8 @@ export const enUS: Catalog = {
     'The stream carried content this console does not render (a tool call or a non-text block, for example). It was not turned into text.',
   'ai.contextExcluded':
     'This answer is not automatically included in the context of later messages: the provider did not complete it.',
+  'ai.contextExcluded.outOfOrder':
+    'This answer is not automatically included in the context of later messages: it came from retrying an earlier turn, and the messages after it had already been answered without it. Sending it would present the model with a conversation that never happened.',
   'ai.code.copy': 'Copy',
   'ai.code.copied': 'Copied',
 

@@ -428,6 +428,8 @@ export const ptBR = {
     'O fluxo trouxe conteúdo que este console não renderiza (por exemplo, chamada de ferramenta ou bloco não textual). Ele não foi convertido em texto.',
   'ai.contextExcluded':
     'Esta resposta não entra automaticamente no contexto das próximas mensagens: ela não foi concluída pelo provedor.',
+  'ai.contextExcluded.outOfOrder':
+    'Esta resposta não entra automaticamente no contexto das próximas mensagens: ela veio de uma nova tentativa de um turno anterior, e as mensagens seguintes já haviam sido respondidas sem ela. Enviá-la apresentaria ao modelo uma conversa que nunca aconteceu.',
   'ai.code.copy': 'Copiar',
   'ai.code.copied': 'Copiado',
 

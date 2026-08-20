@@ -128,6 +128,20 @@ export type InteractionReceipt = {
 export type Attempt = {
   id: string;
   state: TurnState;
+  /**
+   * ★ Whether this attempt's answer may ever become automatic context.
+   *
+   * False for a retry of an EARLIER turn — one the reader goes back to after later turns have
+   * already been answered. Committing such an answer would rewrite history: the later answers
+   * were produced WITHOUT it, and a request carrying all of them tells the model it once said
+   * things in an order it never said them in. That is a conversation branch that never existed.
+   *
+   * The alternative — truncating the later turns when an old retry succeeds — would delete
+   * answers the reader has already read, and this product does not destroy what happened. So
+   * the retried answer is SHOWN, labelled, and left out of the context, which is the same rule
+   * §22 applies to every other answer that cannot be truthfully placed in the history.
+   */
+  eligibleForContext: boolean;
   /** Visible answer text, as far as it streamed. */
   text: string;
   /** A model refusal the provider surfaced as its own field. */
@@ -187,12 +201,18 @@ export function lastAttempt(turn: Turn): Attempt | null {
  *      conversation as it stood when that turn was first asked (mission §25) — not as it
  *      stands now, with later turns already answered. Bounding by index is what makes an
  *      explicit retry a retry rather than a differently-grounded new question.
+ *
+ *   3. AND THE ANSWER TO SUCH A RETRY NEVER JOINS THE HISTORY. See
+ *      `Attempt.eligibleForContext`: committing it would present the later answers as though
+ *      they had been produced knowing it, which is a branch that never existed.
  */
 export function contextForTurn(turns: readonly Turn[], turnIndex: number): ContextMessage[] {
   const out: ContextMessage[] = [];
   for (const turn of turns.slice(0, Math.max(0, turnIndex))) {
     const attempt = lastAttempt(turn);
     if (attempt === null || !commitsContext(attempt.state)) continue;
+    // A retry of an earlier turn is shown but never sent — see Attempt.eligibleForContext.
+    if (!attempt.eligibleForContext) continue;
     // A completed attempt that produced no visible text (a stream whose only output was
     // unrenderable) has no assistant message to send. Dropping the pair keeps the request
     // well-formed; an empty assistant turn is rejected outright by at least one provider.

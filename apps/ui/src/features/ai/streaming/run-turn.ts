@@ -200,13 +200,24 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   const snapshot = accumulator.snapshot();
   const aborted = input.signal.aborted;
 
-  const state: TurnState = aborted
-    ? 'stopped'
-    : snapshot.terminal?.kind === 'error'
+  // ★ THE TERMINAL MARKER OUTRANKS THE ABORT, and the order of this expression is the whole
+  // point. A provider can send its terminal event and leave the connection open afterwards —
+  // which the acceptance stack does for seconds at a time — so Stop is still on screen when the
+  // answer is already visibly finished. Letting `aborted` win there would relabel a completed,
+  // billed execution as "stopped by you": the receipt would be wrong, and the answer would be
+  // dropped from later context for a failure that did not happen.
+  //
+  // A terminal marker is PROOF the provider finished. Nothing that happens to the socket
+  // afterwards — an abort, a fault, a truncation — can retract it. The fault path below already
+  // behaved this way; the abort path now agrees with it.
+  const state: TurnState =
+    snapshot.terminal?.kind === 'error'
       ? 'provider_error'
       : snapshot.terminal?.kind === 'completed'
         ? 'completed'
-        : /* no terminal marker: the stream ended, but nothing confirmed it */ 'unknown_outcome';
+        : aborted
+          ? 'stopped'
+          : /* no terminal marker: the stream ended, but nothing confirmed it */ 'unknown_outcome';
 
   return {
     state,
