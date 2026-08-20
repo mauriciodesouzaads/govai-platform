@@ -456,7 +456,7 @@ Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1 r
 
 | Document | Was (stale once `/ai` exists) | Now (corrected) |
 |---|---|---|
-| `current-state.md` §1 | "U1.5 (AI Console) and U2 (Workroom) are not started"; interface layer titled "milestone U1"; 15 UI files / 324 UI tests | U1.5 recorded with its route, its six provider×mode combinations, its memory-only transcript, its no-auto-retry policy, its receipt limits and its two open backend findings; 31 UI files / 681 UI tests; the acceptance harness named as operator-driven and excluded from both vitest configs |
+| `current-state.md` §1 | "U1.5 (AI Console) and U2 (Workroom) are not started"; interface layer titled "milestone U1"; 15 UI files / 324 UI tests | U1.5 recorded with its route, its six provider×mode combinations, its memory-only transcript, its no-auto-retry policy, its receipt limits and its two open backend findings; 31 UI files / 682 UI tests; the acceptance harness named as operator-driven and excluded from both vitest configs |
 | `development-roadmap.md` | `UI_UX_V1_U1_5_AI_CONSOLE=NOT_STARTED`; "U1.5 — AI Console (not started)" | implemented, with `BACKEND_RUNTIME_CHANGE=NONE` and the two open findings stated as backend work this movement was not authorized to do |
 | `resume-playbook.md` §3 | "U1.5 (AI Console) is NOT started" | implemented, with the Anthropic browser blocker named so the next session does not rediscover it |
 | `apps/ui/README.md` | described a read-only evidence interface | an AI Console section: the routes it drives, what the receipt may and may not say, and the non-goals |
@@ -472,6 +472,23 @@ The blockers are source-proven; the adjudication is the owner's.
 | **`AI-CONSOLE-ORIGIN-RELAY-01`** — the direct provider routes relay the browser's `Origin` header upstream | **P0 for the Anthropic surface**; latent for OpenAI | `buildOutboundHeaders` in `packages/provider-anthropic/src/routes/register-passthrough.ts` (and its OpenAI twin) copies every inbound header except `HOP_BY_HOP` ∪ `STRIP_INBOUND_AUTH`; `origin` is in neither set, in either package. Measured against the running API with the same body four ways: **baseline → 200**, **+`Origin` → 401** `{"type":"error","error":{"type":"authentication_error","message":"CORS requests must set 'anthropic-dangerous-direct-browser-access' header"}}`, **+`Referer` only → 200**, **+`Sec-Fetch-Mode` only → 200**. Only `Origin` triggers it | `Origin` is a forbidden header name: page JavaScript can neither remove nor alter it, and the browser sends it on same-origin POSTs too. The only other route would be for the console to send `anthropic-dangerous-direct-browser-access`, which asserts that the provider key is exposed to the browser — the exact opposite of GovAI's architecture, and a false statement. The fix belongs on the server→provider hop: `Origin` describes the browser↔GovAI hop and has no meaning for a server-side call |
 | **`AI-CONSOLE-RESPONSES-DLP-GAP-01`** — the governed OpenAI Responses DLP pre-scan skips role-shaped `input[]` items | P1 (governance) | `extractOpenAIResponsesText` (`packages/provider-openai/src/governed/extract-text.ts`) hands `input[]` to `pushParts`, which acts only on items whose `type` is `text` / `input_text` / `message`. An item identified by `role` alone matches none, so it is never descended into. Measured with the same CPF: `input: "…"` → **C/enforce**; `[{type:'message', …}]` → **C/enforce**; `[{role, content:"…"}]` → **A/observe**; `[{role, content:[{type:'input_text'}]}]` → **A/observe**. Chat Completions and Anthropic Messages scan a plain string correctly | The console avoids its own exposure by sending fully-qualified typed user items (`apps/ui/src/features/ai/providers/openai-responses.ts`, with a regression test), because the alternative was shipping a Governed mode that scans nothing on its default OpenAI surface. That protects this client only — every other caller using the provider-documented shorthand still gets no scan |
 | **`UI-DEV-PROXY-STREAM-CLOSE-01`** — the Vite DEV proxy does not propagate an abnormal upstream close | dev-only, non-blocking | With an upstream that truncates a stream mid-flight: **direct to GovAI → `curl` exit 18** ("transfer closed with outstanding read data remaining") after ~11 s, i.e. GovAI correctly ends the downstream response and records `stream_outcome: upstream_error`; **through the Vite proxy → `curl` exit 28**, the connection held open to the 30 s timeout. A normal stream closes correctly through the same proxy (exit 0) | GovAI behaves correctly; the dev server does not. In `pnpm dev` a truncated stream leaves a turn showing "Generating…" until the reader presses Stop. The production reverse proxy does not exist yet (**EP-UI-DEPLOY**), so whichever one is chosen must be verified to propagate an abnormal upstream close — added to that EP's acceptance rather than guessed at here |
+
+### Named follow-up — `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`
+
+A browser cannot tell a GovAI 401 from a relayed provider 401 on the direct routes. The status
+and the body are relayed verbatim, and `GovAIErrorBody` validates SHAPE rather than origin, so
+an upstream answering `{"error":"auth_error"}` is indistinguishable from GovAI answering it.
+Response headers are no help either: `filterResponseHeaders` drops only hop-by-hop names, so an
+upstream could supply an `x-govai-*` marker of its own and have it relayed.
+
+The console therefore treats a relayed body as something that may LABEL an error and may never
+END a session — a third party must not be able to sign a reader out and discard a conversation
+in progress. The cost is bounded and self-correcting: an expired GovAI key still ends the
+session at the next GovAI-scoped read.
+
+Closing it properly is a backend contract: strip inbound `x-govai-*` from relayed provider
+responses before GovAI sets its own, which gives the client a signal the upstream cannot forge.
+Not attempted here — it is provider-route behaviour.
 
 ### `UI-DEV-PROXY-503-01` — what this acceptance did and did not establish
 

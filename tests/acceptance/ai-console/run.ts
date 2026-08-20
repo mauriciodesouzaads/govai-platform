@@ -55,8 +55,11 @@ async function main(): Promise<void> {
   console.warn('OPERATOR KEY (paste this into /enter — roles: auditor, developer):');
   console.warn(`  ${stack.org.operator_api_key}`);
   console.warn('');
-  console.warn('ADMIN KEY (provisioning only — never paste into the browser):');
-  console.warn(`  ${stack.org.admin_api_key}`);
+  // ★ The admin key is NOT printed. Provisioning already used it, in-process, and the browser
+  // must never receive it — so writing a privileged credential into terminal output, shell
+  // history and any captured acceptance log buys nothing and exposes something. It stays on the
+  // returned stack object for a programmatic caller that genuinely needs it.
+  console.warn('An admin key was created for provisioning and is deliberately not printed.');
   console.warn('');
   if (stack.provider) {
     console.warn('Prompt markers understood by the loopback upstream:');

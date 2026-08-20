@@ -202,7 +202,16 @@ describe('★ a relayed PROVIDER 401 does not end the GovAI session', () => {
     expect(result.status).toBe(401);
   });
 
-  it('ends the session when the 401 body carries GovAI’s own auth_error envelope', async () => {
+  it('★ keeps the session even when a RELAYED body claims to be GovAI’s auth_error', async () => {
+    // ★ REGRESSION, and a correction of this suite's own earlier assumption. `GovAIErrorBody`
+    // validates SHAPE, not origin. The direct routes relay the upstream's status AND body
+    // verbatim, so an upstream answering `{"error":"auth_error"}` is indistinguishable from
+    // GovAI answering it — and there is no header to fall back on either, because relayed
+    // response headers pass through too. Acting on that body would let a third party sign the
+    // reader out and discard a conversation in progress.
+    //
+    // A relayed body may LABEL an error; it may never DESTROY a session. The authority to end
+    // one stays with GovAI-scoped reads.
     const onUnauthorized = vi.fn();
     const fetchImpl = vi.fn(
       async () =>
@@ -211,11 +220,32 @@ describe('★ a relayed PROVIDER 401 does not end the GovAI session', () => {
           headers: { 'content-type': 'application/json' },
         }),
     );
-    await client(fetchImpl as unknown as typeof fetch, { onUnauthorized }).stream('/x', {
-      body: {},
-      authScope: 'provider-native',
-    });
-    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+    const result = await client(fetchImpl as unknown as typeof fetch, { onUnauthorized }).stream(
+      '/x',
+      { body: {}, authScope: 'provider-native' },
+    );
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    // The status and the code are still reported, so the screen can say what happened.
+    expect(result.status).toBe(401);
+    expect(JSON.parse(await result.readBoundedText())).toMatchObject({ error: 'auth_error' });
+  });
+
+  it('★ the same on the GET path: a relayed auth_error body never ends the session', async () => {
+    const onUnauthorized = vi.fn();
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: 'auth_error' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    await expect(
+      client(fetchImpl as unknown as typeof fetch, { onUnauthorized }).get(
+        '/passthrough/openai/v1/models',
+        { schema: z.object({}), authScope: 'provider-native' },
+      ),
+    ).rejects.toMatchObject({ kind: 'auth', code: 'auth_error' });
+    expect(onUnauthorized).not.toHaveBeenCalled();
   });
 
   it('ends the session for a 401 on a GovAI-scoped path, as before', async () => {
@@ -319,7 +349,10 @@ describe('★ a provider-controlled error body cannot exhaust this browser', () 
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
 
-  it('still ends the session when a bounded 401 body does carry the GovAI envelope', async () => {
+  it('still ends the session for a 401 on a GOVAI-scoped path, where the body is GovAI’s', async () => {
+    // The authority to end a session lives here — on routes whose response GovAI authored.
+    // (The provider-native counterpart, where the body is relayed and proves nothing about its
+    // origin, is asserted the other way round below.)
     const onUnauthorized = vi.fn();
     const fetchImpl = vi.fn(
       async () =>
@@ -330,7 +363,6 @@ describe('★ a provider-controlled error body cannot exhaust this browser', () 
     );
     await client(fetchImpl as unknown as typeof fetch, { onUnauthorized }).stream('/x', {
       body: {},
-      authScope: 'provider-native',
     });
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });

@@ -378,36 +378,33 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
 }
 
 /**
- * Decide, from ALREADY-BOUNDED text, whether a 401 is GovAI rejecting the session.
+ * ★ ENDING A SESSION IS DESTRUCTIVE, SO ONLY GOVAI'S OWN ROUTES MAY CAUSE IT.
  *
- * Takes text rather than a Response on purpose: the caller has already read the body once,
- * under the bound, and there is no second read and no clone to be had. A body truncated at the
- * bound simply fails to parse, which resolves to "not a GovAI envelope" — the safe direction,
- * because it keeps the reader signed in rather than ending a session on an unreadable payload.
+ * On a `provider-native` path this NEVER fires, and the reason is provenance rather than
+ * caution. A 401 there may have come from GovAI (which rejects before calling the provider) or
+ * from the provider (whose status AND body are relayed verbatim), and nothing in the response
+ * distinguishes them: `GovAIErrorBody` validates SHAPE, not origin, so an upstream that answers
+ * `{"error":"auth_error"}` would look exactly like GovAI. Nor is there a header to fall back
+ * on — the direct routes relay every upstream response header that is not hop-by-hop, so a
+ * `x-govai-*` marker could be supplied by the upstream too.
+ *
+ * Trusting that body would let a third party sign the reader out and discard a conversation in
+ * progress. So a relayed body may LABEL an error — the receipt shows the status and the code it
+ * carried — and may never DESTROY a session.
+ *
+ * The cost is bounded and self-correcting: a GovAI key that really has expired still ends the
+ * session at the next GovAI-scoped read, which is where that authority belongs. Closing the gap
+ * properly needs a server-originated signal the upstream cannot forge — GovAI stripping inbound
+ * `x-govai-*` from relayed provider responses before setting its own. That is a backend
+ * contract, and it is named as a follow-up rather than guessed at from the client.
  */
 function notifyUnauthorizedFromText(
-  text: string,
+  _text: string,
   onUnauthorized: (() => void) | undefined,
   authScope: AuthScope,
 ): void {
   if (!onUnauthorized) return;
-  if (authScope === 'govai') {
-    onUnauthorized();
-    return;
-  }
-  if (govaiErrorCodeFromText(text) === 'auth_error') onUnauthorized();
-}
-
-/** The GovAI machine code carried by a body, or null when it is not a GovAI envelope (a
- *  provider error object, HTML from a proxy, an empty or truncated body). */
-function govaiErrorCodeFromText(text: string): string | null {
-  try {
-    const body: unknown = JSON.parse(text);
-    const envelope = GovAIErrorBody.safeParse(body);
-    return envelope.success ? envelope.data.error : null;
-  } catch {
-    return null;
-  }
+  if (authScope === 'govai') onUnauthorized();
 }
 
 async function toApiError(
@@ -441,9 +438,10 @@ async function toApiError(
     code = null;
   }
 
-  // `provider-native` ends the session only for GovAI's own auth envelope — a relayed
-  // PROVIDER 401 means the provider credential is wrong, not the reader's session key.
-  if (kind === 'auth' && (authScope === 'govai' || code === 'auth_error')) onUnauthorized?.();
+  // ★ Same provenance rule as the streaming path: a `provider-native` 401 never ends the
+  // session, because the body that would justify it is relayed from an upstream and its shape
+  // proves nothing about its origin. See notifyUnauthorizedFromText.
+  if (kind === 'auth' && authScope === 'govai') onUnauthorized?.();
 
   return new ApiError({
     kind,
