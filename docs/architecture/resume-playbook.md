@@ -52,6 +52,18 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   table-driven and tested (EC-6 pending is never verified; an unobserved
   EC-3.drop is never "no loss"; a 1.0 ratio over an empty population is never
   full coverage; "blocked" only for a real 403). pt-BR/en-US/es.
+- **UI/UX V1 EP-B2 — IMPLEMENTED (`GET /v1/me` + UI identity).** The one backend
+  addition of this lane so far: a read-only projection of the `AuthIdentity` that
+  `authenticateApiKey` already resolves per request (`principal_type` = the literal
+  `api_key`, `org_id`, `user_id`, `roles`, `tier`, `operational_mode`) — no
+  migration, no schema object, no transaction, no tenant context, no new query,
+  and never the raw key / argon2 hash / `api_key_prefix` / a provider credential.
+  The `/enter` probe is now that read, so the shell shows the server-supplied
+  operational mode, principal type and roles, with user id and tier behind an
+  account/details affordance in which tier is explicitly commercial/account
+  context (R13). **This is not production human auth** — `principal_type` exists
+  so a controlled-pilot org credential is never presented as a human login (R14
+  stands).
 - The repository CI workflow executes the **unit**, **ui** and **integration** jobs
   (PR #116 `GOVAI_INTEGRATION` config gate; the `ui` job added by EP-UIUX-V1-U1);
   successful exact-head CI is
@@ -103,7 +115,7 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
 
 - **Foundation V1 residual register** — R1–R16 in [foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 (evidence-granularity R1–R4, diagnostics noise R5, beta snapshot R6, real EC-5 R7, P0.3-C liveness window R8, branch protection R9, broader parity R10, Workroom 5–7 R11, Phase 5 primitives R12, tier/profile separation R13, human auth for a production UI R14, SPEC v2.2 R15, legacy docs-root hygiene R16). None is a runtime blocker; none may be silently erased (anti-evaporation clause §7 for schema residuals).
 - **Runtime hard-deny enforcement** beyond the computer-use floor and the governed matrix `blocked` outcome is not implemented (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only; Phase 5).
-- **Current product lane:** `UI_UX_V1_FOUNDATION` — **STARTED**. **U1 (evidence cockpit, `apps/ui`) is implemented**; **U2 (workroom console) is NOT started** and is gated on EP-B2 (`GET /v1/me`) and EP-B4 (workroom participants). A production human release still requires the human auth / session / API-key lifecycle that does not exist (residual R14) — the U1 session is an explicitly labelled development / controlled-pilot mechanism, not production auth. No UI may represent ask/sandbox/enforcement as applied (R12) or couple commercial tier to governance profile (R13). See development-roadmap.md and current-state.md §1 *Interface layer*.
+- **Current product lane:** `UI_UX_V1_FOUNDATION` — **STARTED**. **U1 (evidence cockpit, `apps/ui`) is implemented**; **EP-B2 (`GET /v1/me`, the shared identity prerequisite) is implemented**; **U1.5 (AI Console) is NOT started**; **U2 (workroom console) is NOT started** and is now gated only on EP-B4 (workroom participants). A production human release still requires the human auth / session / API-key lifecycle that does not exist (residual R14) — the U1 session is an explicitly labelled development / controlled-pilot mechanism, not production auth. No UI may represent ask/sandbox/enforcement as applied (R12) or couple commercial tier to governance profile (R13). See development-roadmap.md and current-state.md §1 *Interface layer*.
 - Untouched documentary follow-ups: `source-spec.md` ADP-canonical declaration (owner gate), ADR-022–027 status-line normalization, `workroom-governance-room.md`/`governance-philosophy.md`/`contracts/*` prepends, two `tests/live/*` comments, legacy `docs/` root artifacts (see stale-docs-register.md, M3 section).
 
 ---

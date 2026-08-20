@@ -33,6 +33,27 @@ export const ptBR = {
     'Descarta a chave da memória e limpa os dados carregados nesta aba.',
   'session.memoryOnly': 'A chave vive apenas na memória desta aba.',
 
+  // --- authenticated principal (EP-B2 — GET /v1/me) ---------------------------------------
+  // ★ NORMATIVE. `identity.tier.*` exists to keep a COMMERCIAL fact from being read as a
+  // governance fact (Foundation V1 residual R13), and `identity.noProductionAuth` exists so
+  // that showing a real server-resolved identity never starts reading like a user login.
+  'identity.title': 'Sessão',
+  'identity.details': 'Detalhes da sessão',
+  'identity.principal': 'Principal autenticado',
+  'identity.user': 'Usuário (id)',
+  'identity.roles': 'Papéis',
+  'identity.roles.none': 'nenhum papel concedido a esta chave',
+  'identity.tier': 'Plano',
+  'identity.tier.qualifier': 'contexto comercial/de conta',
+  'identity.tier.note':
+    'Plano é contexto comercial e de conta. Não é nível de segurança, perfil de governança, rigor de política nem modo de enforcement.',
+  'identity.operationalMode': 'Modo operacional',
+  'identity.operationalMode.note':
+    'Estado operacional que o servidor informa para esta organização. Esta interface mostra o valor; não o interpreta.',
+  'identity.noProductionAuth':
+    'Autenticação humana de produção: não implementada. Não existe conta de usuário, senha, sessão persistente nem ciclo de vida de chave.',
+  'identity.serverAuthoritative':
+    'Todos estes valores vêm do servidor (GET /v1/me) a cada autenticação. Esta interface não os deduz, não os edita e não os guarda como autoridade.',
   // --- /enter -----------------------------------------------------------------------------
   'enter.title': 'Entrar',
   'enter.lead':
@@ -51,7 +72,7 @@ export const ptBR = {
   'enter.error.server': 'A API do GovAI respondeu com erro. Tente de novo.',
   'enter.error.unknown': 'Não foi possível validar a chave.',
   'enter.probeNote':
-    'A validação usa uma leitura autenticada de evidência (GET /v1/evidence/summary); nada é escrito.',
+    'A validação usa uma leitura autenticada de identidade (GET /v1/me); nada é escrito.',
   'enter.noProductionAuth':
     'Esta é a fundação de desenvolvimento / piloto controlado. Não existe login humano, sessão persistente nem ciclo de vida de chave em produção.',
 
@@ -302,6 +323,8 @@ export const ptBR = {
   'status.chainCategory.policy': 'política',
   'status.chainCategory.admin': 'administração',
 
+  // --- status vocabulary: principal type --------------------------------------------------
+  'status.principalType.api_key': 'chave de API da organização (piloto controlado)',
   // --- ★ NORMATIVE: enforcement honesty vocabulary ----------------------------------------
   // Forwarded means the request reached the provider. None of these may be translated into a
   // word that suggests the request was stopped, protected, redacted or that a declared effect

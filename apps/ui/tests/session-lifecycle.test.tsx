@@ -5,7 +5,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { AppRoutes } from '../src/app/routes.js';
 import { renderApp } from './render.js';
 import { server, VALID_KEY } from './msw/server.js';
-import { ORG_ID, SUMMARY_WITH_GAPS as SUMMARY_FOR_SEED } from './msw/fixtures.js';
+import { ME_PRINCIPAL, ORG_ID, SUMMARY_WITH_GAPS as SUMMARY_FOR_SEED } from './msw/fixtures.js';
 import { CATALOGS } from '../src/lib/i18n/catalogs/index.js';
 import { createCredentialStore } from '../src/lib/session/credential.js';
 import { queryKeys } from '../src/lib/api/keys.js';
@@ -14,8 +14,9 @@ import { createQueryClient } from '../src/lib/api/query-client.js';
 // The session is the security boundary of this application, so its lifecycle is tested through
 // the real router: sign in, navigate, expire, sign out.
 
-/** Sign in the way a reader does, so the org id is LEARNED from the authenticated response
- *  rather than seeded — the shell only ever shows what an actual response told it. */
+/** Sign in the way a reader does, so the identity is LEARNED from the authenticated response
+ *  (GET /v1/me) rather than seeded — the shell only ever shows what an actual response told
+ *  it. */
 async function signInThroughUi(user: ReturnType<typeof renderApp>['user']) {
   await user.type(await screen.findByTestId('api-key-input'), VALID_KEY);
   await user.click(screen.getByTestId('enter-submit'));
@@ -39,8 +40,12 @@ describe('routing requires a session', () => {
   });
 
   it('signing in costs ONE summary read, not two', async () => {
-    // The /enter probe already IS a summary read for the default window; discarding it would
-    // run the endpoint's several aggregates twice and spend two of the shared 100 req/min.
+    // EP-B2 made the /enter probe `GET /v1/me` — a cheap identity read — instead of an
+    // evidence summary, which removed the cache-seeding the previous probe needed. The
+    // property that mattered still holds, and now holds for a better reason: the summary's
+    // several server-side aggregates run ONCE per sign-in, on the cockpit that actually
+    // displays them, and a reader who signs in and navigates straight to another screen never
+    // pays for them at all.
     let summaryCalls = 0;
     server.use(
       http.get('*/v1/evidence/summary', ({ request }) => {
@@ -137,34 +142,33 @@ describe('signing out', () => {
 });
 
 describe('the shell shows only facts it knows', () => {
-  it('shows no role, tier or operational-mode badge — no route returns them', async () => {
-    // apps/api/src/pipeline/auth.ts resolves roles/tier/operational_mode but no route
-    // serializes them, and there is no /v1/me. Rendering any of them would be fabrication.
-    // The header is where such a badge would live, so it is the region under test.
+  it('shows the identity a response carried, and adds nothing to it', async () => {
+    // ★ This test replaces one that asserted the shell showed NO role/tier/mode badge, on the
+    // grounds that no route serialized them. `GET /v1/me` (EP-B2) does, so that premise is
+    // gone; the RULE it protected — display only what a response actually carried — is not,
+    // and is what is asserted here.
+    //
+    // ★ It is asserted PER ELEMENT, not against the header's concatenated `textContent`. That
+    // is not a style preference: adjacent elements concatenate without a separator, so
+    // `operational_mode` + the next chip reads as "productionprincipal", and a `\bproduction\b`
+    // whole-word probe over that blob returns FALSE for a value that is plainly on screen. A
+    // text-blob assertion of an absence is a test that stops working silently.
     const { user } = renderApp(<AppRoutes />, { route: '/enter' });
     await signInThroughUi(user);
-    const header = (screen.getByTestId('app-header').textContent ?? '').toLowerCase();
-    // Whole-word patterns: "cadeia de auditoria" is a chain name, not an `auditor` role badge.
-    const FABRICATED = [
-      /\bstarter\b/,
-      /\bbusiness\b/,
-      /\benterprise\b/,
-      /\bregulated\b/,
-      /\bproduction\b/,
-      /\bpilot\b/,
-      /\bdev\b/,
-      /\btest\b/,
-      /\badmin\b/,
-      /\bauditor\b/,
-      /\bdeveloper\b/,
-      /data_protection_officer/,
-      /dlp_admin/,
-    ];
-    for (const pattern of FABRICATED) {
-      expect(pattern.test(header), `the shell must not display ${pattern}`).toBe(false);
-    }
-    // What it DOES show is the one identity fact an authenticated response actually carries.
-    expect(header).toContain(ORG_ID.toLowerCase());
+    const cluster = await screen.findByTestId('identity-cluster');
+    // Present, because /v1/me returned them.
+    expect(screen.getByTestId('identity-operational-mode')).toHaveTextContent(
+      ME_PRINCIPAL.operational_mode,
+    );
+    expect(screen.getByTestId('identity-principal')).toHaveTextContent(ME_PRINCIPAL.principal_type);
+    expect(screen.getByTestId('app-header')).toHaveTextContent(ORG_ID);
+    // Absent, because the fixture's key carries no roles — an empty array is not a badge.
+    expect(screen.queryByTestId('identity-roles')).toBeNull();
+    // Absent from the HEADER by design even though the response carried it: a plan name beside
+    // an operational mode invites exactly the "regulated is stricter" reading residual R13
+    // forbids. It lives in the details affordance, with its qualifier.
+    expect(cluster.textContent ?? '').not.toContain(ME_PRINCIPAL.tier);
+    expect(screen.getByTestId('session-details-tier')).toHaveTextContent(ME_PRINCIPAL.tier);
   });
 
   it('offers no navigation to areas this delivery does not implement', async () => {

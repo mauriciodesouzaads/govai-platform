@@ -7,6 +7,19 @@
 // asserts they are rendered verbatim actually asserts something.
 
 export const ORG_ID = '2f0c1e4c-4a51-4d2e-9d6f-2a1f0b0e7d31';
+export const USER_ID = '9b7d3a10-2c64-4f8b-8a35-6f1e2d0c4b57';
+
+/** GET /v1/me — apps/api/src/routes/me.ts. The default principal is the everyday case: a key
+ *  with NO special grants (migration 0010 backfills `roles='{}'`), on an org left at the 0008
+ *  tier default. Tests that need roles/tier/mode override the handler. */
+export const ME_PRINCIPAL = {
+  principal_type: 'api_key' as const,
+  org_id: ORG_ID,
+  user_id: USER_ID,
+  roles: [] as string[],
+  tier: 'starter',
+  operational_mode: 'production',
+};
 
 /** evidence-reports.ts:466-469 — the literal EC6_NOTE. */
 export const EC6_NOTE =

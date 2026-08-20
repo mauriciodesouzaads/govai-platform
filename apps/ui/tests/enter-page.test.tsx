@@ -8,6 +8,11 @@ import { CATALOGS } from '../src/lib/i18n/catalogs/index.js';
 
 // /enter is where the credential enters the application. These tests pin both halves of that:
 // the probe really validates against the API, and the key really goes nowhere it must not.
+//
+// EP-B2 changed WHICH read the probe makes — `GET /v1/me` rather than an evidence aggregate —
+// so the failure-path stubs below target that route. What the probe must prove is unchanged:
+// a real authenticated read, writing nothing, whose outcome alone decides whether the key
+// becomes the session credential.
 
 async function submitKey(user: ReturnType<typeof renderApp>['user'], key: string) {
   await user.type(screen.getByTestId('api-key-input'), key);
@@ -84,7 +89,7 @@ describe('/enter — rejection paths', () => {
   });
 
   it('a network failure is reported as such, not as a bad key', async () => {
-    server.use(http.get('*/v1/evidence/summary', () => HttpResponse.error()));
+    server.use(http.get('*/v1/me', () => HttpResponse.error()));
     const { user } = renderApp(<EnterKeyPage />, { route: '/enter' });
     await submitKey(user, VALID_KEY);
     const error = await screen.findByTestId('enter-error');
@@ -93,9 +98,7 @@ describe('/enter — rejection paths', () => {
 
   it('a server error is reported as retryable, not as a rejected credential', async () => {
     server.use(
-      http.get('*/v1/evidence/summary', () =>
-        HttpResponse.json({ error: 'internal' }, { status: 500 }),
-      ),
+      http.get('*/v1/me', () => HttpResponse.json({ error: 'internal' }, { status: 500 })),
     );
     const { user } = renderApp(<EnterKeyPage />, { route: '/enter' });
     await submitKey(user, VALID_KEY);

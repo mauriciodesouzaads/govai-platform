@@ -26,6 +26,24 @@ export const enUS: Catalog = {
   'session.signOut.description': 'Discards the key from memory and clears the data loaded in this tab.',
   'session.memoryOnly': 'The key lives only in this tab’s memory.',
 
+  // --- authenticated principal (EP-B2 — GET /v1/me) ---------------------------------------
+  'identity.title': 'Session',
+  'identity.details': 'Session details',
+  'identity.principal': 'Authenticated principal',
+  'identity.user': 'User (id)',
+  'identity.roles': 'Roles',
+  'identity.roles.none': 'no role granted to this key',
+  'identity.tier': 'Plan',
+  'identity.tier.qualifier': 'commercial / account context',
+  'identity.tier.note':
+    'Plan is commercial and account context. It is not a security level, a governance profile, a policy strictness or an enforcement mode.',
+  'identity.operationalMode': 'Operational mode',
+  'identity.operationalMode.note':
+    'The operational state the server reports for this organization. This interface shows the value; it does not interpret it.',
+  'identity.noProductionAuth':
+    'Production human authentication: not implemented. There is no user account, no password, no persistent session and no key lifecycle.',
+  'identity.serverAuthoritative':
+    'Every value here comes from the server (GET /v1/me) at each authentication. This interface does not infer them, does not edit them and does not hold them as authority.',
   // --- /enter -----------------------------------------------------------------------------
   'enter.title': 'Sign in',
   'enter.lead':
@@ -43,7 +61,7 @@ export const enUS: Catalog = {
   'enter.error.server': 'The GovAI API returned an error. Try again.',
   'enter.error.unknown': 'The key could not be validated.',
   'enter.probeNote':
-    'Validation uses an authenticated evidence read (GET /v1/evidence/summary); nothing is written.',
+    'Validation uses an authenticated identity read (GET /v1/me); nothing is written.',
   'enter.noProductionAuth':
     'This is the development / controlled-pilot foundation. There is no human login, no persistent session and no production API-key lifecycle.',
 
@@ -293,6 +311,8 @@ export const enUS: Catalog = {
   'status.chainCategory.policy': 'policy',
   'status.chainCategory.admin': 'administration',
 
+  // --- status vocabulary: principal type --------------------------------------------------
+  'status.principalType.api_key': 'organization API key (controlled pilot)',
   // --- ★ NORMATIVE: enforcement honesty vocabulary ----------------------------------------
   'enforcement.observe': 'Observed — forwarded to the provider',
   'enforcement.warn': 'Warning recorded — forwarded to the provider',

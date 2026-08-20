@@ -4,8 +4,15 @@ import { CATALOGS } from './i18n/catalogs/index.js';
 import { LOCALES } from './i18n/locales.js';
 import { CAPABILITY_STATUSES, EVIDENCE_STRENGTHS } from './contract/capabilities.js';
 import { CHAIN_CATEGORIES } from './contract/audit-events.js';
+import { KNOWN_PRINCIPAL_TYPES } from './contract/me.js';
 
-const DOMAINS: VocabDomain[] = ['capture', 'capability', 'evidenceStrength', 'chainCategory'];
+const DOMAINS: VocabDomain[] = [
+  'capture',
+  'capability',
+  'evidenceStrength',
+  'chainCategory',
+  'principalType',
+];
 
 describe('the status vocabulary covers exactly the backend enums', () => {
   it('capability statuses match packages/core-governance/src/capability.ts', () => {
@@ -24,6 +31,10 @@ describe('the status vocabulary covers exactly the backend enums', () => {
     expect(knownValues('capture').sort()).toEqual(
       ['captured', 'sealing', 'sealed', 'failed'].sort(),
     );
+  });
+
+  it('principal types match the ones GET /v1/me can actually produce', () => {
+    expect(knownValues('principalType').sort()).toEqual([...KNOWN_PRINCIPAL_TYPES].sort());
   });
 });
 
@@ -61,6 +72,10 @@ describe('green is reserved for asserted facts', () => {
       }
     }
     expect(green.sort()).toEqual(['capability.supported', 'capture.sealed']);
+  });
+
+  it('the API-key principal is neutral — a credential type is not a quality', () => {
+    expect(resolveStatus('principalType', 'api_key').tone).toBe('neutral');
   });
 
   it('no evidence strength is green — evidence strength is never a certification grade', () => {

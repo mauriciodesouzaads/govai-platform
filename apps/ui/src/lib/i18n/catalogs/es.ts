@@ -27,6 +27,24 @@ export const es: Catalog = {
     'Descarta la clave de la memoria y limpia los datos cargados en esta pestaña.',
   'session.memoryOnly': 'La clave existe solo en la memoria de esta pestaña.',
 
+  // --- authenticated principal (EP-B2 — GET /v1/me) ---------------------------------------
+  'identity.title': 'Sesión',
+  'identity.details': 'Detalles de la sesión',
+  'identity.principal': 'Principal autenticado',
+  'identity.user': 'Usuario (id)',
+  'identity.roles': 'Roles',
+  'identity.roles.none': 'ningún rol concedido a esta clave',
+  'identity.tier': 'Plan',
+  'identity.tier.qualifier': 'contexto comercial / de cuenta',
+  'identity.tier.note':
+    'El plan es contexto comercial y de cuenta. No es un nivel de seguridad, un perfil de gobernanza, un rigor de política ni un modo de enforcement.',
+  'identity.operationalMode': 'Modo operativo',
+  'identity.operationalMode.note':
+    'Estado operativo que el servidor informa para esta organización. Esta interfaz muestra el valor; no lo interpreta.',
+  'identity.noProductionAuth':
+    'Autenticación humana de producción: no implementada. No existe cuenta de usuario, contraseña, sesión persistente ni ciclo de vida de clave.',
+  'identity.serverAuthoritative':
+    'Todos estos valores vienen del servidor (GET /v1/me) en cada autenticación. Esta interfaz no los deduce, no los edita y no los guarda como autoridad.',
   // --- /enter -----------------------------------------------------------------------------
   'enter.title': 'Entrar',
   'enter.lead':
@@ -44,7 +62,7 @@ export const es: Catalog = {
   'enter.error.server': 'La API de GovAI devolvió un error. Inténtalo de nuevo.',
   'enter.error.unknown': 'No fue posible validar la clave.',
   'enter.probeNote':
-    'La validación usa una lectura autenticada de evidencia (GET /v1/evidence/summary); no se escribe nada.',
+    'La validación usa una lectura autenticada de identidad (GET /v1/me); no se escribe nada.',
   'enter.noProductionAuth':
     'Esta es la base de desarrollo / piloto controlado. No existe inicio de sesión humano, ni sesión persistente, ni ciclo de vida de claves en producción.',
 
@@ -296,6 +314,8 @@ export const es: Catalog = {
   'status.chainCategory.policy': 'política',
   'status.chainCategory.admin': 'administración',
 
+  // --- status vocabulary: principal type --------------------------------------------------
+  'status.principalType.api_key': 'clave de API de la organización (piloto controlado)',
   // --- ★ NORMATIVE: enforcement honesty vocabulary ----------------------------------------
   'enforcement.observe': 'Observado — reenviado al proveedor',
   'enforcement.warn': 'Alerta registrada — reenviado al proveedor',

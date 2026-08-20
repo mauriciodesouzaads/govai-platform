@@ -3,6 +3,7 @@ import { http, HttpResponse } from 'msw';
 import {
   CAPABILITIES,
   EC1_ROWS,
+  ME_PRINCIPAL,
   EC2_ROWS,
   EC3SEAL_ROWS,
   EC4_ROWS,
@@ -38,6 +39,13 @@ const GAP_ROWS: Record<string, unknown[]> = {
 };
 
 export const handlers = [
+  // The sign-in probe (EP-B2). Every authenticated render goes through it, so it is first.
+  http.get('*/v1/me', ({ request }) => {
+    const denied = requireKey(request);
+    if (denied) return denied;
+    return HttpResponse.json(ME_PRINCIPAL);
+  }),
+
   http.get('*/v1/evidence/summary', ({ request }) => {
     const denied = requireKey(request);
     if (denied) return denied;

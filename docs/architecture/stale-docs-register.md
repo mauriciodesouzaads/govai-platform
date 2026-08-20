@@ -397,3 +397,49 @@ Notes (NOT corrections):
   R12 (Phase 5 primitives), R13 (tier ↔ governance-profile separation) and R14 (human auth
   for a production UI) all still stand, and the U1 interface is built to respect them rather
   than to work around them.
+
+## UI/UX V1 EP-B2 reconciliation (EP-UIUX-V1-B2-WHOAMI-01) — `GET /v1/me` exists
+
+`GET /v1/me` is implemented (`apps/api/src/routes/me.ts`, registered at `server.ts:165`) and the
+U1 interface consumes it. This is a **code** movement: an additive, read-only route plus a
+bounded UI integration. **No migration, no schema object, no event schema, no AuditBridge or
+capture-projection change, no provider or evidence behaviour change** — the Foundation V1
+runtime anchor `de80664a` still names the accepted Foundation V1 runtime; this is a post-freeze
+additive read surface, not a re-anchoring. Corrections applied:
+
+| Document | Was (stale once `/v1/me` exists) | Now (corrected) |
+|---|---|---|
+| `current-state.md` §1 | `server.ts` register anchors `:162-182` (hook `:176`, worker `:192`, entry guard `:255`); "UI shell identity display … **no role, tier or operational-mode badge**, because no route serializes them and there is no `/v1/me`"; 18 route files; 209/128/76 test files; 14 UI files / 281 UI tests | anchors re-derived in this tree (`:163-184`, hook `:178`, worker `:194`, entry guard `:257` — `routes/me.ts` registers at `:165` and shifts the rest); a `/v1/me` row in the surfaces table; the identity-display row rewritten to what the shell now shows and to why tier stays out of the header (R13); 19 route files; 211/129/77; 15 UI files / 323 UI tests |
+| `development-roadmap.md` | "**EP-B2** (`GET /v1/me`) … unadjudicated"; U2 gated on EP-B2 **and** EP-B4; `BACKEND_RUNTIME_CHANGE=NONE` | EP-B2 implemented, with its exact contract and its exact non-claims; U2 gated **only** on EP-B4; U1.5 (AI Console) named as not started; `BACKEND_RUNTIME_CHANGE=ADDITIVE_READ_ONLY_ROUTE` with the enumerated absences |
+| `resume-playbook.md` §3/§4 | U2 "gated on EP-B2 (`GET /v1/me`) and EP-B4" | EP-B2 recorded as a closed gate; U2 gated only on EP-B4; U1.5 named as not started |
+| `apps/ui/README.md` | "**No role, tier or operational-mode badge.** No route returns them at this base and there is no `/v1/me`"; "**EP-B2 `GET /v1/me`** — without it the shell cannot show roles, tier or operational mode" (a named follow-up) | an identity section stating what is shown and what it must never be read as; EP-B2 removed from the follow-up list |
+| `apps/ui/src/lib/contract/errors.ts`, `apps/ui/src/lib/api/query-client.ts` | `apps/api/src/server.ts:108-111` (the rate-limit register) | `:109-112` — the same one-line shift |
+
+Newly registered staleness observed while re-reading the source for EP-B2 (NOT edited):
+
+| Document | Statement | Classification | Action |
+|---|---|---|---|
+| `plans/GOVAI-UI-MASTER-PLAN-FABLE5…`, `plans/GOVAI-UI-ARCHITECTURE-CONSULT-FABLE5…`, `plans/GOVAI-MASTER-PLAN-APPLICATION-FABLE5…`, the `registers/GOVAI-*-FABLE5…` family | `server.ts:93-105` / `:102-105` / `:116-154` / `:156-176` line anchors | **HISTORICAL_ANCHOR** — July 2026 promulgated bodies preserved verbatim under the §16 large-document policy, already anchored to a pre-U1 tree and already off by far more than EP-B2's one line | preserved; `current-state.md` is the anchor authority |
+| `docs/runbooks/user-e2e-local.md` §0 | "expose a one-shot seed script if you want a hand key" | **STILL ACCURATE** — no committed one-shot org-seed script exists, and EP-B2 did not add one (it would be scope this dispatch did not authorize). The EP-B2 operator acceptance used the repository's own primitives — `generateApiKey()` from `@govai/core-identity` plus the same two INSERTs `seedOrg` performs — through a throwaway `tsx` invocation, recorded in the external mission record | none; a committed dev seed script remains an unclaimed follow-up |
+
+Notes (NOT corrections):
+
+- EP-UIUX-V1-B2 changes `apps/api/src/routes/me.ts` (new), `apps/api/src/server.ts` (two lines:
+  one import, one register), `apps/api/src/pipeline/auth.test.ts` (new),
+  `tests/integration/me-route.test.ts` (new), `apps/ui/**` and the four canonical documents
+  above. No migration, no `packages/**`, no `apps/audit-sealer`, no workflow, no D9 artifact and
+  no Foundation V1 freeze record is touched.
+- **A test that asserted an absence over a text blob stopped working silently, and that is the
+  durable lesson.** `session-lifecycle.test.tsx` asserted that the shell showed no
+  role/tier/mode by running whole-word regexes over the header's concatenated `textContent`.
+  Adjacent elements concatenate without a separator, so the rendered `production` chip followed
+  by the `Principal` chip reads as `productionprincipal`, and `\bproduction\b` returns FALSE for
+  a value plainly on screen — the test would have passed even if EP-B2 had fabricated every
+  value it now displays. It was replaced by per-element assertions. The pattern, not the
+  instance, is what is registered here.
+- The Foundation V1 residual register (freeze record §6) is unchanged by this movement. **R13**
+  (tier ↔ governance-profile separation) and **R14** (human auth for a production UI) are the
+  two this movement touches most closely, and both are respected rather than worked around:
+  tier is rendered only in an account/details affordance, explicitly qualified as commercial and
+  explicitly denied as a security/governance/policy level; and `principal_type` exists precisely
+  so a controlled-pilot org credential is never presented as a human login.
