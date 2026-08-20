@@ -1,5 +1,5 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": { "noEmit": true },
-  "include": ["integration/**/*", "live/**/*", "fixtures/**/*"]
+  "include": ["integration/**/*", "live/**/*", "acceptance/**/*", "fixtures/**/*"]
 }
