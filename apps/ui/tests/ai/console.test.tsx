@@ -162,9 +162,12 @@ describe('★ one Send is one provider POST', () => {
     await user.type(composer, '{Enter}');
     await screen.findByText('hi');
     expect(log.calls).toHaveLength(1);
-    expect((log.calls[0]?.body as { input: { content: string }[] }).input[0]?.content).toBe(
-      'line one\nline two',
-    );
+    // A user turn goes as a fully-qualified typed item (see providers/openai-responses.ts).
+    expect((log.calls[0]?.body as { input: unknown[] }).input[0]).toEqual({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'line one\nline two' }],
+    });
   });
 });
 
@@ -245,9 +248,9 @@ describe('★ context is committed only by a completed answer', () => {
     await waitFor(() => expect(log.calls).toHaveLength(2));
 
     expect((log.calls[1]?.body as { input: unknown }).input).toEqual([
-      { role: 'user', content: 'first question' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first question' }] },
       { role: 'assistant', content: 'first answer' },
-      { role: 'user', content: 'second question' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'second question' }] },
     ]);
   });
 
@@ -275,7 +278,7 @@ describe('★ context is committed only by a completed answer', () => {
     await send(user, 'second question');
     await waitFor(() => expect(log.calls).toHaveLength(2));
     expect((log.calls[1]?.body as { input: unknown }).input).toEqual([
-      { role: 'user', content: 'second question' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'second question' }] },
     ]);
   });
 });
