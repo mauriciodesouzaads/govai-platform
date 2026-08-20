@@ -22,4 +22,8 @@ export const queryKeys = {
     ['audit-events', { chainCategory, limit }] as const,
 
   capabilities: () => ['capabilities'] as const,
+
+  /** The AI Console's model discovery, per provider. Carries the provider name and nothing
+   *  else — no credential, no org, no model id the reader typed. */
+  providerModels: (provider: 'openai' | 'anthropic') => ['provider-models', provider] as const,
 } as const;
