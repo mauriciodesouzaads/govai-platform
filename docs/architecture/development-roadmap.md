@@ -140,13 +140,21 @@ pending — `apps/api/src/db/migrations/0025_audit_capture_outbox_foundation.sql
 promulgated files. Future D9 doctrine changes require a dedicated
 architecture/doctrine movement (M3 was that movement for the initial promulgation).
 
-## UI/UX V1 Foundation — STARTED; U1 complete in this tree
+## UI/UX V1 Foundation — STARTED; U1 complete, EP-B2 complete in this tree
 
 ```text
 CURRENT_PRODUCT_LANE=UI_UX_V1_FOUNDATION
 UI_UX_V1_U1=IMPLEMENTED_IN_THIS_TREE     (EP-UIUX-V1-U1; apps/ui)
+UI_UX_V1_B2=IMPLEMENTED_IN_THIS_TREE     (EP-UIUX-V1-B2; GET /v1/me + UI identity)
+UI_UX_V1_U1_5_AI_CONSOLE=NOT_STARTED
 UI_UX_V1_U2=NOT_STARTED
-BACKEND_RUNTIME_CHANGE=NONE              (Foundation V1 runtime anchor unchanged)
+EP_B4_PARTICIPANTS=NOT_STARTED
+PRODUCTION_HUMAN_AUTH=NOT_IMPLEMENTED    (residual R14)
+BACKEND_RUNTIME_CHANGE=ADDITIVE_READ_ONLY_ROUTE
+  (EP-B2 only: GET /v1/me. No migration, no schema object, no event schema, no
+   AuditBridge/capture change, no provider or evidence behaviour change. The
+   Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1
+   runtime; this is a post-freeze additive read surface, not a re-anchoring.)
 ```
 
 **U1 — Evidence Cockpit (done).** `apps/ui` is a static React + TypeScript + Vite SPA
@@ -158,14 +166,31 @@ before any screen uses it; pt-BR/en-US/es ship from the first commit. CI gains a
 (typecheck, lint, test, build, plus a secret scan of the built bundle). See
 current-state.md §1 *Interface layer* and `apps/ui/README.md`.
 
-**U2 — Workroom console (not started).** Its backend prerequisites are named and
-unadjudicated: **EP-B2** (`GET /v1/me` — without it no UI can show roles, tier or
-operational mode, and U1 correctly shows none) and **EP-B4**
-(`GET /v1/workrooms/:id/participants` — without it there is no roster and no
-separation-of-duties UX).
+**EP-B2 — authenticated principal (done).** `GET /v1/me` projects the identity
+`authenticateApiKey` already resolves on every request — `principal_type` (the literal
+`api_key`), `org_id`, `user_id`, `roles`, `tier`, `operational_mode` — and returns nothing
+else: no raw key, no argon2 hash, no `api_key_prefix`, no provider credential. It opens no
+transaction, sets no tenant context and adds no query; a 401 discloses nothing about org
+existence, roles, tier, mode or provider configuration. In the UI it replaced the `/enter`
+probe (an evidence aggregate) with the identity read, so the shell now displays the
+server-supplied operational mode, principal type and roles, and offers user id and tier in an
+account/details affordance where tier carries an explicit commercial/account qualifier
+(residual **R13** — a plan is not a governance posture, which is also why tier is not in the
+header cluster). `principal_type` exists so the controlled-pilot credential is never presented
+as a human login: production human auth remains **R14**, unimplemented.
 
-Other named follow-ups the U1 tree deliberately does not do: **EP-B7**
-(`@govai/api-contract`, so route schemas stop being mirrored in the UI), **EP-B1**
+**U1.5 — AI Console (not started).** The standalone provider-native conversational surface over
+the existing OpenAI/Anthropic passthrough/governed routes. EP-B2 was its shared identity
+prerequisite and is now met.
+
+**U2 — Workroom console (not started).** One backend prerequisite remains named and
+unadjudicated: **EP-B4** (`GET /v1/workrooms/:id/participants` — without it there is no roster
+and no separation-of-duties UX). Its other prerequisite, EP-B2, is implemented in this tree.
+
+Other named follow-ups this lane deliberately does not do: **EP-B7**
+(`@govai/api-contract`, so route schemas stop being mirrored in the UI — EP-B2 added one more
+mirror, `apps/ui/src/lib/contract/me.ts`, and one more duplicated credential-extraction helper
+in `apps/api/src/routes/me.ts`), **EP-B1**
 (per-key rate limiting — the API's 100 req/min is per process and global), **EP-V1**
 (persisted chain verification, the honest CTA behind EC-6's permanent `pending`), a
 Playwright browser suite, and **EP-UI-DEPLOY** — CI builds, scans and uploads

@@ -1,4 +1,4 @@
-# @govai/ui — GovAI evidence interface (UI/UX V1, milestone U1)
+# @govai/ui — GovAI evidence interface (UI/UX V1, milestone U1 + EP-B2)
 
 The first visible GovAI product layer, built on the frozen Backend Foundation V1. It is a
 **static React + TypeScript SPA** that consumes the Fastify API **directly** — no BFF, no SSR,
@@ -14,7 +14,7 @@ represents a capability the runtime does not have.
 
 | Route | Screen | Backend |
 |---|---|---|
-| `/enter` | Paste the organization's API key | probe: `GET /v1/evidence/summary` |
+| `/enter` | Paste the organization's API key | probe: `GET /v1/me` |
 | `/` | Evidence cockpit | `GET /v1/evidence/summary` |
 | `/evidence/gaps/:invariant` | Gap list per invariant (`ec1 ec2 ec3seal ec3drop ec4`) | `GET /v1/evidence/gaps` |
 | `/audit-events` | HMAC chain (metadata + hashes) | `GET /v1/audit-events` |
@@ -43,9 +43,18 @@ enforced by tests that run before any screen uses them:
   no sandbox was created. Phase 5 primitives do not exist.
 - **`evidence_strength` is not certification** (ADR-005: the strong members are themselves
   planned in the baseline), and a **`planned`** capability is registered, not available.
-- **No role, tier or operational-mode badge.** No route returns them at this base and there is
-  no `/v1/me`; displaying one would be fabrication, and coupling a commercial tier to a
-  governance posture is exactly the conflation the Foundation V1 residual register forbids.
+- **Only what a response carried.** `GET /v1/me` (EP-B2) serializes the caller's roles,
+  commercial tier and operational mode, so the shell shows them — rendered verbatim, next to a
+  translated field label, never re-worded into a friendlier value. Before that route existed the
+  shell correctly showed none of them; the rule did not change, the supply did.
+- **A plan is not a governance posture.** `tier` appears only in the account/details affordance,
+  qualified as commercial/account context and accompanied by an explicit denial that it is a
+  security level, a governance profile, a policy strictness or an enforcement mode. It is
+  deliberately kept out of the header cluster, where sitting beside an operational mode would
+  invite exactly that reading (Foundation V1 residual R13).
+- **An API key is not a login.** `principal_type` is rendered through the status vocabulary, so
+  a principal type this build has never seen degrades to an explicit unknown with the raw value
+  visible — it can never inherit copy written for a controlled-pilot API key.
 
 ## Session model — read this before calling it "login"
 
@@ -53,7 +62,13 @@ This is the **development / controlled-pilot** access mechanism, not production 
 authentication. There is no user account, no password, no session cookie and no key lifecycle.
 
 - The reader pastes the organization's GovAI API key at `/enter`.
-- It is validated with a real authenticated read before the session accepts it.
+- It is validated with a real authenticated read before the session accepts it — `GET /v1/me`,
+  which both proves the key and returns the principal the server resolved for it
+  (`principal_type`, `org_id`, `user_id`, `roles`, `tier`, `operational_mode`).
+- That principal is React state for **rendering only**. It is never an authority: every API
+  route re-derives identity from the credential on every single request, so a tampered
+  principal changes what this tab displays and nothing else. It is dropped with the credential
+  on sign-out and on any 401.
 - It lives in **one module-scoped variable** (`src/lib/session/credential.ts`) and nowhere
   else: never in localStorage, sessionStorage, IndexedDB, a cookie, the URL, router state, a
   React Query key, a log line or the DOM after submission.
@@ -179,10 +194,10 @@ Requires Node 24 and pnpm 10.33.2, like the rest of the monorepo.
 
 - **EP-B7 `@govai/api-contract`** — extract the route Zod schemas into a shared package. Until
   then the shapes are mirrored in `src/lib/contract/` and nowhere else, so the swap is mechanical.
+  EP-B2 added one more mirror (`contract/me.ts`) and, on the API side, one more copy of the
+  credential-extraction helper — both are the same debt this movement pays off.
 - **EP-B1 per-key rate limiting** — the API's limit is 100 req/min **per process, globally**. The
   client caches aggressively and backs off, but a dashboard in production wants a per-key limit.
-- **EP-B2 `GET /v1/me`** — without it the shell cannot show roles, tier or operational mode, and
-  correctly shows none.
 - **EP-V1 persisted chain verification** — the honest CTA behind EC-6's permanent `pending`.
 - **Playwright end-to-end** — the component and data-layer suites run in CI today; a browser
   suite against the local stack is registered as a U1 follow-up rather than scope-expanded here.

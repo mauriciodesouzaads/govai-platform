@@ -102,6 +102,93 @@ describe('translations preserve enforcement honesty', () => {
   });
 });
 
+// ★ The same rule, applied to the identity copy EP-B2 introduced: showing a real,
+// server-resolved principal must never start reading like a production human login, and a
+// COMMERCIAL plan must never acquire the vocabulary of a security or governance level.
+const API_KEY_TERM: Record<(typeof LOCALES)[number], RegExp> = {
+  'pt-BR': /chave de API/i,
+  'en-US': /API key/i,
+  es: /clave de API/i,
+};
+
+/** Words that would turn "you presented an organization API key" into "you are logged in". */
+const LOGIN_VOCABULARY: Record<(typeof LOCALES)[number], RegExp[]> = {
+  'pt-BR': [/\blogin\b/i, /\bsenha\b/i, /conta de usuário/i, /usuário autenticado/i],
+  'en-US': [/\blog ?in\b/i, /\bsigned in as\b/i, /\bpassword\b/i, /user account/i],
+  es: [/inicio de sesión/i, /\bcontraseña\b/i, /cuenta de usuario/i],
+};
+
+const NOT_IMPLEMENTED_TERM: Record<(typeof LOCALES)[number], RegExp> = {
+  'pt-BR': /não implementad/i,
+  'en-US': /not implemented/i,
+  es: /no implementad/i,
+};
+
+/** Words that would turn a commercial plan into a governance/security claim (residual R13). */
+const GOVERNANCE_VOCABULARY: Record<(typeof LOCALES)[number], RegExp[]> = {
+  'pt-BR': [/nível de segurança/i, /perfil de governança/i, /rigor de política/i],
+  'en-US': [/security level/i, /governance profile/i, /policy strictness/i],
+  es: [/nivel de seguridad/i, /perfil de gobernanza/i, /rigor de política/i],
+};
+
+describe('translations never strengthen the authentication claim', () => {
+  it.each(LOCALES)('%s: the principal label names an API key', (locale) => {
+    expect(CATALOGS[locale]['status.principalType.api_key']).toMatch(API_KEY_TERM[locale]);
+  });
+
+  it.each(LOCALES)('%s: no positive identity label uses login vocabulary', (locale) => {
+    // Deliberately excludes `identity.noProductionAuth`, whose whole job is to NEGATE those
+    // words — the rule is about claims, not about the letters.
+    const claims: MessageKey[] = [
+      'status.principalType.api_key',
+      'identity.principal',
+      'identity.title',
+      'identity.details',
+      'identity.serverAuthoritative',
+    ];
+    for (const key of claims) {
+      const text = CATALOGS[locale][key];
+      for (const forbidden of LOGIN_VOCABULARY[locale]) {
+        expect(forbidden.test(text), `${locale} ${key} must not match ${forbidden}: "${text}"`).toBe(
+          false,
+        );
+      }
+    }
+  });
+
+  it.each(LOCALES)('%s: the no-production-auth statement really is a negation', (locale) => {
+    expect(CATALOGS[locale]['identity.noProductionAuth']).toMatch(NOT_IMPLEMENTED_TERM[locale]);
+  });
+
+  it.each(LOCALES)('%s: the plan is labelled commercial, never as a governance level', (locale) => {
+    // The qualifier says commercial/account; the note may NAME the governance words only in
+    // order to deny them, so the positive labels are what is scanned.
+    const commercial: MessageKey[] = ['identity.tier', 'identity.tier.qualifier'];
+    for (const key of commercial) {
+      for (const forbidden of GOVERNANCE_VOCABULARY[locale]) {
+        expect(
+          forbidden.test(CATALOGS[locale][key]),
+          `${locale} ${key} must not match ${forbidden}`,
+        ).toBe(false);
+      }
+    }
+    // And the note that carries the separation must actually carry it.
+    const note = CATALOGS[locale]['identity.tier.note'];
+    for (const required of GOVERNANCE_VOCABULARY[locale]) {
+      expect(required.test(note), `${locale} identity.tier.note must deny ${required}`).toBe(true);
+    }
+  });
+
+  it.each(LOCALES)('%s: the operational mode is presented as a value, not a verdict', (locale) => {
+    // No tone word: the interface reports what the server said about the org's operational
+    // state and does not grade it.
+    const text = CATALOGS[locale]['identity.operationalMode.note'];
+    for (const verdict of [/segur|secure|seguro/i, /risco|risk|riesgo/i, /conform|complian/i]) {
+      expect(verdict.test(text), `${locale} must not grade the mode (${verdict})`).toBe(false);
+    }
+  });
+});
+
 describe('EC-6 and EC-3.drop copy stays honest in every language', () => {
   it.each(LOCALES)('%s: EC-6 copy never claims verification happened', (locale) => {
     // The pending explanation must not read as a pass in any language.

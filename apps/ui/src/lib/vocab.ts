@@ -16,7 +16,12 @@ export type Tone = 'ok' | 'attention' | 'failure' | 'neutral' | 'info';
 export type VocabEntry = { messageKey: MessageKey; tone: Tone };
 
 /** The status domains U1 actually renders. */
-export type VocabDomain = 'capture' | 'capability' | 'evidenceStrength' | 'chainCategory';
+export type VocabDomain =
+  | 'capture'
+  | 'capability'
+  | 'evidenceStrength'
+  | 'chainCategory'
+  | 'principalType';
 
 /** `govai.audit_capture_outbox.status` — the EC-1 / EC-3.seal row status.
  *  `sealed` is the only sealed-fact value, so it is the only `ok`. `captured`/`sealing` are
@@ -58,11 +63,22 @@ const CHAIN_CATEGORY: Record<string, VocabEntry> = {
   admin: { messageKey: 'status.chainCategory.admin', tone: 'neutral' },
 };
 
+/** `principal_type` (apps/api/src/routes/me.ts). NEUTRAL, and the one domain whose UNKNOWN
+ *  branch is a product-safety control rather than a cosmetic fallback: the label attached to
+ *  `api_key` states that this is a controlled-pilot credential and not a human login, so a
+ *  principal type this build has never seen must NOT inherit that wording. It falls through
+ *  to `status.unknown` with the raw value rendered verbatim — the reader is told the API said
+ *  something this interface does not recognise, which is the truth. */
+const PRINCIPAL_TYPE: Record<string, VocabEntry> = {
+  api_key: { messageKey: 'status.principalType.api_key', tone: 'neutral' },
+};
+
 const TABLES: Record<VocabDomain, Record<string, VocabEntry>> = {
   capture: CAPTURE,
   capability: CAPABILITY,
   evidenceStrength: EVIDENCE_STRENGTH,
   chainCategory: CHAIN_CATEGORY,
+  principalType: PRINCIPAL_TYPE,
 };
 
 export type ResolvedStatus = VocabEntry & {

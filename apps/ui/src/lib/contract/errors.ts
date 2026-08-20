@@ -3,7 +3,7 @@
 //   apps/api/src/routes/evidence.ts:59-60,74-75    — 400 invalid_query / 401 auth_error
 //   apps/api/src/routes/audit-events.ts:23-24,34-35
 //   apps/api/src/routes/capabilities.ts:24-25
-//   apps/api/src/server.ts:108-111                 — @fastify/rate-limit (100/min outside test)
+//   apps/api/src/server.ts:109-112                 — @fastify/rate-limit (100/min outside test)
 //
 // ★ SOURCE ADJUDICATION — the July plans describe a single uniform `{error, …}` envelope for
 // every response. Two real responses do NOT carry a GovAI `error` code:

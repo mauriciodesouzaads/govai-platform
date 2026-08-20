@@ -4,18 +4,22 @@ import { useSession } from '../../lib/session/SessionProvider.js';
 import { uiBuildSha } from '../../lib/query-export.js';
 import { LanguageSelector } from './LanguageSelector.js';
 import { WindowSelector } from './WindowSelector.js';
+import { IdentityChips, SessionDetails } from './SessionIdentity.js';
 
 // The U1 application shell.
 //
-// ★ It displays ONLY facts it actually knows. At this base no route returns the caller's
-// roles, commercial tier or operational mode (apps/api/src/pipeline/auth.ts resolves them but
-// never serializes them; there is no /v1/me — the named backend follow-up EP-B2). So there is
-// no role badge, no tier badge and no environment badge here: inventing one would be a
-// fabricated fact, and coupling a commercial tier to a governance posture is exactly the
-// conflation the Foundation V1 residual register forbids.
+// ★ It displays ONLY facts it actually knows — the rule that governed U1 from the first
+// commit, unchanged. What changed is the supply: EP-B2 added `GET /v1/me`, so the caller's
+// roles, commercial tier and operational mode are now SERIALIZED by a route (they were always
+// resolved — apps/api/src/pipeline/auth.ts — but nothing published them). The shell therefore
+// shows the operational mode and the kind of principal, and offers the rest through the
+// session-details affordance in the footer. Tier is deliberately not in the header cluster:
+// see SessionIdentity.tsx for why coupling it to a governance reading is the conflation the
+// Foundation V1 residual register forbids (R13).
 //
-// The org id shown below is not chosen or typed by anyone: it is read from the authenticated
-// response, which is also why there is no organization selector.
+// Nothing here is an authority: the server re-derives identity on every request, so this is a
+// rendering of one response and never a capability. Neither the org id nor any other identity
+// value is chosen or typed by anyone — which is also why there is no organization selector.
 //
 // Workroom, regulatory and admin navigation are NOT rendered. Those areas are not part of this
 // delivery, and a disabled menu item promising them would be a promise the product cannot keep.
@@ -40,7 +44,7 @@ function windowScopesRoute(pathname: string): boolean {
 
 export function AppShell() {
   const { t } = useI18n();
-  const { orgId, signOut } = useSession();
+  const { orgId, principal, signOut } = useSession();
   const { pathname } = useLocation();
   const build = uiBuildSha();
   const showWindowSelector = windowScopesRoute(pathname);
@@ -82,6 +86,7 @@ export function AppShell() {
           <div className="ml-auto flex flex-wrap items-center gap-x-[var(--govai-space-4)] gap-y-[var(--govai-space-2)]">
             {showWindowSelector && <WindowSelector />}
             <LanguageSelector />
+            <IdentityChips />
             {orgId && (
               <span className="text-[length:var(--govai-text-xs)] text-[var(--govai-text-secondary)]">
                 {t('session.org')}{' '}
@@ -123,6 +128,7 @@ export function AppShell() {
           <span className="basis-full text-[var(--govai-text-tertiary)]">
             {t('app.footer.scope')}
           </span>
+          {principal && <SessionDetails principal={principal} />}
         </div>
       </footer>
     </div>

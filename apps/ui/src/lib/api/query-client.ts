@@ -7,7 +7,7 @@
 // the real cause behind a spinner.
 //
 // staleTime is generous because the API enforces a per-process 100 req/min limit
-// (apps/api/src/server.ts:108-111) and an evidence cockpit is several panels wide. Per-key
+// (apps/api/src/server.ts:109-112) and an evidence cockpit is several panels wide. Per-key
 // rate limiting is a named backend follow-up (EP-B1), not something the UI can fix.
 
 import { QueryClient } from '@tanstack/react-query';
