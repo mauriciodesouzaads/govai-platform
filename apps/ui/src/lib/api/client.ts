@@ -201,6 +201,14 @@ const DEFAULT_ERROR_BODY_MAX_BYTES = 16 * 1024;
  */
 const PROVIDER_NATIVE_BODY_MAX_BYTES = 2 * 1024 * 1024;
 
+/** Sentinel for "the read deadline won the race". A unique object, so it can never collide with
+ *  a legitimate `ReadableStreamReadResult`. */
+const READ_DEADLINE = Symbol('bounded-read-deadline');
+
+/** Total wall-clock ceiling on one bounded body read. Generous enough that a slow but real
+ *  response completes, short enough that a silent one does not strand a screen in `loading`. */
+const BOUNDED_READ_TIMEOUT_MS = 15_000;
+
 export function createApiClient(config: ApiClientConfig): ApiClient {
   const baseUrl = normalizeBaseUrl(config.baseUrl ?? '');
   const doFetch = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -365,17 +373,41 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
  * Read at most `maxBytes` of a response body as UTF-8 text. A provider error body is
  * attacker-influenced input of unknown size; the console parses a fixed set of fields out of
  * it and must never buffer an unbounded response to do so.
+ *
+ * ★ A SIZE BOUND IS NOT A TIME BOUND, and only one of the two was here. A response that sends
+ * a few bytes under `maxBytes` and then simply holds the connection open never reaches the
+ * ceiling, so the loop waited on a `read()` that would not resolve — model discovery sat in its
+ * loading state until the reader navigated away. The two bounds are independent and the read
+ * needs both: whichever is reached first stops it, and the `finally` cancels the reader either
+ * way, which tears the connection down rather than leaking it.
+ *
+ * The deadline is TOTAL, not per-chunk. A per-chunk timer would let a body that trickles one
+ * byte inside every interval hold the read open indefinitely, which is the same defect wearing
+ * a different shape.
+ *
+ * A timed-out read returns what it has, exactly as a truncated one does: partial error detail is
+ * still worth showing, and it is never the primary signal — the STATUS is.
  */
-async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+async function readBoundedText(
+  response: Response,
+  maxBytes: number,
+  timeoutMs: number = BOUNDED_READ_TIMEOUT_MS,
+): Promise<string> {
   const body = response.body;
   if (!body) return '';
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8');
   let out = '';
   let read = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof READ_DEADLINE>((resolve) => {
+    timer = setTimeout(() => resolve(READ_DEADLINE), timeoutMs);
+  });
   try {
     for (;;) {
-      const { value, done } = await reader.read();
+      const next = await Promise.race([reader.read(), deadline]);
+      if (next === READ_DEADLINE) break;
+      const { value, done } = next;
       if (done) break;
       if (!value) continue;
       read += value.byteLength;
@@ -393,6 +425,7 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
   } catch {
     // A truncated error body is still worth what was read; it is never the primary signal.
   } finally {
+    clearTimeout(timer);
     await reader.cancel().catch(() => undefined);
   }
   return out;

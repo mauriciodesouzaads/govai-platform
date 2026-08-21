@@ -700,6 +700,45 @@ describe('provider and GovAI error surfaces', () => {
   });
 });
 
+// A refusal-only attempt renders its refusal and no `text`. The exclusion notice used to be
+// guarded on `text` alone, so this — the case where the reader most needs to know whether the
+// visible refusal will be reused — showed nothing at all.
+describe('★ a refusal-only attempt still says whether it is reused', () => {
+  it('an UNFINISHED refusal-only attempt shows the context-exclusion notice', async () => {
+    const { user } = renderConsole([
+      streamHandler(PATHS.openaiResponsesNative, {
+        // A refusal delta and then the socket ends with NO terminal marker: unconfirmed, so it
+        // is excluded from context — and there is no `text`, only a refusal.
+        chunks: ['data: {"type":"response.refusal.delta","delta":"I cannot help with that"}\n\n'],
+      }),
+    ]);
+    await chooseModel(user, 'a-model');
+    await send(user, 'q');
+    expect(await screen.findByTestId('attempt-refusal')).toHaveTextContent(
+      'I cannot help with that',
+    );
+    expect(await screen.findByTestId('attempt-state-badge')).toHaveTextContent(
+      T['ai.state.unknownOutcome'],
+    );
+    expect(screen.getByTestId('attempt-context-excluded')).toHaveTextContent(
+      T['ai.contextExcluded'],
+    );
+  });
+
+  it('an attempt with NOTHING visible shows no notice — there is nothing to exclude', async () => {
+    const { user } = renderConsole([
+      errorHandler(PATHS.openaiResponsesNative, {
+        status: 500,
+        body: { error: { type: 'server_error', message: 'upstream failure' } },
+      }),
+    ]);
+    await chooseModel(user, 'a-model');
+    await send(user, 'q');
+    await screen.findByTestId('attempt-state-badge');
+    expect(screen.queryByTestId('attempt-context-excluded')).toBeNull();
+  });
+});
+
 describe('the composer and the empty state', () => {
   it('starts empty, with an explanation rather than a fake first message', async () => {
     renderConsole();
@@ -732,6 +771,45 @@ describe('the composer and the empty state', () => {
     const status = await screen.findByTestId('conversation-status');
     await waitFor(() => expect(status).toHaveTextContent(T['ai.state.completed']));
     expect(status).not.toHaveTextContent(T['ai.generating']);
+  });
+
+  // A retry can target ANY turn. "The last turn's last attempt" is the wrong answer whenever an
+  // earlier turn is retried while later ones exist — the region would report a different turn's
+  // outcome than the one that just finished.
+  it('★ announces the outcome of the turn that was RETRIED, not the chronological last one', async () => {
+    let call = 0;
+    const { user } = renderConsole([
+      http.post(`*${PATHS.openaiResponsesNative}`, () => {
+        call += 1;
+        // 1st: turn 1 fails. 2nd: turn 2 succeeds. 3rd: the RETRY of turn 1 fails again.
+        if (call === 1 || call >= 3) {
+          return HttpResponse.json(
+            { error: { type: 'rate_limit_error', message: 'slow down' } },
+            { status: 429 },
+          );
+        }
+        return new HttpResponse(responsesScript('second turn ok').join(''), {
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }),
+    ]);
+    await chooseModel(user, 'a-model');
+
+    await send(user, 'first');
+    await waitFor(() => expect(screen.getAllByTestId('attempt-state-badge')).toHaveLength(1));
+    await send(user, 'second');
+    await waitFor(() => expect(screen.getAllByTestId('attempt-state-badge')).toHaveLength(2));
+
+    const status = screen.getByTestId('conversation-status');
+    await waitFor(() => expect(status).toHaveTextContent(T['ai.state.completed']));
+
+    // Retry turn ONE while turn TWO already exists and is the chronological last.
+    await user.click(screen.getAllByTestId('retry-turn')[0] as HTMLElement);
+
+    // The retry failed, so the announcement must be the retry's own outcome — not turn two's
+    // `completed`, which is what "the last turn's last attempt" would have said.
+    await waitFor(() => expect(status).toHaveTextContent(T['ai.state.rateLimited']));
+    expect(status).not.toHaveTextContent(T['ai.state.completed']);
   });
 
   it('announces a FAILED terminal state with its own label, not a generic one', async () => {

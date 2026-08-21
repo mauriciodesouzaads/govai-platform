@@ -297,3 +297,52 @@ describe('URL building', () => {
     expect(url).toBe('/v1/thing');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A SIZE BOUND IS NOT A TIME BOUND.
+//
+// `readBoundedText` stopped at `maxBytes`, and only at `maxBytes`. A response that sends a few
+// bytes UNDER the ceiling and then holds the connection open never reaches it, so the read
+// waited on a `read()` that would not resolve and the caller — model discovery, an error-body
+// parse — sat in `loading` until the reader navigated away. Both bounds are needed; whichever
+// is reached first must stop the read, and the reader must be cancelled either way.
+describe('bounded body reads have a deadline, not only a ceiling', () => {
+  /** A body that emits `prefix`, then never completes and never closes. */
+  function trickleThenHang(prefix: string): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(prefix));
+        // Deliberately no close(), no further enqueue: the connection just stays open.
+      },
+    });
+  }
+
+  it('★ a body that stalls under the size ceiling still resolves, instead of hanging forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const stalling = new Response(trickleThenHang('{"error":{"type":"server_'), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+      const api = client(async () => stalling);
+      const pending = api.get('/v1/models', { schema: Schema }).catch((err: unknown) => err);
+      // Nothing can complete on its own: only the deadline can end this read.
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(isApiError(result)).toBe(true);
+      expect((result as { status: number }).status).toBe(500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a body that CLOSES normally is unaffected by the deadline', async () => {
+    const api = client(async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(api.get('/v1/thing', { schema: Schema })).resolves.toEqual({ ok: true });
+  });
+});

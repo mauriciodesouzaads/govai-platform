@@ -54,7 +54,7 @@ export type ConversationAction =
   | { type: 'newConversation' };
 
 export function initialConversationState(config: ConversationConfig): ConversationState {
-  return { config, locked: false, turns: [], inFlight: null };
+  return { config, locked: false, turns: [], inFlight: null, lastSettled: null };
 }
 
 function newAttempt(id: string, eligibleForContext: boolean): Attempt {
@@ -181,14 +181,20 @@ export function conversationReducer(
         next.inFlight.attemptId === action.attemptId
           ? null
           : next.inFlight;
-      return { ...next, inFlight: stillInFlight };
+      // Record WHICH attempt settled. A retry can target any turn, so the view cannot recover
+      // this from `turns` — see ConversationState.lastSettled.
+      return {
+        ...next,
+        inFlight: stillInFlight,
+        lastSettled: { turnId: action.turnId, attemptId: action.attemptId },
+      };
     }
 
     case 'newConversation':
       // The controls are kept (the reader just chose them) and unlocked; everything the
       // provider produced is dropped. There is nothing else to clear: no cache entry, no
       // storage key, no provider-side conversation id — the console never created one.
-      return { config: state.config, locked: false, turns: [], inFlight: null };
+      return { config: state.config, locked: false, turns: [], inFlight: null, lastSettled: null };
 
     /* c8 ignore next 2 -- exhaustive switch over a closed union */
     default:

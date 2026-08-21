@@ -183,6 +183,15 @@ export type ConversationState = {
   turns: Turn[];
   /** The attempt currently in flight, as `{turnId, attemptId}`, or null. */
   inFlight: { turnId: string; attemptId: string } | null;
+  /**
+   * The attempt that settled MOST RECENTLY, as `{turnId, attemptId}`, or null before the first
+   * one settles. Not derivable from `turns`: a retry targets any turn, so "the last turn's last
+   * attempt" is the wrong answer whenever an earlier turn is retried while later ones exist —
+   * the live region would announce a different turn's outcome than the one that just finished.
+   * The reducer knows exactly which attempt settled, so it records it rather than making the
+   * view guess.
+   */
+  lastSettled: { turnId: string; attemptId: string } | null;
 };
 
 /** The last attempt of a turn, or null for a turn that has none. */

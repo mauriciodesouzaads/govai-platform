@@ -143,7 +143,11 @@ function AttemptBody({ attempt, isLast }: { attempt: Attempt; isLast: boolean })
 
       {attempt.error !== null && <ProviderErrorDetail error={attempt.error} />}
 
-      {excludedFromContext && attempt.text.length > 0 && (
+      {/* Guarded on VISIBLE OUTPUT, not on `text` alone: a refusal-only attempt renders its
+          refusal and would otherwise show no notice at all — and since a refusal is carried as
+          a real answer, whether THIS one is excluded is exactly what the reader needs to know.
+          An attempt with nothing visible needs no notice: there is nothing to exclude. */}
+      {excludedFromContext && (attempt.text.length > 0 || (attempt.refusal ?? '').length > 0) && (
         <p
           className="mt-[var(--govai-space-2)] max-w-prose text-[length:var(--govai-text-xs)] text-[var(--govai-text-secondary)]"
           data-testid="attempt-context-excluded"

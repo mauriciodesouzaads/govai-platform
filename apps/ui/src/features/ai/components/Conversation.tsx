@@ -29,12 +29,21 @@ export function Conversation({
   const { t } = useI18n();
   const busy = state.inFlight !== null;
 
-  // The last attempt of the last turn — the one whose outcome just settled. Only a TERMINAL
-  // state is announced: `submitting` / `streaming` are the busy phase, already covered above.
-  const lastAttempt = state.turns.at(-1)?.attempts.at(-1);
+  // The attempt that ACTUALLY settled, by identity — never "the last turn's last attempt".
+  // A retry targets any turn, so after retrying turn 1 while turn 2 exists, the chronological
+  // last attempt belongs to a different turn and announcing its label would report the wrong
+  // outcome. Only a TERMINAL state is announced: `submitting` / `streaming` are the busy phase,
+  // already covered above.
+  const settled = state.lastSettled;
+  const settledAttempt =
+    settled === null
+      ? undefined
+      : state.turns
+          .find((turn) => turn.id === settled.turnId)
+          ?.attempts.find((attempt) => attempt.id === settled.attemptId);
   const settledLabel =
-    lastAttempt !== undefined && isTerminalState(lastAttempt.state)
-      ? t(STATE_LABEL[lastAttempt.state].key)
+    settledAttempt !== undefined && isTerminalState(settledAttempt.state)
+      ? t(STATE_LABEL[settledAttempt.state].key)
       : '';
 
   return (
