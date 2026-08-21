@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "generated_by": "scripts/canonical-source-manifest.ts",
+  "regenerate": "pnpm docs:manifest:write",
+  "verify": "pnpm docs:manifest:check",
+  "structure": {
+    "architecture_docs": 104,
+    "regulatory_docs": 20,
+    "adr_decision_records": 31,
+    "workspace_apps": [
+      "apps/api",
+      "apps/audit-sealer",
+      "apps/ui"
+    ],
+    "workspace_packages": [
+      "packages/config",
+      "packages/core-audit",
+      "packages/core-events",
+      "packages/core-governance",
+      "packages/core-identity",
+      "packages/core-tenant",
+      "packages/core-types",
+      "packages/dlp-br",
+      "packages/observability",
+      "packages/provider-anthropic",
+      "packages/provider-openai",
+      "packages/provider-stream-http",
+      "packages/signing"
+    ],
+    "other_workspace_members": [
+      "scripts",
+      "tests"
+    ],
+    "api_route_files": 19,
+    "db_migrations": 29
+  },
+  "tests": {
+    "root_unit": {
+      "files": 137,
+      "tests": 1549
+    },
+    "root_integration_only": {
+      "files": 77,
+      "tests": 1122
+    },
+    "root_full_integration_gate": {
+      "files": 214,
+      "tests": 2671
+    },
+    "ui": {
+      "files": 33,
+      "tests": 753
+    },
+    "live_gated": {
+      "files": 5,
+      "tests": null,
+      "reason": "not enumerated: collection would import live-gated modules whose import-time guards read provider environment; files-only by design"
+    },
+    "acceptance_harnesses": {
+      "paths": [
+        "tests/acceptance/ai-console"
+      ],
+      "note": "operator-driven harnesses, not vitest suites; excluded from every vitest config"
+    }
+  }
+}

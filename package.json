@@ -18,7 +18,9 @@
     "test:obs": "vitest run --config vitest.live.config.ts tests/live/observability-collector.test.ts",
     "test:user-e2e": "vitest run --config vitest.live.config.ts tests/live/user-e2e.test.ts",
     "acceptance:ai-console": "tsx tests/acceptance/ai-console/run.ts",
-    "acceptance:ai-console:live": "tsx tests/acceptance/ai-console/run.ts live"
+    "acceptance:ai-console:live": "tsx tests/acceptance/ai-console/run.ts live",
+    "docs:manifest:write": "tsx scripts/canonical-source-manifest.ts write",
+    "docs:manifest:check": "tsx scripts/canonical-source-manifest.ts check"
   },
   "devDependencies": {
     "@types/node": "24.10.0",

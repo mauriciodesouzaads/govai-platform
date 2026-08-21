@@ -146,15 +146,19 @@ architecture/doctrine movement (M3 was that movement for the initial promulgatio
 CURRENT_PRODUCT_LANE=UI_UX_V1_FOUNDATION
 UI_UX_V1_U1=IMPLEMENTED_IN_THIS_TREE     (EP-UIUX-V1-U1; apps/ui)
 UI_UX_V1_B2=IMPLEMENTED_IN_THIS_TREE     (EP-UIUX-V1-B2; GET /v1/me + UI identity)
-UI_UX_V1_U1_5_AI_CONSOLE=IMPLEMENTED_IN_THIS_TREE  (EP-UIUX-V1-U1.5; apps/ui /ai; ZERO backend change)
+UI_UX_V1_U1_5_AI_CONSOLE=IMPLEMENTED_IN_THIS_TREE  (EP-UIUX-V1-U1.5; apps/ui /ai; initial
+  implementation UI-first, final merged tree carries the two owner-adjudicated
+  CLOSEOUT-02 provider fixes — see below)
 UI_UX_V1_U2=NOT_STARTED
 EP_B4_PARTICIPANTS=NOT_STARTED
 PRODUCTION_HUMAN_AUTH=NOT_IMPLEMENTED    (residual R14)
-BACKEND_RUNTIME_CHANGE=ADDITIVE_READ_ONLY_ROUTE
-  (EP-B2 only: GET /v1/me. No migration, no schema object, no event schema, no
-   AuditBridge/capture change, no provider or evidence behaviour change. The
-   Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1
-   runtime; this is a post-freeze additive read surface, not a re-anchoring.)
+BACKEND_RUNTIME_CHANGE=ADDITIVE_ROUTE_PLUS_TWO_ADJUDICATED_PROVIDER_FIXES
+  (EP-B2: GET /v1/me, a read-only additive route. CLOSEOUT-02: the two
+   owner-adjudicated provider-package fixes — the Origin strip and the Responses
+   DLP coverage fix. No migration, no schema object, no event schema, no
+   AuditBridge/capture change, no evidence behaviour change. The Foundation V1
+   runtime anchor `de80664a` still names the accepted Foundation V1 runtime;
+   these are post-freeze additive/corrective changes, not a re-anchoring.)
 ```
 
 **U1 — Evidence Cockpit (done).** `apps/ui` is a static React + TypeScript + Vite SPA
@@ -181,7 +185,9 @@ as a human login: production human auth remains **R14**, unimplemented.
 
 **U1.5 — AI Console (implemented in this tree).** The standalone provider-native conversational
 surface at `/ai`, over the six already-registered OpenAI/Anthropic passthrough+governed routes.
-`BACKEND_RUNTIME_CHANGE=NONE`: no route, no migration, no event schema, no governance semantics.
+The console adds no route, no migration, no event schema and no governance semantics — but the
+final merged tree is **not** backend-untouched: the two owner-adjudicated CLOSEOUT-02 fixes below
+are backend (provider-package) changes, with root test suites added by the review rounds.
 The transcript is memory-only by construction, a provider POST is never retried automatically,
 and the Interaction Receipt states only browser-provable facts — no audit event id, no evidence
 claim, no per-request governance on the Native surface.
@@ -218,13 +224,17 @@ Two findings its LIVE acceptance produced were backend defects, were adjudicated
 
 A residual the same review named, **not** fixed here: `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`
 — `referer` and `cookie` describe the inbound hop by exactly the same reasoning as `origin`, and
-are relayed today. `Referer` is a semantic wrong with no observable failure (measured at 200
-against real Anthropic). `cookie` is measured, not theoretical: in the CLOSEOUT-02 acceptance
-browser the GovAI origin carried **6 cookies / 229 bytes** that GovAI never set, and they are
-relayed upstream on every browser-originated provider call. It is unfixed here because the
-adjudication covered `origin` and was explicit that the correction must not become a general
-browser-header purge — scope, not absence of a defect. Owner adjudication, like the two above.
-See stale-docs-register.md for the measurement.
+only `origin` is stripped (`STRIP_INBOUND_BROWSER_HOP`). Stated precisely: `Referer` **is**
+relayed on browser calls — a semantic wrong with no observable failure (measured at 200 against
+real Anthropic). For `cookie`, the server-side header builders **would relay** an inbound
+`cookie` header, but the official AI Console attaches none: its `ApiClient` issues every request
+(GETs and provider streaming POSTs alike) with `credentials: 'omit'`, so no browser cookie
+reaches GovAI to be relayed today. The CLOSEOUT-02 measurement — **6 cookies / 229 bytes** on
+the acceptance origin, none set by GovAI — quantifies what a `credentials: 'include'` caller
+would hand upstream, and the risk becomes MATERIAL with any future cookie-based human auth
+(R14). It is unfixed here because the adjudication covered `origin` and was explicit that the
+correction must not become a general browser-header purge — scope, not absence of a defect.
+Owner adjudication, like the two above. See stale-docs-register.md for the measurement.
 
 A second residual, also source-proven during the same review rounds and also **not** fixed:
 `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01` — the non-stream passthrough forward calls
