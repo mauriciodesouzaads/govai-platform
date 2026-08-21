@@ -37,7 +37,7 @@
   "tests": {
     "root_unit": {
       "files": 137,
-      "tests": 1549
+      "tests": 1551
     },
     "root_integration_only": {
       "files": 77,
@@ -45,7 +45,7 @@
     },
     "root_full_integration_gate": {
       "files": 214,
-      "tests": 2671
+      "tests": 2673
     },
     "ui": {
       "files": 33,

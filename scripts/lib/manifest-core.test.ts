@@ -266,6 +266,20 @@ describe('generated block replacement', () => {
       /END marker appears before BEGIN/
     );
   });
+
+  it('rejects a corrupted marker (trailing text on the marker line) instead of accepting it as a boundary', () => {
+    expect(() =>
+      replaceGeneratedBlock(`${BEGIN_MARKER} typo\ncontent\n${END_MARKER}\n`, 'x')
+    ).toThrow(/corrupted BEGIN marker on line 1/);
+    expect(() =>
+      replaceGeneratedBlock(`${BEGIN_MARKER}\ncontent\n> ${END_MARKER}\n`, 'x')
+    ).toThrow(/corrupted END marker on line 3/);
+  });
+
+  it('rejects a marker token quoted inside prose (fail-closed, not a silent extra boundary)', () => {
+    const doc = `intro quoting \`${BEGIN_MARKER}\` in prose\n${BEGIN_MARKER}\nold\n${END_MARKER}\n`;
+    expect(() => replaceGeneratedBlock(doc, 'x')).toThrow(/corrupted BEGIN marker on line 1/);
+  });
 });
 
 describe('firstDifferingLine (check-mode mismatch reports)', () => {

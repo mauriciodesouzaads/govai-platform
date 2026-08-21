@@ -353,25 +353,39 @@ export function renderMarkdownBlock(manifest: SourceManifest): string {
 }
 
 /**
- * Replace the generated block (marker lines inclusive) inside a document. Exactly one
- * BEGIN and one END marker must exist, BEGIN before END — anything else throws.
+ * Replace the generated block (marker lines inclusive) inside a document. Markers are
+ * recognized only as COMPLETE lines — a line that merely contains a marker token (a
+ * corrupted marker such as `<!-- … --> typo`, or the token quoted in prose) is treated
+ * as corruption and throws, so a malformed document is rejected rather than silently
+ * rewritten around the wrong boundary. Exactly one BEGIN and one END line must exist,
+ * BEGIN before END — anything else throws.
  */
 export function replaceGeneratedBlock(doc: string, newBlock: string): string {
-  const begins = [...doc.matchAll(new RegExp(escapeRegExp(BEGIN_MARKER), 'g'))];
-  const ends = [...doc.matchAll(new RegExp(escapeRegExp(END_MARKER), 'g'))];
-  if (begins.length === 0) throw new Error(`missing BEGIN marker: ${BEGIN_MARKER}`);
-  if (ends.length === 0) throw new Error(`missing END marker: ${END_MARKER}`);
-  if (begins.length > 1) throw new Error('duplicate BEGIN marker');
-  if (ends.length > 1) throw new Error('duplicate END marker');
-  const beginIdx = begins[0]!.index;
-  const endIdx = ends[0]!.index;
-  if (endIdx < beginIdx) throw new Error('END marker appears before BEGIN marker');
-  const afterEnd = endIdx + END_MARKER.length;
-  return doc.slice(0, beginIdx) + newBlock + doc.slice(afterEnd);
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lines = doc.split('\n');
+  const beginLines: number[] = [];
+  const endLines: number[] = [];
+  lines.forEach((line, i) => {
+    if (line === BEGIN_MARKER) beginLines.push(i);
+    else if (line.includes(BEGIN_MARKER)) {
+      throw new Error(
+        `corrupted BEGIN marker on line ${i + 1}: the marker must occupy the whole line`
+      );
+    }
+    if (line === END_MARKER) endLines.push(i);
+    else if (line.includes(END_MARKER)) {
+      throw new Error(
+        `corrupted END marker on line ${i + 1}: the marker must occupy the whole line`
+      );
+    }
+  });
+  if (beginLines.length === 0) throw new Error(`missing BEGIN marker: ${BEGIN_MARKER}`);
+  if (endLines.length === 0) throw new Error(`missing END marker: ${END_MARKER}`);
+  if (beginLines.length > 1) throw new Error('duplicate BEGIN marker');
+  if (endLines.length > 1) throw new Error('duplicate END marker');
+  const begin = beginLines[0]!;
+  const end = endLines[0]!;
+  if (end < begin) throw new Error('END marker appears before BEGIN marker');
+  return [...lines.slice(0, begin), newBlock, ...lines.slice(end + 1)].join('\n');
 }
 
 /** First line where two strings diverge — for concise check-mode mismatch reports. */
