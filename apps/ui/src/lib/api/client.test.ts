@@ -440,6 +440,45 @@ describe('bounded body reads have a deadline, not only a ceiling', () => {
     expect(isApiError(result)).toBe(false);
   });
 
+  // ★ An interrupted read is not a syntax error. Both interruption shapes — `json()` rejecting
+  // with the abort, and a truncated bounded read that then fails to parse — look exactly like
+  // malformed JSON at the catch. `malformed_response` is a PERMANENT kind the query layer does
+  // not retry, so mislabelling a stall that way tells the reader the API returned an invalid
+  // contract AND denies it the bounded retry a network condition would get.
+  it('★ a body cut short by the deadline reports as network, NOT as malformed JSON', async () => {
+    vi.useFakeTimers();
+    try {
+      // 2xx headers arrive, then the body stalls under the size ceiling and never closes.
+      const stalled = new Response(trickleThenHang('{"ok":tr'), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+      const api = client(async () => stalled);
+      const pending = api
+        .get('/v1/models', { schema: Schema, authScope: 'provider-native' })
+        .catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(isApiError(result)).toBe(true);
+      expect((result as { kind: string }).kind).toBe('network');
+      expect((result as { kind: string }).kind).not.toBe('malformed_response');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('genuinely invalid JSON is STILL malformed_response — the fix must not blunt the real case', async () => {
+    const api = client(async () =>
+      new Response('{ not json at all', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(api.get('/v1/thing', { schema: Schema })).rejects.toMatchObject({
+      kind: 'malformed_response',
+    });
+  });
+
   it('a body that CLOSES normally is unaffected by the deadline', async () => {
     const api = client(async () =>
       new Response(JSON.stringify({ ok: true }), {

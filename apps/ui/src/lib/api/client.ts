@@ -221,6 +221,17 @@ const READ_DEADLINE = Symbol('bounded-read-deadline');
  *
  * Generous enough that a slow but real response completes, short enough that a silent one does
  * not strand a screen.
+ *
+ * ★ WHAT AN INTERRUPTION IS REPORTED AS, everywhere in `get()` — one taxonomy, three answers:
+ *
+ *   the CALLER aborted        re-thrown untouched; it is their cancellation, not a fault
+ *   OUR deadline fired        `network` — nobody cancelled it, so "cancelled" would be a lie,
+ *                             and `network` is the kind the query layer may retry
+ *   anything else             its own kind (`malformed_response`, the status-derived kinds…)
+ *
+ * The rule is to ask the SIGNAL, never to pattern-match the error: an abort surfaces as a fetch
+ * rejection, as a `json()` rejection, and as a truncated body that fails to parse, and only the
+ * first of those looks like an abort at all.
  */
 const JSON_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -337,7 +348,22 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
             authScope === 'provider-native'
               ? JSON.parse(await readBoundedText(response, PROVIDER_NATIVE_BODY_MAX_BYTES))
               : await response.json();
-        } catch {
+        } catch (err) {
+          // ★ AN INTERRUPTED READ IS NOT A SYNTAX ERROR, and the difference is not cosmetic.
+          //
+          // Both shapes arrive here looking identical to malformed JSON: `response.json()`
+          // rejects with the abort, and `readBoundedText` swallows it and returns a truncated
+          // body that then fails to parse. But `malformed_response` is a PERMANENT kind — the
+          // query layer does not retry it — so labelling a transient stall that way tells the
+          // reader the API returned an invalid contract, and denies it the bounded retry a
+          // network condition would get. Ask the SIGNAL what happened rather than the error.
+          if (options.signal?.aborted) throw err; // the caller's cancellation, untouched
+          if (deadline.signal.aborted) {
+            throw new ApiError({
+              kind: 'network',
+              message: 'the GovAI API did not respond in time',
+            });
+          }
           throw new ApiError({
             kind: 'malformed_response',
             status: response.status,
