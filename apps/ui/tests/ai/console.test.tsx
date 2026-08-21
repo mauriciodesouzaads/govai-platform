@@ -4,6 +4,8 @@ import { http, HttpResponse } from 'msw';
 import { AiConsolePage } from '../../src/features/ai/AiConsolePage.js';
 import { renderApp } from '../render.js';
 import { server, VALID_KEY } from '../msw/server.js';
+import { QueryClient } from '@tanstack/react-query';
+import { shouldRetry } from '../../src/lib/api/query-client.js';
 import { CATALOGS } from '../../src/lib/i18n/catalogs/index.js';
 import {
   ANTHROPIC_MODELS,
@@ -703,6 +705,60 @@ describe('provider and GovAI error surfaces', () => {
 // A refusal-only attempt renders its refusal and no `text`. The exclusion notice used to be
 // guarded on `text` alone, so this — the case where the reader most needs to know whether the
 // visible refusal will be reused — showed nothing at all.
+// Model discovery runs automatically when `/ai` opens, so one transient blip used to greet the
+// reader with a permanently unavailable picker: the query carried `retry: false`, which is a
+// blunter instrument than the budget reason it was there for. The shared policy already retries
+// at most twice and only the transient kinds, which is what this asserts — together with the
+// half that must NOT change: a permanent answer is still never retried.
+describe('★ model discovery uses the shared bounded retry policy', () => {
+  function realPolicyClient(): QueryClient {
+    return new QueryClient({ defaultOptions: { queries: { retry: shouldRetry, gcTime: 0 } } });
+  }
+
+  it('recovers from a transient 5xx instead of stranding the picker', async () => {
+    let calls = 0;
+    server.use(
+      http.get('*/passthrough/openai/v1/models', () => {
+        calls += 1;
+        if (calls === 1) return HttpResponse.json({ error: { message: 'upstream' } }, { status: 502 });
+        return HttpResponse.json({ data: [{ id: 'recovered-model' }] });
+      }),
+    );
+    renderApp(<AiConsolePage />, {
+      route: '/ai',
+      credential: VALID_KEY,
+      queryClient: realPolicyClient(),
+    });
+    await waitFor(
+      () => {
+        const list = document.querySelector('[data-testid="model-suggestions"]');
+        expect([...(list as HTMLDataListElement).options].map((o) => o.value)).toContain(
+          'recovered-model',
+        );
+      },
+      { timeout: 5000 },
+    );
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  it('★ does NOT retry a permanent answer — a 404 is asked once and reported', async () => {
+    let calls = 0;
+    server.use(
+      http.get('*/passthrough/openai/v1/models', () => {
+        calls += 1;
+        return HttpResponse.json({ error: { message: 'no such route' } }, { status: 404 });
+      }),
+    );
+    renderApp(<AiConsolePage />, {
+      route: '/ai',
+      credential: VALID_KEY,
+      queryClient: realPolicyClient(),
+    });
+    await screen.findByTestId('model-list-error');
+    expect(calls).toBe(1);
+  });
+});
+
 describe('★ a refusal-only attempt still says whether it is reused', () => {
   it('an UNFINISHED refusal-only attempt shows the context-exclusion notice', async () => {
     const { user } = renderConsole([

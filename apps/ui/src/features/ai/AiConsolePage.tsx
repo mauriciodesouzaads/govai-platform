@@ -187,10 +187,19 @@ export function AiConsolePage() {
       }
       return pages;
     },
-    // A provider's model list does not change minute to minute, and the API's shared
-    // rate limit is better spent on conversation.
+    // A provider's model list does not change minute to minute, and the API's shared rate limit
+    // is better spent on conversation — which is what `staleTime` is for, and it does the real
+    // budget work: one discovery per provider per five minutes.
+    //
+    // ★ NO `retry: false`. It used to be here for the same budget reason, and it was too blunt
+    // an instrument for it: the shared policy already retries at most twice and ONLY the
+    // transient kinds (a 5xx, or a request that never reached the API), which is a negligible
+    // cost against a per-provider five-minute cache. What `retry: false` actually bought was a
+    // picker left permanently empty by one timeout, with no in-place recovery — and this query
+    // now runs automatically when `/ai` opens, so a single blip greeted the reader with an
+    // unavailable listing until the query was remounted. A permanent answer (401, 404, a
+    // contract mismatch) is still never retried; the shared predicate is what decides.
     staleTime: 5 * 60_000,
-    retry: false,
   });
 
   const models: readonly ProviderModel[] = useMemo(
