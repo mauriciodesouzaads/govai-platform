@@ -178,7 +178,8 @@ describe('the shell shows only facts it knows', () => {
     const hrefs = within(nav)
       .getAllByRole('link')
       .map((a) => a.getAttribute('href'));
-    expect(hrefs).toEqual(['/', '/audit-events', '/capabilities']);
+    // Exhaustive, and every entry is a screen that exists. U1.5 added /ai; nothing else.
+    expect(hrefs).toEqual(['/ai', '/', '/audit-events', '/capabilities']);
     // Not even a disabled item: a promise the backend cannot keep is still a promise. The
     // out-of-scope areas appear exactly once in the whole application — in the footer
     // statement that says they are NOT part of this delivery.

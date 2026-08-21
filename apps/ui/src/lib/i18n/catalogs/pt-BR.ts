@@ -15,16 +15,21 @@ export const ptBR = {
   // --- application chrome -----------------------------------------------------------------
   'app.name': 'GovAI',
   'app.skipToContent': 'Ir para o conteúdo principal',
-  'app.nav.label': 'Navegação de evidência',
+  'app.nav.label': 'Navegação principal',
+  'app.nav.ai': 'AI Console',
   'app.nav.cockpit': 'Cockpit',
   'app.nav.gaps': 'Lacunas',
   'app.nav.auditEvents': 'Cadeia de auditoria',
   'app.nav.capabilities': 'Capacidades',
+  'app.chunkError.title': 'Não foi possível carregar esta tela',
+  'app.chunkError.description':
+    'Parte da aplicação não foi baixada. Em geral isso significa que uma nova versão foi publicada enquanto esta aba estava aberta, ou que a rede derrubou a requisição. Recarregar busca a versão atual. O que existe apenas nesta aba — inclusive uma conversa do Console de IA — não sobrevive ao recarregamento.',
+  'app.chunkError.reload': 'Recarregar a aplicação',
   'app.footer.build': 'Build da UI',
   'app.footer.buildUnavailable': 'não informado',
   'app.footer.org': 'Organização',
   'app.footer.scope':
-    'Interface de leitura de evidência (U1). Workrooms, regulatório e administração não fazem parte desta entrega.',
+    'Leitura de evidência e conversa provider-native (U1 + U1.5). Workrooms, regulatório e administração não fazem parte desta entrega.',
 
   // --- session ----------------------------------------------------------------------------
   'session.org': 'Organização',
@@ -344,6 +349,161 @@ export const ptBR = {
   'enforcement.passthrough': 'Passthrough — observado; nunca aplica política',
   'enforcement.note':
     'Uma decisão só é apresentada como bloqueio quando a requisição realmente devolveu 403. Recomendações encaminhadas são descritas como encaminhadas.',
+
+
+  // --- ★ AI Console (UI/UX V1 U1.5) -------------------------------------------------------
+  // ★ NORMATIVE COPY, under the same rule as the enforcement vocabulary above: a translation
+  // may weaken a claim and may never strengthen one. Concretely, in every language:
+  //   • "encaminhado" nunca vira "bloqueado", "aplicado", "protegido" ou "impedido";
+  //   • um fluxo que terminou sem o marcador terminal do provedor é NÃO CONFIRMADO, jamais
+  //     "falhou" e jamais "concluído";
+  //   • nenhuma string aqui afirma que evidência foi capturada, selada, verificada ou
+  //     certificada — o navegador não recebe nada que prove isso;
+  //   • a correlação exata entre um turno e um evento de auditoria é declarada indisponível.
+  'ai.title': 'AI Console',
+  'ai.lead':
+    'Converse com os provedores pelas rotas provider-native do GovAI. A resposta é do provedor; o recibo ao lado dela mostra apenas o que este navegador conseguiu observar.',
+  'ai.scopeNote':
+    'Esta entrega expõe apenas conversa em texto. Ferramentas, busca na web, arquivos, imagens, agentes e prompt de sistema não fazem parte do AI Console V1, mesmo quando o provedor os suporta.',
+
+  // controls
+  'ai.controls.label': 'Configuração da conversa',
+  'ai.provider': 'Provedor',
+  'ai.provider.openai': 'OpenAI',
+  'ai.provider.anthropic': 'Anthropic',
+  'ai.mode': 'Modo',
+  'ai.mode.native': 'Nativo / Auditado',
+  'ai.mode.governed': 'Governado',
+  'ai.surface': 'Superfície de API',
+  'ai.surface.responses': 'Responses',
+  'ai.surface.chatCompletions': 'Chat Completions',
+  'ai.surface.messages': 'Messages',
+  'ai.advanced': 'Avançado',
+  'ai.maxTokens': 'max_tokens',
+  'ai.maxTokens.hint':
+    'A API Messages da Anthropic exige max_tokens. É o teto de geração enviado ao provedor.',
+  'ai.locked':
+    'Provedor, modo, superfície e modelo ficam fixos depois do primeiro envio. Para trocar, inicie uma nova conversa.',
+  'ai.newConversation': 'Nova conversa',
+
+  // model discovery
+  'ai.model': 'Modelo',
+  'ai.model.placeholder': 'id do modelo, como o provedor o nomeia',
+  'ai.model.hint':
+    'Sugestões vêm da listagem do próprio provedor. Estar na lista não garante suporte em toda superfície de API; o provedor continua sendo a autoridade e o id digitado é enviado exatamente como está.',
+  'ai.model.loading': 'Carregando a listagem do provedor…',
+  'ai.model.listEmpty': 'O provedor não retornou nenhum modelo. Digite o id manualmente.',
+  'ai.model.listUnavailable':
+    'Não foi possível ler a listagem do provedor. Digite o id do modelo manualmente.',
+  'ai.model.listCredential':
+    'O GovAI não conseguiu resolver uma credencial de provedor para esta organização. Digite o id do modelo manualmente.',
+  'ai.model.listRejected':
+    'Uma credencial foi recusada ao listar modelos. Este navegador não consegue distinguir se foi a chave de sessão do GovAI ou a credencial de provedor da organização. Digite o id do modelo manualmente.',
+  'ai.model.listRateLimited':
+    'Limite de requisições atingido ao listar modelos. Digite o id do modelo manualmente.',
+
+  // transcript
+  'ai.memoryOnly.label': 'Onde esta conversa vive',
+  'ai.memoryOnly':
+    'O GovAI UI não persiste esta transcrição: ela existe apenas na memória desta aba e desaparece ao recarregar a página, ao sair de /ai ou ao encerrar a sessão. Isso não é uma afirmação sobre o provedor — o tratamento de dados do lado do provedor continua seguindo a configuração do provedor e da conta.',
+  'ai.conversation.label': 'Conversa',
+  'ai.empty.title': 'Nenhuma mensagem ainda',
+  'ai.empty.description':
+    'Escolha provedor, modo, superfície e modelo e envie a primeira mensagem. A partir daí, essa identidade de transporte fica fixa nesta conversa.',
+  'ai.you': 'Você',
+  'ai.assistant': 'Assistente',
+  'ai.generating': 'Gerando…',
+
+  // composer
+  'ai.composer.label': 'Mensagem',
+  'ai.composer.placeholder': 'Pergunte qualquer coisa…',
+  'ai.composer.hint': 'Enter envia. Shift+Enter quebra linha.',
+  'ai.composer.largeInput':
+    'Esta mensagem é muito grande; o limite de contexto quem define é o provedor.',
+  'ai.send': 'Enviar',
+  'ai.stop': 'Parar',
+  'ai.retry': 'Tentar de novo — nova chamada ao provedor',
+  'ai.retry.note':
+    'Tentar de novo dispara uma NOVA chamada ao provedor, que pode ser cobrada de novo. O GovAI UI nunca repete um POST de provedor automaticamente.',
+
+  // per-attempt annotations
+  'ai.refusal': 'Recusa do modelo',
+  'ai.unsupportedOutput':
+    'O fluxo trouxe conteúdo que este console não renderiza (por exemplo, chamada de ferramenta ou bloco não textual). Ele não foi convertido em texto.',
+  'ai.contextExcluded':
+    'Esta resposta não entra automaticamente no contexto das próximas mensagens: ela não foi concluída pelo provedor.',
+  'ai.contextExcluded.outOfOrder':
+    'Esta resposta não entra automaticamente no contexto das próximas mensagens: ela veio de uma nova tentativa de um turno anterior, e as mensagens seguintes já haviam sido respondidas sem ela. Enviá-la apresentaria ao modelo uma conversa que nunca aconteceu.',
+  'ai.markdown.imageBlocked': 'imagem não carregada',
+  'ai.code.copy': 'Copiar',
+  'ai.code.copied': 'Copiado',
+
+  // turn states
+  'ai.state.submitting': 'Enviando',
+  'ai.state.streaming': 'Transmitindo',
+  'ai.state.completed': 'Concluído pelo provedor',
+  'ai.state.stopped': 'Interrompido por você',
+  'ai.state.stopped.note':
+    'Este navegador cancelou a requisição. O texto parcial acima é o que chegou; o que o provedor fez depois disso não é informado nesta resposta.',
+  'ai.state.blocked': 'Bloqueado (403)',
+  'ai.state.blocked.note':
+    'A resposta veio com 403 e um código de bloqueio do GovAI. Para esse código o GovAI não chama o provedor. Este navegador lê o código da resposta; ele não tem como verificar sozinho a origem dela.',
+  'ai.state.providerError': 'Erro do provedor',
+  'ai.state.providerError.note': 'O provedor respondeu com erro. O que ele disse está abaixo.',
+  'ai.state.rateLimited': 'Limite de requisições',
+  'ai.state.rateLimited.note':
+    'Limite de requisições atingido. Nada foi repetido automaticamente: um POST de provedor pode já ter sido executado e cobrado.',
+  'ai.state.credentialUnavailable': 'Credencial de provedor indisponível',
+  'ai.state.credentialUnavailable.note':
+    'A resposta veio com 502 e o código de credencial de provedor do GovAI. O GovAI devolve esse código quando não consegue resolver uma credencial para a organização, e nesse caso não chama o provedor. É uma condição de configuração, resolvida por quem administra a organização.',
+  'ai.state.authRejected': 'Autenticação recusada',
+  'ai.state.authRejected.note':
+    'Veio um 401 para este turno. Este navegador não consegue distinguir se o GovAI recusou a chave da sessão ou se o provedor recusou a credencial da organização — as duas chegam iguais —, então não atribui a nenhum, e deliberadamente não encerra sua sessão por causa disso: uma resposta repassada não pode encerrar sua sessão. Se as outras telas do GovAI continuam carregando, a causa mais provável é a credencial do provedor.',
+  'ai.state.requestTooLarge': 'Recusada por tamanho',
+  'ai.state.requestTooLarge.note':
+    'A requisição foi recusada pelo tamanho. O GovAI tem o próprio limite de corpo e recusa antes de chamar o provedor, que é a causa usual — mas este navegador não consegue provar qual salto recusou, então não afirma que o provedor foi ou não chamado. Encurte a mensagem ou comece uma nova conversa: uma transcrição longa é enviada inteira a cada turno.',
+  'ai.state.networkError': 'Resultado não confirmado',
+  'ai.state.networkError.note':
+    'A requisição saiu deste navegador e nenhuma resposta chegou. Este navegador não tem como saber se o provedor executou a chamada, então nada foi repetido automaticamente.',
+  'ai.state.unknownOutcome': 'Resultado não confirmado',
+  'ai.state.unknownOutcome.note':
+    'O fluxo terminou sem o marcador terminal do provedor. O texto acima é o que chegou; este navegador não pode afirmar que a resposta está completa.',
+  'ai.state.retryAfter': 'aguarde {seconds}s antes de tentar de novo',
+  'ai.error.providerSaid': 'O provedor respondeu',
+
+  // interaction receipt
+  'ai.receipt.title': 'Recibo da interação',
+  'ai.receipt.provider': 'Provedor',
+  'ai.receipt.model': 'Modelo enviado',
+  'ai.receipt.surface': 'Superfície de API',
+  'ai.receipt.mode': 'Modo GovAI',
+  'ai.receipt.endpoint': 'Rota GovAI',
+  'ai.receipt.status': 'HTTP',
+  'ai.receipt.noResponse': 'nenhuma resposta recebida',
+  'ai.receipt.termination': 'Encerramento',
+  'ai.receipt.stopReason': 'stop_reason do provedor',
+  'ai.receipt.providerRequestId': 'Request id do provedor',
+  'ai.receipt.providerMessageId': 'Id da mensagem no provedor',
+  'ai.receipt.notExposed': 'não exposto nesta resposta',
+  'ai.receipt.duration': 'Duração observada pelo navegador',
+  'ai.receipt.governance': 'Governança',
+  'ai.receipt.governance.nativeSurface':
+    'A superfície Nativa / Auditada não resolve decisão de governança por requisição e não devolve nenhuma ao navegador. Nada é deduzido aqui.',
+  'ai.receipt.governance.absentOnResponse':
+    'Esta resposta não trouxe os cabeçalhos de governança do GovAI.',
+  'ai.receipt.capabilityLevel': 'capability_level',
+  'ai.receipt.riskClass': 'effective_risk_class',
+  'ai.receipt.recommendation': 'Recomendação',
+  'ai.receipt.applied': 'Aplicado de fato',
+  'ai.receipt.applied.forwarded': 'Encaminhado ao provedor',
+  'ai.receipt.applied.blocked': 'Bloqueado (403)',
+  'ai.receipt.governanceNote': 'Como ler',
+  'ai.receipt.recommendationVsApplied':
+    'Recomendação é o que a matriz de enforcement indicou. Aplicado de fato é o que o runtime executou. Encaminhado significa que a requisição chegou ao provedor: ninguém foi consultado, nenhum sandbox foi criado e nada foi impedido.',
+  'ai.receipt.correlationCaveat':
+    'A correlação exata entre este turno e um evento de auditoria específico não é exposta pela API atual, e este console não a estima. Consulte Evidência e Cadeia de auditoria para ver o que foi registrado.',
+  'ai.receipt.openEvidence': 'Abrir Evidência',
+  'ai.receipt.openAudit': 'Abrir Cadeia de auditoria',
 
   // --- unknown-value fallback -------------------------------------------------------------
   'status.unknown': 'valor não reconhecido',

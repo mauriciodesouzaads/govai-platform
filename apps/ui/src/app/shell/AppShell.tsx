@@ -24,6 +24,10 @@ import { IdentityChips, SessionDetails } from './SessionIdentity.js';
 // Workroom, regulatory and admin navigation are NOT rendered. Those areas are not part of this
 // delivery, and a disabled menu item promising them would be a promise the product cannot keep.
 //
+// ★ U1.5 adds ONE nav item: the AI Console. It leads because it is the surface a reader opens
+// to do work; the evidence screens follow, which is also the order the product tells its story
+// in — use the model, then inspect what was recorded.
+//
 // ★ The evidence-window control is rendered ONLY on the routes it actually scopes. `?window=`
 // is a real parameter of /v1/evidence/summary and /v1/evidence/gaps; /v1/audit-events and
 // /v1/capabilities take no window at all. Leaving the selector visible on those screens would
@@ -32,6 +36,7 @@ import { IdentityChips, SessionDetails } from './SessionIdentity.js';
 // prevent. So the control appears where it means something and is absent where it does not.
 
 const NAV = [
+  { to: '/ai', end: false, labelKey: 'app.nav.ai' },
   { to: '/', end: true, labelKey: 'app.nav.cockpit' },
   { to: '/audit-events', end: false, labelKey: 'app.nav.auditEvents' },
   { to: '/capabilities', end: false, labelKey: 'app.nav.capabilities' },

@@ -444,3 +444,133 @@ Notes (NOT corrections):
   tier is rendered only in an account/details affordance, explicitly qualified as commercial and
   explicitly denied as a security/governance/policy level; and `principal_type` exists precisely
   so a controlled-pilot org credential is never presented as a human login.
+
+---
+
+## UI/UX V1 U1.5 reconciliation (EP-UIUX-V1-U1.5-AI-CONSOLE-01) — the AI Console exists
+
+`/ai` is implemented (`apps/ui/src/features/ai/**`, route table `apps/ui/src/app/routes.tsx`).
+**`BACKEND_RUNTIME_CHANGE=NONE`** — no route, no migration, no schema object, no event schema,
+no AuditBridge or capture-projection change, no provider or governance behaviour change. The
+Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1 runtime.
+
+| Document | Was (stale once `/ai` exists) | Now (corrected) |
+|---|---|---|
+| `current-state.md` §1 | "U1.5 (AI Console) and U2 (Workroom) are not started"; interface layer titled "milestone U1"; 15 UI files / 324 UI tests | U1.5 recorded with its route, its six provider×mode combinations, its memory-only transcript, its no-auto-retry policy, its receipt limits and its two open backend findings; 31 UI files / 708 UI tests; the acceptance harness named as operator-driven and excluded from both vitest configs |
+| `development-roadmap.md` | `UI_UX_V1_U1_5_AI_CONSOLE=NOT_STARTED`; "U1.5 — AI Console (not started)" | implemented, with `BACKEND_RUNTIME_CHANGE=NONE` and the two open findings stated as backend work this movement was not authorized to do |
+| `resume-playbook.md` §3 | "U1.5 (AI Console) is NOT started" | implemented, with the Anthropic browser blocker named so the next session does not rediscover it |
+| `apps/ui/README.md` | described a read-only evidence interface | an AI Console section: the routes it drives, what the receipt may and may not say, and the non-goals |
+
+### ★ New findings, source-proven during the U1.5 live acceptance
+
+Both provider-package findings were **owner-adjudicated `FIX_REQUIRED`** and are **FIXED** in
+this tree by `EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02`. The rows below are kept as written —
+they are the historical record of what was measured and why — and each carries its present-tense
+disposition. `PROVIDER_ROUTE_SEMANTICS_CHANGE` still requires owner adjudication; this pair had
+it. `UI-DEV-PROXY-STREAM-CLOSE-01` remains open and dev-only.
+
+| Finding | Severity | Evidence | Why the UI cannot fix it |
+|---|---|---|---|
+| **`AI-CONSOLE-ORIGIN-RELAY-01`** — the direct provider routes relay the browser's `Origin` header upstream | **P0 for the Anthropic surface**; latent for OpenAI | `buildOutboundHeaders` in `packages/provider-anthropic/src/routes/register-passthrough.ts` (and its OpenAI twin) copies every inbound header except `HOP_BY_HOP` ∪ `STRIP_INBOUND_AUTH`; `origin` is in neither set, in either package. Measured against the running API with the same body four ways: **baseline → 200**, **+`Origin` → 401** `{"type":"error","error":{"type":"authentication_error","message":"CORS requests must set 'anthropic-dangerous-direct-browser-access' header"}}`, **+`Referer` only → 200**, **+`Sec-Fetch-Mode` only → 200**. Only `Origin` triggers it | `Origin` is a forbidden header name: page JavaScript can neither remove nor alter it, and the browser sends it on same-origin POSTs too. The only other route would be for the console to send `anthropic-dangerous-direct-browser-access`, which asserts that the provider key is exposed to the browser — the exact opposite of GovAI's architecture, and a false statement. The fix belongs on the server→provider hop: `Origin` describes the browser↔GovAI hop and has no meaning for a server-side call. **★ FIXED (CLOSEOUT-02).** `packages/provider-{openai,anthropic}/src/outbound-header-policy.ts` owns one `STRIP_INBOUND_BROWSER_HOP` per package; every outbound header builder applies it — Native/Audited route, governed handler, both OpenAI governed surfaces, streaming and non-streaming — and the legacy exported `rewritePassthroughHeaders` holds the same policy so no future caller can reintroduce the relay through it. Deliberately NOT a browser-header purge: `user-agent`, `referer` and the `sec-*` families are still forwarded, asserted by test. Wire-level regression coverage in `*.inbound-hop-headers.test.ts` (real socket, both providers, both modes, stream and non-stream); live-reaccepted against real Anthropic in Native and Governed |
+| **`AI-CONSOLE-RESPONSES-DLP-GAP-01`** — the governed OpenAI Responses DLP pre-scan skips role-shaped `input[]` items | P1 (governance) | `extractOpenAIResponsesText` (`packages/provider-openai/src/governed/extract-text.ts`) hands `input[]` to `pushParts`, which acts only on items whose `type` is `text` / `input_text` / `message`. An item identified by `role` alone matches none, so it is never descended into. Measured with the same CPF: `input: "…"` → **C/enforce**; `[{type:'message', …}]` → **C/enforce**; `[{role, content:"…"}]` → **A/observe**; `[{role, content:[{type:'input_text'}]}]` → **A/observe**. Chat Completions and Anthropic Messages scan a plain string correctly | The console avoids its own exposure by sending fully-qualified typed user items (`apps/ui/src/features/ai/providers/openai-responses.ts`, with a regression test), because the alternative was shipping a Governed mode that scans nothing on its default OpenAI surface. That protects this client only — every other caller using the provider-documented shorthand still gets no scan. **★ FIXED (CLOSEOUT-02).** The extractor now recognizes the message item by `type: 'message'` OR by the role-shaped `EasyInputMessage` form (`type` optional), and walks a `content` that is a string as well as one that is an array of parts; `output_text` parts of a replayed assistant turn are covered too. All five accepted spellings extract identically. It is NOT a recursive string scan: ids, metadata, model names, tool identifiers and non-message input items are still never read as prompt text. Chat Completions is unchanged, and no risk matrix / decision table / enforcement semantics / event schema / AuditBridge posture moved — only coverage. Proven by `extract-text.test.ts` and end to end by `register-governed.dlp-equivalence.test.ts`, which asserts one governance outcome across all six representations and that the scan runs BEFORE provider dispatch |
+| **`UI-DEV-PROXY-STREAM-CLOSE-01`** — the Vite DEV proxy does not propagate an abnormal upstream close | dev-only, non-blocking | With an upstream that truncates a stream mid-flight: **direct to GovAI → `curl` exit 18** ("transfer closed with outstanding read data remaining") after ~11 s, i.e. GovAI correctly ends the downstream response and records `stream_outcome: upstream_error`; **through the Vite proxy → `curl` exit 28**, the connection held open to the 30 s timeout. A normal stream closes correctly through the same proxy (exit 0) | GovAI behaves correctly; the dev server does not. In `pnpm dev` a truncated stream leaves a turn showing "Generating…" until the reader presses Stop. The production reverse proxy does not exist yet (**EP-UI-DEPLOY**), so whichever one is chosen must be verified to propagate an abnormal upstream close — added to that EP's acceptance rather than guessed at here |
+
+### Named residual — `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01`
+
+Source-proven during the `CLOSEOUT-02` review rounds, **not fixed**, and deliberately so.
+
+The NON-STREAM passthrough forward has no deadline and no body ceiling. Both routes call
+`forwardRaw` with no `signal`
+(`packages/provider-openai/src/routes/register-passthrough.ts:586` and the Anthropic twin at
+`:578`), and `forwardRaw` awaits `res.arrayBuffer()` — an unbounded read of an upstream the
+provider controls. A provider or intermediary that sends an enormous body, or never finishes
+one, leaves the API buffering or waiting indefinitely; a client disconnect is not propagated on
+this path either. The STREAMING forward is unaffected — EP-008C threads an `AbortController`
+through it and aborts upstream on client disconnect.
+
+What changed is only its reachability: the AI Console runs `GET /passthrough/*/v1/models`
+automatically when `/ai` opens, so a browser now triggers this path routinely. The browser-side
+request deadline added in this PR bounds the BROWSER's wait; it cannot bound the GovAI→provider
+hop, and the register should not read as though it does.
+
+Not fixed here for one reason: it is `packages/provider-*` route behaviour, which
+`PROVIDER_ROUTE_SEMANTICS_CHANGE=FORBIDDEN_UNLESS_A_REAL_BLOCKER_IS_SOURCE_PROVEN_AND_OWNER_ADJUDICATES`
+places behind owner adjudication, and it is **not one of the two findings the owner
+adjudicated** for this mission. It is also pre-existing: this PR's only change to those two
+files is the 11-line `Origin` strip, and both `forwardRaw` call sites are untouched. Fixing it
+would be the same unilateral provider-route change the previous mission correctly refused to
+make for `AI-CONSOLE-ORIGIN-RELAY-01` — the one it reported and waited for adjudication on.
+
+It blocks no acceptance gate: every hermetic and live leg passes. Closing it needs the same
+treatment the Origin relay got — an owner adjudication, then a deadline plus a body ceiling on
+the non-stream forward, with client-disconnect propagation to match the streaming path.
+
+### Named residual — `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`
+
+Opened by `EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02` while fixing `AI-CONSOLE-ORIGIN-RELAY-01`.
+`referer` and `cookie` describe the CLIENT→GovAI hop by exactly the same reasoning that made
+`origin` wrong to relay: GovAI is not "referred" by the browser's page to the provider, and a
+cookie scoped to the GovAI origin is not the provider's to receive. Both are still forwarded.
+
+Not folded into the `origin` fix, deliberately — but the reason is **scope, not absence of a
+defect**, and this row must not be read as the latter.
+
+`Referer` was **measured at 200** against real Anthropic: it is not a rejection trigger, so
+relaying it is a semantic wrong without an observable failure.
+
+`cookie` is different, and the CLOSEOUT-02 acceptance sharpened it from "latent" to **measured**.
+The earlier record said GovAI issues no cookies, which is true and beside the point: what reaches
+the provider is what the BROWSER sends on the GovAI origin, not what GovAI sets. In the acceptance
+browser, on `http://localhost:5173`, the page carried **6 cookies / 229 bytes** — none set by
+GovAI (`localhost` is shared by every dev server the operator has ever run, and cookies are
+host-scoped, not port-scoped), confirmed against a same-host listener with
+`credentials: 'include'`. `cookie` is in none of the three strip sets and an arbitrary unlisted
+header is proven to be relayed (`*.inbound-hop-headers.test.ts` asserts exactly that), so those
+bytes go upstream on every browser-originated provider call. `document.cookie` also excludes
+HttpOnly cookies, so 229 bytes is a floor, not a ceiling.
+
+It is still not fixed here, for two reasons and no others: the dispatch that authorized the
+`origin` correction was explicit that it must not become a general browser-header purge, and
+`PROVIDER_ROUTE_SEMANTICS_CHANGE` is owner-adjudicated per finding — this one was not among the
+two adjudicated. There is also no deployed browser topology yet (`EP-UI-DEPLOY` is blocked), which
+bounds today's exposure to development hosts. None of that makes the relay correct.
+
+What would close it: an owner adjudication of the same class, plus the same wire-level proof the
+`origin` strip carries. `packages/provider-{openai,anthropic}/src/outbound-header-policy.ts` is
+the single place per package that would change, and `outbound-header-policy.test.ts` pins the
+current boundary so widening it cannot happen by accident.
+
+### Named follow-up — `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`
+
+A browser cannot tell a GovAI 401 from a relayed provider 401 on the direct routes. The status
+and the body are relayed verbatim, and `GovAIErrorBody` validates SHAPE rather than origin, so
+an upstream answering `{"error":"auth_error"}` is indistinguishable from GovAI answering it.
+Response headers are no help either: `filterResponseHeaders` drops only hop-by-hop names, so an
+upstream could supply an `x-govai-*` marker of its own and have it relayed.
+
+The console therefore treats a relayed body as something that may LABEL an error and may never
+END a session — a third party must not be able to sign a reader out and discard a conversation
+in progress. The cost is bounded and self-correcting: an expired GovAI key still ends the
+session at the next GovAI-scoped read.
+
+Closing it properly is a backend contract: strip inbound `x-govai-*` from relayed provider
+responses before GovAI sets its own, which gives the client a signal the upstream cannot forge.
+Not attempted here — it is provider-route behaviour.
+
+### `UI-DEV-PROXY-503-01` — what this acceptance did and did not establish
+
+Every 503 observed during the U1.5 acceptance coincided with an upstream that was **deliberately
+stopped** (the API was restarted between runs, and once killed on purpose to test the rule that
+a proxy 503 must not trigger an automatic retry — it did not; the browser network log shows the
+503 and the 502 each exactly once, with no following request). With the upstream up, **0 of 11**
+provider POSTs and 0 model-discovery GETs returned 503. That is NOT a root cause for the
+historical B2 observation, which was seen on GETs with the API believed up. `ROOT_CAUSE`
+therefore remains **NOT_PROVEN**, and StrictMode is still not claimed as the explanation.
+
+### Unchanged by this movement
+
+`AUTH-READ-CACHE-01` stays **OPEN_DEPLOYMENT_BLOCKER** and `EP_UI_DEPLOY` stays
+**BLOCKED_UNTIL_CACHE_CLASS_ADJUDICATED**. U1.5 deliberately did not broaden into that class; it
+adds one more authenticated GET surface to it, the provider `GET /v1/models` reads, which the
+same eventual route/proxy policy must cover. Residuals R12, R13 and R14 are untouched, and the
+Foundation V1 freeze record is not edited.

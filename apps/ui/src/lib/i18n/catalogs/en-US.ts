@@ -9,16 +9,21 @@ export const enUS: Catalog = {
   // --- application chrome -----------------------------------------------------------------
   'app.name': 'GovAI',
   'app.skipToContent': 'Skip to main content',
-  'app.nav.label': 'Evidence navigation',
+  'app.nav.label': 'Main navigation',
+  'app.nav.ai': 'AI Console',
   'app.nav.cockpit': 'Cockpit',
   'app.nav.gaps': 'Gaps',
   'app.nav.auditEvents': 'Audit chain',
   'app.nav.capabilities': 'Capabilities',
+  'app.chunkError.title': 'This screen could not be loaded',
+  'app.chunkError.description':
+    'Part of the application failed to download. This usually means a new version was deployed while this tab was open, or the network dropped the request. Reloading fetches the current version. Anything held only in this tab — including an AI Console conversation — is not carried across a reload.',
+  'app.chunkError.reload': 'Reload the application',
   'app.footer.build': 'UI build',
   'app.footer.buildUnavailable': 'not provided',
   'app.footer.org': 'Organization',
   'app.footer.scope':
-    'Evidence read interface (U1). Workrooms, regulatory and administration are not part of this delivery.',
+    'Evidence reading and provider-native conversation (U1 + U1.5). Workrooms, regulatory and administration are not part of this delivery.',
 
   // --- session ----------------------------------------------------------------------------
   'session.org': 'Organization',
@@ -328,6 +333,156 @@ export const enUS: Catalog = {
   'enforcement.passthrough': 'Passthrough — observed; never applies policy',
   'enforcement.note':
     'A decision is presented as a block only when the request actually returned 403. Forwarded recommendations are described as forwarded.',
+
+
+  // --- ★ AI Console (UI/UX V1 U1.5) -------------------------------------------------------
+  // ★ NORMATIVE COPY — see the pt-BR catalog for the rule. A translation may weaken a claim
+  // and may never strengthen one: forwarded never becomes blocked or applied, an unconfirmed
+  // outcome never becomes a failure or a success, nothing here says evidence was captured,
+  // and exact turn-to-audit-event correlation is stated as unavailable.
+  'ai.title': 'AI Console',
+  'ai.lead':
+    'Talk to the providers through GovAI’s provider-native routes. The answer is the provider’s; the receipt beside it shows only what this browser was able to observe.',
+  'ai.scopeNote':
+    'This delivery exposes text conversation only. Tools, web search, files, images, agents and a system prompt are not part of AI Console V1, even where the provider supports them.',
+
+  // controls
+  'ai.controls.label': 'Conversation configuration',
+  'ai.provider': 'Provider',
+  'ai.provider.openai': 'OpenAI',
+  'ai.provider.anthropic': 'Anthropic',
+  'ai.mode': 'Mode',
+  'ai.mode.native': 'Native / Audited',
+  'ai.mode.governed': 'Governed',
+  'ai.surface': 'API surface',
+  'ai.surface.responses': 'Responses',
+  'ai.surface.chatCompletions': 'Chat Completions',
+  'ai.surface.messages': 'Messages',
+  'ai.advanced': 'Advanced',
+  'ai.maxTokens': 'max_tokens',
+  'ai.maxTokens.hint':
+    'Anthropic’s Messages API requires max_tokens. It is the generation ceiling sent to the provider.',
+  'ai.locked':
+    'Provider, mode, surface and model are fixed after the first send. Start a new conversation to change them.',
+  'ai.newConversation': 'New conversation',
+
+  // model discovery
+  'ai.model': 'Model',
+  'ai.model.placeholder': 'model id, as the provider names it',
+  'ai.model.hint':
+    'Suggestions come from the provider’s own listing. Availability in the list does not guarantee support on every API surface; the provider remains the authority, and the id you type is sent exactly as typed.',
+  'ai.model.loading': 'Loading the provider listing…',
+  'ai.model.listEmpty': 'The provider returned no models. Type the id manually.',
+  'ai.model.listUnavailable': 'The provider listing could not be read. Type the model id manually.',
+  'ai.model.listCredential':
+    'GovAI could not resolve a provider credential for this organization. Type the model id manually.',
+  'ai.model.listRejected':
+    'A credential was rejected while listing models. This browser cannot tell whether it was GovAI’s session key or the organization’s provider credential. Type the model id manually.',
+  'ai.model.listRateLimited':
+    'Rate limit reached while listing models. Type the model id manually.',
+
+  // transcript
+  'ai.memoryOnly.label': 'Where this conversation lives',
+  'ai.memoryOnly':
+    'The GovAI UI does not persist this transcript: it exists only in this tab’s memory and disappears on reload, on leaving /ai, or on ending the session. That is not a statement about the provider — provider-side data handling continues to follow the provider and account configuration.',
+  'ai.conversation.label': 'Conversation',
+  'ai.empty.title': 'No messages yet',
+  'ai.empty.description':
+    'Choose provider, mode, surface and model, then send the first message. From then on that transport identity is fixed for this conversation.',
+  'ai.you': 'You',
+  'ai.assistant': 'Assistant',
+  'ai.generating': 'Generating…',
+
+  // composer
+  'ai.composer.label': 'Message',
+  'ai.composer.placeholder': 'Ask anything…',
+  'ai.composer.hint': 'Enter sends. Shift+Enter inserts a newline.',
+  'ai.composer.largeInput':
+    'This message is very large; the provider is what defines the context limit.',
+  'ai.send': 'Send',
+  'ai.stop': 'Stop',
+  'ai.retry': 'Retry — new provider call',
+  'ai.retry.note':
+    'Retry issues a NEW provider call, which may be billed again. The GovAI UI never repeats a provider POST automatically.',
+
+  // per-attempt annotations
+  'ai.refusal': 'Model refusal',
+  'ai.unsupportedOutput':
+    'The stream carried content this console does not render (a tool call or a non-text block, for example). It was not turned into text.',
+  'ai.contextExcluded':
+    'This answer is not automatically included in the context of later messages: the provider did not complete it.',
+  'ai.contextExcluded.outOfOrder':
+    'This answer is not automatically included in the context of later messages: it came from retrying an earlier turn, and the messages after it had already been answered without it. Sending it would present the model with a conversation that never happened.',
+  'ai.markdown.imageBlocked': 'image not loaded',
+  'ai.code.copy': 'Copy',
+  'ai.code.copied': 'Copied',
+
+  // turn states
+  'ai.state.submitting': 'Sending',
+  'ai.state.streaming': 'Streaming',
+  'ai.state.completed': 'Completed by the provider',
+  'ai.state.stopped': 'Stopped by you',
+  'ai.state.stopped.note':
+    'This browser cancelled the request. The partial text above is what arrived; what the provider did afterwards is not reported in this response.',
+  'ai.state.blocked': 'Blocked (403)',
+  'ai.state.blocked.note':
+    'The response came back 403 with a GovAI block code. GovAI does not call the provider for that code. This browser reads the code from the response; it cannot verify the response’s origin on its own.',
+  'ai.state.providerError': 'Provider error',
+  'ai.state.providerError.note': 'The provider answered with an error. What it said is below.',
+  'ai.state.rateLimited': 'Rate limited',
+  'ai.state.rateLimited.note':
+    'Rate limit reached. Nothing was repeated automatically: a provider POST may already have been executed and billed.',
+  'ai.state.credentialUnavailable': 'Provider credential unavailable',
+  'ai.state.credentialUnavailable.note':
+    'The response came back 502 with GovAI’s provider-credential code. GovAI returns that code when it cannot resolve a credential for the organization, and does not call the provider in that case. This is a configuration condition, resolved by whoever administers the organization.',
+  'ai.state.authRejected': 'Authentication rejected',
+  'ai.state.authRejected.note':
+    'A 401 came back for this turn. This browser cannot tell whether GovAI rejected the session key or the provider rejected the organization credential — the two are relayed identically — so it names neither, and it deliberately does not sign you out on it: a relayed response must not be able to end your session. If other GovAI screens still load, the provider credential is the likelier cause.',
+  'ai.state.requestTooLarge': 'Rejected as too large',
+  'ai.state.requestTooLarge.note':
+    'The request was rejected for its size. GovAI has its own body limit and rejects before calling the provider, which is the usual cause — but this browser cannot prove which hop rejected it, so it does not claim the provider was or was not called. Shorten the message, or start a new conversation: a long transcript is sent in full on every turn.',
+  'ai.state.networkError': 'Outcome not confirmed',
+  'ai.state.networkError.note':
+    'The request left this browser and no response arrived. This browser cannot tell whether the provider executed the call, so nothing was repeated automatically.',
+  'ai.state.unknownOutcome': 'Outcome not confirmed',
+  'ai.state.unknownOutcome.note':
+    'The stream ended without the provider’s terminal marker. The text above is what arrived; this browser cannot assert that the answer is complete.',
+  'ai.state.retryAfter': 'wait {seconds}s before trying again',
+  'ai.error.providerSaid': 'The provider answered',
+
+  // interaction receipt
+  'ai.receipt.title': 'Interaction receipt',
+  'ai.receipt.provider': 'Provider',
+  'ai.receipt.model': 'Model sent',
+  'ai.receipt.surface': 'API surface',
+  'ai.receipt.mode': 'GovAI mode',
+  'ai.receipt.endpoint': 'GovAI route',
+  'ai.receipt.status': 'HTTP',
+  'ai.receipt.noResponse': 'no response received',
+  'ai.receipt.termination': 'Termination',
+  'ai.receipt.stopReason': 'provider stop_reason',
+  'ai.receipt.providerRequestId': 'Provider request id',
+  'ai.receipt.providerMessageId': 'Provider message id',
+  'ai.receipt.notExposed': 'not exposed in this response',
+  'ai.receipt.duration': 'Client-observed duration',
+  'ai.receipt.governance': 'Governance',
+  'ai.receipt.governance.nativeSurface':
+    'The Native / Audited surface resolves no per-request governance decision and returns none to the browser. Nothing is inferred here.',
+  'ai.receipt.governance.absentOnResponse':
+    'This response carried none of the GovAI governance headers.',
+  'ai.receipt.capabilityLevel': 'capability_level',
+  'ai.receipt.riskClass': 'effective_risk_class',
+  'ai.receipt.recommendation': 'Recommendation',
+  'ai.receipt.applied': 'Actually applied',
+  'ai.receipt.applied.forwarded': 'Forwarded to the provider',
+  'ai.receipt.applied.blocked': 'Blocked (403)',
+  'ai.receipt.governanceNote': 'How to read this',
+  'ai.receipt.recommendationVsApplied':
+    'Recommendation is what the enforcement matrix indicated. Actually applied is what the runtime carried out. Forwarded means the request reached the provider: nobody was asked, no sandbox was created, and nothing was stopped.',
+  'ai.receipt.correlationCaveat':
+    'Exact correlation between this turn and one specific audit event is not exposed by the current API, and this console does not estimate it. Open Evidence and Audit chain to see what was recorded.',
+  'ai.receipt.openEvidence': 'Open Evidence',
+  'ai.receipt.openAudit': 'Open Audit chain',
 
   // --- unknown-value fallback -------------------------------------------------------------
   'status.unknown': 'unrecognized value',

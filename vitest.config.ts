@@ -20,6 +20,10 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       'tests/live/**',
+      // The AI Console acceptance stack is operator-driven (a real browser against a real
+      // API + a loopback upstream), not a vitest suite. Its files carry no `.test.ts` suffix,
+      // so this is belt and braces — and a note to anyone who adds one later.
+      'tests/acceptance/**',
       // UI/UX V1 U1: @govai/ui ships its own vitest config (jsdom + Testing Library + MSW).
       // This root config is `environment: 'node'`, so collecting the UI suite here would run
       // browser tests without a DOM. The CI `ui` job runs them via `pnpm --filter @govai/ui test`.

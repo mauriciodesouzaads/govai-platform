@@ -137,12 +137,31 @@ describe('error mapping', () => {
   });
 
   it('an abort propagates as an abort, not as a fault to report', async () => {
+    // The CALLER's cancellation, which is what this rule is about. The signal is what makes it
+    // the caller's: since `get` now arms its own request deadline, an `AbortError` with no
+    // caller signal can only be that deadline, and the next test asserts it reports as a
+    // network condition instead — nobody cancelled it, so calling it "cancelled" would be a
+    // lie in the reader's direction.
+    const controller = new AbortController();
+    controller.abort();
+    const fetchImpl = vi.fn(async () => {
+      throw new DOMException('aborted', 'AbortError');
+    });
+    await expect(
+      client(fetchImpl as unknown as typeof fetch).get('/v1/thing', {
+        schema: Schema,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(DOMException);
+  });
+
+  it('an AbortError with NO caller signal is our own deadline, and reports as network', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new DOMException('aborted', 'AbortError');
     });
     await expect(
       client(fetchImpl as unknown as typeof fetch).get('/v1/thing', { schema: Schema }),
-    ).rejects.toThrow(DOMException);
+    ).rejects.toMatchObject({ kind: 'network' });
   });
 
   it('tolerates a non-JSON error body (a proxy HTML page) without masking the status', async () => {
@@ -295,5 +314,178 @@ describe('URL building', () => {
     await client(fetchImpl as unknown as typeof fetch).get('/v1/thing', { schema: Schema });
     const [url] = fetchImpl.mock.calls[0] as unknown as [string];
     expect(url).toBe('/v1/thing');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A SIZE BOUND IS NOT A TIME BOUND.
+//
+// `readBoundedText` stopped at `maxBytes`, and only at `maxBytes`. A response that sends a few
+// bytes UNDER the ceiling and then holds the connection open never reaches it, so the read
+// waited on a `read()` that would not resolve and the caller — model discovery, an error-body
+// parse — sat in `loading` until the reader navigated away. Both bounds are needed; whichever
+// is reached first must stop the read, and the reader must be cancelled either way.
+describe('bounded body reads have a deadline, not only a ceiling', () => {
+  /** A body that emits `prefix`, then never completes and never closes. */
+  function trickleThenHang(prefix: string): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(prefix));
+        // Deliberately no close(), no further enqueue: the connection just stays open.
+      },
+    });
+  }
+
+  it('★ a body that stalls under the size ceiling still resolves, instead of hanging forever', async () => {
+    vi.useFakeTimers();
+    try {
+      const stalling = new Response(trickleThenHang('{"error":{"type":"server_'), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      });
+      const api = client(async () => stalling);
+      const pending = api.get('/v1/models', { schema: Schema }).catch((err: unknown) => err);
+      // Nothing can complete on its own: only the deadline can end this read.
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(isApiError(result)).toBe(true);
+      expect((result as { status: number }).status).toBe(500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ★ THE CLASS, stated as a test: a JSON read awaits a remote party TWICE — once for headers,
+  // once for the body — and bounding only the second left the first unbounded. A server that
+  // accepts the connection and never answers kept `/ai` in `loading` until the reader navigated
+  // away. The deadline now sits on the REQUEST, so one clock covers both halves.
+  // Every response this client obtains is either consumed or cancelled. The 429 retry path was
+  // the one that did neither: it discarded the response and issued a new request, leaving the
+  // old body open — up to RATE_LIMIT_MAX_ATTEMPTS times per query, and again on every refetch.
+  it('★ a 429 that is retried has its discarded body CANCELLED, not abandoned', async () => {
+    const cancelled: string[] = [];
+    /** A body that records its own cancellation. */
+    function trackedBody(tag: string): ReadableStream<Uint8Array> {
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"retry":true}'));
+        },
+        cancel() {
+          cancelled.push(tag);
+        },
+      });
+    }
+    let call = 0;
+    const fetchImpl: typeof fetch = async () => {
+      call += 1;
+      if (call === 1) {
+        return new Response(trackedBody('first-429'), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '1' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    await expect(client(fetchImpl).get('/v1/thing', { schema: Schema })).resolves.toEqual({
+      ok: true,
+    });
+    expect(call).toBe(2);
+    expect(cancelled).toEqual(['first-429']);
+  });
+
+  it('★ a server that never sends response headers fails as network, not as a hang', async () => {
+    vi.useFakeTimers();
+    try {
+      // A fetch that resolves only when its signal aborts — the pre-header stall, exactly.
+      const stalling: typeof fetch = (_input, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal;
+          signal?.addEventListener('abort', () => {
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        });
+      const api = client(stalling);
+      const pending = api.get('/v1/models', { schema: Schema }).catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(isApiError(result)).toBe(true);
+      expect((result as { kind: string }).kind).toBe('network');
+      // It must NOT read as the reader's own cancellation: nobody cancelled this.
+      expect(result).not.toBeInstanceOf(DOMException);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the CALLER's own abort is still re-thrown untouched, not relabelled as a network fault", async () => {
+    const controller = new AbortController();
+    const stalling: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      });
+    const api = client(stalling);
+    const pending = api
+      .get('/v1/models', { schema: Schema, signal: controller.signal })
+      .catch((err: unknown) => err);
+    controller.abort();
+    const result = await pending;
+    expect(result).toBeInstanceOf(DOMException);
+    expect((result as DOMException).name).toBe('AbortError');
+    expect(isApiError(result)).toBe(false);
+  });
+
+  // ★ An interrupted read is not a syntax error. Both interruption shapes — `json()` rejecting
+  // with the abort, and a truncated bounded read that then fails to parse — look exactly like
+  // malformed JSON at the catch. `malformed_response` is a PERMANENT kind the query layer does
+  // not retry, so mislabelling a stall that way tells the reader the API returned an invalid
+  // contract AND denies it the bounded retry a network condition would get.
+  it('★ a body cut short by the deadline reports as network, NOT as malformed JSON', async () => {
+    vi.useFakeTimers();
+    try {
+      // 2xx headers arrive, then the body stalls under the size ceiling and never closes.
+      const stalled = new Response(trickleThenHang('{"ok":tr'), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+      const api = client(async () => stalled);
+      const pending = api
+        .get('/v1/models', { schema: Schema, authScope: 'provider-native' })
+        .catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(isApiError(result)).toBe(true);
+      expect((result as { kind: string }).kind).toBe('network');
+      expect((result as { kind: string }).kind).not.toBe('malformed_response');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('genuinely invalid JSON is STILL malformed_response — the fix must not blunt the real case', async () => {
+    const api = client(async () =>
+      new Response('{ not json at all', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(api.get('/v1/thing', { schema: Schema })).rejects.toMatchObject({
+      kind: 'malformed_response',
+    });
+  });
+
+  it('a body that CLOSES normally is unaffected by the deadline', async () => {
+    const api = client(async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(api.get('/v1/thing', { schema: Schema })).resolves.toEqual({ ok: true });
   });
 });

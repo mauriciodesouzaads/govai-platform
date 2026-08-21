@@ -43,6 +43,7 @@ import {
   buildToolValidationBlocked,
   type TenantContext,
 } from '../passthrough/audit-emit.js';
+import { STRIP_INBOUND_BROWSER_HOP } from '../outbound-header-policy.js';
 
 export type OpenAIPassthroughDeps = {
   /** Upstream base URL (https://api.openai.com in production; loopback in tests). */
@@ -95,7 +96,15 @@ function buildOutboundHeaders(
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(inbound)) {
     const key = k.toLowerCase();
-    if (HOP_BY_HOP.has(key) || STRIP_INBOUND_AUTH.has(key)) continue;
+    // AI-CONSOLE-ORIGIN-RELAY-01: `origin` describes the CLIENT→GovAI hop and is
+    // structurally false on this (GovAI→provider) one — see ../outbound-header-policy.ts.
+    if (
+      HOP_BY_HOP.has(key) ||
+      STRIP_INBOUND_AUTH.has(key) ||
+      STRIP_INBOUND_BROWSER_HOP.has(key)
+    ) {
+      continue;
+    }
     if (Array.isArray(v)) out[k] = v.join(', ');
     else if (typeof v === 'string') out[k] = v;
   }
