@@ -29,6 +29,7 @@ import { SHA256_EMPTY } from '../passthrough/evidence-constants.js';
 import type { StreamOutcome } from '@govai/provider-stream-http';
 import { KNOWN_ANTHROPIC_TAXONOMY_VERSION } from '../tool-taxonomy-version.js';
 import { extractAnthropicText } from './extract-text.js';
+import { STRIP_INBOUND_BROWSER_HOP } from '../outbound-header-policy.js';
 
 export type GovernedTenant = {
   org_id: string;
@@ -199,7 +200,15 @@ function buildOutboundHeaders(
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(inbound)) {
     const key = k.toLowerCase();
-    if (HOP_BY_HOP.has(key) || STRIP_INBOUND_AUTH.has(key)) continue;
+    // AI-CONSOLE-ORIGIN-RELAY-01: `origin` describes the CLIENT→GovAI hop and is
+    // structurally false on this (GovAI→provider) one — see ../outbound-header-policy.ts.
+    if (
+      HOP_BY_HOP.has(key) ||
+      STRIP_INBOUND_AUTH.has(key) ||
+      STRIP_INBOUND_BROWSER_HOP.has(key)
+    ) {
+      continue;
+    }
     out[k] = v;
   }
   out['x-api-key'] = providerKey;

@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { STRIP_INBOUND_BROWSER_HOP } from './outbound-header-policy.js';
 import type { UsageSource } from '@govai/core-events';
 
 export type OpenAIAuth = { apiKey: string; organization?: string };
@@ -84,6 +85,13 @@ export function rewritePassthroughHeaders(
     const key = k.toLowerCase();
     if (key === 'authorization' || key === 'x-govai-api-key') continue;
     if (key === 'host' || key === 'connection' || key === 'content-length') continue;
+    // AI-CONSOLE-ORIGIN-RELAY-01, class-wide: a header describing the CLIENT→GovAI
+    // hop is structurally false on this (GovAI→provider) one. This legacy entry
+    // point is fed SYNTHESIZED headers today (protocol-v1 run dispatch builds them
+    // from scratch — apps/api buildDeterministicPlan), so nothing observable
+    // changes; it holds the same policy so no future caller can reintroduce the
+    // relay through it. See ./outbound-header-policy.ts.
+    if (STRIP_INBOUND_BROWSER_HOP.has(key)) continue;
     if (Array.isArray(v)) out[k] = v.join(', ');
     else if (v !== undefined) out[k] = v;
   }
