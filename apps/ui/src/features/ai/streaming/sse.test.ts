@@ -187,6 +187,77 @@ describe('abort', () => {
   });
 });
 
+describe('★ settling early DETACHES the body — it never cancels it', () => {
+  /** A stream that reports whether it was cancelled and whether it was read to the end. */
+  function observableStream(chunks: readonly string[]) {
+    const state = { cancelled: false, reachedEnd: false };
+    let i = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (i >= chunks.length) {
+          state.reachedEnd = true;
+          c.close();
+          return;
+        }
+        c.enqueue(enc(chunks[i] as string));
+        i += 1;
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    });
+    return { body, state };
+  }
+
+  it('★ keeps draining to end-of-stream after the caller settles', async () => {
+    // ★ REGRESSION, P1. Cancelling the body to settle sooner reaches GovAI's proxy as a
+    // DOWNSTREAM CLOSE, which `classifyStreamError` turns into `client_disconnect`: the
+    // terminal audit event for a COMPLETED conversation would be sealed as a disconnect with a
+    // partial stream hash, while this screen said "Completed by the provider". Every completed
+    // turn, systematically — the product contradicting its own evidence plane.
+    const { body, state } = observableStream([
+      'data: one\n\n',
+      'data: TERMINAL\n\n',
+      'data: trailing\n\n',
+      'data: more-trailing\n\n',
+    ]);
+    const seen: string[] = [];
+    let terminalSeen = false;
+    await pumpSse({
+      body,
+      onFrame: (f) => {
+        seen.push(f.data);
+        if (f.data === 'TERMINAL') terminalSeen = true;
+      },
+      stopWhen: () => terminalSeen,
+    });
+    // The caller settled at the terminal and never saw the trailing frames.
+    expect(seen).toEqual(['one', 'TERMINAL']);
+    // Give the detached drain a turn of the loop.
+    await new Promise((r) => setTimeout(r, 50));
+    // ★ The body ran to its natural end, and was NOT cancelled out from under the proxy.
+    expect(state.reachedEnd).toBe(true);
+  });
+
+  it('an ABORT still cancels, because an abort is a real disconnect', async () => {
+    const { body, state } = observableStream(['data: one\n\n', 'data: two\n\n', 'data: three\n\n']);
+    const controller = new AbortController();
+    await pumpSse({
+      body,
+      signal: controller.signal,
+      onFrame: () => controller.abort(),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.cancelled).toBe(true);
+  });
+
+  it('reads to the end normally when the caller never settles early', async () => {
+    const { body, state } = observableStream(['data: only\n\n']);
+    await pumpSse({ body, onFrame: () => undefined });
+    expect(state.reachedEnd).toBe(true);
+  });
+});
+
 describe('a stream that errors mid-flight', () => {
   it('rejects, so the caller can classify the outcome rather than assume success', async () => {
     const body = new ReadableStream<Uint8Array>({

@@ -56,13 +56,25 @@ export type PumpSseInput = {
   /** Aborting cancels the reader and resolves; the caller owns the abort semantics. */
   signal?: AbortSignal;
   /**
-   * Checked after each chunk: return true to stop reading and cancel the body.
+   * Checked after each chunk: return true to SETTLE now — stop dispatching frames and resolve —
+   * while the body keeps draining in the background.
    *
-   * ★ This is what lets a turn SETTLE when the provider says it is done, rather than when the
-   * socket happens to close. A provider may send its terminal event and hold the connection
-   * open — the acceptance stack does exactly that — and draining to EOF anyway would leave the
-   * answer stuck as "generating", keep the client-observed duration climbing, and hold the
-   * answer out of later context, all long after the provider finished.
+   * ★ SETTLE IS NOT CANCEL, and the difference is the audit record. A provider may send its
+   * terminal event and hold the connection open (the acceptance stack does, for seconds), and
+   * draining to EOF before resolving would leave the answer stuck as "generating", its
+   * client-observed duration climbing, and a completed answer held out of later context.
+   *
+   * But CANCELLING the body to settle sooner would be worse than the problem. GovAI's proxy
+   * treats a downstream close before its own drain finishes as a client disconnect
+   * (`classifyStreamError` in @govai/provider-stream-http: `signal.aborted` ⇒
+   * `client_disconnect`), aborts the upstream, and seals the terminal audit event with that
+   * outcome and a partial stream hash. Every completed conversation would then be recorded in
+   * the evidence plane as a disconnect, while this screen said "Completed by the provider" —
+   * the product contradicting its own audit trail, systematically.
+   *
+   * So the reader is DETACHED, not cancelled: the caller resolves immediately and a background
+   * loop reads on to end-of-stream, so the proxy sees a normal end and records `complete`. An
+   * abort still cancels it, because an abort is a real disconnect.
    */
   stopWhen?: () => boolean;
 };
@@ -98,6 +110,7 @@ export async function pumpSse(input: PumpSseInput): Promise<void> {
     input.signal.addEventListener('abort', onAbort, { once: true });
   }
 
+  let settled = false;
   try {
     for (;;) {
       const { value, done } = await reader.read();
@@ -111,25 +124,64 @@ export async function pumpSse(input: PumpSseInput): Promise<void> {
         break;
       }
       if (input.signal?.aborted) break;
-      // The provider has said everything it is going to say; the `finally` cancels the body.
-      if (input.stopWhen?.()) break;
+      // The provider has said everything it is going to say. Resolve now; the body is handed
+      // to the background drain below rather than cancelled — see `stopWhen`.
+      if (input.stopWhen?.()) {
+        settled = true;
+        break;
+      }
     }
-    // Flush the decoder's pending bytes. An incomplete multi-byte sequence at EOF becomes
-    // U+FFFD here rather than silently vanishing.
-    const tail = decoder.decode();
-    if (tail.length > 0) {
-      try {
-        parser.feed(tail);
-      } catch {
-        /* terminated parser — nothing left to dispatch */
+    if (!settled) {
+      // Flush the decoder's pending bytes. An incomplete multi-byte sequence at EOF becomes
+      // U+FFFD here rather than silently vanishing. Skipped when settling early: the terminal
+      // has already been seen and any trailing bytes belong to the background drain.
+      const tail = decoder.decode();
+      if (tail.length > 0) {
+        try {
+          parser.feed(tail);
+        } catch {
+          /* terminated parser — nothing left to dispatch */
+        }
       }
     }
     // ★ The parser is NOT reset with `consume: true`: an event that never received its blank
     // line is incomplete data, and completing it here would fabricate a frame. See the header.
   } finally {
     input.signal?.removeEventListener('abort', onAbort);
-    await reader.cancel().catch(() => undefined);
+    if (settled) drainToEnd(reader, input.signal);
+    else await reader.cancel().catch(() => undefined);
   }
+}
+
+/**
+ * Read the rest of a body to end-of-stream and discard it, so the proxy in front of us sees a
+ * NORMAL end rather than a client disconnect. Deliberately not awaited: the answer is already
+ * complete and the reader is not waiting on these bytes.
+ *
+ * An abort cancels it, because an abort IS a disconnect — the reader really has gone.
+ */
+function drainToEnd(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal | undefined,
+): void {
+  const cancel = (): void => {
+    void reader.cancel().catch(() => undefined);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  void (async () => {
+    try {
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    } catch {
+      // The upstream ended abnormally AFTER the provider's terminal event. The turn is already
+      // settled on that terminal, and nothing here can or should revise it.
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      await reader.cancel().catch(() => undefined);
+    }
+  })();
 }
 
 /**
