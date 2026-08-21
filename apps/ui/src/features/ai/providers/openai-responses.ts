@@ -150,28 +150,26 @@ function incompleteReason(payload: Record<string, unknown> | null): string | nul
 /**
  * A USER turn, as a fully-qualified input message item.
  *
- * ★ WHY THE VERBOSE FORM. The API accepts a shorthand — `{ role, content: "text" }` — and that
- * is what the provider's conversation-state guide shows. This console sends the fully-qualified
- * typed item instead, because GovAI's governed DLP pre-scan can only read the typed one:
- * `extractOpenAIResponsesText` (packages/provider-openai/src/governed/extract-text.ts) walks
- * `input[]` and descends only into items carrying an explicit `type` of `message` /
- * `input_text` / `text`. An item identified by `role` alone is skipped whether its content is a
- * string or an array of parts, so a governed Responses request built the shorthand way is
- * forwarded with NO DLP scan, base risk A and `enforcement_decision: observe`.
+ * ★ WHY THE VERBOSE FORM. The API also accepts a shorthand — `{ role, content: "text" }` —
+ * and that is what the provider's conversation-state guide shows. This console keeps the
+ * fully-qualified typed item: it is the canonical provider form, it costs nothing, and it is
+ * unambiguous about what each part of a turn is.
  *
- * Measured against the running API at this base, with the same CPF in every body:
+ * It is NO LONGER a governance workaround. When this console was written,
+ * `extractOpenAIResponsesText` (packages/provider-openai/src/governed/extract-text.ts)
+ * descended only into `input[]` items carrying an explicit `type`, so an item identified by
+ * `role` alone was never DLP-scanned and a governed Responses request built the shorthand way
+ * was forwarded at base risk A with `enforcement_decision: observe`. That was reported as
+ * `AI-CONSOLE-RESPONSES-DLP-GAP-01` rather than papered over here, and it was FIXED in the
+ * extractor (EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02): all five accepted spellings — string
+ * input, typed message with string or `input_text[]` content, and the role-shaped
+ * `EasyInputMessage` in either content form — now extract identically, which
+ * `register-governed.dlp-equivalence.test.ts` proves end to end.
  *
- *   input: "…"                                                    → risk C, enforce
- *   input: [{type:'message', role, content:[{type:'input_text'}]}] → risk C, enforce
- *   input: [{role, content: "…"}]                                 → risk A, observe   ✗
- *   input: [{role, content:[{type:'input_text', …}]}]              → risk A, observe   ✗
- *
- * The same CPF through Chat Completions or Anthropic Messages resolves to risk C / `enforce`,
- * so the shorthand would have made this console's DEFAULT OpenAI surface the one place where
- * governed mode quietly scans nothing. Choosing the typed form is not a workaround hidden in
- * the UI: it is the canonical provider form, it costs nothing, and the underlying extractor gap
- * is reported as its own finding rather than being papered over — see the mission record and
- * the follow-up named in docs/architecture/stale-docs-register.md.
+ * The typed form is therefore a preference, not a mitigation, and this console's governance
+ * outcome no longer depends on which accepted spelling it picks. The shape stays
+ * regression-tested all the same: changing a request body silently is exactly the kind of edit
+ * that should have to face a test.
  */
 function userItem(text: string): Record<string, unknown> {
   return { type: 'message', role: 'user', content: [{ type: 'input_text', text }] };
@@ -180,11 +178,13 @@ function userItem(text: string): Record<string, unknown> {
 /**
  * An ASSISTANT turn from local history, in the shorthand form.
  *
- * Deliberately NOT the typed form. A typed assistant item must use `output_text` content parts
- * (an assistant message is not user input), and `output_text` is not in the extractor's
- * allowlist either — so assistant history is unscannable on this surface in EVERY shape, and
- * the verbose form would buy nothing while adding a shape whose validity for a locally
+ * Deliberately NOT the typed form: a typed assistant item must use `output_text` content parts
+ * (an assistant message is not user input), and that adds a shape whose validity for a locally
  * reconstructed item this console cannot verify. The shorthand is documented and unambiguous.
+ *
+ * Since AI-CONSOLE-RESPONSES-DLP-GAP-01 was fixed, this shape is no longer a governance blind
+ * spot: a role-shaped message with string content is DLP-scanned like any other, and so is an
+ * `output_text` part, so replayed assistant history is covered whichever form a caller sends.
  */
 function assistantItem(text: string): Record<string, unknown> {
   return { role: 'assistant', content: text };
