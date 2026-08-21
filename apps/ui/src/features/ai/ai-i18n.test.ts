@@ -138,17 +138,47 @@ describe('★ "blocked" appears only where a 403 actually happened', () => {
     expect(note).toMatch(rule[locale]);
   });
 
-  it.each(LOCALES)('%s: the blocked note does not assert the response’s origin', (locale) => {
-    const note = text(locale, 'ai.state.blocked.note');
-    // The past-tense claim about this specific request is exactly what was removed.
-    const forbidden: Record<Locale, RegExp[]> = {
-      'pt-BR': [/GovAI devolveu/i, /não chamou o provedor/i],
-      'en-US': [/GovAI returned 403 and did not call/i, /did not call the provider for this request/i],
-      es: [/GovAI devolvió/i, /no llamó al proveedor/i],
-    };
-    for (const pattern of forbidden[locale]) {
-      expect(pattern.test(note), `${locale}: "${note}"`).toBe(false);
+  it.each(LOCALES)('%s: the blocked BADGE states the 403 and nothing about the provider', (locale) => {
+    // The badge is the most-read string of the three, and "before the provider" asserted the
+    // very origin the note had already stopped claiming.
+    const badge = text(locale, 'ai.state.blocked');
+    expect(badge).toContain('403');
+    for (const pattern of [/antes do provedor/i, /before the provider/i, /antes del proveedor/i]) {
+      expect(pattern.test(badge), `${locale} badge: "${badge}"`).toBe(false);
     }
+  });
+
+  it.each(LOCALES)(
+    '%s: NO ai.* string claims, in the past tense, that the provider was not called',
+    (locale) => {
+      // ★ One rule, applied everywhere rather than string by string. The routes relay an
+      // upstream's status AND body verbatim, so no response proves it came from GovAI — the
+      // copy may state what GovAI DOES for a code, never what happened to this request.
+      const forbidden: Record<Locale, RegExp[]> = {
+        'pt-BR': [/não chamou o provedor/i, /GovAI devolveu/i],
+        'en-US': [/did not call the provider/i, /GovAI returned \d/i],
+        es: [/no llamó al proveedor/i, /GovAI devolvió/i],
+      };
+      for (const key of aiKeys()) {
+        const value = text(locale, key);
+        for (const pattern of forbidden[locale]) {
+          expect(pattern.test(value), `${locale} ${key} must not match ${pattern}: "${value}"`).toBe(
+            false,
+          );
+        }
+      }
+    },
+  );
+
+  it.each(LOCALES)('%s: the credential note states the rule, not the event', (locale) => {
+    const note = text(locale, 'ai.state.credentialUnavailable.note');
+    expect(note).toContain('502');
+    const rule: Record<Locale, RegExp> = {
+      'pt-BR': /não chama o provedor/i,
+      'en-US': /does not call the provider/i,
+      es: /no llama al proveedor/i,
+    };
+    expect(note).toMatch(rule[locale]);
   });
 });
 

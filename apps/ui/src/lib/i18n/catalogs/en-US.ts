@@ -420,7 +420,7 @@ export const enUS: Catalog = {
   'ai.state.stopped': 'Stopped by you',
   'ai.state.stopped.note':
     'This browser cancelled the request. The partial text above is what arrived; what the provider did afterwards is not reported in this response.',
-  'ai.state.blocked': 'Blocked (403) before the provider',
+  'ai.state.blocked': 'Blocked (403)',
   'ai.state.blocked.note':
     'The response came back 403 with a GovAI block code. GovAI does not call the provider for that code. This browser reads the code from the response; it cannot verify the response’s origin on its own.',
   'ai.state.providerError': 'Provider error',
@@ -430,7 +430,7 @@ export const enUS: Catalog = {
     'Rate limit reached. Nothing was repeated automatically: a provider POST may already have been executed and billed.',
   'ai.state.credentialUnavailable': 'Provider credential unavailable',
   'ai.state.credentialUnavailable.note':
-    'GovAI could not resolve a provider credential for this organization, so it did not call the provider. This is a configuration condition, resolved by whoever administers the organization.',
+    'The response came back 502 with GovAI’s provider-credential code. GovAI returns that code when it cannot resolve a credential for the organization, and does not call the provider in that case. This is a configuration condition, resolved by whoever administers the organization.',
   'ai.state.networkError': 'Outcome not confirmed',
   'ai.state.networkError.note':
     'The request left this browser and no response arrived. This browser cannot tell whether the provider executed the call, so nothing was repeated automatically.',

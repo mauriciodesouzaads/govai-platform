@@ -425,7 +425,7 @@ export const es: Catalog = {
   'ai.state.stopped': 'Detenido por usted',
   'ai.state.stopped.note':
     'Este navegador canceló la petición. El texto parcial de arriba es lo que llegó; lo que el proveedor hizo después no se informa en esta respuesta.',
-  'ai.state.blocked': 'Bloqueado (403) antes del proveedor',
+  'ai.state.blocked': 'Bloqueado (403)',
   'ai.state.blocked.note':
     'La respuesta llegó con 403 y un código de bloqueo de GovAI. Para ese código GovAI no llama al proveedor. Este navegador lee el código de la respuesta; no puede verificar por sí mismo su origen.',
   'ai.state.providerError': 'Error del proveedor',
@@ -435,7 +435,7 @@ export const es: Catalog = {
     'Límite de peticiones alcanzado. No se repitió nada automáticamente: un POST al proveedor puede haberse ejecutado y facturado ya.',
   'ai.state.credentialUnavailable': 'Credencial de proveedor no disponible',
   'ai.state.credentialUnavailable.note':
-    'GovAI no pudo resolver una credencial de proveedor para esta organización, por lo que no llamó al proveedor. Es una condición de configuración, que resuelve quien administra la organización.',
+    'La respuesta llegó con 502 y el código de credencial de proveedor de GovAI. GovAI devuelve ese código cuando no puede resolver una credencial para la organización, y en ese caso no llama al proveedor. Es una condición de configuración, que resuelve quien administra la organización.',
   'ai.state.networkError': 'Resultado no confirmado',
   'ai.state.networkError.note':
     'La petición salió de este navegador y no llegó ninguna respuesta. Este navegador no puede saber si el proveedor ejecutó la llamada, así que no se repitió nada automáticamente.',

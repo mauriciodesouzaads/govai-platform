@@ -441,7 +441,7 @@ export const ptBR = {
   'ai.state.stopped': 'Interrompido por você',
   'ai.state.stopped.note':
     'Este navegador cancelou a requisição. O texto parcial acima é o que chegou; o que o provedor fez depois disso não é informado nesta resposta.',
-  'ai.state.blocked': 'Bloqueado (403) antes do provedor',
+  'ai.state.blocked': 'Bloqueado (403)',
   'ai.state.blocked.note':
     'A resposta veio com 403 e um código de bloqueio do GovAI. Para esse código o GovAI não chama o provedor. Este navegador lê o código da resposta; ele não tem como verificar sozinho a origem dela.',
   'ai.state.providerError': 'Erro do provedor',
@@ -451,7 +451,7 @@ export const ptBR = {
     'Limite de requisições atingido. Nada foi repetido automaticamente: um POST de provedor pode já ter sido executado e cobrado.',
   'ai.state.credentialUnavailable': 'Credencial de provedor indisponível',
   'ai.state.credentialUnavailable.note':
-    'O GovAI não conseguiu resolver uma credencial de provedor para esta organização, e por isso não chamou o provedor. É uma condição de configuração, resolvida por quem administra a organização.',
+    'A resposta veio com 502 e o código de credencial de provedor do GovAI. O GovAI devolve esse código quando não consegue resolver uma credencial para a organização, e nesse caso não chama o provedor. É uma condição de configuração, resolvida por quem administra a organização.',
   'ai.state.networkError': 'Resultado não confirmado',
   'ai.state.networkError.note':
     'A requisição saiu deste navegador e nenhuma resposta chegou. Este navegador não tem como saber se o provedor executou a chamada, então nada foi repetido automaticamente.',
