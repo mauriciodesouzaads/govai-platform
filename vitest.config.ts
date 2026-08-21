@@ -7,6 +7,10 @@ export default defineConfig({
     include: [
       'packages/*/src/**/*.test.ts',
       'apps/*/src/**/*.test.ts',
+      // Canonical source-manifest tooling (EP-CANONICAL-SOURCE-MANIFEST-GATE-01): the pure
+      // manifest logic under scripts/ tests in-memory fixtures only — no git, no child
+      // process, no repository discovery — so it belongs to the Docker-free unit lane.
+      'scripts/**/*.test.ts',
       // EP-GATE-MECHANIZATION: wire GOVAI_INTEGRATION into a real gate at the ONLY layer that
       // stops container startup. The integration files start their testcontainer from a top-level
       // (module-scope) beforeAll, so a describe.skip wrapper would NOT prevent it — the hook runs

@@ -158,7 +158,7 @@ Notes (NOT corrections):
   - WAS (historical): `D9_LOCATION=UNRESOLVED`; "a repo-wide search at `719fefc2` reproduced no such literal references — broken-reference count: UNVERIFIED". Both halves are superseded: the first by documentary verification, the second because it was **falsified** — the search that returned zero was wrong.
   - NOW (current): the D9 corpus was **located and integrity-inventoried from the owner-supplied v0.9/PR-0 package** (`EP-PR0-D9-RECONCILIATION-V2_MANIFEST_v0.2`: package hash verification 26/26 match; 11/11 D9 required source paths present; content SHA-256 hashed; provenance `USER_SUPPLIED_V09_PACKAGE`). The corpus has **not yet been promulgated into repository main**. PR-0/D9 remains documentary-blocked on **reconciliation/promotion, not on source location**: `D9_SOURCE_CORPUS_LOCATED=YES`; `D9_PRESENT_IN_REPOSITORY_MAIN=NO`; `D9_REPOSITORY_PROMULGATION=PENDING`; `PR0_STATUS=DOCUMENTARY_BLOCKED_PENDING_PROMULGATION`; `TECHNICAL_P0_3_STATUS=NOT_BLOCKED_BY_D9`.
   - **Broken references, reconfirmed and precisely classified at `165291d9`:** the genuine missing-target references are **2 production-source files** — `apps/api/src/db/migrations/0025_audit_capture_outbox_foundation.sql:36-37` (cites `docs/architecture/adr/ADR-017-audit-bridge-evidence-plane.md` and `docs/security/threat-model.md`) and `packages/core-audit/src/capture.ts:54` ("See ADR-017") — whose targets do not exist in the tree; no file cites `claims-policy.md`. A broad ADR-016..019 sweep returns 13 files, but the other 11 are **not** broken references to the D9 artifacts: prohibition/conditional mentions of the deliberately-never-created *message-batches* ADR-016 (`ADR-014-allow-files-beta.md:80`, the PR2 canonical/patch/execution docs, `packages/provider-anthropic/src/beta-policy.ts:28` — a reserved-number hygiene item for the future ADR-INDEX, not a missing D9 target), same-numbered but unrelated concept headings in `canonical/govai_adp_v4_2.md:673-691`, and this register's own text. Classification (for the 2 genuine ones): `REPOSITORY_REFERENCE_TARGET_MISSING=YES`; `SOURCE_ARTIFACT_AVAILABLE_EXTERNALLY=YES`; `PROMOTION_PENDING=YES`. This is a documentary-integrity / repository-hygiene gap, **not** a P0.3-A runtime defect. Do **not** state "no broken document references exist" while the promotion is pending.
-- **SEEDORG_FLAKE_CANDIDATE** (observed once as a primary-key prefix collision in an earlier unrelated integration attempt; root cause **source-adjudicated by M3** — the collision domain is the API-key prefix generator/schema rather than the fixture, classified `LATENT_AUTH_LIFECYCLE_DESIGN_RISK` and deferred to `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING`) and **DIRECT_STREAM_REQUEST_ID_HEADER_GAP** (PRE_EXISTING; not introduced by F4; not F4-blocking) are recorded in current-state.md §8 as narrow, non-blocking follow-ups.
+- **SEEDORG_FLAKE_CANDIDATE** (first observed as a primary-key prefix collision in an earlier unrelated integration attempt; root cause **source-adjudicated by M3** — the collision domain is the API-key prefix generator/schema rather than the fixture; since **recurred in CI** as an actual `api_keys_pkey` duplicate during the AI Console closeout runs, so the present-tense classification is `EMPIRICALLY_MANIFESTED_TEST_FIXTURE_COLLISION` and `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING` is `OPEN_EMPIRICALLY_MANIFESTED`) and **DIRECT_STREAM_REQUEST_ID_HEADER_GAP** (PRE_EXISTING; not introduced by F4; not F4-blocking) are recorded in current-state.md §8 as narrow, non-blocking follow-ups.
 - Historical anchors inside completed-phase records (e.g. roadmap Phase 2.5 "Inputs" citing `governed-openai.ts:69-70` / `governed-anthropic.ts:71-72`, or "matches code at `8be5cfc`" rows above) describe the state at the time those phases executed and are deliberately NOT rewritten.
 - EP-DOCS-04 changes no runtime behavior, no tests, no migrations, no schemas/routes/events, no dependencies.
 
@@ -453,6 +453,10 @@ Notes (NOT corrections):
 **`BACKEND_RUNTIME_CHANGE=NONE`** — no route, no migration, no schema object, no event schema,
 no AuditBridge or capture-projection change, no provider or governance behaviour change. The
 Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1 runtime.
+*(Present-tense clarifier: the `NONE` above describes the INITIAL U1.5 movement this section
+recorded at its head. The final merged PR #137 tree includes the two owner-adjudicated
+CLOSEOUT-02 provider-package fixes — backend changes, with root test suites — dispositioned
+in the findings table below. The merged milestone is therefore not UI-only.)*
 
 | Document | Was (stale once `/ai` exists) | Now (corrected) |
 |---|---|---|
@@ -525,9 +529,17 @@ browser, on `http://localhost:5173`, the page carried **6 cookies / 229 bytes** 
 GovAI (`localhost` is shared by every dev server the operator has ever run, and cookies are
 host-scoped, not port-scoped), confirmed against a same-host listener with
 `credentials: 'include'`. `cookie` is in none of the three strip sets and an arbitrary unlisted
-header is proven to be relayed (`*.inbound-hop-headers.test.ts` asserts exactly that), so those
-bytes go upstream on every browser-originated provider call. `document.cookie` also excludes
-HttpOnly cookies, so 229 bytes is a floor, not a ceiling.
+header is proven to be relayed (`*.inbound-hop-headers.test.ts` asserts exactly that) — so the
+server **would relay** an inbound `cookie` on any provider call that carries one. Stated
+precisely for the official console: its `ApiClient` issues every request (GETs and provider
+streaming POSTs alike) with `credentials: 'omit'`, so the browser attaches **no** cookie to
+GovAI calls and none reaches the builders today —
+`CURRENT_GOVAI_AI_CONSOLE_ATTACHES_BROWSER_COOKIES=NO`,
+`SERVER_WOULD_RELAY_INBOUND_COOKIE=YES`,
+`FUTURE_COOKIE_BASED_HUMAN_AUTH_RISK=MATERIAL` (R14). A `credentials: 'include'` caller, or any
+future cookie session, hands those bytes upstream. `document.cookie` also excludes HttpOnly
+cookies, so 229 bytes is a floor, not a ceiling. `referer` remains a real inbound-hop semantic
+residual — it IS relayed on browser calls regardless of credentials mode.
 
 It is still not fixed here, for two reasons and no others: the dispatch that authorized the
 `origin` correction was explicit that it must not become a general browser-header purge, and
@@ -574,3 +586,41 @@ therefore remains **NOT_PROVEN**, and StrictMode is still not claimed as the exp
 adds one more authenticated GET surface to it, the provider `GET /v1/models` reads, which the
 same eventual route/proxy policy must cover. Residuals R12, R13 and R14 are untouched, and the
 Foundation V1 freeze record is not edited.
+
+---
+
+## Canonical source manifest gate (EP-CANONICAL-SOURCE-MANIFEST-GATE-01) — counts stop being hand-maintained
+
+**Finding `AI-CONSOLE-CLOSEOUT-CANONICAL-MANIFEST-01`.** Hand-maintained canonical source/test
+counts went stale TWICE by the same mechanism — later review rounds changed the tree after the
+counts were written (U1: 244→281 UI tests; AI Console: 31/708→33/753 UI, 129/1463→136/1517 root
+unit) — and the prose built on them ("U1.5 adds no root test file: it is UI-only", "re-derived
+for the two post-freeze movements U1/B2") became false at merged `main@a2fb23e3`. Executor
+memory is not an integrity mechanism.
+
+**Correction (this movement):** the mechanically derivable portion of `current-state.md` §*Source
+manifests* is now GENERATED from the repository tree (tracked files via `git ls-files` + the
+supported `vitest list --json` collectors) into a marker-bounded block, mirrored machine-readable
+in `docs/architecture/generated/source-manifest.json`, regenerated by `pnpm docs:manifest:write`
+and verified by `pnpm docs:manifest:check` — which the CI `unit` job runs, so a PR that changes
+tests/routes/migrations/document structure without reconciling the manifest FAILS CI. Exact
+counts now live only in the generated manifest; prose references it instead of repeating them.
+
+| Document | Was (stale at `a2fb23e3`) | Now |
+|---|---|---|
+| `current-state.md` §Source manifests | hand-written counts: 31/708 UI, 129/1463 root unit, 211 root files; "U1.5 adds no root test file: it is UI-only"; "re-derived for the two post-freeze movements (U1, B2)" | the generated block (machine-derived, CI-verified); durable count-free prose notes; U1.5 history stated precisely (initial implementation UI-first, final merged tree carries the two CLOSEOUT-02 backend fixes + their root suites) |
+| `current-state.md` §1 interface rows | "31 files / 708 tests"; U1.5 "**zero backend change**" | rows reference the generated manifest; U1.5 row states "no new route, no migration, no event schema" and points at the CLOSEOUT-02 fixes |
+| `development-roadmap.md` | `UI_UX_V1_U1_5_AI_CONSOLE=… ZERO backend change`; `BACKEND_RUNTIME_CHANGE=ADDITIVE_READ_ONLY_ROUTE (EP-B2 only…)`; `BACKEND_RUNTIME_CHANGE=NONE` in the U1.5 paragraph | present-tense truth: the two CLOSEOUT-02 provider fixes are named as backend changes wherever the lane's backend footprint is stated |
+| `current-state.md` §8 + this register | SEEDORG collision "observed once…latent" | `EMPIRICALLY_MANIFESTED_TEST_FIXTURE_COLLISION` (recurred in CI as an actual `api_keys_pkey` duplicate); `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING=OPEN_EMPIRICALLY_MANIFESTED`; no auth runtime change here |
+| cookie residual rows (this register + roadmap + current-state §Status) | "those bytes go upstream on every browser-originated provider call" | precision: `SERVER_WOULD_RELAY_INBOUND_COOKIE=YES`; `CURRENT_GOVAI_AI_CONSOLE_ATTACHES_BROWSER_COOKIES=NO` (`credentials: 'omit'` on every ApiClient request); `FUTURE_COOKIE_BASED_HUMAN_AUTH_RISK=MATERIAL`; `referer` remains a real relayed residual; `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01` stays OPEN |
+
+Historical mission records, intermediate-head counts inside earlier register sections, and PR
+commit messages describing old heads are NOT rewritten — they remain true of their heads. This
+movement changes tooling/tests/CI/docs only: no backend runtime, no provider behaviour, no
+migration, no event schema, no auth change. Open provider-hardening findings
+(`PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`, `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01`,
+`EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`, `AUTH-READ-CACHE-01`, `UI-DEV-PROXY-503-01`,
+`UI-DEV-PROXY-STREAM-CLOSE-01`, `EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION`,
+`EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING`, R14) are all UNCHANGED in status.
+`NATIVE_EXPERIENCE_PARITY_V1=TARGET_NOT_IMPLEMENTED`; next movement
+`EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`.

@@ -24,6 +24,13 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test
+      # Canonical source manifest gate (EP-CANONICAL-SOURCE-MANIFEST-GATE-01): regenerates
+      # the machine-derived manifest from the tree (git ls-files + vitest collectors — no
+      # Docker, no DB, no network) and fails if the tracked manifest JSON or the generated
+      # block in current-state.md was not reconciled with a change to tests/routes/
+      # migrations/docs structure.
+      - name: docs manifest gate
+        run: pnpm docs:manifest:check
       - name: re2 smoke
         run: pnpm --filter @govai/dlp-br run smoke:re2
       # A2 §9(c)(ii): fail the check if any authorship/tool-attribution string appears in the PR's
