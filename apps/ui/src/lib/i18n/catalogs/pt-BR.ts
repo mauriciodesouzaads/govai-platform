@@ -456,9 +456,9 @@ export const ptBR = {
   'ai.state.credentialUnavailable': 'Credencial de provedor indisponível',
   'ai.state.credentialUnavailable.note':
     'A resposta veio com 502 e o código de credencial de provedor do GovAI. O GovAI devolve esse código quando não consegue resolver uma credencial para a organização, e nesse caso não chama o provedor. É uma condição de configuração, resolvida por quem administra a organização.',
-  'ai.state.requestTooLarge': 'Requisição grande demais para o GovAI',
+  'ai.state.requestTooLarge': 'Recusada por tamanho',
   'ai.state.requestTooLarge.note':
-    'O GovAI recusou esta requisição por tamanho antes de chamar o provedor, então nenhuma chamada foi feita e nada foi cobrado. Encurte a mensagem ou comece uma nova conversa — uma transcrição longa é enviada inteira a cada turno.',
+    'A requisição foi recusada pelo tamanho. O GovAI tem o próprio limite de corpo e recusa antes de chamar o provedor, que é a causa usual — mas este navegador não consegue provar qual salto recusou, então não afirma que o provedor foi ou não chamado. Encurte a mensagem ou comece uma nova conversa: uma transcrição longa é enviada inteira a cada turno.',
   'ai.state.networkError': 'Resultado não confirmado',
   'ai.state.networkError.note':
     'A requisição saiu deste navegador e nenhuma resposta chegou. Este navegador não tem como saber se o provedor executou a chamada, então nada foi repetido automaticamente.',

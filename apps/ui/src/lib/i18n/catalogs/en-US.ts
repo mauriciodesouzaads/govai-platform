@@ -435,9 +435,9 @@ export const enUS: Catalog = {
   'ai.state.credentialUnavailable': 'Provider credential unavailable',
   'ai.state.credentialUnavailable.note':
     'The response came back 502 with GovAI’s provider-credential code. GovAI returns that code when it cannot resolve a credential for the organization, and does not call the provider in that case. This is a configuration condition, resolved by whoever administers the organization.',
-  'ai.state.requestTooLarge': 'Request too large for GovAI',
+  'ai.state.requestTooLarge': 'Rejected as too large',
   'ai.state.requestTooLarge.note':
-    'GovAI rejected this request as too large before calling the provider, so no provider call was made and nothing was billed. Shorten the message, or start a new conversation — a long transcript is sent in full on every turn.',
+    'The request was rejected for its size. GovAI has its own body limit and rejects before calling the provider, which is the usual cause — but this browser cannot prove which hop rejected it, so it does not claim the provider was or was not called. Shorten the message, or start a new conversation: a long transcript is sent in full on every turn.',
   'ai.state.networkError': 'Outcome not confirmed',
   'ai.state.networkError.note':
     'The request left this browser and no response arrived. This browser cannot tell whether the provider executed the call, so nothing was repeated automatically.',

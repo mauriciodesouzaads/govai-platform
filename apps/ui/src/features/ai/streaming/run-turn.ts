@@ -78,9 +78,23 @@ const GOVAI_PRE_PROVIDER_BLOCK_CODES = new Set([
   'governed_blocked', // packages/provider-{openai,anthropic}/src/governed/register-governed.ts
 ]);
 
-/** Fastify's machine code for a body over `bodyLimit`. GovAI sets no bodyLimit, so the
- *  framework default (1 MiB) is the real ceiling, and this code is the only thing that proves
- *  the rejection was GovAI-local rather than the provider's own size check. */
+/**
+ * Fastify's machine code for a body over `bodyLimit`. GovAI sets no bodyLimit, so the framework
+ * default (1 MiB) is the real ceiling and this is what a GovAI-local rejection says.
+ *
+ * ★ IT IS A HINT, NOT A PROOF OF ORIGIN. The direct routes relay an upstream status and body
+ * VERBATIM, so an upstream or intermediary that answers 413 with this same envelope would
+ * arrive here indistinguishable from GovAI's own rejection. Deciding provenance from a relayed
+ * body is exactly what this console refuses to do everywhere else — a relayed body may LABEL an
+ * error and may never authenticate it — and the missing non-forgeable GovAI-origin signal is
+ * the named residual `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`, which is open and out of scope
+ * here.
+ *
+ * So the state is kept (the remedy is the same either way, and "the provider answered with an
+ * error" was wrong for a call the provider never received) and the CLAIM is weakened to what
+ * the browser can actually stand behind: rejected for size, cause usually GovAI's own limit,
+ * no assertion about whether the provider was called or billed.
+ */
 export const FASTIFY_BODY_TOO_LARGE_CODE = 'FST_ERR_CTP_BODY_TOO_LARGE';
 
 export function isPreProviderBlockCode(code: string | null): boolean {
@@ -286,13 +300,18 @@ function isAbort(err: unknown): boolean {
  * content policy refusal, say) is a provider error, because the provider is exactly who ran
  * it — the distinction is the whole point of the code check.
  *
- * `request_too_large` applies the SAME rule to 413. GovAI configures no `bodyLimit`, so
- * Fastify's default 1 MiB applies and an oversized body is rejected by the framework before
- * either provider route runs — reachable, because the composer accepts an arbitrarily long
- * prompt and multi-turn history accumulates. Calling that `provider_error` would print "the
- * provider answered with an error" for a call the provider never received, which is exactly
- * the kind of thing this console exists not to say. It is keyed on Fastify's own machine code,
- * never on the bare status: a provider's own 413 stays a provider error.
+ * `request_too_large` is DIFFERENT, and the difference is worth stating. GovAI configures no
+ * `bodyLimit`, so Fastify's default 1 MiB applies and an oversized body is rejected by the
+ * framework before either provider route runs — reachable, because the composer accepts an
+ * arbitrarily long prompt and multi-turn history accumulates. Calling that `provider_error`
+ * would print "the provider answered with an error" for a call the provider never received.
+ *
+ * But unlike `blocked`, this classification CANNOT prove pre-provider origin: the direct routes
+ * relay an upstream body verbatim, so a 413 carrying the same envelope from an upstream or an
+ * intermediary is indistinguishable here (`EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`, open). The
+ * state is therefore kept for its remedy — shorten the request — while its COPY claims only
+ * what the browser can stand behind, and asserts nothing about whether the provider was called
+ * or billed. A 413 with no such code stays a provider error.
  */
 export function classifyErrorStatus(status: number, error: SafeProviderError): TurnState {
   if (status === 403 && isPreProviderBlockCode(error.code)) return 'blocked';

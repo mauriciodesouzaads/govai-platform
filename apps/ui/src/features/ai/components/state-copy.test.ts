@@ -52,3 +52,58 @@ describe('turn-state copy is complete', () => {
     expect(Object.keys(STATE_NOTE).sort()).toEqual(ALL_STATES.slice().sort());
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `request_too_large` is decided from a RELAYED body. The direct routes pass an upstream status
+// and body through verbatim, so a 413 carrying Fastify's envelope from an upstream or an
+// intermediary is indistinguishable here from GovAI's own rejection — the missing non-forgeable
+// GovAI-origin signal is the open residual `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`.
+//
+// The state earns its place on its REMEDY (shorten the request, which is right either way) and
+// on not saying "the provider answered with an error" about a call the provider may never have
+// received. What it must never do is convert a forgeable hint into a claim about billing or
+// about which hop ran. This test pins that boundary in every locale, because the tempting
+// wording — "GovAI rejected this, nothing was billed" — is precisely what the browser cannot
+// stand behind, and it is what the copy said before this was caught.
+describe('★ the oversized-request copy claims only what the browser can prove', () => {
+  const NOTE_KEY = 'ai.state.requestTooLarge.note' as const;
+  const LABEL_KEY = 'ai.state.requestTooLarge' as const;
+
+  /** Claims that require knowing WHICH hop rejected the request, in the three shipped locales. */
+  const UNPROVABLE = [
+    /nothing was billed/i,
+    /no provider call was made/i,
+    /nada foi cobrado/i,
+    /nenhuma chamada foi feita/i,
+    /no se factur/i,
+    /no se hizo ninguna llamada/i,
+  ];
+
+  it('no locale asserts that the provider was not called, or that nothing was billed', () => {
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      const note = catalog[NOTE_KEY];
+      expect(note, locale).toBeTruthy();
+      for (const pattern of UNPROVABLE) {
+        expect(pattern.test(note), `${locale} note asserts ${String(pattern)}`).toBe(false);
+      }
+    }
+  });
+
+  it('the badge names the fact (a size rejection), not an origin', () => {
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      expect(catalog[LABEL_KEY], locale).not.toMatch(/GovAI/);
+    }
+  });
+
+  it('every locale still gives the reader the remedy', () => {
+    // pt-BR / es / en-US all name shortening the message and starting a new conversation.
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      const note = catalog[NOTE_KEY];
+      expect(/shorten|encurte|acorta/i.test(note), `${locale} omits the remedy`).toBe(true);
+      expect(
+        /new conversation|nova conversa|conversación nueva/i.test(note),
+        `${locale} omits the second remedy`,
+      ).toBe(true);
+    }
+  });
+});

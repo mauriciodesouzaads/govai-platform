@@ -440,9 +440,9 @@ export const es: Catalog = {
   'ai.state.credentialUnavailable': 'Credencial de proveedor no disponible',
   'ai.state.credentialUnavailable.note':
     'La respuesta llegó con 502 y el código de credencial de proveedor de GovAI. GovAI devuelve ese código cuando no puede resolver una credencial para la organización, y en ese caso no llama al proveedor. Es una condición de configuración, que resuelve quien administra la organización.',
-  'ai.state.requestTooLarge': 'Solicitud demasiado grande para GovAI',
+  'ai.state.requestTooLarge': 'Rechazada por tamaño',
   'ai.state.requestTooLarge.note':
-    'GovAI rechazó esta solicitud por tamaño antes de llamar al proveedor, así que no se hizo ninguna llamada ni se facturó nada. Acorta el mensaje o empieza una conversación nueva — una transcripción larga se envía completa en cada turno.',
+    'La solicitud fue rechazada por su tamaño. GovAI tiene su propio límite de cuerpo y rechaza antes de llamar al proveedor, que es la causa habitual — pero este navegador no puede probar qué salto la rechazó, así que no afirma que el proveedor fuera o no llamado. Acorta el mensaje o empieza una conversación nueva: una transcripción larga se envía completa en cada turno.',
   'ai.state.networkError': 'Resultado no confirmado',
   'ai.state.networkError.note':
     'La petición salió de este navegador y no llegó ninguna respuesta. Este navegador no puede saber si el proveedor ejecutó la llamada, así que no se repitió nada automáticamente.',
