@@ -13,13 +13,26 @@ import { isEmptyProviderError, type SafeProviderError } from '../providers/error
 // collapsed Interaction Receipt for the reader who wants the transport facts. Nothing about
 // compliance is injected INTO the answer text, which is the model's, unedited.
 
-/** The explanatory line under a non-successful attempt. Each states the fact, not a verdict. */
-const STATE_NOTE: Partial<Record<TurnState, MessageKey>> = {
+/**
+ * The explanatory line under a non-successful attempt. Each states the fact, not a verdict.
+ *
+ * ★ TOTAL, not `Partial`. It was `Partial<Record<…>>`, and adding `request_too_large` without an
+ * entry therefore compiled cleanly and silently shipped a state whose ONLY guidance — shorten
+ * the message, or start a new conversation — never rendered. A total map with an explicit `null`
+ * makes the compiler ask the question for every state that is ever added: a note, or a
+ * deliberate none? The three `null`s are the states that genuinely have nothing to explain:
+ * two are the in-flight phases, and `completed` is the answer speaking for itself.
+ */
+export const STATE_NOTE: Record<TurnState, MessageKey | null> = {
+  submitting: null,
+  streaming: null,
+  completed: null,
   stopped: 'ai.state.stopped.note',
   blocked: 'ai.state.blocked.note',
   provider_error: 'ai.state.providerError.note',
   rate_limited: 'ai.state.rateLimited.note',
   credential_unavailable: 'ai.state.credentialUnavailable.note',
+  request_too_large: 'ai.state.requestTooLarge.note',
   network_error: 'ai.state.networkError.note',
   unknown_outcome: 'ai.state.unknownOutcome.note',
 };
