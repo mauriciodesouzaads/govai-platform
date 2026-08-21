@@ -32,6 +32,7 @@ export const STATE_NOTE: Record<TurnState, MessageKey | null> = {
   provider_error: 'ai.state.providerError.note',
   rate_limited: 'ai.state.rateLimited.note',
   credential_unavailable: 'ai.state.credentialUnavailable.note',
+  auth_rejected: 'ai.state.authRejected.note',
   request_too_large: 'ai.state.requestTooLarge.note',
   network_error: 'ai.state.networkError.note',
   unknown_outcome: 'ai.state.unknownOutcome.note',

@@ -458,6 +458,18 @@ describe('the classification table is pure and exhaustive', () => {
   // GovAI configures no `bodyLimit`, so Fastify's default 1 MiB rejects an oversized body
   // BEFORE either provider route runs. Calling that `provider_error` prints "the provider
   // answered with an error" for a call the provider never received.
+  // GovAI answers its own 401 for a revoked session key BEFORE dispatching, and the direct
+  // routes relay a provider's verbatim. `provider_error` claimed the provider answered.
+  it("★ a 401 is attributed to NOBODY — its origin is not knowable here", () => {
+    expect(classifyErrorStatus(401, EMPTY_PROVIDER_ERROR)).toBe('auth_rejected');
+    expect(
+      classifyErrorStatus(401, { ...EMPTY_PROVIDER_ERROR, code: 'auth_error' }),
+    ).toBe('auth_rejected');
+    expect(
+      classifyErrorStatus(401, { ...EMPTY_PROVIDER_ERROR, type: 'authentication_error' }),
+    ).toBe('auth_rejected');
+  });
+
   it("a GovAI-local 413 is NOT attributed to the provider", () => {
     expect(
       classifyErrorStatus(413, { ...EMPTY_PROVIDER_ERROR, code: FASTIFY_BODY_TOO_LARGE_CODE }),

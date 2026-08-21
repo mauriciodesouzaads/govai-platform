@@ -29,6 +29,14 @@ export type TurnState =
   | 'rate_limited'
   /** 502 provider_credential_unresolvable — an operator/configuration condition. */
   | 'credential_unavailable'
+  /**
+   * A 401. WHOSE 401 is not knowable here: GovAI answers its own for a revoked session key
+   * before dispatching, and the direct routes relay a provider's verbatim — and the console
+   * deliberately does not end the session on either, because a relayed body must not be able
+   * to sign a reader out (`EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`). So the state names the
+   * fact and attributes it to nobody.
+   */
+  | 'auth_rejected'
   /** GovAI's own framework rejected the request body as too large, BEFORE any provider route
    *  ran. Source-proven by the Fastify code, never inferred from the 413 alone: a provider's
    *  own 413 is a provider error, because the provider is who ran the check. */
@@ -46,6 +54,7 @@ export const TERMINAL_STATES: readonly TurnState[] = [
   'provider_error',
   'rate_limited',
   'credential_unavailable',
+  'auth_rejected',
   'request_too_large',
   'network_error',
   'unknown_outcome',

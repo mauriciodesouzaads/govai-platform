@@ -107,3 +107,65 @@ describe('★ the oversized-request copy claims only what the browser can prove'
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A 401 is the most ambiguous status this console receives. GovAI answers its own for a revoked
+// session key BEFORE dispatching; the direct routes relay a provider's verbatim; nothing tells
+// them apart (`EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`, open). The console already refuses to
+// END a session on it for that reason — and must equally refuse to ATTRIBUTE it, which is what
+// `provider_error` did: it printed "the provider answered with an error" for a call the provider
+// may never have received.
+describe('★ the 401 copy attributes the rejection to nobody', () => {
+  const NOTE_KEY = 'ai.state.authRejected.note' as const;
+  const LIST_KEY = 'ai.model.listRejected' as const;
+
+  /** Phrasings that name a culprit the browser cannot identify, in the three shipped locales. */
+  const ATTRIBUTIONS = [
+    /the provider rejected/i,
+    /the provider answered/i,
+    /o provedor recusou/i,
+    /el proveedor rechaz/i,
+    /govai rejected/i,
+    /o govai recusou/i,
+    /govai rechaz/i,
+  ];
+
+  // Asserted POSITIVELY on purpose. The note necessarily names both candidates — that is what
+  // "cannot tell whether X or Y" is made of — so a keyword blocklist would fail honest copy for
+  // containing the words it needs. What must be true is that the note states the inability
+  // itself; a rewrite that quietly picks one culprit would drop that phrase, and this fails.
+  it('the turn note STATES that the origin is not knowable, in every locale', () => {
+    const HEDGE = /cannot tell|não consegue distinguir|no puede distinguir/i;
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      const note = catalog[NOTE_KEY];
+      expect(note, locale).toBeTruthy();
+      expect(HEDGE.test(note), `${locale} note does not state the ambiguity`).toBe(true);
+    }
+  });
+
+  it('the turn note also says the session is deliberately NOT ended on it', () => {
+    const KEPT = /does not sign you out|não encerra sua sessão|no cierra tu sesión/i;
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      expect(KEPT.test(catalog[NOTE_KEY]), `${locale} omits the session rule`).toBe(true);
+    }
+  });
+
+  it('the model-list 401 copy has the same ambiguity and states it', () => {
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      const copy = catalog[LIST_KEY];
+      for (const pattern of ATTRIBUTIONS) {
+        expect(pattern.test(copy), `${locale} list copy asserts ${String(pattern)}`).toBe(false);
+      }
+      // It must still tell the reader what to do.
+      expect(/manual/i.test(copy), `${locale} list copy omits the remedy`).toBe(true);
+    }
+  });
+
+  it('the badge says authentication was rejected, without saying by whom', () => {
+    for (const [locale, catalog] of Object.entries(CATALOGS)) {
+      const label = catalog['ai.state.authRejected'];
+      expect(label, locale).toBeTruthy();
+      expect(label).not.toMatch(/GovAI|provider|provedor|proveedor/i);
+    }
+  });
+});

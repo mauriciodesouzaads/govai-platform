@@ -377,7 +377,7 @@ export const enUS: Catalog = {
   'ai.model.listCredential':
     'GovAI could not resolve a provider credential for this organization. Type the model id manually.',
   'ai.model.listRejected':
-    'The provider rejected this organization’s credential while listing models. Type the model id manually.',
+    'A credential was rejected while listing models. This browser cannot tell whether it was GovAI’s session key or the organization’s provider credential. Type the model id manually.',
   'ai.model.listRateLimited':
     'Rate limit reached while listing models. Type the model id manually.',
 
@@ -435,6 +435,9 @@ export const enUS: Catalog = {
   'ai.state.credentialUnavailable': 'Provider credential unavailable',
   'ai.state.credentialUnavailable.note':
     'The response came back 502 with GovAI’s provider-credential code. GovAI returns that code when it cannot resolve a credential for the organization, and does not call the provider in that case. This is a configuration condition, resolved by whoever administers the organization.',
+  'ai.state.authRejected': 'Authentication rejected',
+  'ai.state.authRejected.note':
+    'A 401 came back for this turn. This browser cannot tell whether GovAI rejected the session key or the provider rejected the organization credential — the two are relayed identically — so it names neither, and it deliberately does not sign you out on it: a relayed response must not be able to end your session. If other GovAI screens still load, the provider credential is the likelier cause.',
   'ai.state.requestTooLarge': 'Rejected as too large',
   'ai.state.requestTooLarge.note':
     'The request was rejected for its size. GovAI has its own body limit and rejects before calling the provider, which is the usual cause — but this browser cannot prove which hop rejected it, so it does not claim the provider was or was not called. Shorten the message, or start a new conversation: a long transcript is sent in full on every turn.',

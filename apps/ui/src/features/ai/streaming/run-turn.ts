@@ -312,9 +312,17 @@ function isAbort(err: unknown): boolean {
  * state is therefore kept for its remedy — shorten the request — while its COPY claims only
  * what the browser can stand behind, and asserts nothing about whether the provider was called
  * or billed. A 413 with no such code stays a provider error.
+ *
+ * `auth_rejected` is the same reasoning applied to 401, where the ambiguity is TOTAL: GovAI
+ * answers its own 401 for a revoked session key before dispatching, the direct routes relay a
+ * provider's verbatim, and nothing in either response tells them apart. `provider_error` would
+ * print "the provider answered with an error" for a call the provider may never have received.
+ * The console already refuses to END a session on this status for exactly that reason; refusing
+ * to ATTRIBUTE it is the same rule applied to what the screen says.
  */
 export function classifyErrorStatus(status: number, error: SafeProviderError): TurnState {
   if (status === 403 && isPreProviderBlockCode(error.code)) return 'blocked';
+  if (status === 401) return 'auth_rejected';
   if (status === 413 && error.code === FASTIFY_BODY_TOO_LARGE_CODE) return 'request_too_large';
   if (status === 429) return 'rate_limited';
   if (status === 502 && error.code === 'provider_credential_unresolvable') {

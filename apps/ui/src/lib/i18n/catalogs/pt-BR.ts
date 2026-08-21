@@ -398,7 +398,7 @@ export const ptBR = {
   'ai.model.listCredential':
     'O GovAI não conseguiu resolver uma credencial de provedor para esta organização. Digite o id do modelo manualmente.',
   'ai.model.listRejected':
-    'O provedor recusou a credencial desta organização ao listar modelos. Digite o id do modelo manualmente.',
+    'Uma credencial foi recusada ao listar modelos. Este navegador não consegue distinguir se foi a chave de sessão do GovAI ou a credencial de provedor da organização. Digite o id do modelo manualmente.',
   'ai.model.listRateLimited':
     'Limite de requisições atingido ao listar modelos. Digite o id do modelo manualmente.',
 
@@ -456,6 +456,9 @@ export const ptBR = {
   'ai.state.credentialUnavailable': 'Credencial de provedor indisponível',
   'ai.state.credentialUnavailable.note':
     'A resposta veio com 502 e o código de credencial de provedor do GovAI. O GovAI devolve esse código quando não consegue resolver uma credencial para a organização, e nesse caso não chama o provedor. É uma condição de configuração, resolvida por quem administra a organização.',
+  'ai.state.authRejected': 'Autenticação recusada',
+  'ai.state.authRejected.note':
+    'Veio um 401 para este turno. Este navegador não consegue distinguir se o GovAI recusou a chave da sessão ou se o provedor recusou a credencial da organização — as duas chegam iguais —, então não atribui a nenhum, e deliberadamente não encerra sua sessão por causa disso: uma resposta repassada não pode encerrar sua sessão. Se as outras telas do GovAI continuam carregando, a causa mais provável é a credencial do provedor.',
   'ai.state.requestTooLarge': 'Recusada por tamanho',
   'ai.state.requestTooLarge.note':
     'A requisição foi recusada pelo tamanho. O GovAI tem o próprio limite de corpo e recusa antes de chamar o provedor, que é a causa usual — mas este navegador não consegue provar qual salto recusou, então não afirma que o provedor foi ou não chamado. Encurte a mensagem ou comece uma nova conversa: uma transcrição longa é enviada inteira a cada turno.',

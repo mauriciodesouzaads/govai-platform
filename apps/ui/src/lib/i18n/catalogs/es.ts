@@ -382,7 +382,7 @@ export const es: Catalog = {
   'ai.model.listCredential':
     'GovAI no pudo resolver una credencial de proveedor para esta organización. Escriba el id del modelo manualmente.',
   'ai.model.listRejected':
-    'El proveedor rechazó la credencial de esta organización al listar modelos. Escriba el id del modelo manualmente.',
+    'Una credencial fue rechazada al listar modelos. Este navegador no puede distinguir si fue la clave de sesión de GovAI o la credencial de proveedor de la organización. Escriba el id del modelo manualmente.',
   'ai.model.listRateLimited':
     'Límite de peticiones alcanzado al listar modelos. Escriba el id del modelo manualmente.',
 
@@ -440,6 +440,9 @@ export const es: Catalog = {
   'ai.state.credentialUnavailable': 'Credencial de proveedor no disponible',
   'ai.state.credentialUnavailable.note':
     'La respuesta llegó con 502 y el código de credencial de proveedor de GovAI. GovAI devuelve ese código cuando no puede resolver una credencial para la organización, y en ese caso no llama al proveedor. Es una condición de configuración, que resuelve quien administra la organización.',
+  'ai.state.authRejected': 'Autenticación rechazada',
+  'ai.state.authRejected.note':
+    'Llegó un 401 para este turno. Este navegador no puede distinguir si GovAI rechazó la clave de sesión o si el proveedor rechazó la credencial de la organización — ambas llegan igual —, así que no lo atribuye a ninguno, y deliberadamente no cierra tu sesión por ello: una respuesta retransmitida no debe poder cerrarte la sesión. Si las demás pantallas de GovAI siguen cargando, la causa más probable es la credencial del proveedor.',
   'ai.state.requestTooLarge': 'Rechazada por tamaño',
   'ai.state.requestTooLarge.note':
     'La solicitud fue rechazada por su tamaño. GovAI tiene su propio límite de cuerpo y rechaza antes de llamar al proveedor, que es la causa habitual — pero este navegador no puede probar qué salto la rechazó, así que no afirma que el proveedor fuera o no llamado. Acorta el mensaje o empieza una conversación nueva: una transcripción larga se envía completa en cada turno.',
