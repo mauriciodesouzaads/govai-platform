@@ -421,6 +421,59 @@ describe('★ new conversation', () => {
     ]);
   });
 
+  it('★ also aborts the background drain of a turn that already SETTLED', async () => {
+    // ★ REGRESSION. A turn settles at the provider's terminal frame while its body keeps
+    // draining in the background (detaching rather than cancelling is what keeps GovAI's audit
+    // event `complete`). If the page forgets that controller once the turn settles, a provider
+    // that never reaches EOF strands a reader and a proxy request — and "New conversation
+    // aborts the stream" quietly stops being true for exactly the turns that succeeded.
+    // The request's own signal is what the page ultimately controls, and it is observable from
+    // the handler — unlike the source stream's `cancel`, which MSW does not propagate.
+    let requestSignal: AbortSignal | null = null;
+    server.use(
+      http.post(`*${PATHS.openaiResponsesNative}`, ({ request }) => {
+        requestSignal = request.signal;
+        const chunks = [...responsesScript('an answer')];
+        const encoder = new TextEncoder();
+        let i = 0;
+        return new HttpResponse(
+          new ReadableStream<Uint8Array>({
+            async pull(c) {
+              if (i < chunks.length) {
+                c.enqueue(encoder.encode(chunks[i] as string));
+                i += 1;
+                return;
+              }
+              // Terminal already sent; hold the connection open for ever.
+              await new Promise<void>(() => undefined);
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }),
+      ...defaultModelHandlers(),
+    );
+    const { user } = renderApp(<AiConsolePage />, { route: '/ai', credential: VALID_KEY });
+    await chooseModel(user, 'a-model');
+    await send(user, 'a question');
+
+    // The turn SETTLES even though the connection is still open.
+    await screen.findByText('an answer');
+    await waitFor(() =>
+      expect(screen.getByTestId('attempt-state-badge')).toHaveTextContent(T['ai.state.completed']),
+    );
+    // Detached, not cancelled: the request is still live, which is what keeps GovAI's audit
+    // event `complete` rather than `client_disconnect`.
+    expect(requestSignal).not.toBeNull();
+    expect((requestSignal as unknown as AbortSignal).aborted).toBe(false);
+
+    // …and New conversation still reaches it, because the page kept the controller.
+    await user.click(screen.getByTestId('new-conversation'));
+    await waitFor(() =>
+      expect((requestSignal as unknown as AbortSignal).aborted).toBe(true),
+    );
+  });
+
   it('aborts an in-flight stream when the conversation is reset', async () => {
     const { user } = renderConsole([
       streamHandler(PATHS.openaiResponsesNative, openEndedScript('in flight')),

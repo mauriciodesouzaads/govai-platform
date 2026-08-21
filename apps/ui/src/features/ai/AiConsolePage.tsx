@@ -120,17 +120,35 @@ export function AiConsolePage() {
   const [state, dispatch] = useReducer(conversationReducer, DEFAULT_CONFIG, initialConversationState);
   const [draft, setDraft] = useState('');
 
-  // The controller for the attempt currently in flight. A ref, not state: aborting must not
-  // depend on a re-render having happened, and the value must survive one.
+  // The controller for the attempt currently in flight — what Stop targets. A ref, not state:
+  // aborting must not depend on a re-render having happened, and the value must survive one.
   const controllerRef = useRef<AbortController | null>(null);
+
+  // ★ EVERY controller this conversation created, not just the in-flight one.
+  //
+  // A turn now SETTLES at the provider's terminal frame while its body keeps draining in the
+  // background (see streaming/sse.ts — detaching rather than cancelling is what keeps the audit
+  // event `complete`). That drain is still governed by its turn's signal, so dropping the only
+  // reference to the controller when the turn settled would leave New conversation, leaving
+  // /ai, and signing out unable to stop it: a provider that never reaches EOF would strand a
+  // reader and a proxy request indefinitely, and completed turns would accumulate open
+  // connections while their terminal audit events stayed pending.
+  //
+  // Aborting an already-finished stream is a no-op, so keeping them costs one object per turn
+  // and makes the lifecycle claims — "leaving aborts", "sign-out aborts" — actually true.
+  const controllersRef = useRef<Set<AbortController>>(new Set());
+  const abortEverything = useCallback(() => {
+    for (const controller of controllersRef.current) controller.abort();
+    controllersRef.current.clear();
+    controllerRef.current = null;
+  }, []);
 
   // Abort on unmount — route change, sign-out, or the tab's owner navigating away.
   useEffect(
     () => () => {
-      controllerRef.current?.abort();
-      controllerRef.current = null;
+      abortEverything();
     },
-    [],
+    [abortEverything],
   );
 
   const adapter = useMemo(
@@ -198,6 +216,7 @@ export function AiConsolePage() {
       if (turnAdapter === null) return;
       const controller = new AbortController();
       controllerRef.current = controller;
+      controllersRef.current.add(controller);
 
       const result = await runTurn({
         client,
@@ -221,6 +240,9 @@ export function AiConsolePage() {
         ),
       });
 
+      // Stop no longer targets this turn — it has settled. The controller STAYS in
+      // `controllersRef` because its body may still be draining in the background; see the
+      // note on that ref.
       if (controllerRef.current === controller) controllerRef.current = null;
       dispatch({
         type: 'settle',
@@ -286,11 +308,12 @@ export function AiConsolePage() {
   }, []);
 
   const onNewConversation = useCallback(() => {
-    controllerRef.current?.abort();
-    controllerRef.current = null;
+    // Everything, not just the in-flight turn: a detached drain from a settled turn must not
+    // outlive the conversation that produced it.
+    abortEverything();
     setDraft('');
     dispatch({ type: 'newConversation' });
-  }, []);
+  }, [abortEverything]);
 
   const busy = isBusy(state);
   const canSend = adapter !== null && state.config.model.trim().length > 0;
