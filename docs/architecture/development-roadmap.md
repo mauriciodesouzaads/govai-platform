@@ -186,24 +186,45 @@ The transcript is memory-only by construction, a provider POST is never retried 
 and the Interaction Receipt states only browser-provable facts — no audit event id, no evidence
 claim, no per-request governance on the Native surface.
 
-Two findings its LIVE acceptance produced are OPEN, belong to the backend, and are NOT fixed by
-this movement (`PROVIDER_ROUTE_SEMANTICS_CHANGE` requires owner adjudication):
+Two findings its LIVE acceptance produced were backend defects, were adjudicated by the owner
+(`PROVIDER_ROUTE_SEMANTICS_CHANGE` requires exactly that), and are **FIXED** in this tree:
 
-- **`AI-CONSOLE-ORIGIN-RELAY-01` (blocks the Anthropic surface for any browser client).** Both
-  provider packages forward every inbound header that is not hop-by-hop or auth, and `origin`
-  is in neither list — so a browser's `Origin` reaches the provider. Anthropic reads that as a
-  direct browser call and answers 401 `"CORS requests must set
-  'anthropic-dangerous-direct-browser-access' header"`. OpenAI tolerates the same relay today,
-  which makes this latent there rather than absent. There is no UI-side fix: a page cannot
-  remove its own `Origin`, and setting the Anthropic beta header would assert a direct browser
-  access that is precisely not what GovAI does. The fix is header hygiene on the server→provider
-  hop.
-- **`AI-CONSOLE-RESPONSES-DLP-GAP-01` (governed DLP).** `extractOpenAIResponsesText` descends
-  only into `input[]` items with an explicit `type`; a role-shaped item is skipped whether its
-  content is a string or parts, so those requests reach the provider with no DLP pre-scan and
-  `enforcement_decision: observe`. Chat Completions and Anthropic Messages are unaffected. The
-  console works around its own exposure by sending fully-qualified typed user items — the gap
-  itself remains for every other caller.
+- **`AI-CONSOLE-ORIGIN-RELAY-01` — FIXED (was: blocked the Anthropic surface for any browser
+  client).** Both provider packages forwarded every inbound header that is not hop-by-hop or
+  auth, and `origin` was in neither list — so a browser's `Origin` reached the provider.
+  Anthropic reads that as a direct browser call and answers 401 `"CORS requests must set
+  'anthropic-dangerous-direct-browser-access' header"`. There is no UI-side fix: a page cannot
+  remove its own `Origin`, and setting that beta header would assert a direct browser access
+  that is precisely not what GovAI does. The correction is header hygiene on the server→provider
+  hop, owned by one policy module per provider package
+  (`packages/provider-{openai,anthropic}/src/outbound-header-policy.ts`) and applied by every
+  outbound header builder — Native/Audited and Governed, streaming and non-streaming, both
+  OpenAI governed surfaces. OpenAI tolerated the relay, so it was latent there rather than
+  absent; the strip is class-wide. It is deliberately NOT a general browser-header purge:
+  `user-agent`, `referer` and the `sec-*` families are still forwarded, and the tests assert
+  that too. Live-reaccepted against real Anthropic in both modes.
+- **`AI-CONSOLE-RESPONSES-DLP-GAP-01` — FIXED (governed DLP coverage).**
+  `extractOpenAIResponsesText` descended only into `input[]` items with an explicit `type`; a
+  role-shaped item was skipped whether its content was a string or parts, so those requests
+  reached the provider with no DLP pre-scan and `enforcement_decision: observe`. All five
+  accepted spellings of a Responses message now extract identically (string input; typed
+  message with string or `input_text[]` content; the role-shaped `EasyInputMessage` in either
+  content form), plus `output_text` parts of a replayed assistant turn. Extraction stays keyed
+  to provider-semantic text fields — ids, metadata, model names and tool identifiers are still
+  never read as prompt text, and non-message input items keep their existing classifier
+  responsibilities. Chat Completions behaviour is unchanged. No risk matrix, decision table,
+  enforcement semantics, event schema or AuditBridge posture changed: this was a coverage
+  defect, and only coverage moved.
+
+A residual the same review named, **not** fixed here: `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`
+— `referer` and `cookie` describe the inbound hop by exactly the same reasoning as `origin`, and
+are relayed today. `Referer` is a semantic wrong with no observable failure (measured at 200
+against real Anthropic). `cookie` is measured, not theoretical: in the CLOSEOUT-02 acceptance
+browser the GovAI origin carried **6 cookies / 229 bytes** that GovAI never set, and they are
+relayed upstream on every browser-originated provider call. It is unfixed here because the
+adjudication covered `origin` and was explicit that the correction must not become a general
+browser-header purge — scope, not absence of a defect. Owner adjudication, like the two above.
+See stale-docs-register.md for the measurement.
 
 **U2 — Workroom console (not started).** One backend prerequisite remains named and
 unadjudicated: **EP-B4** (`GET /v1/workrooms/:id/participants` — without it there is no roster
@@ -235,6 +256,33 @@ reconciled to Foundation V1 — see `plans/GOVAI-UI-MASTER-PLAN…` header,
   (R13);
 - a UI must not represent ask/sandbox/enforcement as applied. Claims follow
   `claims-policy.md`.
+
+### `GOVAI_NATIVE_EXPERIENCE_PARITY_V1` — NEXT program target
+
+`NATIVE_EXPERIENCE_PARITY_V1 = TARGET_NOT_IMPLEMENTED`. Recorded here as the owner's declared
+direction, **not** as work in flight and **not** as anything this tree delivers.
+
+The intent: GovAI exposes OpenAI, Anthropic, **Codex** and **Claude Code** capabilities with
+provider-native fidelity wherever an official supported programmatic interface exists, and with
+a GovAI-product-equivalent experience where the provider's app has no equivalent public
+interface. The doctrine it must hold to:
+
+- provider-native semantics are preserved; GovAI does not normalize providers down to a common
+  denominator;
+- a capability is **not** called fully available merely because an endpoint is registered;
+- Native and Governed coverage are proven independently of each other;
+- UI exposure is an independent axis;
+- live acceptance is an independent axis;
+- a provider app-only feature with no public supported interface is `GOVAI_PRODUCT_EQUIVALENT`,
+  never `PROVIDER_NATIVE`;
+- Codex integration prioritizes supported structured interfaces (e.g. `codex app-server`) over
+  terminal scraping;
+- Claude Code integration prioritizes the supported Agent SDK / structured CLI interface over
+  TUI scraping.
+
+Its first movement is `EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`: build the machine-readable
+parity matrix and prove the actual current capability gap across `OPENAI_API`, `ANTHROPIC_API`,
+`CODEX` and `CLAUDE_CODE`, **before** any capability implementation wave. Not started.
 
 ---
 

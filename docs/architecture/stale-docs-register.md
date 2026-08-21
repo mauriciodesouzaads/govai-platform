@@ -461,17 +461,54 @@ Foundation V1 runtime anchor `de80664a` still names the accepted Foundation V1 r
 | `resume-playbook.md` §3 | "U1.5 (AI Console) is NOT started" | implemented, with the Anthropic browser blocker named so the next session does not rediscover it |
 | `apps/ui/README.md` | described a read-only evidence interface | an AI Console section: the routes it drives, what the receipt may and may not say, and the non-goals |
 
-### ★ New findings, source-proven during the U1.5 live acceptance — OPEN, backend-owned
+### ★ New findings, source-proven during the U1.5 live acceptance
 
-Neither is fixed here: both sit in `packages/provider-*`, which the dispatch governs with
-`PROVIDER_ROUTE_SEMANTICS_CHANGE=FORBIDDEN_UNLESS_A_REAL_BLOCKER_IS_SOURCE_PROVEN_AND_OWNER_ADJUDICATES`.
-The blockers are source-proven; the adjudication is the owner's.
+Both provider-package findings were **owner-adjudicated `FIX_REQUIRED`** and are **FIXED** in
+this tree by `EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02`. The rows below are kept as written —
+they are the historical record of what was measured and why — and each carries its present-tense
+disposition. `PROVIDER_ROUTE_SEMANTICS_CHANGE` still requires owner adjudication; this pair had
+it. `UI-DEV-PROXY-STREAM-CLOSE-01` remains open and dev-only.
 
 | Finding | Severity | Evidence | Why the UI cannot fix it |
 |---|---|---|---|
-| **`AI-CONSOLE-ORIGIN-RELAY-01`** — the direct provider routes relay the browser's `Origin` header upstream | **P0 for the Anthropic surface**; latent for OpenAI | `buildOutboundHeaders` in `packages/provider-anthropic/src/routes/register-passthrough.ts` (and its OpenAI twin) copies every inbound header except `HOP_BY_HOP` ∪ `STRIP_INBOUND_AUTH`; `origin` is in neither set, in either package. Measured against the running API with the same body four ways: **baseline → 200**, **+`Origin` → 401** `{"type":"error","error":{"type":"authentication_error","message":"CORS requests must set 'anthropic-dangerous-direct-browser-access' header"}}`, **+`Referer` only → 200**, **+`Sec-Fetch-Mode` only → 200**. Only `Origin` triggers it | `Origin` is a forbidden header name: page JavaScript can neither remove nor alter it, and the browser sends it on same-origin POSTs too. The only other route would be for the console to send `anthropic-dangerous-direct-browser-access`, which asserts that the provider key is exposed to the browser — the exact opposite of GovAI's architecture, and a false statement. The fix belongs on the server→provider hop: `Origin` describes the browser↔GovAI hop and has no meaning for a server-side call |
-| **`AI-CONSOLE-RESPONSES-DLP-GAP-01`** — the governed OpenAI Responses DLP pre-scan skips role-shaped `input[]` items | P1 (governance) | `extractOpenAIResponsesText` (`packages/provider-openai/src/governed/extract-text.ts`) hands `input[]` to `pushParts`, which acts only on items whose `type` is `text` / `input_text` / `message`. An item identified by `role` alone matches none, so it is never descended into. Measured with the same CPF: `input: "…"` → **C/enforce**; `[{type:'message', …}]` → **C/enforce**; `[{role, content:"…"}]` → **A/observe**; `[{role, content:[{type:'input_text'}]}]` → **A/observe**. Chat Completions and Anthropic Messages scan a plain string correctly | The console avoids its own exposure by sending fully-qualified typed user items (`apps/ui/src/features/ai/providers/openai-responses.ts`, with a regression test), because the alternative was shipping a Governed mode that scans nothing on its default OpenAI surface. That protects this client only — every other caller using the provider-documented shorthand still gets no scan |
+| **`AI-CONSOLE-ORIGIN-RELAY-01`** — the direct provider routes relay the browser's `Origin` header upstream | **P0 for the Anthropic surface**; latent for OpenAI | `buildOutboundHeaders` in `packages/provider-anthropic/src/routes/register-passthrough.ts` (and its OpenAI twin) copies every inbound header except `HOP_BY_HOP` ∪ `STRIP_INBOUND_AUTH`; `origin` is in neither set, in either package. Measured against the running API with the same body four ways: **baseline → 200**, **+`Origin` → 401** `{"type":"error","error":{"type":"authentication_error","message":"CORS requests must set 'anthropic-dangerous-direct-browser-access' header"}}`, **+`Referer` only → 200**, **+`Sec-Fetch-Mode` only → 200**. Only `Origin` triggers it | `Origin` is a forbidden header name: page JavaScript can neither remove nor alter it, and the browser sends it on same-origin POSTs too. The only other route would be for the console to send `anthropic-dangerous-direct-browser-access`, which asserts that the provider key is exposed to the browser — the exact opposite of GovAI's architecture, and a false statement. The fix belongs on the server→provider hop: `Origin` describes the browser↔GovAI hop and has no meaning for a server-side call. **★ FIXED (CLOSEOUT-02).** `packages/provider-{openai,anthropic}/src/outbound-header-policy.ts` owns one `STRIP_INBOUND_BROWSER_HOP` per package; every outbound header builder applies it — Native/Audited route, governed handler, both OpenAI governed surfaces, streaming and non-streaming — and the legacy exported `rewritePassthroughHeaders` holds the same policy so no future caller can reintroduce the relay through it. Deliberately NOT a browser-header purge: `user-agent`, `referer` and the `sec-*` families are still forwarded, asserted by test. Wire-level regression coverage in `*.inbound-hop-headers.test.ts` (real socket, both providers, both modes, stream and non-stream); live-reaccepted against real Anthropic in Native and Governed |
+| **`AI-CONSOLE-RESPONSES-DLP-GAP-01`** — the governed OpenAI Responses DLP pre-scan skips role-shaped `input[]` items | P1 (governance) | `extractOpenAIResponsesText` (`packages/provider-openai/src/governed/extract-text.ts`) hands `input[]` to `pushParts`, which acts only on items whose `type` is `text` / `input_text` / `message`. An item identified by `role` alone matches none, so it is never descended into. Measured with the same CPF: `input: "…"` → **C/enforce**; `[{type:'message', …}]` → **C/enforce**; `[{role, content:"…"}]` → **A/observe**; `[{role, content:[{type:'input_text'}]}]` → **A/observe**. Chat Completions and Anthropic Messages scan a plain string correctly | The console avoids its own exposure by sending fully-qualified typed user items (`apps/ui/src/features/ai/providers/openai-responses.ts`, with a regression test), because the alternative was shipping a Governed mode that scans nothing on its default OpenAI surface. That protects this client only — every other caller using the provider-documented shorthand still gets no scan. **★ FIXED (CLOSEOUT-02).** The extractor now recognizes the message item by `type: 'message'` OR by the role-shaped `EasyInputMessage` form (`type` optional), and walks a `content` that is a string as well as one that is an array of parts; `output_text` parts of a replayed assistant turn are covered too. All five accepted spellings extract identically. It is NOT a recursive string scan: ids, metadata, model names, tool identifiers and non-message input items are still never read as prompt text. Chat Completions is unchanged, and no risk matrix / decision table / enforcement semantics / event schema / AuditBridge posture moved — only coverage. Proven by `extract-text.test.ts` and end to end by `register-governed.dlp-equivalence.test.ts`, which asserts one governance outcome across all six representations and that the scan runs BEFORE provider dispatch |
 | **`UI-DEV-PROXY-STREAM-CLOSE-01`** — the Vite DEV proxy does not propagate an abnormal upstream close | dev-only, non-blocking | With an upstream that truncates a stream mid-flight: **direct to GovAI → `curl` exit 18** ("transfer closed with outstanding read data remaining") after ~11 s, i.e. GovAI correctly ends the downstream response and records `stream_outcome: upstream_error`; **through the Vite proxy → `curl` exit 28**, the connection held open to the 30 s timeout. A normal stream closes correctly through the same proxy (exit 0) | GovAI behaves correctly; the dev server does not. In `pnpm dev` a truncated stream leaves a turn showing "Generating…" until the reader presses Stop. The production reverse proxy does not exist yet (**EP-UI-DEPLOY**), so whichever one is chosen must be verified to propagate an abnormal upstream close — added to that EP's acceptance rather than guessed at here |
+
+### Named residual — `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`
+
+Opened by `EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02` while fixing `AI-CONSOLE-ORIGIN-RELAY-01`.
+`referer` and `cookie` describe the CLIENT→GovAI hop by exactly the same reasoning that made
+`origin` wrong to relay: GovAI is not "referred" by the browser's page to the provider, and a
+cookie scoped to the GovAI origin is not the provider's to receive. Both are still forwarded.
+
+Not folded into the `origin` fix, deliberately — but the reason is **scope, not absence of a
+defect**, and this row must not be read as the latter.
+
+`Referer` was **measured at 200** against real Anthropic: it is not a rejection trigger, so
+relaying it is a semantic wrong without an observable failure.
+
+`cookie` is different, and the CLOSEOUT-02 acceptance sharpened it from "latent" to **measured**.
+The earlier record said GovAI issues no cookies, which is true and beside the point: what reaches
+the provider is what the BROWSER sends on the GovAI origin, not what GovAI sets. In the acceptance
+browser, on `http://localhost:5173`, the page carried **6 cookies / 229 bytes** — none set by
+GovAI (`localhost` is shared by every dev server the operator has ever run, and cookies are
+host-scoped, not port-scoped), confirmed against a same-host listener with
+`credentials: 'include'`. `cookie` is in none of the three strip sets and an arbitrary unlisted
+header is proven to be relayed (`*.inbound-hop-headers.test.ts` asserts exactly that), so those
+bytes go upstream on every browser-originated provider call. `document.cookie` also excludes
+HttpOnly cookies, so 229 bytes is a floor, not a ceiling.
+
+It is still not fixed here, for two reasons and no others: the dispatch that authorized the
+`origin` correction was explicit that it must not become a general browser-header purge, and
+`PROVIDER_ROUTE_SEMANTICS_CHANGE` is owner-adjudicated per finding — this one was not among the
+two adjudicated. There is also no deployed browser topology yet (`EP-UI-DEPLOY` is blocked), which
+bounds today's exposure to development hosts. None of that makes the relay correct.
+
+What would close it: an owner adjudication of the same class, plus the same wire-level proof the
+`origin` strip carries. `packages/provider-{openai,anthropic}/src/outbound-header-policy.ts` is
+the single place per package that would change, and `outbound-header-policy.test.ts` pins the
+current boundary so widening it cannot happen by accident.
 
 ### Named follow-up — `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`
 

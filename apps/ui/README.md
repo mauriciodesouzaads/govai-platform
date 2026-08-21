@@ -85,20 +85,26 @@ use, code execution, artifacts, RAG, agent loops, a system-prompt field, persist
 anything belonging to Workroom. Several are supported by the providers; each opens a governance
 surface this milestone was not scoped to open.
 
-### Two open backend findings the live acceptance produced
+### Two backend findings the live acceptance produced — both FIXED
 
-Neither is a UI defect and neither is fixed here:
+Neither was a UI defect; both were owner-adjudicated and corrected in `packages/provider-*`
+(`EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02`):
 
-- **`AI-CONSOLE-ORIGIN-RELAY-01`.** The direct routes forward the browser's `Origin` header
-  upstream, and Anthropic answers `401 "CORS requests must set
-  'anthropic-dangerous-direct-browser-access' header"`. **The Anthropic surface therefore does
-  not work from a browser** until that relay is fixed server-side. A page cannot remove its own
-  `Origin`, and this console must not send that beta header — it asserts that the provider key is
-  exposed to the browser, which is the opposite of what GovAI does.
-- **`AI-CONSOLE-RESPONSES-DLP-GAP-01`.** The governed Responses DLP pre-scan skips `input[]`
-  items identified by `role` alone. This console sends fully-qualified typed user items so its
-  own governed traffic is scanned; the gap remains for callers using the provider-documented
-  shorthand.
+- **`AI-CONSOLE-ORIGIN-RELAY-01` — FIXED.** The direct routes forwarded the browser's `Origin`
+  header upstream, and Anthropic answers `401 "CORS requests must set
+  'anthropic-dangerous-direct-browser-access' header"` — so the Anthropic surface did not work
+  from a browser. A page cannot remove its own `Origin`, and this console must not send that
+  beta header: it asserts that the provider key is exposed to the browser, the opposite of what
+  GovAI does. The server→provider hop now strips `Origin` on every outbound path (both
+  providers, Native/Audited and Governed, streaming and non-streaming). Anthropic is
+  live-reaccepted in both modes. Not a browser-header purge — `user-agent`, `referer` and the
+  `sec-*` families still forward, and one residual of the same class stays deliberately open
+  (`PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`).
+- **`AI-CONSOLE-RESPONSES-DLP-GAP-01` — FIXED.** The governed Responses DLP pre-scan skipped
+  `input[]` items identified by `role` alone. All five accepted message spellings now extract
+  identically, so a caller using the provider-documented shorthand is scanned like this console
+  is. This console still sends fully-qualified typed user items — now a preference, not a
+  mitigation.
 
 ## What this interface must never say
 
