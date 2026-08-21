@@ -622,5 +622,40 @@ migration, no event schema, no auth change. Open provider-hardening findings
 `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`, `AUTH-READ-CACHE-01`, `UI-DEV-PROXY-503-01`,
 `UI-DEV-PROXY-STREAM-CLOSE-01`, `EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION`,
 `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING`, R14) are all UNCHANGED in status.
-`NATIVE_EXPERIENCE_PARITY_V1=TARGET_NOT_IMPLEMENTED`; next movement
-`EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`.
+`NATIVE_EXPERIENCE_PARITY_V1=TARGET_NOT_IMPLEMENTED` at that head; the next movement was
+`EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01` (executed — see the next section).
+
+## Native Experience Parity V1 baseline (EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01) — reconciliation
+
+This movement is documentation + manifest + validator tooling ONLY: no backend runtime, no
+provider behaviour, no migration, no event schema, no auth change, no residual fixed. It adds
+`native-experience-parity-v1.md`, `ai-conversation-continuity-v1.md`,
+`generated/native-experience-parity-v1.json` (244 rows, research snapshot 2026-08-21; gated by
+`pnpm docs:parity:check` + the unit lane) and the `scripts/` parity validator with tests.
+
+| Document | Was | Now |
+|---|---|---|
+| `development-roadmap.md` §GOVAI_NATIVE_EXPERIENCE_PARITY_V1 | "NEXT program target … first movement … Not started" | `BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`; wave plan + next mission pointer to the baseline doc |
+| `resume-playbook.md` §4 parity bullet | "first movement … not started" | baseline complete in this tree; read the two new docs; next mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` |
+| `current-state.md` | no parity/continuity state | status bullet + end-of-file canonical block (`BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`, `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`) |
+
+Register-relevant facts this baseline PROVED but did NOT change (they stay OPEN, now with a
+parity-lane classification recorded in `native-experience-parity-v1.md` §8):
+
+- **`TOOL-TAXONOMY-DRIFT-2026-08` (NEW finding, registered here):** the computer-use guardrail
+  matches legacy shapes only (`computer_YYYYMMDD` / `computer_use_preview` tool types + the three
+  hard-denied Anthropic computer-use beta headers). Anthropic's `computer_toolset_20260801`
+  (GA 2026-08-19, NO beta header) and OpenAI's newer `computer` tool type match NEITHER — they
+  would classify `typed_unknown` (risk C) and forward under the observe doctrine, bypassing the
+  computer-use floor's intent. Classification: `BLOCKER_BEFORE_PARITY_IMPLEMENTATION` for the
+  computer-use/browser-use class (P7 precondition: taxonomy + beta-policy refresh). This also
+  makes residual **R6 (beta snapshot staleness) demonstrably material**: both pinned policy
+  snapshots (`anthropic-beta-policy@2026-05-06`, `openai-beta-policy@2026-08-16`) predate the
+  providers' 2026 GA movements (Anthropic Files/Skills/computer-use GA'd 2026-08-19; the
+  registry still models `files-api-2025-04-14` as a required beta dependency).
+- The consolidation-plan line claiming `realtime=v1` is "already hard-denied" remains stale
+  (the OpenAI beta policy has ZERO hard_denied tokens) — already registered; unchanged.
+- All previously open findings above are UNCHANGED in status.
+
+`NATIVE_EXPERIENCE_PARITY_V1=BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`; next movement
+`EP-AI-CONVERSATION-CONTINUITY-V1-01` (not started).
