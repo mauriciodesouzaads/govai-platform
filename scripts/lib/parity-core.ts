@@ -180,6 +180,25 @@ export function validateParityManifest(m: unknown): string[] {
   }
   const man = m as Record<string, unknown>;
 
+  // Unknown root keys are hard errors for the same reason unknown row keys are: the canonical
+  // renderer emits a FIXED root object, so `format` would silently delete anything else —
+  // violating its content-preserving contract. Reject before any formatting can happen.
+  const ROOT_FIELDS = [
+    'schema_version',
+    'name',
+    'description',
+    'research_snapshot_date',
+    'source_anchor',
+    'verify',
+    'doc',
+    'capability_count',
+    'capabilities',
+  ];
+  const unknownRoot = Object.keys(man).filter((k) => !ROOT_FIELDS.includes(k));
+  if (unknownRoot.length > 0) {
+    errs.push(`unknown root keys (formatting would delete them): ${unknownRoot.join(', ')}`);
+  }
+
   if (man['schema_version'] !== PARITY_SCHEMA_VERSION) {
     errs.push(`schema_version must be ${PARITY_SCHEMA_VERSION}`);
   }
@@ -387,14 +406,26 @@ export function validateParityManifest(m: unknown): string[] {
       }
     }
     if (cls === 'MISSING') {
+      // EVERY GovAI-owned axis, including the continuity fields — the baseline doc states
+      // `MISSING ⇒ no GovAI axes` as a mechanically enforced invariant, so the allowlist must
+      // be complete, not merely the axes the implication rules would catch transitively.
       const govai = [
         'govai_registered',
         'native_route_available',
         'native_tested',
         'native_live_accepted',
+        'governed_applicable',
         'governed_route_available',
+        'governed_tested',
+        'governed_live_accepted',
         'ui_exposed',
+        'ui_tested',
+        'ui_live_accepted',
         'evidence_wired',
+        'exact_turn_evidence_correlation',
+        'persistence_supported',
+        'resume_supported',
+        'fork_supported',
       ];
       for (const f of govai) {
         if (b(f)) errs.push(`${where()}: MISSING rows must not set ${f}`);

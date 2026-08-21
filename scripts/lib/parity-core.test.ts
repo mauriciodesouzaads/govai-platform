@@ -233,6 +233,27 @@ describe('validateParityManifest', () => {
     expect(out2.join('\n')).not.toContain('keys out of canonical order');
   });
 
+  it('rejects unknown root keys before format could silently delete them', () => {
+    const m = mkManifest([mkRow({})]) as unknown as Record<string, unknown>;
+    m['reserch_snapshot_date'] = '2026-08-21';
+    const out = validateParityManifest(m).join('\n');
+    expect(out).toContain('unknown root keys');
+    expect(out).toContain('reserch_snapshot_date');
+  });
+
+  it('MISSING check covers every GovAI-owned axis, continuity fields included', () => {
+    for (const axis of [
+      'governed_applicable',
+      'exact_turn_evidence_correlation',
+      'persistence_supported',
+      'resume_supported',
+      'fork_supported',
+    ] as const) {
+      const m = mkManifest([mkRow({ classification: 'MISSING', [axis]: true })]);
+      expect(validateParityManifest(m).join('\n')).toContain(`MISSING rows must not set ${axis}`);
+    }
+  });
+
   it('returns findings (never throws) for structurally invalid rows, including in the ordering pass', () => {
     // Two entries with one null used to reach the ordering pass and throw a TypeError.
     const m = mkManifest([mkRow({}), null as unknown as ParityRow]);
