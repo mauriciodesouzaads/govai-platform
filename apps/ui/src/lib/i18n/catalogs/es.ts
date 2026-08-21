@@ -15,6 +15,10 @@ export const es: Catalog = {
   'app.nav.gaps': 'Brechas',
   'app.nav.auditEvents': 'Cadena de auditoría',
   'app.nav.capabilities': 'Capacidades',
+  'app.chunkError.title': 'No se pudo cargar esta pantalla',
+  'app.chunkError.description':
+    'Parte de la aplicación no se descargó. Normalmente significa que se publicó una versión nueva mientras esta pestaña estaba abierta, o que la red descartó la petición. Recargar obtiene la versión actual. Lo que solo existe en esta pestaña — incluida una conversación de la Consola de IA — no sobrevive a la recarga.',
+  'app.chunkError.reload': 'Recargar la aplicación',
   'app.footer.build': 'Build de la interfaz',
   'app.footer.buildUnavailable': 'no informado',
   'app.footer.org': 'Organización',
@@ -436,6 +440,9 @@ export const es: Catalog = {
   'ai.state.credentialUnavailable': 'Credencial de proveedor no disponible',
   'ai.state.credentialUnavailable.note':
     'La respuesta llegó con 502 y el código de credencial de proveedor de GovAI. GovAI devuelve ese código cuando no puede resolver una credencial para la organización, y en ese caso no llama al proveedor. Es una condición de configuración, que resuelve quien administra la organización.',
+  'ai.state.requestTooLarge': 'Solicitud demasiado grande para GovAI',
+  'ai.state.requestTooLarge.note':
+    'GovAI rechazó esta solicitud por tamaño antes de llamar al proveedor, así que no se hizo ninguna llamada ni se facturó nada. Acorta el mensaje o empieza una conversación nueva — una transcripción larga se envía completa en cada turno.',
   'ai.state.networkError': 'Resultado no confirmado',
   'ai.state.networkError.note':
     'La petición salió de este navegador y no llegó ninguna respuesta. Este navegador no puede saber si el proveedor ejecutó la llamada, así que no se repitió nada automáticamente.',

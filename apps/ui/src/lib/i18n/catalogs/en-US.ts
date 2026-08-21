@@ -15,6 +15,10 @@ export const enUS: Catalog = {
   'app.nav.gaps': 'Gaps',
   'app.nav.auditEvents': 'Audit chain',
   'app.nav.capabilities': 'Capabilities',
+  'app.chunkError.title': 'This screen could not be loaded',
+  'app.chunkError.description':
+    'Part of the application failed to download. This usually means a new version was deployed while this tab was open, or the network dropped the request. Reloading fetches the current version. Anything held only in this tab — including an AI Console conversation — is not carried across a reload.',
+  'app.chunkError.reload': 'Reload the application',
   'app.footer.build': 'UI build',
   'app.footer.buildUnavailable': 'not provided',
   'app.footer.org': 'Organization',
@@ -431,6 +435,9 @@ export const enUS: Catalog = {
   'ai.state.credentialUnavailable': 'Provider credential unavailable',
   'ai.state.credentialUnavailable.note':
     'The response came back 502 with GovAI’s provider-credential code. GovAI returns that code when it cannot resolve a credential for the organization, and does not call the provider in that case. This is a configuration condition, resolved by whoever administers the organization.',
+  'ai.state.requestTooLarge': 'Request too large for GovAI',
+  'ai.state.requestTooLarge.note':
+    'GovAI rejected this request as too large before calling the provider, so no provider call was made and nothing was billed. Shorten the message, or start a new conversation — a long transcript is sent in full on every turn.',
   'ai.state.networkError': 'Outcome not confirmed',
   'ai.state.networkError.note':
     'The request left this browser and no response arrived. This browser cannot tell whether the provider executed the call, so nothing was repeated automatically.',

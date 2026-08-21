@@ -78,6 +78,11 @@ const GOVAI_PRE_PROVIDER_BLOCK_CODES = new Set([
   'governed_blocked', // packages/provider-{openai,anthropic}/src/governed/register-governed.ts
 ]);
 
+/** Fastify's machine code for a body over `bodyLimit`. GovAI sets no bodyLimit, so the
+ *  framework default (1 MiB) is the real ceiling, and this code is the only thing that proves
+ *  the rejection was GovAI-local rather than the provider's own size check. */
+export const FASTIFY_BODY_TOO_LARGE_CODE = 'FST_ERR_CTP_BODY_TOO_LARGE';
+
 export function isPreProviderBlockCode(code: string | null): boolean {
   return code !== null && GOVAI_PRE_PROVIDER_BLOCK_CODES.has(code);
 }
@@ -280,9 +285,18 @@ function isAbort(err: unknown): boolean {
  * GovAI 403 carrying one of the three pre-provider denial codes. A provider's OWN 403 (a
  * content policy refusal, say) is a provider error, because the provider is exactly who ran
  * it — the distinction is the whole point of the code check.
+ *
+ * `request_too_large` applies the SAME rule to 413. GovAI configures no `bodyLimit`, so
+ * Fastify's default 1 MiB applies and an oversized body is rejected by the framework before
+ * either provider route runs — reachable, because the composer accepts an arbitrarily long
+ * prompt and multi-turn history accumulates. Calling that `provider_error` would print "the
+ * provider answered with an error" for a call the provider never received, which is exactly
+ * the kind of thing this console exists not to say. It is keyed on Fastify's own machine code,
+ * never on the bare status: a provider's own 413 stays a provider error.
  */
 export function classifyErrorStatus(status: number, error: SafeProviderError): TurnState {
   if (status === 403 && isPreProviderBlockCode(error.code)) return 'blocked';
+  if (status === 413 && error.code === FASTIFY_BODY_TOO_LARGE_CODE) return 'request_too_large';
   if (status === 429) return 'rate_limited';
   if (status === 502 && error.code === 'provider_credential_unresolvable') {
     return 'credential_unavailable';

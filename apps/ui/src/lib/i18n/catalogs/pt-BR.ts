@@ -21,6 +21,10 @@ export const ptBR = {
   'app.nav.gaps': 'Lacunas',
   'app.nav.auditEvents': 'Cadeia de auditoria',
   'app.nav.capabilities': 'Capacidades',
+  'app.chunkError.title': 'Não foi possível carregar esta tela',
+  'app.chunkError.description':
+    'Parte da aplicação não foi baixada. Em geral isso significa que uma nova versão foi publicada enquanto esta aba estava aberta, ou que a rede derrubou a requisição. Recarregar busca a versão atual. O que existe apenas nesta aba — inclusive uma conversa do Console de IA — não sobrevive ao recarregamento.',
+  'app.chunkError.reload': 'Recarregar a aplicação',
   'app.footer.build': 'Build da UI',
   'app.footer.buildUnavailable': 'não informado',
   'app.footer.org': 'Organização',
@@ -452,6 +456,9 @@ export const ptBR = {
   'ai.state.credentialUnavailable': 'Credencial de provedor indisponível',
   'ai.state.credentialUnavailable.note':
     'A resposta veio com 502 e o código de credencial de provedor do GovAI. O GovAI devolve esse código quando não consegue resolver uma credencial para a organização, e nesse caso não chama o provedor. É uma condição de configuração, resolvida por quem administra a organização.',
+  'ai.state.requestTooLarge': 'Requisição grande demais para o GovAI',
+  'ai.state.requestTooLarge.note':
+    'O GovAI recusou esta requisição por tamanho antes de chamar o provedor, então nenhuma chamada foi feita e nada foi cobrado. Encurte a mensagem ou comece uma nova conversa — uma transcrição longa é enviada inteira a cada turno.',
   'ai.state.networkError': 'Resultado não confirmado',
   'ai.state.networkError.note':
     'A requisição saiu deste navegador e nenhuma resposta chegou. Este navegador não tem como saber se o provedor executou a chamada, então nada foi repetido automaticamente.',

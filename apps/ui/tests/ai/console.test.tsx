@@ -719,6 +719,34 @@ describe('the composer and the empty state', () => {
     expect(within(status).queryByText('streaming text')).toBeNull();
   });
 
+  // The other half of the same promise: a screen-reader user who hears "generating" must also
+  // hear how it ended. Clearing the region on settle announces nothing, so the outcome — the
+  // one distinction this console exists to make — would be withheld from exactly the readers
+  // who cannot see the badge.
+  it('announces the TERMINAL state too, not silence', async () => {
+    const { user } = renderConsole([
+      streamHandler(PATHS.openaiResponsesNative, { chunks: responsesScript('done') }),
+    ]);
+    await chooseModel(user, 'a-model');
+    await send(user, 'q');
+    const status = await screen.findByTestId('conversation-status');
+    await waitFor(() => expect(status).toHaveTextContent(T['ai.state.completed']));
+    expect(status).not.toHaveTextContent(T['ai.generating']);
+  });
+
+  it('announces a FAILED terminal state with its own label, not a generic one', async () => {
+    const { user } = renderConsole([
+      errorHandler(PATHS.openaiResponsesNative, {
+        status: 429,
+        body: { error: { type: 'rate_limit_error', message: 'slow down' } },
+      }),
+    ]);
+    await chooseModel(user, 'a-model');
+    await send(user, 'q');
+    const status = await screen.findByTestId('conversation-status');
+    await waitFor(() => expect(status).toHaveTextContent(T['ai.state.rateLimited']));
+  });
+
   it('warns about an unusually large prompt without refusing it', async () => {
     const log = newCallLog();
     const { user } = renderConsole([

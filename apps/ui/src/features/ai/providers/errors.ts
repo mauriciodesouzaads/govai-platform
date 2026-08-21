@@ -77,8 +77,19 @@ export function extractProviderError(
   const errorField = record['error'] ?? nested;
 
   if (typeof errorField === 'string') {
-    // The GovAI envelope shape (`{ error: 'governed_blocked', … }`). The code IS the value.
-    return { ...base, code: boundedString(errorField), message: boundedString(record['message']) };
+    // Two shapes reach here, and they disagree about where the machine code lives:
+    //   GovAI envelope   { error: 'governed_blocked', message }          → the code IS `error`
+    //   Fastify envelope { statusCode, code, error: 'Payload Too Large',
+    //                      message }                                     → the code is `code`
+    // Prefer a top-level string `code` when there is one. GovAI's envelope has none, so this is
+    // additive there; without it a framework rejection surfaces as the human phrase ("Payload
+    // Too Large") and no caller can key a decision off it.
+    const topLevelCode = boundedString(record['code']);
+    return {
+      ...base,
+      code: topLevelCode ?? boundedString(errorField),
+      message: boundedString(record['message']),
+    };
   }
 
   if (typeof errorField === 'object' && errorField !== null) {

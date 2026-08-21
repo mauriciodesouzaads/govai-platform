@@ -5,6 +5,7 @@ import { useSession } from '../lib/session/SessionProvider.js';
 import { useI18n } from '../lib/i18n/I18nProvider.js';
 import { EnterKeyPage } from '../features/auth/EnterKeyPage.js';
 import { LoadingSkeleton } from '../components/states.js';
+import { RouteErrorBoundary } from './RouteErrorBoundary.js';
 
 // The route table. Exactly the surface this application implements:
 //
@@ -75,8 +76,21 @@ function RouteFallback() {
   return <LoadingSkeleton rows={4} label={t('table.loading')} />;
 }
 
+/**
+ * One split screen: a boundary OUTSIDE the Suspense, then the Suspense, then the lazy element.
+ *
+ * The order matters. `Suspense` owns the pending import; it does nothing for a REJECTED one, and
+ * an unhandled rejection there unmounts the whole authenticated application rather than the one
+ * screen that failed to load. The boundary sits above it so a chunk that cannot be fetched costs
+ * the reader a panel with a reload button, not the app. It handles ONLY a chunk-load failure —
+ * see RouteErrorBoundary.
+ */
 function chunk(element: ReactElement): ReactElement {
-  return <Suspense fallback={<RouteFallback />}>{element}</Suspense>;
+  return (
+    <RouteErrorBoundary>
+      <Suspense fallback={<RouteFallback />}>{element}</Suspense>
+    </RouteErrorBoundary>
+  );
 }
 
 export function AppRoutes() {

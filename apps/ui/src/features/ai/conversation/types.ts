@@ -29,6 +29,10 @@ export type TurnState =
   | 'rate_limited'
   /** 502 provider_credential_unresolvable — an operator/configuration condition. */
   | 'credential_unavailable'
+  /** GovAI's own framework rejected the request body as too large, BEFORE any provider route
+   *  ran. Source-proven by the Fastify code, never inferred from the 413 alone: a provider's
+   *  own 413 is a provider error, because the provider is who ran the check. */
+  | 'request_too_large'
   /** The request never produced a response. NOT proof the provider did not run it. */
   | 'network_error'
   /** The stream ended with no terminal marker. The outcome is not confirmed by this browser. */
@@ -42,6 +46,7 @@ export const TERMINAL_STATES: readonly TurnState[] = [
   'provider_error',
   'rate_limited',
   'credential_unavailable',
+  'request_too_large',
   'network_error',
   'unknown_outcome',
 ];

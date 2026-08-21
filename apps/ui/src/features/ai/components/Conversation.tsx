@@ -1,7 +1,8 @@
 import { useI18n } from '../../../lib/i18n/I18nProvider.js';
 import { MessageTurn } from './MessageTurn.js';
+import { STATE_LABEL } from './InteractionReceipt.js';
 import { isRetryable } from '../conversation/reducer.js';
-import type { ConversationState } from '../conversation/types.js';
+import { isTerminalState, type ConversationState } from '../conversation/types.js';
 
 // The transcript.
 //
@@ -11,6 +12,12 @@ import type { ConversationState } from '../conversation/types.js';
 // status line — "generating", then the termination — so a non-sighted reader knows the phase
 // without being read the answer character by character. They then navigate to the answer and
 // read it as text, which is how they would read any other document.
+//
+// The TERMINATION half of that has to be a real string. Clearing the region on settle announces
+// nothing at all: a screen-reader user would hear that generation began and never hear that it
+// completed, failed, was blocked or was stopped — the one distinction this console is built to
+// make, silently withheld from the readers who cannot see the badge. So the idle state carries
+// the last attempt's own terminal label, the same label the badge shows, rather than ''.
 
 export function Conversation({
   state,
@@ -22,11 +29,19 @@ export function Conversation({
   const { t } = useI18n();
   const busy = state.inFlight !== null;
 
+  // The last attempt of the last turn — the one whose outcome just settled. Only a TERMINAL
+  // state is announced: `submitting` / `streaming` are the busy phase, already covered above.
+  const lastAttempt = state.turns.at(-1)?.attempts.at(-1);
+  const settledLabel =
+    lastAttempt !== undefined && isTerminalState(lastAttempt.state)
+      ? t(STATE_LABEL[lastAttempt.state].key)
+      : '';
+
   return (
     <section aria-label={t('ai.conversation.label')} data-testid="conversation">
       {/* One polite status for the whole conversation. Deliberately outside the transcript. */}
       <p role="status" aria-live="polite" className="govai-sr-only" data-testid="conversation-status">
-        {busy ? t('ai.generating') : ''}
+        {busy ? t('ai.generating') : settledLabel}
       </p>
 
       {state.turns.length === 0 ? (

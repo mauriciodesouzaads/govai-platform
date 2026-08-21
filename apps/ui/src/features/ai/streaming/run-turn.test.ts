@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { classifyErrorStatus, isPreProviderBlockCode, runTurn } from './run-turn.js';
+import {
+  classifyErrorStatus,
+  isPreProviderBlockCode,
+  runTurn,
+  FASTIFY_BODY_TOO_LARGE_CODE,
+} from './run-turn.js';
 import { anthropicMessagesAdapter } from '../providers/anthropic-messages.js';
 import { openaiChatCompletionsAdapter } from '../providers/openai-chat-completions.js';
 import { openaiResponsesAdapter } from '../providers/openai-responses.js';
-import { EMPTY_PROVIDER_ERROR } from '../providers/errors.js';
+import { EMPTY_PROVIDER_ERROR, providerErrorFromText } from '../providers/errors.js';
 import type { ApiClient } from '../../../lib/api/client.js';
 import type { ConsoleMode, ProviderAdapter } from '../providers/types.js';
 
@@ -448,6 +453,42 @@ describe('the classification table is pure and exhaustive', () => {
     expect(classifyErrorStatus(403, EMPTY_PROVIDER_ERROR)).toBe('provider_error');
     expect(classifyErrorStatus(429, EMPTY_PROVIDER_ERROR)).toBe('rate_limited');
     expect(classifyErrorStatus(500, EMPTY_PROVIDER_ERROR)).toBe('provider_error');
+  });
+
+  // GovAI configures no `bodyLimit`, so Fastify's default 1 MiB rejects an oversized body
+  // BEFORE either provider route runs. Calling that `provider_error` prints "the provider
+  // answered with an error" for a call the provider never received.
+  it("a GovAI-local 413 is NOT attributed to the provider", () => {
+    expect(
+      classifyErrorStatus(413, { ...EMPTY_PROVIDER_ERROR, code: FASTIFY_BODY_TOO_LARGE_CODE }),
+    ).toBe('request_too_large');
+  });
+
+  it("a provider's OWN 413 stays a provider error — the code, never the bare status, decides", () => {
+    expect(classifyErrorStatus(413, EMPTY_PROVIDER_ERROR)).toBe('provider_error');
+    expect(
+      classifyErrorStatus(413, { ...EMPTY_PROVIDER_ERROR, code: 'request_too_large' }),
+    ).toBe('provider_error');
+    expect(
+      classifyErrorStatus(413, { ...EMPTY_PROVIDER_ERROR, type: 'invalid_request_error' }),
+    ).toBe('provider_error');
+  });
+
+  it("reads Fastify's real 413 envelope end to end: top-level code wins over the human phrase", () => {
+    // The exact body Fastify 5 emits for a body over `bodyLimit`, verified against the
+    // framework rather than assumed.
+    const error = providerErrorFromText(
+      '{"statusCode":413,"code":"FST_ERR_CTP_BODY_TOO_LARGE","error":"Payload Too Large","message":"Request body is too large"}',
+      413,
+    );
+    expect(error.code).toBe(FASTIFY_BODY_TOO_LARGE_CODE);
+    expect(classifyErrorStatus(413, error)).toBe('request_too_large');
+  });
+
+  it("the GovAI envelope is unchanged: with no top-level code, `error` is still the code", () => {
+    const error = providerErrorFromText('{"error":"governed_blocked","message":"blocked"}', 403);
+    expect(error.code).toBe('governed_blocked');
+    expect(classifyErrorStatus(403, error)).toBe('blocked');
   });
 });
 

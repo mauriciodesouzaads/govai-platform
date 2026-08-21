@@ -70,6 +70,7 @@ export const STATE_LABEL: Record<TurnState, { key: MessageKey; tone: Tone }> = {
   provider_error: { key: 'ai.state.providerError', tone: 'failure' },
   rate_limited: { key: 'ai.state.rateLimited', tone: 'attention' },
   credential_unavailable: { key: 'ai.state.credentialUnavailable', tone: 'attention' },
+  request_too_large: { key: 'ai.state.requestTooLarge', tone: 'attention' },
   network_error: { key: 'ai.state.networkError', tone: 'attention' },
   unknown_outcome: { key: 'ai.state.unknownOutcome', tone: 'attention' },
 };
