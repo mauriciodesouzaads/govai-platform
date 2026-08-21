@@ -391,3 +391,96 @@ describe('new conversation clears everything the provider produced', () => {
     expect(JSON.stringify(fresh)).not.toContain('q1');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `lastSettled` exists so the live region can announce the outcome of the attempt that ACTUALLY
+// settled — a retry targets any turn, so "the last turn's last attempt" is the wrong answer.
+// It is an IDENTITY into `turns`, which makes it the kind of field that can go stale, so the
+// invariant it must hold is asserted directly rather than inferred from the actions:
+//
+//   `lastSettled` is null, or it names an attempt that exists.
+//
+// A settle can arrive for an attempt this conversation no longer has: New conversation aborts an
+// in-flight request and drops its turns, and the old `execute()` then dispatches `settle`
+// anyway. Recording that identity would overwrite a live one, and the view — which resolves it
+// against `turns` — would then find nothing and SILENCE a turn that really did settle.
+describe('★ lastSettled always names an attempt that exists', () => {
+  /** The invariant, as a predicate over any state. */
+  function resolves(state: ConversationState): boolean {
+    if (state.lastSettled === null) return true;
+    const { turnId, attemptId } = state.lastSettled;
+    return state.turns.some(
+      (turn) => turn.id === turnId && turn.attempts.some((a) => a.id === attemptId),
+    );
+  }
+
+  it('is null before anything settles', () => {
+    expect(initialConversationState(CONFIG).lastSettled).toBeNull();
+  });
+
+  it('names the settled attempt, and names the RETRIED one after an out-of-order retry', () => {
+    const state = run([
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'one' },
+      settle('t1', 'a1', 'provider_error', ''),
+      { type: 'send', turnId: 't2', attemptId: 'a2', userText: 'two' },
+      settle('t2', 'a2', 'completed', 'ok'),
+      // Retry the FIRST turn while the second is the chronological last.
+      { type: 'retry', turnId: 't1', attemptId: 'a1b' },
+      settle('t1', 'a1b', 'rate_limited', ''),
+    ]);
+    expect(state.lastSettled).toEqual({ turnId: 't1', attemptId: 'a1b' });
+    expect(resolves(state)).toBe(true);
+  });
+
+  it('★ a settle for an attempt dropped by New conversation does NOT overwrite a live one', () => {
+    const state = run([
+      { type: 'send', turnId: 'old', attemptId: 'oldA', userText: 'before the reset' },
+      { type: 'newConversation' },
+      { type: 'send', turnId: 'new', attemptId: 'newA', userText: 'after the reset' },
+      settle('new', 'newA', 'completed', 'fresh answer'),
+      // The aborted request finally settles, for a turn this conversation no longer has.
+      settle('old', 'oldA', 'stopped', 'stale'),
+    ]);
+    expect(state.lastSettled).toEqual({ turnId: 'new', attemptId: 'newA' });
+    expect(resolves(state)).toBe(true);
+  });
+
+  it('a settle for an unknown attempt on an EMPTY conversation leaves it null', () => {
+    const state = run([settle('ghost', 'ghostA', 'completed', 'nothing')]);
+    expect(state.lastSettled).toBeNull();
+    expect(resolves(state)).toBe(true);
+  });
+
+  it('New conversation clears it', () => {
+    const state = run([
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'q' },
+      settle('t1', 'a1', 'completed', 'a'),
+      { type: 'newConversation' },
+    ]);
+    expect(state.lastSettled).toBeNull();
+    expect(resolves(state)).toBe(true);
+  });
+
+  it('the invariant survives every action in sequence', () => {
+    const actions: ConversationAction[] = [
+      { type: 'configure', patch: { model: 'm' } },
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'q1' },
+      { type: 'streaming', turnId: 't1', attemptId: 'a1' },
+      { type: 'delta', turnId: 't1', attemptId: 'a1', text: 'partial' },
+      settle('t1', 'a1', 'unknown_outcome', 'partial'),
+      { type: 'retry', turnId: 't1', attemptId: 'a1b' },
+      settle('t1', 'a1b', 'completed', 'done'),
+      { type: 'send', turnId: 't2', attemptId: 'a2', userText: 'q2' },
+      settle('ghost', 'ghostA', 'completed', 'stale'),
+      settle('t2', 'a2', 'stopped', 'half'),
+      { type: 'newConversation' },
+      settle('t2', 'a2', 'completed', 'very stale'),
+    ];
+    let state = initialConversationState(CONFIG);
+    for (const [i, action] of actions.entries()) {
+      state = conversationReducer(state, action);
+      expect(resolves(state), `after action ${String(i)} (${action.type})`).toBe(true);
+    }
+    expect(state.lastSettled).toBeNull();
+  });
+});

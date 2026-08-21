@@ -183,10 +183,23 @@ export function conversationReducer(
           : next.inFlight;
       // Record WHICH attempt settled. A retry can target any turn, so the view cannot recover
       // this from `turns` — see ConversationState.lastSettled.
+      //
+      // ★ ONLY when the attempt is still HERE. `patchAttempt` returns the same object when it
+      // matched nothing, which is exactly the late-settle case its own doc describes: New
+      // conversation aborts an in-flight request and drops its turns, then the old `execute()`
+      // dispatches `settle` for an attempt that no longer exists. Recording that identity
+      // anyway would overwrite a live one — and since the view resolves `lastSettled` against
+      // `turns`, the lookup would then fail and SILENCE the announcement of a turn that really
+      // did settle. The invariant is: `lastSettled` is null, or it names an attempt that
+      // exists. A late settle is dropped here for the same reason a late `delta` is dropped
+      // there.
+      const matched = next !== state;
       return {
         ...next,
         inFlight: stillInFlight,
-        lastSettled: { turnId: action.turnId, attemptId: action.attemptId },
+        lastSettled: matched
+          ? { turnId: action.turnId, attemptId: action.attemptId }
+          : state.lastSettled,
       };
     }
 
