@@ -475,6 +475,36 @@ it. `UI-DEV-PROXY-STREAM-CLOSE-01` remains open and dev-only.
 | **`AI-CONSOLE-RESPONSES-DLP-GAP-01`** — the governed OpenAI Responses DLP pre-scan skips role-shaped `input[]` items | P1 (governance) | `extractOpenAIResponsesText` (`packages/provider-openai/src/governed/extract-text.ts`) hands `input[]` to `pushParts`, which acts only on items whose `type` is `text` / `input_text` / `message`. An item identified by `role` alone matches none, so it is never descended into. Measured with the same CPF: `input: "…"` → **C/enforce**; `[{type:'message', …}]` → **C/enforce**; `[{role, content:"…"}]` → **A/observe**; `[{role, content:[{type:'input_text'}]}]` → **A/observe**. Chat Completions and Anthropic Messages scan a plain string correctly | The console avoids its own exposure by sending fully-qualified typed user items (`apps/ui/src/features/ai/providers/openai-responses.ts`, with a regression test), because the alternative was shipping a Governed mode that scans nothing on its default OpenAI surface. That protects this client only — every other caller using the provider-documented shorthand still gets no scan. **★ FIXED (CLOSEOUT-02).** The extractor now recognizes the message item by `type: 'message'` OR by the role-shaped `EasyInputMessage` form (`type` optional), and walks a `content` that is a string as well as one that is an array of parts; `output_text` parts of a replayed assistant turn are covered too. All five accepted spellings extract identically. It is NOT a recursive string scan: ids, metadata, model names, tool identifiers and non-message input items are still never read as prompt text. Chat Completions is unchanged, and no risk matrix / decision table / enforcement semantics / event schema / AuditBridge posture moved — only coverage. Proven by `extract-text.test.ts` and end to end by `register-governed.dlp-equivalence.test.ts`, which asserts one governance outcome across all six representations and that the scan runs BEFORE provider dispatch |
 | **`UI-DEV-PROXY-STREAM-CLOSE-01`** — the Vite DEV proxy does not propagate an abnormal upstream close | dev-only, non-blocking | With an upstream that truncates a stream mid-flight: **direct to GovAI → `curl` exit 18** ("transfer closed with outstanding read data remaining") after ~11 s, i.e. GovAI correctly ends the downstream response and records `stream_outcome: upstream_error`; **through the Vite proxy → `curl` exit 28**, the connection held open to the 30 s timeout. A normal stream closes correctly through the same proxy (exit 0) | GovAI behaves correctly; the dev server does not. In `pnpm dev` a truncated stream leaves a turn showing "Generating…" until the reader presses Stop. The production reverse proxy does not exist yet (**EP-UI-DEPLOY**), so whichever one is chosen must be verified to propagate an abnormal upstream close — added to that EP's acceptance rather than guessed at here |
 
+### Named residual — `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01`
+
+Source-proven during the `CLOSEOUT-02` review rounds, **not fixed**, and deliberately so.
+
+The NON-STREAM passthrough forward has no deadline and no body ceiling. Both routes call
+`forwardRaw` with no `signal`
+(`packages/provider-openai/src/routes/register-passthrough.ts:586` and the Anthropic twin at
+`:578`), and `forwardRaw` awaits `res.arrayBuffer()` — an unbounded read of an upstream the
+provider controls. A provider or intermediary that sends an enormous body, or never finishes
+one, leaves the API buffering or waiting indefinitely; a client disconnect is not propagated on
+this path either. The STREAMING forward is unaffected — EP-008C threads an `AbortController`
+through it and aborts upstream on client disconnect.
+
+What changed is only its reachability: the AI Console runs `GET /passthrough/*/v1/models`
+automatically when `/ai` opens, so a browser now triggers this path routinely. The browser-side
+request deadline added in this PR bounds the BROWSER's wait; it cannot bound the GovAI→provider
+hop, and the register should not read as though it does.
+
+Not fixed here for one reason: it is `packages/provider-*` route behaviour, which
+`PROVIDER_ROUTE_SEMANTICS_CHANGE=FORBIDDEN_UNLESS_A_REAL_BLOCKER_IS_SOURCE_PROVEN_AND_OWNER_ADJUDICATES`
+places behind owner adjudication, and it is **not one of the two findings the owner
+adjudicated** for this mission. It is also pre-existing: this PR's only change to those two
+files is the 11-line `Origin` strip, and both `forwardRaw` call sites are untouched. Fixing it
+would be the same unilateral provider-route change the previous mission correctly refused to
+make for `AI-CONSOLE-ORIGIN-RELAY-01` — the one it reported and waited for adjudication on.
+
+It blocks no acceptance gate: every hermetic and live leg passes. Closing it needs the same
+treatment the Origin relay got — an owner adjudication, then a deadline plus a body ceiling on
+the non-stream forward, with client-disconnect propagation to match the streaming path.
+
 ### Named residual — `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`
 
 Opened by `EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02` while fixing `AI-CONSOLE-ORIGIN-RELAY-01`.

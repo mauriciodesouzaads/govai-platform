@@ -226,6 +226,15 @@ adjudication covered `origin` and was explicit that the correction must not beco
 browser-header purge — scope, not absence of a defect. Owner adjudication, like the two above.
 See stale-docs-register.md for the measurement.
 
+A second residual, also source-proven during the same review rounds and also **not** fixed:
+`PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01` — the non-stream passthrough forward calls
+`forwardRaw` with no `signal` and awaits an unbounded `res.arrayBuffer()`, so a provider that
+sends an enormous body or never finishes one leaves the API buffering indefinitely, and a client
+disconnect is not propagated (the STREAMING forward is unaffected — EP-008C bounds it). The AI
+Console made it routinely reachable by running model discovery when `/ai` opens, but the defect
+is pre-existing and the fix is provider-route behaviour: owner-adjudicated, and not among the
+two adjudicated here. It blocks no acceptance gate.
+
 **U2 — Workroom console (not started).** One backend prerequisite remains named and
 unadjudicated: **EP-B4** (`GET /v1/workrooms/:id/participants` — without it there is no roster
 and no separation-of-duties UX). Its other prerequisite, EP-B2, is implemented in this tree.
