@@ -63,8 +63,12 @@ function check(): void {
 function format(): void {
   const { raw, parsed } = load();
   const errs = validateParityManifest(parsed);
-  // Ordering violations are exactly what format fixes; every other violation must be fixed by hand.
-  const hard = errs.filter((e) => !e.includes('rows out of canonical order'));
+  // Canonical-FORM violations are exactly what format fixes: row ordering and per-row key
+  // ordering (over the complete key set). Every other violation — including a wrong key SET —
+  // must be fixed by hand, because rendering would fabricate or drop data.
+  const hard = errs.filter(
+    (e) => !e.includes('rows out of canonical order') && !e.includes('keys out of canonical order')
+  );
   if (hard.length > 0) {
     for (const e of hard.slice(0, 40)) console.error(`docs:parity — INVALID: ${e}`);
     fail('fix the invariant violations above before formatting');

@@ -208,6 +208,41 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(m).join('\n')).toContain('only meaningful on the CODEX surface');
   });
 
+  it('separates key-SET violations (hard) from key-ORDER violations (formatter-repairable)', () => {
+    // Reordered keys over the COMPLETE set → the repairable finding, and the canonical
+    // renderer repairs it (fixed ROW_FIELDS order), so `format` must let it through.
+    const complete = mkRow({});
+    const reordered: Record<string, unknown> = {};
+    for (const k of [...Object.keys(complete)].reverse()) {
+      reordered[k] = (complete as unknown as Record<string, unknown>)[k];
+    }
+    const m1 = mkManifest([reordered as unknown as ParityRow]);
+    const out1 = validateParityManifest(m1);
+    expect(out1.join('\n')).toContain('keys out of canonical order');
+    expect(out1.join('\n')).toContain('docs:parity:format');
+    expect(out1.join('\n')).not.toContain('keys must be exactly');
+    const repaired = JSON.parse(renderParityManifest(m1)) as ParityManifest;
+    expect(validateParityManifest(repaired)).toEqual([]);
+
+    // Missing/unknown keys → the hard finding, never the repairable one.
+    const missing = { ...(mkRow({}) as unknown as Record<string, unknown>) };
+    delete missing['notes'];
+    const out2 = validateParityManifest(mkManifest([missing as unknown as ParityRow]));
+    expect(out2.join('\n')).toContain('keys must be exactly');
+    expect(out2.join('\n')).toContain('missing: notes');
+    expect(out2.join('\n')).not.toContain('keys out of canonical order');
+  });
+
+  it('returns findings (never throws) for structurally invalid rows, including in the ordering pass', () => {
+    // Two entries with one null used to reach the ordering pass and throw a TypeError.
+    const m = mkManifest([mkRow({}), null as unknown as ParityRow]);
+    let out: string[] = [];
+    expect(() => {
+      out = validateParityManifest(m);
+    }).not.toThrow();
+    expect(out.join('\n')).toContain('row[1] must be an object');
+  });
+
   it('flags rows out of canonical order and points at format', () => {
     const a = mkRow({ capability_id: 'zzz-cap' });
     const b = mkRow({ capability_id: 'aaa-cap' });

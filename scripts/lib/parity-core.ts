@@ -219,9 +219,21 @@ export function validateParityManifest(m: unknown): string[] {
     }
     const r = raw as Record<string, unknown>;
 
+    // Key-SET violations (missing/extra fields) are hard errors — rendering such a row would
+    // fabricate or drop data. A wrong key ORDER over the complete set is merely non-canonical
+    // form: renderParityManifest rebuilds rows in ROW_FIELDS order, so the formatter repairs it.
     const keys = Object.keys(r);
-    if (keys.length !== ROW_FIELDS.length || ROW_FIELDS.some((f, j) => keys[j] !== f)) {
-      errs.push(`${where()}: keys must be exactly the ${ROW_FIELDS.length} schema fields in canonical order`);
+    const keySet = new Set(keys);
+    const missing = ROW_FIELDS.filter((f) => !keySet.has(f));
+    const extra = keys.filter((k) => !(ROW_FIELDS as readonly string[]).includes(k));
+    if (missing.length > 0 || extra.length > 0 || keys.length !== ROW_FIELDS.length) {
+      errs.push(
+        `${where()}: keys must be exactly the ${ROW_FIELDS.length} schema fields` +
+          (missing.length > 0 ? ` (missing: ${missing.join(', ')})` : '') +
+          (extra.length > 0 ? ` (unknown: ${extra.join(', ')})` : '')
+      );
+    } else if (ROW_FIELDS.some((f, j) => keys[j] !== f)) {
+      errs.push(`${where()}: keys out of canonical order — run \`pnpm docs:parity:format\``);
     }
 
     if (!oneOf(r['surface'], SURFACES)) {
@@ -397,6 +409,12 @@ export function validateParityManifest(m: unknown): string[] {
   });
 
   // Deterministic ordering: surface (declared order), then family, then capability_id.
+  // Runs only once every row is narrowed to an object — a structurally invalid row is already
+  // reported above, and dereferencing it here would throw instead of returning findings
+  // (the validator's contract on unknown input is findings, never exceptions).
+  if (caps.some((c) => typeof c !== 'object' || c === null || Array.isArray(c))) {
+    return errs;
+  }
   const order = new Map<string, number>(SURFACES.map((s, i) => [s, i]));
   for (let i = 1; i < caps.length; i += 1) {
     const a = caps[i - 1] as Record<string, unknown>;
