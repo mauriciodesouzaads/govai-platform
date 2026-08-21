@@ -213,12 +213,20 @@ export function contextForTurn(turns: readonly Turn[], turnIndex: number): Conte
     if (attempt === null || !commitsContext(attempt.state)) continue;
     // A retry of an earlier turn is shown but never sent — see Attempt.eligibleForContext.
     if (!attempt.eligibleForContext) continue;
-    // A completed attempt that produced no visible text (a stream whose only output was
-    // unrenderable) has no assistant message to send. Dropping the pair keeps the request
-    // well-formed; an empty assistant turn is rejected outright by at least one provider.
-    if (attempt.text.length === 0) continue;
+    // ★ A REFUSAL IS AN ANSWER. When a model declines, OpenAI reports it in its own `refusal`
+    // field and leaves the text empty — so treating "no text" as "nothing to send" would drop
+    // BOTH the question and the refusal, and a follow-up like "why not?" would reach the model
+    // as though that exchange had never happened. The refusal is carried as the assistant's
+    // message, verbatim: it is what the model said, and prefixing or paraphrasing it would put
+    // words in its mouth.
+    //
+    // What genuinely has nothing to send is an attempt with neither — a stream whose only
+    // output was unrenderable. Dropping that pair keeps the request well-formed; an empty
+    // assistant turn is rejected outright by at least one provider.
+    const answer = attempt.text.length > 0 ? attempt.text : (attempt.refusal ?? '');
+    if (answer.length === 0) continue;
     out.push({ role: 'user', text: turn.userText });
-    out.push({ role: 'assistant', text: attempt.text });
+    out.push({ role: 'assistant', text: answer });
   }
   return out;
 }

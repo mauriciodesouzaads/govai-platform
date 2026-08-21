@@ -49,6 +49,7 @@ function settle(
   attemptId: string,
   state: TurnState,
   text: string,
+  refusal: string | null = null,
 ): ConversationAction {
   return {
     type: 'settle',
@@ -56,7 +57,7 @@ function settle(
     attemptId,
     state,
     text,
-    refusal: null,
+    refusal,
     unsupportedOutput: false,
     error: null,
     retryAfterSeconds: null,
@@ -140,6 +141,30 @@ describe('★ THE CONTEXT-COMMIT RULE', () => {
       expect(contextForTurn(state.turns, 1)).toEqual([]);
     },
   );
+
+  it('★ carries a refusal-only turn as context — a refusal IS an answer', () => {
+    // ★ REGRESSION. OpenAI reports a decline in its own `refusal` field and leaves the text
+    // empty. Treating "no text" as "nothing to send" dropped BOTH the question and the
+    // refusal, so a follow-up like "why not?" reached the model as though the exchange had
+    // never happened.
+    const state = run([
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'do something disallowed' },
+      settle('t1', 'a1', 'completed', '', 'I cannot help with that.'),
+    ]);
+    expect(contextForTurn(state.turns, 1)).toEqual([
+      { role: 'user', text: 'do something disallowed' },
+      // Verbatim: it is what the model said, and paraphrasing it would put words in its mouth.
+      { role: 'assistant', text: 'I cannot help with that.' },
+    ]);
+  });
+
+  it('prefers the answer text when a turn has both', () => {
+    const state = run([
+      { type: 'send', turnId: 't1', attemptId: 'a1', userText: 'q' },
+      settle('t1', 'a1', 'completed', 'the answer', 'a partial refusal'),
+    ]);
+    expect(contextForTurn(state.turns, 1)[1]).toEqual({ role: 'assistant', text: 'the answer' });
+  });
 
   it('drops a completed turn that produced no visible text', () => {
     // A stream whose only output was unrenderable has no assistant message to send, and an
