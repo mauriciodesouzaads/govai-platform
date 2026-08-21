@@ -177,13 +177,54 @@ export interface ParityFinding {
 }
 
 /**
+ * Decode the escapes of a raw JSON string body (the text between the quotes) to the string
+ * `JSON.parse` would produce. `\uXXXX` decodes per UTF-16 code unit — exactly parse semantics,
+ * surrogate pairs included. A malformed escape is kept verbatim: such input cannot survive the
+ * subsequent `JSON.parse` anyway, and keeping bytes is the conservative identity choice.
+ */
+const SIMPLE_ESCAPES: Record<string, string> = {
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+};
+
+function decodeJsonStringBody(body: string): string {
+  let out = '';
+  let i = 0;
+  while (i < body.length) {
+    const c = body[i];
+    if (c !== '\\') {
+      out += c;
+      i += 1;
+      continue;
+    }
+    const next = body[i + 1];
+    if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(body.slice(i + 2, i + 6))) {
+      out += String.fromCharCode(parseInt(body.slice(i + 2, i + 6), 16));
+      i += 6;
+    } else if (next !== undefined && next in SIMPLE_ESCAPES) {
+      out += SIMPLE_ESCAPES[next];
+      i += 2;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/**
  * Detect duplicate keys inside JSON OBJECT literals in raw text. `JSON.parse` silently keeps
  * the last occurrence, so a duplicated key would survive validation while `format` rewrote the
  * file without the earlier value — silent content loss. A tiny string/escape-aware scanner:
- * tracks object vs array contexts and collects each object's keys. Escape sequences are kept
- * verbatim for key identity (two escape-spellings of one key may evade detection — acceptable:
- * the target is accidental literal duplication, and JSON.stringify output never escapes keys
- * this manifest uses).
+ * tracks object vs array contexts and collects each object's keys. Key identity is the DECODED
+ * string — the same identity `JSON.parse` uses — so an escaped alias of a literal key (e.g.
+ * `"\u006eotes"` aliasing `"notes"`) is detected as the duplicate it becomes at parse time.
  */
 export function findDuplicateJsonKeys(raw: string): string[] {
   const dups: string[] = [];
@@ -195,20 +236,21 @@ export function findDuplicateJsonKeys(raw: string): string[] {
     const c = raw[i];
     if (c === '"') {
       let j = i + 1;
-      let s = '';
+      let body = '';
       while (j < raw.length && raw[j] !== '"') {
         if (raw[j] === '\\') {
-          s += raw.slice(j, j + 2);
+          body += raw.slice(j, j + 2);
           j += 2;
         } else {
-          s += raw[j];
+          body += raw[j];
           j += 1;
         }
       }
       const top = stack[stack.length - 1];
       if (top instanceof Set && expectKey) {
-        if (top.has(s)) dups.push(s);
-        top.add(s);
+        const key = decodeJsonStringBody(body);
+        if (top.has(key)) dups.push(key);
+        top.add(key);
         expectKey = false;
       }
       i = j + 1;

@@ -311,6 +311,20 @@ describe('findDuplicateJsonKeys', () => {
     expect(findDuplicateJsonKeys(dupNested)).toEqual(['notes']);
   });
 
+  it('detects escaped aliases of a literal key (decoded identity == JSON.parse identity)', () => {
+    // "notes" decodes to "notes": JSON.parse keeps only the second value, so the scanner
+    // must flag it even though the raw spellings differ.
+    const escapedAlias = '{"notes":"first","\\u006eotes":"second"}';
+    expect(findDuplicateJsonKeys(escapedAlias)).toEqual(['notes']);
+    // Simple-escape aliasing too: "a\tb" spelled with \t and with 	.
+    const tabAlias = '{"a\\tb": 1, "a\\u0009b": 2}';
+    expect(findDuplicateJsonKeys(tabAlias)).toEqual(['a\tb']);
+    // Decoded-DISTINCT keys are not duplicates.
+    expect(findDuplicateJsonKeys('{"notes": 1, "\\u006eote": 2}')).toEqual([]);
+    // Escaped quote inside a key neither terminates the string nor confuses identity.
+    expect(findDuplicateJsonKeys('{"a\\"b": 1, "a\\"b": 2}')).toEqual(['a"b']);
+  });
+
   it('does not false-positive on repeated keys across sibling objects, arrays, or key-like VALUES', () => {
     const ok =
       '{"capabilities": [{"notes": "a"}, {"notes": "b"}], "description": "notes: {\\"notes\\": 1}, [1,2]"}';
