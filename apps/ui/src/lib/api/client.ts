@@ -205,9 +205,24 @@ const PROVIDER_NATIVE_BODY_MAX_BYTES = 2 * 1024 * 1024;
  *  a legitimate `ReadableStreamReadResult`. */
 const READ_DEADLINE = Symbol('bounded-read-deadline');
 
-/** Total wall-clock ceiling on one bounded body read. Generous enough that a slow but real
- *  response completes, short enough that a silent one does not strand a screen in `loading`. */
-const BOUNDED_READ_TIMEOUT_MS = 15_000;
+/**
+ * Total wall-clock ceiling on ONE JSON read — the header wait AND the body read together.
+ *
+ * ★ THE CLASS: every await on a remote party needs a clock, and a JSON read has two of them.
+ * Bounding the body alone left the earlier half unbounded: a server that accepts the connection
+ * and never sends response headers leaves `fetch` pending forever, and `/ai` shows its model
+ * listing as loading until the reader navigates away. Fixing one half and not the other is how
+ * this defect survived its own fix, so the deadline is applied at the REQUEST, where it covers
+ * both — the same signal aborts the fetch and stops the read.
+ *
+ * `stream()` is deliberately exempt and says so at its own call site: a long provider stream is
+ * SUPPOSED to stay open, and its liveness is the caller's Stop button plus the terminal-marker
+ * rule, not a timer.
+ *
+ * Generous enough that a slow but real response completes, short enough that a silent one does
+ * not strand a screen.
+ */
+const JSON_REQUEST_TIMEOUT_MS = 15_000;
 
 export function createApiClient(config: ApiClientConfig): ApiClient {
   const baseUrl = normalizeBaseUrl(config.baseUrl ?? '');
@@ -231,70 +246,112 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
     const authScope = options.authScope ?? 'govai';
 
     for (let attempt = 0; ; attempt += 1) {
-      let response: Response;
-      try {
-        response = await doFetch(url, {
-          method: 'GET',
-          headers: {
-            accept: 'application/json',
-            'x-govai-api-key': credential,
-          },
-          signal: options.signal ?? null,
-          credentials: 'omit',
-          cache: 'no-store',
-          redirect: 'error',
-        });
-      } catch (err) {
-        // An aborted request is the caller's own cancellation, not a fault to report.
-        if (err instanceof DOMException && err.name === 'AbortError') throw err;
-        throw new ApiError({ kind: 'network', message: 'request did not reach the GovAI API' });
+      // ★ ONE DEADLINE PER ATTEMPT, COVERING BOTH HALVES OF THE READ.
+      //
+      // It is passed to `fetch`, so it bounds the header wait; and because aborting a fetch's
+      // signal ERRORS the response body stream, the same abort also ends a body read already in
+      // progress. That is what makes it one clock rather than two — bounding the body alone left
+      // the header wait unbounded, which is how a server that accepts the connection and never
+      // answers kept `/ai` in `loading` until the reader navigated away.
+      //
+      // Composed WITH the caller's signal so a lifecycle abort still wins immediately, and
+      // released on every exit path — including the 429 `continue`, which arms a fresh one.
+      const deadline = new AbortController();
+      const timer = setTimeout(() => {
+        deadline.abort(new DOMException('request deadline elapsed', 'TimeoutError'));
+      }, JSON_REQUEST_TIMEOUT_MS);
+      const onCallerAbort = (): void => {
+        deadline.abort(options.signal?.reason);
+      };
+      if (options.signal) {
+        if (options.signal.aborted) onCallerAbort();
+        else options.signal.addEventListener('abort', onCallerAbort, { once: true });
       }
+      const releaseDeadline = (): void => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onCallerAbort);
+      };
 
-      if (response.status === 429 && attempt < RATE_LIMIT_MAX_ATTEMPTS - 1) {
-        const retryAfter = parseRetryAfter(response.headers.get('retry-after'), Date.now());
-        const delayMs = rateLimitDelayMs(attempt, retryAfter);
-        if (delayMs !== null) {
-          await sleep(delayMs);
-          if (options.signal?.aborted) {
-            throw new DOMException('aborted', 'AbortError');
+      try {
+        let response: Response;
+        try {
+          response = await doFetch(url, {
+            method: 'GET',
+            headers: {
+              accept: 'application/json',
+              'x-govai-api-key': credential,
+            },
+            signal: deadline.signal,
+            credentials: 'omit',
+            cache: 'no-store',
+            redirect: 'error',
+          });
+        } catch (err) {
+          // The CALLER's cancellation is theirs, and is re-thrown untouched. OUR deadline is not
+          // the caller's abort: a stalled server is a network condition and must surface as one,
+          // or the screen would render "cancelled" for something nobody cancelled.
+          if (options.signal?.aborted) throw err;
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            throw new ApiError({
+              kind: 'network',
+              message: 'the GovAI API did not respond in time',
+            });
           }
-          continue;
+          throw new ApiError({ kind: 'network', message: 'request did not reach the GovAI API' });
         }
-        // Advertised wait exceeds what we will block for: fall through and report the 429
-        // with `retryAfterSeconds`, rather than retrying inside the blocked window.
-      }
 
-      if (!response.ok) {
-        throw await toApiError(response, config.onUnauthorized, authScope);
-      }
+        if (response.status === 429 && attempt < RATE_LIMIT_MAX_ATTEMPTS - 1) {
+          const retryAfter = parseRetryAfter(response.headers.get('retry-after'), Date.now());
+          const delayMs = rateLimitDelayMs(attempt, retryAfter);
+          if (delayMs !== null) {
+            // Release BEFORE sleeping: the backoff is deliberately outside the request deadline
+            // (an advertised Retry-After may exceed it), and the next attempt arms its own.
+            releaseDeadline();
+            await sleep(delayMs);
+            if (options.signal?.aborted) {
+              throw new DOMException('aborted', 'AbortError');
+            }
+            continue;
+          }
+          // Advertised wait exceeds what we will block for: fall through and report the 429
+          // with `retryAfterSeconds`, rather than retrying inside the blocked window.
+        }
 
-      let body: unknown;
-      try {
-        // A provider-controlled 2xx is read under a bound; GovAI's own is not. See
-        // PROVIDER_NATIVE_BODY_MAX_BYTES.
-        body =
-          authScope === 'provider-native'
-            ? JSON.parse(await readBoundedText(response, PROVIDER_NATIVE_BODY_MAX_BYTES))
-            : await response.json();
-      } catch {
-        throw new ApiError({
-          kind: 'malformed_response',
-          status: response.status,
-          message: 'response body was not JSON',
-        });
-      }
+        if (!response.ok) {
+          throw await toApiError(response, config.onUnauthorized, authScope);
+        }
 
-      const parsed = options.schema.safeParse(body);
-      if (!parsed.success) {
-        // Deliberately no body echo: a contract mismatch is diagnosed from the schema, and
-        // echoing an unexpected payload into an error message is how data leaks into logs.
-        throw new ApiError({
-          kind: 'malformed_response',
-          status: response.status,
-          message: 'response did not match the mirrored contract',
-        });
+        let body: unknown;
+        try {
+          // A provider-controlled 2xx is read under a bound; GovAI's own is not. See
+          // PROVIDER_NATIVE_BODY_MAX_BYTES.
+          body =
+            authScope === 'provider-native'
+              ? JSON.parse(await readBoundedText(response, PROVIDER_NATIVE_BODY_MAX_BYTES))
+              : await response.json();
+        } catch {
+          throw new ApiError({
+            kind: 'malformed_response',
+            status: response.status,
+            message: 'response body was not JSON',
+          });
+        }
+
+        const parsed = options.schema.safeParse(body);
+        if (!parsed.success) {
+          // Deliberately no body echo: a contract mismatch is diagnosed from the schema, and
+          // echoing an unexpected payload into an error message is how data leaks into logs.
+          throw new ApiError({
+            kind: 'malformed_response',
+            status: response.status,
+            message: 'response did not match the mirrored contract',
+          });
+        }
+        return parsed.data;
+      } finally {
+        // Idempotent: the 429 path already released before sleeping.
+        releaseDeadline();
       }
-      return parsed.data;
     }
   }
 
@@ -391,7 +448,7 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
 async function readBoundedText(
   response: Response,
   maxBytes: number,
-  timeoutMs: number = BOUNDED_READ_TIMEOUT_MS,
+  timeoutMs: number = JSON_REQUEST_TIMEOUT_MS,
 ): Promise<string> {
   const body = response.body;
   if (!body) return '';

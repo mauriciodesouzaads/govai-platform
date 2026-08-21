@@ -137,12 +137,31 @@ describe('error mapping', () => {
   });
 
   it('an abort propagates as an abort, not as a fault to report', async () => {
+    // The CALLER's cancellation, which is what this rule is about. The signal is what makes it
+    // the caller's: since `get` now arms its own request deadline, an `AbortError` with no
+    // caller signal can only be that deadline, and the next test asserts it reports as a
+    // network condition instead — nobody cancelled it, so calling it "cancelled" would be a
+    // lie in the reader's direction.
+    const controller = new AbortController();
+    controller.abort();
+    const fetchImpl = vi.fn(async () => {
+      throw new DOMException('aborted', 'AbortError');
+    });
+    await expect(
+      client(fetchImpl as unknown as typeof fetch).get('/v1/thing', {
+        schema: Schema,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(DOMException);
+  });
+
+  it('an AbortError with NO caller signal is our own deadline, and reports as network', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new DOMException('aborted', 'AbortError');
     });
     await expect(
       client(fetchImpl as unknown as typeof fetch).get('/v1/thing', { schema: Schema }),
-    ).rejects.toThrow(DOMException);
+    ).rejects.toMatchObject({ kind: 'network' });
   });
 
   it('tolerates a non-JSON error body (a proxy HTML page) without masking the status', async () => {
@@ -334,6 +353,54 @@ describe('bounded body reads have a deadline, not only a ceiling', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // ★ THE CLASS, stated as a test: a JSON read awaits a remote party TWICE — once for headers,
+  // once for the body — and bounding only the second left the first unbounded. A server that
+  // accepts the connection and never answers kept `/ai` in `loading` until the reader navigated
+  // away. The deadline now sits on the REQUEST, so one clock covers both halves.
+  it('★ a server that never sends response headers fails as network, not as a hang', async () => {
+    vi.useFakeTimers();
+    try {
+      // A fetch that resolves only when its signal aborts — the pre-header stall, exactly.
+      const stalling: typeof fetch = (_input, init) =>
+        new Promise((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal;
+          signal?.addEventListener('abort', () => {
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        });
+      const api = client(stalling);
+      const pending = api.get('/v1/models', { schema: Schema }).catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(isApiError(result)).toBe(true);
+      expect((result as { kind: string }).kind).toBe('network');
+      // It must NOT read as the reader's own cancellation: nobody cancelled this.
+      expect(result).not.toBeInstanceOf(DOMException);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the CALLER's own abort is still re-thrown untouched, not relabelled as a network fault", async () => {
+    const controller = new AbortController();
+    const stalling: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      });
+    const api = client(stalling);
+    const pending = api
+      .get('/v1/models', { schema: Schema, signal: controller.signal })
+      .catch((err: unknown) => err);
+    controller.abort();
+    const result = await pending;
+    expect(result).toBeInstanceOf(DOMException);
+    expect((result as DOMException).name).toBe('AbortError');
+    expect(isApiError(result)).toBe(false);
   });
 
   it('a body that CLOSES normally is unaffected by the deadline', async () => {
