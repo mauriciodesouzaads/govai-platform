@@ -359,6 +359,43 @@ describe('bounded body reads have a deadline, not only a ceiling', () => {
   // once for the body — and bounding only the second left the first unbounded. A server that
   // accepts the connection and never answers kept `/ai` in `loading` until the reader navigated
   // away. The deadline now sits on the REQUEST, so one clock covers both halves.
+  // Every response this client obtains is either consumed or cancelled. The 429 retry path was
+  // the one that did neither: it discarded the response and issued a new request, leaving the
+  // old body open — up to RATE_LIMIT_MAX_ATTEMPTS times per query, and again on every refetch.
+  it('★ a 429 that is retried has its discarded body CANCELLED, not abandoned', async () => {
+    const cancelled: string[] = [];
+    /** A body that records its own cancellation. */
+    function trackedBody(tag: string): ReadableStream<Uint8Array> {
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"retry":true}'));
+        },
+        cancel() {
+          cancelled.push(tag);
+        },
+      });
+    }
+    let call = 0;
+    const fetchImpl: typeof fetch = async () => {
+      call += 1;
+      if (call === 1) {
+        return new Response(trackedBody('first-429'), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '1' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    await expect(client(fetchImpl).get('/v1/thing', { schema: Schema })).resolves.toEqual({
+      ok: true,
+    });
+    expect(call).toBe(2);
+    expect(cancelled).toEqual(['first-429']);
+  });
+
   it('★ a server that never sends response headers fails as network, not as a hang', async () => {
     vi.useFakeTimers();
     try {

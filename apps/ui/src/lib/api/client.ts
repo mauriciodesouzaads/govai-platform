@@ -304,6 +304,14 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
           const retryAfter = parseRetryAfter(response.headers.get('retry-after'), Date.now());
           const delayMs = rateLimitDelayMs(attempt, retryAfter);
           if (delayMs !== null) {
+            // ★ THE RETRY DISCARDS THIS RESPONSE, SO CLOSE IT. A 429 from a proxy or a provider
+            // can arrive with its body still open, and nothing here will ever read it — the
+            // retry is a NEW request. An abandoned body holds its connection until GC, up to
+            // RATE_LIMIT_MAX_ATTEMPTS times per query and again on every refetch, which is how
+            // a rate-limited model listing quietly strands connections. Every other path in
+            // this client either consumes its body or cancels it; this was the one that did
+            // neither.
+            await response.body?.cancel().catch(() => undefined);
             // Release BEFORE sleeping: the backoff is deliberately outside the request deadline
             // (an advertised Retry-After may exceed it), and the next attempt arms its own.
             releaseDeadline();
