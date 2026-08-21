@@ -122,17 +122,33 @@ describe('★ "forwarded" never becomes "blocked" or "applied"', () => {
 // ── Concept: a block claim requires a 403 ──────────────────────────────────────────────────
 
 describe('★ "blocked" appears only where a 403 actually happened', () => {
-  it.each(LOCALES)('%s: the blocked state names the 403 and the pre-provider fact', (locale) => {
+  it.each(LOCALES)('%s: the blocked state names the 403 and states the rule', (locale) => {
     expect(text(locale, 'ai.state.blocked')).toContain('403');
     const note = text(locale, 'ai.state.blocked.note');
     expect(note).toContain('403');
-    // It says GovAI did not call the provider — the one claim the source proves.
-    const required: Record<Locale, RegExp> = {
-      'pt-BR': /não chamou o provedor/i,
-      'en-US': /did not call the provider/i,
-      es: /no llamó al proveedor/i,
+    // ★ It states the RULE — GovAI does not call the provider for that code — rather than
+    // asserting that THIS response originated at GovAI. The routes relay an upstream's status
+    // and body verbatim, so a 403 carrying the code is almost certainly GovAI's and cannot be
+    // proven to be; the copy must not claim more than the browser can check.
+    const rule: Record<Locale, RegExp> = {
+      'pt-BR': /não chama o provedor/i,
+      'en-US': /does not call the provider/i,
+      es: /no llama al proveedor/i,
     };
-    expect(note).toMatch(required[locale]);
+    expect(note).toMatch(rule[locale]);
+  });
+
+  it.each(LOCALES)('%s: the blocked note does not assert the response’s origin', (locale) => {
+    const note = text(locale, 'ai.state.blocked.note');
+    // The past-tense claim about this specific request is exactly what was removed.
+    const forbidden: Record<Locale, RegExp[]> = {
+      'pt-BR': [/GovAI devolveu/i, /não chamou o provedor/i],
+      'en-US': [/GovAI returned 403 and did not call/i, /did not call the provider for this request/i],
+      es: [/GovAI devolvió/i, /no llamó al proveedor/i],
+    };
+    for (const pattern of forbidden[locale]) {
+      expect(pattern.test(note), `${locale}: "${note}"`).toBe(false);
+    }
   });
 });
 

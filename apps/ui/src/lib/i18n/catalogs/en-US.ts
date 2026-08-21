@@ -421,7 +421,8 @@ export const enUS: Catalog = {
   'ai.state.stopped.note':
     'This browser cancelled the request. The partial text above is what arrived; what the provider did afterwards is not reported in this response.',
   'ai.state.blocked': 'Blocked (403) before the provider',
-  'ai.state.blocked.note': 'GovAI returned 403 and did not call the provider for this request.',
+  'ai.state.blocked.note':
+    'The response came back 403 with a GovAI block code. GovAI does not call the provider for that code. This browser reads the code from the response; it cannot verify the response’s origin on its own.',
   'ai.state.providerError': 'Provider error',
   'ai.state.providerError.note': 'The provider answered with an error. What it said is below.',
   'ai.state.rateLimited': 'Rate limited',

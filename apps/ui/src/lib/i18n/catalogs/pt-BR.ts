@@ -443,7 +443,7 @@ export const ptBR = {
     'Este navegador cancelou a requisição. O texto parcial acima é o que chegou; o que o provedor fez depois disso não é informado nesta resposta.',
   'ai.state.blocked': 'Bloqueado (403) antes do provedor',
   'ai.state.blocked.note':
-    'O GovAI devolveu 403 e não chamou o provedor nesta requisição.',
+    'A resposta veio com 403 e um código de bloqueio do GovAI. Para esse código o GovAI não chama o provedor. Este navegador lê o código da resposta; ele não tem como verificar sozinho a origem dela.',
   'ai.state.providerError': 'Erro do provedor',
   'ai.state.providerError.note': 'O provedor respondeu com erro. O que ele disse está abaixo.',
   'ai.state.rateLimited': 'Limite de requisições',

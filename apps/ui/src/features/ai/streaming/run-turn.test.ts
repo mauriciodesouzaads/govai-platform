@@ -204,6 +204,57 @@ describe('★ a stream that ends without a terminal marker is NOT a success', ()
   });
 });
 
+describe('★ a turn settles at the provider’s terminal event, not at EOF', () => {
+  it('stops reading once the terminal arrives, even on a connection held open', async () => {
+    // ★ REGRESSION. A provider may send its terminal event and keep the socket open — the
+    // acceptance stack does, for seconds. Draining to EOF anyway left the turn in `streaming`
+    // with its duration climbing and its completed answer held out of later context, long
+    // after the provider had finished. It is also what made a late Stop click possible at all.
+    let pulls = 0;
+    const stub = stubClient({});
+    const patched: ApiClient = {
+      ...stub.client,
+      stream: async () => ({
+        status: 200,
+        ok: true,
+        headers: new Headers(),
+        body: new ReadableStream<Uint8Array>({
+          pull(c) {
+            pulls += 1;
+            if (pulls <= RESPONSES_OK.length) {
+              c.enqueue(enc(RESPONSES_OK[pulls - 1] as string));
+              return;
+            }
+            // Silence for ever. If the pump waited for EOF, this would never resolve.
+            return new Promise<void>(() => undefined);
+          },
+        }),
+        readBoundedText: async () => '',
+      }),
+    };
+    const result = await Promise.race([
+      runTurn({
+        client: patched,
+        adapter: openaiResponsesAdapter,
+        mode: 'native_audited',
+        model: 'm',
+        maxTokens: 1,
+        history: [],
+        prompt: 'x',
+        signal: new AbortController().signal,
+        onText: () => undefined,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('runTurn waited for EOF after the terminal event')), 3000),
+      ),
+    ]);
+    expect(result.state).toBe('completed');
+    expect(result.text).toBe('Hello');
+    // It read the three scripted chunks and stopped; it did not sit on the open connection.
+    expect(pulls).toBeLessThanOrEqual(RESPONSES_OK.length + 1);
+  });
+});
+
 describe('stop', () => {
   it('reports stopped and keeps the partial text', async () => {
     const controller = new AbortController();

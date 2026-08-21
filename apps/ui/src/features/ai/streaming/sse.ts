@@ -55,6 +55,16 @@ export type PumpSseInput = {
   onFrame: (frame: SseFrame) => void;
   /** Aborting cancels the reader and resolves; the caller owns the abort semantics. */
   signal?: AbortSignal;
+  /**
+   * Checked after each chunk: return true to stop reading and cancel the body.
+   *
+   * ★ This is what lets a turn SETTLE when the provider says it is done, rather than when the
+   * socket happens to close. A provider may send its terminal event and hold the connection
+   * open — the acceptance stack does exactly that — and draining to EOF anyway would leave the
+   * answer stuck as "generating", keep the client-observed duration climbing, and hold the
+   * answer out of later context, all long after the provider finished.
+   */
+  stopWhen?: () => boolean;
 };
 
 /**
@@ -101,6 +111,8 @@ export async function pumpSse(input: PumpSseInput): Promise<void> {
         break;
       }
       if (input.signal?.aborted) break;
+      // The provider has said everything it is going to say; the `finally` cancels the body.
+      if (input.stopWhen?.()) break;
     }
     // Flush the decoder's pending bytes. An incomplete multi-byte sequence at EOF becomes
     // U+FFFD here rather than silently vanishing.

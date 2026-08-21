@@ -61,6 +61,49 @@ function newId(): string {
   return `id-${Math.random().toString(36).slice(2)}-${String(Date.now())}`;
 }
 
+/**
+ * How often the streaming answer is republished to React. ~12 updates a second reads as
+ * continuous to a person while bounding the Markdown re-parse a long answer would otherwise
+ * trigger on every single frame.
+ */
+const STREAM_RENDER_INTERVAL_MS = 80;
+
+/**
+ * Throttle over the accumulated text, with BOTH edges.
+ *
+ * ★ The trailing edge is not a refinement, it is the correctness condition. Intermediate values
+ * are safe to drop — each carries the full answer so far — but the LAST one is not: a stream
+ * that emits its text and then falls quiet (a slow generation, a connection held open) would
+ * otherwise leave the final value dropped inside the interval and never published, and the
+ * reader would watch an empty answer while the text sat in memory. So the newest value is
+ * always published, either immediately or once the interval elapses.
+ *
+ * A timer that fires after the turn has settled is harmless: the reducer ignores a delta for an
+ * attempt that already reached a terminal state.
+ */
+function throttleText(publish: (text: string) => void): (text: string) => void {
+  let lastAt = 0;
+  let pending: string | null = null;
+  let timer: number | null = null;
+  return (text: string) => {
+    pending = text;
+    const wait = STREAM_RENDER_INTERVAL_MS - (Date.now() - lastAt);
+    const flush = (): void => {
+      timer = null;
+      lastAt = Date.now();
+      if (pending === null) return;
+      const next = pending;
+      pending = null;
+      publish(next);
+    };
+    if (wait <= 0) {
+      flush();
+      return;
+    }
+    if (timer === null) timer = window.setTimeout(flush, wait);
+  };
+}
+
 const DEFAULT_CONFIG: ConversationConfig = {
   provider: 'openai',
   surface: 'responses',
@@ -167,8 +210,15 @@ export function AiConsolePage() {
         signal: controller.signal,
         onStreamStart: () =>
           dispatch({ type: 'streaming', turnId: args.turnId, attemptId: args.attemptId }),
-        onText: (text) =>
+        // ★ COALESCE THE STREAMING RE-RENDER. Every frame publishes the WHOLE accumulated
+        // answer, and rendering it re-parses the entire Markdown document — so a long reply
+        // with thousands of delta frames does quadratic parsing work and visibly stutters.
+        // Dropping intermediate frames is safe precisely because each one carries the full
+        // text so far, and because `settle` below writes the runner's final snapshot: the last
+        // word never depends on the last delta having been dispatched.
+        onText: throttleText((text) =>
           dispatch({ type: 'delta', turnId: args.turnId, attemptId: args.attemptId, text }),
+        ),
       });
 
       if (controllerRef.current === controller) controllerRef.current = null;

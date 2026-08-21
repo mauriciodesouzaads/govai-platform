@@ -427,7 +427,7 @@ export const es: Catalog = {
     'Este navegador canceló la petición. El texto parcial de arriba es lo que llegó; lo que el proveedor hizo después no se informa en esta respuesta.',
   'ai.state.blocked': 'Bloqueado (403) antes del proveedor',
   'ai.state.blocked.note':
-    'GovAI devolvió 403 y no llamó al proveedor en esta petición.',
+    'La respuesta llegó con 403 y un código de bloqueo de GovAI. Para ese código GovAI no llama al proveedor. Este navegador lee el código de la respuesta; no puede verificar por sí mismo su origen.',
   'ai.state.providerError': 'Error del proveedor',
   'ai.state.providerError.note': 'El proveedor respondió con un error. Lo que dijo está abajo.',
   'ai.state.rateLimited': 'Límite de peticiones',

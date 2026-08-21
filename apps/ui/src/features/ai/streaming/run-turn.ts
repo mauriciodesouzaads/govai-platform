@@ -59,8 +59,19 @@ export type RunTurnResult = {
   receipt: InteractionReceipt;
 };
 
-/** GovAI's own pre-provider denial codes, from the four direct routes. Each one means the
- *  provider was NOT called — proven at source, which is the only reason the UI may say so. */
+/**
+ * GovAI's own pre-provider denial codes, from the four direct routes. GovAI does not call the
+ * provider for any of them — proven at source.
+ *
+ * ★ WHAT THIS DOES NOT ESTABLISH. The routes relay an upstream's status AND body verbatim, so
+ * a 403 carrying one of these codes is *almost certainly* GovAI's but cannot be PROVEN to be:
+ * an upstream emitting the same envelope would look identical, and no response header settles
+ * it either (relayed headers pass through). The state and badge are still `blocked` — a 403 was
+ * genuinely observed — but the accompanying copy states the rule and attributes the code to the
+ * response, rather than asserting that this particular response originated at GovAI and that
+ * the provider therefore never ran. Same provenance limit as the 401 rule in lib/api/client.ts;
+ * closing it is EP-PROVIDER-RESPONSE-HEADER-PROVENANCE.
+ */
 const GOVAI_PRE_PROVIDER_BLOCK_CODES = new Set([
   'beta_denied', // packages/provider-{openai,anthropic}/src/routes/register-passthrough.ts
   'tool_blocked_until_governance_primitive', // idem
@@ -188,6 +199,10 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         accumulator.accept(frame);
         input.onText(accumulator.snapshot().text);
       },
+      // ★ Stop at the provider's terminal event, not at EOF. See PumpSseInput.stopWhen: a
+      // connection held open after the answer is finished would otherwise keep the turn in
+      // `streaming`, keep its duration climbing, and keep a completed answer out of context.
+      stopWhen: () => accumulator.snapshot().terminal !== null,
     });
   } catch {
     // The stream itself errored mid-flight. Whatever arrived is KEPT and the classification
