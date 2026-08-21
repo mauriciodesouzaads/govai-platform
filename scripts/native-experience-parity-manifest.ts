@@ -14,8 +14,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  findDuplicateJsonKeys,
   renderParityManifest,
-  validateParityManifest,
+  validateParityManifestFindings,
   type ParityManifest,
 } from './lib/parity-core.js';
 
@@ -37,6 +38,13 @@ function load(): { raw: string; parsed: unknown } {
   } catch {
     fail(`missing ${path.relative(REPO_ROOT, MANIFEST_PATH)}`);
   }
+  // Duplicate object keys never survive JSON.parse (last occurrence wins), so they must be
+  // rejected from the RAW text before any validation or formatting: `format` rewriting a
+  // deduplicated parse would silently discard the earlier value.
+  const dups = findDuplicateJsonKeys(raw);
+  if (dups.length > 0) {
+    fail(`duplicate JSON keys (parsing keeps only the last occurrence): ${dups.join(', ')}`);
+  }
   try {
     return { raw, parsed: JSON.parse(raw) as unknown };
   } catch (err) {
@@ -46,11 +54,11 @@ function load(): { raw: string; parsed: unknown } {
 
 function check(): void {
   const { raw, parsed } = load();
-  const errs = validateParityManifest(parsed);
-  if (errs.length > 0) {
-    for (const e of errs.slice(0, 40)) console.error(`docs:parity — INVALID: ${e}`);
-    if (errs.length > 40) console.error(`docs:parity — … and ${errs.length - 40} more`);
-    fail(`${errs.length} invariant violation${errs.length === 1 ? '' : 's'}`);
+  const findings = validateParityManifestFindings(parsed);
+  if (findings.length > 0) {
+    for (const f of findings.slice(0, 40)) console.error(`docs:parity — INVALID: ${f.message}`);
+    if (findings.length > 40) console.error(`docs:parity — … and ${findings.length - 40} more`);
+    fail(`${findings.length} invariant violation${findings.length === 1 ? '' : 's'}`);
   }
   const canonical = renderParityManifest(parsed as ParityManifest);
   if (canonical !== raw) {
@@ -62,15 +70,14 @@ function check(): void {
 
 function format(): void {
   const { raw, parsed } = load();
-  const errs = validateParityManifest(parsed);
+  const findings = validateParityManifestFindings(parsed);
   // Canonical-FORM violations are exactly what format fixes: row ordering and per-row key
   // ordering (over the complete key set). Every other violation — including a wrong key SET —
-  // must be fixed by hand, because rendering would fabricate or drop data.
-  const hard = errs.filter(
-    (e) => !e.includes('rows out of canonical order') && !e.includes('keys out of canonical order')
-  );
+  // must be fixed by hand, because rendering would fabricate or drop data. The branch is on
+  // the STRUCTURAL finding code, never on message text (messages embed user-controlled values).
+  const hard = findings.filter((f) => f.code === 'invalid');
   if (hard.length > 0) {
-    for (const e of hard.slice(0, 40)) console.error(`docs:parity — INVALID: ${e}`);
+    for (const f of hard.slice(0, 40)) console.error(`docs:parity — INVALID: ${f.message}`);
     fail('fix the invariant violations above before formatting');
   }
   const canonical = renderParityManifest(parsed as ParityManifest);

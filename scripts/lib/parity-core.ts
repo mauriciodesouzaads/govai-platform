@@ -164,19 +164,93 @@ function isBool(v: unknown): v is boolean {
   return typeof v === 'boolean';
 }
 
+/**
+ * A validation finding with a STRUCTURAL repairability class. `row-order` and `key-order`
+ * are canonical-FORM violations the formatter repairs; everything else is `invalid` (hard).
+ * Consumers must branch on `code`, never on message text — messages embed user-controlled
+ * values, so substring matching would let a crafted value (e.g. an official_status of
+ * "rows out of canonical order") misclassify a hard finding as repairable.
+ */
+export interface ParityFinding {
+  code: 'invalid' | 'row-order' | 'key-order';
+  message: string;
+}
+
+/**
+ * Detect duplicate keys inside JSON OBJECT literals in raw text. `JSON.parse` silently keeps
+ * the last occurrence, so a duplicated key would survive validation while `format` rewrote the
+ * file without the earlier value — silent content loss. A tiny string/escape-aware scanner:
+ * tracks object vs array contexts and collects each object's keys. Escape sequences are kept
+ * verbatim for key identity (two escape-spellings of one key may evade detection — acceptable:
+ * the target is accidental literal duplication, and JSON.stringify output never escapes keys
+ * this manifest uses).
+ */
+export function findDuplicateJsonKeys(raw: string): string[] {
+  const dups: string[] = [];
+  // Object contexts carry a key set; array contexts push null.
+  const stack: Array<Set<string> | null> = [];
+  let expectKey = false;
+  let i = 0;
+  while (i < raw.length) {
+    const c = raw[i];
+    if (c === '"') {
+      let j = i + 1;
+      let s = '';
+      while (j < raw.length && raw[j] !== '"') {
+        if (raw[j] === '\\') {
+          s += raw.slice(j, j + 2);
+          j += 2;
+        } else {
+          s += raw[j];
+          j += 1;
+        }
+      }
+      const top = stack[stack.length - 1];
+      if (top instanceof Set && expectKey) {
+        if (top.has(s)) dups.push(s);
+        top.add(s);
+        expectKey = false;
+      }
+      i = j + 1;
+    } else if (c === '{') {
+      stack.push(new Set());
+      expectKey = true;
+      i += 1;
+    } else if (c === '[') {
+      stack.push(null);
+      i += 1;
+    } else if (c === '}' || c === ']') {
+      stack.pop();
+      i += 1;
+    } else if (c === ',') {
+      if (stack[stack.length - 1] instanceof Set) expectKey = true;
+      i += 1;
+    } else if (c === ':') {
+      expectKey = false;
+      i += 1;
+    } else {
+      i += 1;
+    }
+  }
+  return dups;
+}
+
 function oneOf<T extends string>(v: unknown, vocab: readonly T[]): v is T {
   return typeof v === 'string' && (vocab as readonly string[]).includes(v);
 }
 
 /**
- * Validate the full manifest. Returns human-readable findings; empty array = valid.
- * Every finding names the offending row as `surface/capability_id` so a hand editor
- * can locate it without line numbers.
+ * Validate the full manifest. Returns typed findings (empty array = valid); every finding
+ * names the offending row as `surface/capability_id` so a hand editor can locate it without
+ * line numbers. Repairability lives in `code` (§ParityFinding), never in message text.
  */
-export function validateParityManifest(m: unknown): string[] {
-  const errs: string[] = [];
+export function validateParityManifestFindings(m: unknown): ParityFinding[] {
+  const findings: ParityFinding[] = [];
+  const push = (message: string, code: ParityFinding['code'] = 'invalid'): void => {
+    findings.push({ code, message });
+  };
   if (typeof m !== 'object' || m === null || Array.isArray(m)) {
-    return ['manifest root must be a JSON object'];
+    return [{ code: 'invalid', message: 'manifest root must be a JSON object' }];
   }
   const man = m as Record<string, unknown>;
 
@@ -196,34 +270,34 @@ export function validateParityManifest(m: unknown): string[] {
   ];
   const unknownRoot = Object.keys(man).filter((k) => !ROOT_FIELDS.includes(k));
   if (unknownRoot.length > 0) {
-    errs.push(`unknown root keys (formatting would delete them): ${unknownRoot.join(', ')}`);
+    push(`unknown root keys (formatting would delete them): ${unknownRoot.join(', ')}`);
   }
 
   if (man['schema_version'] !== PARITY_SCHEMA_VERSION) {
-    errs.push(`schema_version must be ${PARITY_SCHEMA_VERSION}`);
+    push(`schema_version must be ${PARITY_SCHEMA_VERSION}`);
   }
   if (man['name'] !== 'native-experience-parity-v1') {
-    errs.push('name must be "native-experience-parity-v1"');
+    push('name must be "native-experience-parity-v1"');
   }
   const snap = man['research_snapshot_date'];
   if (typeof snap !== 'string' || !DATE_RE.test(snap)) {
-    errs.push('research_snapshot_date must be a YYYY-MM-DD string');
+    push('research_snapshot_date must be a YYYY-MM-DD string');
   }
   if (typeof man['source_anchor'] !== 'string' || !SHA_RE.test(man['source_anchor'] as string)) {
-    errs.push('source_anchor must be a 40-hex commit sha');
+    push('source_anchor must be a 40-hex commit sha');
   }
   for (const f of ['description', 'verify', 'doc'] as const) {
     if (typeof man[f] !== 'string' || (man[f] as string).length === 0) {
-      errs.push(`${f} must be a non-empty string`);
+      push(`${f} must be a non-empty string`);
     }
   }
   const caps = man['capabilities'];
   if (!Array.isArray(caps)) {
-    errs.push('capabilities must be an array');
-    return errs;
+    push('capabilities must be an array');
+    return findings;
   }
   if (man['capability_count'] !== caps.length) {
-    errs.push(`capability_count (${String(man['capability_count'])}) != capabilities.length (${caps.length})`);
+    push(`capability_count (${String(man['capability_count'])}) != capabilities.length (${caps.length})`);
   }
 
   const seen = new Set<string>();
@@ -233,7 +307,7 @@ export function validateParityManifest(m: unknown): string[] {
         ? `${String((raw as Record<string, unknown>)['surface'])}/${String((raw as Record<string, unknown>)['capability_id'])}`
         : `row[${i}]`;
     if (typeof raw !== 'object' || raw === null) {
-      errs.push(`row[${i}] must be an object`);
+      push(`row[${i}] must be an object`);
       return;
     }
     const r = raw as Record<string, unknown>;
@@ -246,67 +320,67 @@ export function validateParityManifest(m: unknown): string[] {
     const missing = ROW_FIELDS.filter((f) => !keySet.has(f));
     const extra = keys.filter((k) => !(ROW_FIELDS as readonly string[]).includes(k));
     if (missing.length > 0 || extra.length > 0 || keys.length !== ROW_FIELDS.length) {
-      errs.push(
+      push(
         `${where()}: keys must be exactly the ${ROW_FIELDS.length} schema fields` +
           (missing.length > 0 ? ` (missing: ${missing.join(', ')})` : '') +
           (extra.length > 0 ? ` (unknown: ${extra.join(', ')})` : '')
       );
     } else if (ROW_FIELDS.some((f, j) => keys[j] !== f)) {
-      errs.push(`${where()}: keys out of canonical order — run \`pnpm docs:parity:format\``);
+      push(`${where()}: keys out of canonical order — run \`pnpm docs:parity:format\``, 'key-order');
     }
 
     if (!oneOf(r['surface'], SURFACES)) {
-      errs.push(`${where()}: invalid surface ${String(r['surface'])}`);
+      push(`${where()}: invalid surface ${String(r['surface'])}`);
       return;
     }
     const surface = r['surface'];
     if (r['provider'] !== SURFACE_PROVIDER[surface]) {
-      errs.push(`${where()}: provider must be ${SURFACE_PROVIDER[surface]} for surface ${surface}`);
+      push(`${where()}: provider must be ${SURFACE_PROVIDER[surface]} for surface ${surface}`);
     }
     if (typeof r['capability_id'] !== 'string' || !CAPABILITY_ID_RE.test(r['capability_id'])) {
-      errs.push(`${where()}: capability_id must be kebab-case`);
+      push(`${where()}: capability_id must be kebab-case`);
     } else {
       const key = `${surface}/${r['capability_id']}`;
-      if (seen.has(key)) errs.push(`duplicate capability id: ${key}`);
+      if (seen.has(key)) push(`duplicate capability id: ${key}`);
       seen.add(key);
     }
     for (const f of ['family', 'capability_name'] as const) {
       if (typeof r[f] !== 'string' || (r[f] as string).length === 0) {
-        errs.push(`${where()}: ${f} must be a non-empty string`);
+        push(`${where()}: ${f} must be a non-empty string`);
       }
     }
-    if (typeof r['notes'] !== 'string') errs.push(`${where()}: notes must be a string`);
+    if (typeof r['notes'] !== 'string') push(`${where()}: notes must be a string`);
     if (!oneOf(r['official_status'], OFFICIAL_STATUSES)) {
-      errs.push(`${where()}: invalid official_status ${String(r['official_status'])}`);
+      push(`${where()}: invalid official_status ${String(r['official_status'])}`);
     }
     if (!oneOf(r['classification'], CLASSIFICATIONS)) {
-      errs.push(`${where()}: invalid classification ${String(r['classification'])}`);
+      push(`${where()}: invalid classification ${String(r['classification'])}`);
       return;
     }
     if (!oneOf(r['source_type'], SOURCE_TYPES)) {
-      errs.push(`${where()}: invalid source_type ${String(r['source_type'])}`);
+      push(`${where()}: invalid source_type ${String(r['source_type'])}`);
     }
     if (
       typeof r['official_source'] !== 'string' ||
       !(r['official_source'] as string).startsWith('https://')
     ) {
-      errs.push(`${where()}: official_source must be an https URL (required for every row)`);
+      push(`${where()}: official_source must be an https URL (required for every row)`);
     }
     if (r['verified_at'] !== snap) {
-      errs.push(`${where()}: verified_at must equal research_snapshot_date (single-snapshot semantics)`);
+      push(`${where()}: verified_at must equal research_snapshot_date (single-snapshot semantics)`);
     }
     if (r['model_constraints'] !== null && typeof r['model_constraints'] !== 'string') {
-      errs.push(`${where()}: model_constraints must be string or null`);
+      push(`${where()}: model_constraints must be string or null`);
     }
     if (r['protocol_stability'] !== null) {
       if (!oneOf(r['protocol_stability'], PROTOCOL_STABILITIES)) {
-        errs.push(`${where()}: invalid protocol_stability ${String(r['protocol_stability'])}`);
+        push(`${where()}: invalid protocol_stability ${String(r['protocol_stability'])}`);
       } else if (surface !== 'CODEX') {
-        errs.push(`${where()}: protocol_stability is only meaningful on the CODEX surface`);
+        push(`${where()}: protocol_stability is only meaningful on the CODEX surface`);
       }
     }
     if (r['risk_class_if_known'] !== null && !oneOf(r['risk_class_if_known'], RISK_CLASSES)) {
-      errs.push(`${where()}: invalid risk_class_if_known ${String(r['risk_class_if_known'])}`);
+      push(`${where()}: invalid risk_class_if_known ${String(r['risk_class_if_known'])}`);
     }
     const boolFields = ROW_FIELDS.filter(
       (f) =>
@@ -322,7 +396,7 @@ export function validateParityManifest(m: unknown): string[] {
         f === 'govai_product_equivalent_required'
     );
     for (const f of boolFields) {
-      if (!isBool(r[f])) errs.push(`${where()}: ${f} must be boolean`);
+      if (!isBool(r[f])) push(`${where()}: ${f} must be boolean`);
     }
     if (boolFields.some((f) => !isBool(r[f]))) return;
 
@@ -332,29 +406,29 @@ export function validateParityManifest(m: unknown): string[] {
 
     // --- axis coherence -----------------------------------------------------
     if ((b('native_tested') || b('native_live_accepted')) && !b('native_route_available')) {
-      errs.push(`${where()}: native_tested/live_accepted require native_route_available`);
+      push(`${where()}: native_tested/live_accepted require native_route_available`);
     }
     if (
       (b('governed_route_available') || b('governed_tested') || b('governed_live_accepted')) &&
       !b('governed_applicable')
     ) {
-      errs.push(`${where()}: governed_* axes require governed_applicable`);
+      push(`${where()}: governed_* axes require governed_applicable`);
     }
     if ((b('governed_tested') || b('governed_live_accepted')) && !b('governed_route_available')) {
-      errs.push(`${where()}: governed_tested/live_accepted require governed_route_available`);
+      push(`${where()}: governed_tested/live_accepted require governed_route_available`);
     }
     if ((b('ui_tested') || b('ui_live_accepted')) && !b('ui_exposed')) {
-      errs.push(`${where()}: ui_tested/live_accepted require ui_exposed`);
+      push(`${where()}: ui_tested/live_accepted require ui_exposed`);
     }
 
     // --- product-only cannot masquerade as provider API --------------------
     if (isApp) {
-      if (cls !== 'PRODUCT_ONLY') errs.push(`${where()}: app-surface rows must classify PRODUCT_ONLY`);
+      if (cls !== 'PRODUCT_ONLY') push(`${where()}: app-surface rows must classify PRODUCT_ONLY`);
       if (r['official_status'] !== 'PRODUCT_ONLY') {
-        errs.push(`${where()}: app-surface rows must carry official_status PRODUCT_ONLY`);
+        push(`${where()}: app-surface rows must carry official_status PRODUCT_ONLY`);
       }
       if (b('provider_exposed')) {
-        errs.push(`${where()}: app-surface rows must not claim provider_exposed (API) status`);
+        push(`${where()}: app-surface rows must not claim provider_exposed (API) status`);
       }
       const apiAxes = [
         'govai_registered',
@@ -371,14 +445,14 @@ export function validateParityManifest(m: unknown): string[] {
         'evidence_wired',
       ];
       for (const f of apiAxes) {
-        if (b(f)) errs.push(`${where()}: app-surface rows must not set ${f}`);
+        if (b(f)) push(`${where()}: app-surface rows must not set ${f}`);
       }
     } else {
       if (cls === 'PRODUCT_ONLY') {
-        errs.push(`${where()}: PRODUCT_ONLY classification is reserved for app surfaces`);
+        push(`${where()}: PRODUCT_ONLY classification is reserved for app surfaces`);
       }
       if (r['official_status'] === 'PRODUCT_ONLY') {
-        errs.push(`${where()}: official_status PRODUCT_ONLY is reserved for app surfaces`);
+        push(`${where()}: official_status PRODUCT_ONLY is reserved for app surfaces`);
       }
     }
 
@@ -396,13 +470,13 @@ export function validateParityManifest(m: unknown): string[] {
         'evidence_wired',
       ];
       for (const f of need) {
-        if (!b(f)) errs.push(`${where()}: FULL requires ${f}=true`);
+        if (!b(f)) push(`${where()}: FULL requires ${f}=true`);
       }
       if (
         b('governed_applicable') &&
         !(b('governed_route_available') && b('governed_tested') && b('governed_live_accepted'))
       ) {
-        errs.push(`${where()}: FULL with governed_applicable requires the governed axes proven`);
+        push(`${where()}: FULL with governed_applicable requires the governed axes proven`);
       }
     }
     if (cls === 'MISSING') {
@@ -428,14 +502,14 @@ export function validateParityManifest(m: unknown): string[] {
         'fork_supported',
       ];
       for (const f of govai) {
-        if (b(f)) errs.push(`${where()}: MISSING rows must not set ${f}`);
+        if (b(f)) push(`${where()}: MISSING rows must not set ${f}`);
       }
     }
     if (cls === 'PROVIDER_NOT_EXPOSED' && b('provider_exposed')) {
-      errs.push(`${where()}: PROVIDER_NOT_EXPOSED contradicts provider_exposed=true`);
+      push(`${where()}: PROVIDER_NOT_EXPOSED contradicts provider_exposed=true`);
     }
     if ((cls === 'FULL' || cls === 'PARTIAL' || cls === 'BLOCKED_BY_GOVAI') && !b('provider_exposed')) {
-      errs.push(`${where()}: ${cls} requires provider_exposed=true`);
+      push(`${where()}: ${cls} requires provider_exposed=true`);
     }
   });
 
@@ -444,7 +518,7 @@ export function validateParityManifest(m: unknown): string[] {
   // reported above, and dereferencing it here would throw instead of returning findings
   // (the validator's contract on unknown input is findings, never exceptions).
   if (caps.some((c) => typeof c !== 'object' || c === null || Array.isArray(c))) {
-    return errs;
+    return findings;
   }
   const order = new Map<string, number>(SURFACES.map((s, i) => [s, i]));
   for (let i = 1; i < caps.length; i += 1) {
@@ -461,15 +535,25 @@ export function validateParityManifest(m: unknown): string[] {
       String(c['capability_id']),
     ];
     if (ka[0] > kc[0] || (ka[0] === kc[0] && (ka[1] > kc[1] || (ka[1] === kc[1] && ka[2] >= kc[2])))) {
-      errs.push(
+      push(
         `rows out of canonical order at index ${i}: ${String(c['surface'])}/${String(c['capability_id'])} ` +
-          'must sort by (surface, family, capability_id) — run `pnpm docs:parity:format`'
+          'must sort by (surface, family, capability_id) — run `pnpm docs:parity:format`',
+        'row-order'
       );
       break;
     }
   }
 
-  return errs;
+  return findings;
+}
+
+/**
+ * String façade over validateParityManifestFindings — human-readable messages only.
+ * Kept as the simple assertion surface for tests and callers that don't branch on
+ * repairability; anything deciding what `format` may repair MUST use the typed function.
+ */
+export function validateParityManifest(m: unknown): string[] {
+  return validateParityManifestFindings(m).map((f) => f.message);
 }
 
 /** Canonical byte rendering: fixed key order, canonical row sort, 2-space JSON, trailing \n. */

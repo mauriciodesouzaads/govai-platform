@@ -6,8 +6,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PARITY_SCHEMA_VERSION,
+  findDuplicateJsonKeys,
   renderParityManifest,
   validateParityManifest,
+  validateParityManifestFindings,
   type ParityManifest,
   type ParityRow,
 } from './parity-core.js';
@@ -270,6 +272,52 @@ describe('validateParityManifest', () => {
     const out = validateParityManifest(mkManifest([a, b])).join('\n');
     expect(out).toContain('rows out of canonical order');
     expect(out).toContain('docs:parity:format');
+  });
+});
+
+describe('typed findings (repairability is structural, never message-text matching)', () => {
+  it('tags only the two canonical-form findings as repairable', () => {
+    const reordered: Record<string, unknown> = {};
+    const complete = mkRow({}) as unknown as Record<string, unknown>;
+    for (const k of [...Object.keys(complete)].reverse()) reordered[k] = complete[k];
+    const zz = mkRow({ capability_id: 'zzz-cap' });
+    const aa = mkRow({ capability_id: 'aaa-cap' });
+    const findings = validateParityManifestFindings(
+      mkManifest([reordered as unknown as ParityRow, zz, aa])
+    );
+    expect(findings.map((f) => f.code).sort()).toEqual(['key-order', 'row-order']);
+  });
+
+  it('a crafted value CONTAINING a repairable phrase still classifies invalid', () => {
+    // The spoof Codex flagged: substring matching on messages would let this row erase the
+    // hard finding and permit `format` to rewrite a schema-invalid manifest.
+    const spoofed = mkRow({}) as unknown as Record<string, unknown>;
+    spoofed['official_status'] = 'rows out of canonical order — run `pnpm docs:parity:format`';
+    const findings = validateParityManifestFindings(mkManifest([spoofed as unknown as ParityRow]));
+    expect(findings.length).toBeGreaterThan(0);
+    for (const f of findings) expect(f.code).toBe('invalid');
+    // And the string façade agrees with the typed messages.
+    expect(validateParityManifest(mkManifest([spoofed as unknown as ParityRow]))).toEqual(
+      findings.map((f) => f.message)
+    );
+  });
+});
+
+describe('findDuplicateJsonKeys', () => {
+  it('detects duplicated root and nested row keys in raw text', () => {
+    const dupRoot = '{"name": "a", "name": "b"}';
+    expect(findDuplicateJsonKeys(dupRoot)).toEqual(['name']);
+    const dupNested = '{"capabilities": [{"provider": "openai", "notes": "x", "notes": "y"}]}';
+    expect(findDuplicateJsonKeys(dupNested)).toEqual(['notes']);
+  });
+
+  it('does not false-positive on repeated keys across sibling objects, arrays, or key-like VALUES', () => {
+    const ok =
+      '{"capabilities": [{"notes": "a"}, {"notes": "b"}], "description": "notes: {\\"notes\\": 1}, [1,2]"}';
+    expect(findDuplicateJsonKeys(ok)).toEqual([]);
+    // The real tracked-manifest shape round-trips clean.
+    const rendered = renderParityManifest(mkManifest([mkRow({}), mkRow({ capability_id: 'other-cap' })]));
+    expect(findDuplicateJsonKeys(rendered)).toEqual([]);
   });
 });
 
