@@ -78,6 +78,7 @@ recorded grant — not a relaxation of the default.)
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
 | Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque |
 | Evidence Link | `govai.ai_conversation_evidence_links` | Additive projection turn/attempt → `{govai_request_id, capture_id, audit_event_id?}` (§14). Never mutates audit tables |
+| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7) and must survive purge until cleanup consumes them (§19). Justification recorded here so the exception can never silently generalize |
 | Content blob | `govai.ai_conversation_content` | Envelope-encrypted payload store owned by THIS domain (§6) — deliberately not `audit_event_payloads` |
 
 Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
@@ -339,7 +340,10 @@ Normative rules:
      `provider_state` keeps a single fenced writer. ONE narrowly-typed write survives the
      fence: a discarded finalize MAY append an ORPHAN-DISPOSAL record —
      `{org, owner, conversation, provider, object_kind, provider_object_id}` — to a dedicated
-     append-only cleanup ledger that is branch-state-INDEPENDENT. Without it, a fenced chaining
+     append-only cleanup ledger that is branch-state-INDEPENDENT and, by the §3 exception,
+     CONVERSATION-LIFECYCLE-INDEPENDENT: the append works even after the conversation was
+     purged, so a zombie that resumes post-deletion still hands its provider identifier to
+     cleanup instead of stranding a provider object behind a completed deletion. Without it, a fenced chaining
      runner that received a stored provider response would discard the only copy of that
      response's id, and §19's provider cleanup could never delete an orphan it has no
      identifier for; provider-retained content would survive user deletion. The ledger is a
@@ -395,7 +399,16 @@ Normative rules:
    WINS — N's eligibility resolves first, and N+1's boundary (acquiring the authority
    afterward) builds the resulting context; DISPATCH WINS — N+1's boundary commits first
    without N, and the probe (acquiring the authority afterward) observes the advance and
-   records `context_excluded`. There is no third outcome. The probe's decision branches:
+   records `context_excluded`. There is no third outcome. **And the REQUEST PAYLOAD obeys the
+   same serialization (causal-context version):** context construction is deliberately done
+   OUTSIDE the authority (it involves decrypt work — holding a lock across it would serialize
+   the world), so a probe could still win the authority BETWEEN a runner's context build and
+   its boundary commit, leaving a stale request that contradicts the probe-wins outcome. Every
+   branch therefore carries a monotonic `causal_version`, bumped by EVERY eligibility-changing
+   commit (probe upgrades, eligibility handoffs, `context_excluded` markings); the runner
+   records the version its context was built at, and the dispatch-boundary CAS carries
+   `causal_version = <as-built>` as one more predicate — a stale build loses the CAS before
+   any POST (boundary-before-POST, §7.7) and simply rebuilds. The probe's decision branches:
    - **Branch NOT advanced** (no later turn on the branch has crossed its dispatch boundary
      since N was ratcheted — queued reservations do not count): the recovered attempt regains
      ordinary eligibility. This is safe by construction, because every strategy derives its
@@ -495,9 +508,11 @@ Normative rules:
   `provider_state` (e.g. `previous_response_id`). Rule: a branch is SINGLE-FLIGHT. The
   dispatch-boundary CAS (§7.7) executes UNDER the branch execution authority (the per-branch
   serialization primitive of LAW 16 — the same authority §7.8's recovery decision must hold)
-  and carries a second predicate — it succeeds only when no
-  earlier-`turn_seq` turn on the branch is in a non-terminal state — so reservations form a
-  durable per-branch queue that dispatches strictly in `turn_seq` order, each turn's context
+  and carries two further predicates — no
+  earlier-`turn_seq` turn on the branch in a non-terminal state, AND the §7.8 causal-context
+  version the request was built at still current — so reservations form a
+  durable per-branch queue that dispatches strictly in `turn_seq` order with never-stale
+  request payloads, each turn's context
   includes every earlier terminal outcome, and `provider_state` has one writer at a time. A
   queued turn is visible to the UI as pending; Stop/discard of a queued turn is an ordinary
   pre-dispatch transition (`accepted → stopped`), which unblocks the queue behind it.
@@ -953,7 +968,10 @@ active turns, and provider cleanup must not lose its tracking data:
 4. Row purge is LAST, and only after provider cleanup has completed or been durably handed to a
    cleanup queue that itself carries the provider identifiers it needs — purging must never
    orphan the very data the cleanup requires. Content blobs become crypto-shred eligible at
-   this point.
+   this point. Purge does NOT delete pending disposal-ledger rows (the ledger is
+   lifecycle-independent, §3) and does NOT wait on stale claimants — an unbounded zombie can
+   never gate purge, because its late identifier lands in the post-purge-writable ledger and
+   is cleaned from there; ledger rows are removed only by cleanup completion.
 
 A UI "Delete conversation" never promises evidence erasure the audit plane legitimately prevents;
 it states exactly what is deleted and what hash-only evidence remains. LGPD erasure of CONTENT is
@@ -1025,7 +1043,7 @@ sections it cites; any sentence elsewhere in this document that contradicts a la
 in that sentence, not a second doctrine. Laws 1–15, 17, 18 consolidate invariants already
 normative above; LAW 16 is introduced here.
 
-- **LAW 1 — IDENTITY AND OWNERSHIP.** Canonical ownership is `(org_id, owner_user_id)`;
+- **LAW 1 — IDENTITY AND OWNERSHIP** (one documented exception: the disposal ledger's lifecycle independence, §3)**.** Canonical ownership is `(org_id, owner_user_id)`;
   dual-predicate FORCE RLS everywhere; NO_SECURITY_OR_CAUSAL_POINTER_BY_ID_ALONE — every
   authorization/context/causality/execution/cleanup pointer is composite-lineage-bound
   (branch→conversation, turn→branch, attempt→turn, `current_attempt_id`→same-turn ancestry
@@ -1040,7 +1058,8 @@ normative above; LAW 16 is introduced here.
   (`context_excluded`); continuation with the recovered result is an explicit fork;
   pre-advance restoration requires both context domains reconciled to the same boundary, and
   the advance check itself is SERIALIZED on the branch execution authority
-  (RECOVERY_ADVANCE_SERIALIZATION). (§7.8, LAW 16)
+  (RECOVERY_ADVANCE_SERIALIZATION), and request payloads carry the branch `causal_version`
+  into the boundary CAS so a stale context build can never dispatch. (§7.8, §8, LAW 16)
 - **LAW 4 — RETRY IS CAUSAL REPLACEMENT.** RETRY_REGENERATE_CONTEXT_BOUNDARY: attempt N+1 =
   context-before-N-output + same immutable user input; the boundary is identical in the durable
   projection AND provider continuation (chaining rewinds to the parent anchor or stateless
@@ -1077,7 +1096,9 @@ normative above; LAW 16 is introduced here.
   conversation database. (§5, §6)
 - **LAW 13 — DELETE IS A PROTOCOL.** The §19 ordered fencing pipeline, with durable provider
   cleanup whose identifiers are never purged before cleanup completes or is durably handed
-  off; evidence-plane retention reported honestly. (§19)
+  off; the disposal ledger stays writable AFTER purge (the LAW 1 exception) so stale claimants
+  can neither gate purge nor strand provider objects; evidence-plane retention reported
+  honestly. (§19, §3)
 - **LAW 14 — CONVERSATION ≠ WORKROOM ≠ PROJECT.** No workroom-as-chat-storage, no
   workroom-per-conversation, `project_id` optional and future-compatible. (§4, §16)
 - **LAW 15 — COMMON CONTROL PLANE, PROVIDER-NATIVE DATA PLANE.** GovAI standardizes identity,
@@ -1132,7 +1153,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | QUEUE WAKE | root still eligible (LAW 10) | (3), reads (2) predicate | claim CAS unclaimed head | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
 | DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
 | PROVIDER CLEANUP | deleted or superseded state | (1)→(3) fresh txn | durable job outcomes/retries | n/a | provider deletion recorded, never assumed | worker | re-runnable | job terminal | outcome recorded | provider-deletion outcome shown |
-| ORPHAN CLEANUP | n/a | (3) ledger rows | opaque job id; owner context first | n/a | orphan object deleted | worker | keyset re-discovery | job terminal | ledger row | n/a (background) |
+| ORPHAN CLEANUP | n/a | (3) ledger rows (lifecycle-independent, post-purge writable) | opaque job id; owner context first | n/a | orphan object deleted | worker | keyset re-discovery | job terminal | ledger row | n/a (background) |
 
 ## 26. ADVERSARIAL COUNTEREXAMPLE SWEEP (executed pre-review; one deterministic outcome each)
 
@@ -1154,11 +1175,15 @@ tainted shared object → provider-terminal-evidence-or-rotate — PASS. U old C
 newer owner → process/connection termination + thread fork — PASS. V old Agent-SDK session
 runner → same receiver-side fence — PASS. W provider success + lost fence → finalize
 discarded; orphan-disposal record preserves the id — PASS. X orphan after advance → never
-referenced; ledger cleanup — PASS. Y legal hold during delete → §19 hold row blocks
+referenced; ledger cleanup — PASS. AC zombie resumes AFTER conversation purge with a stored
+response id → the lifecycle-independent ledger accepts the append; cleanup consumes it;
+nothing survives deletion and purge never waited on the zombie — PASS. Y legal hold during delete → §19 hold row blocks
 purge/shred; fencing proceeds, purge waits — PASS. Z archived→deleted → §19.1 admits both
 origins — PASS. AA concurrent probe upgrade vs
 N+1 dispatch boundary → RECOVERY_ADVANCE_SERIALIZATION: both hold the branch execution
-authority; probe-wins and dispatch-wins are the only orderings, no third outcome — PASS. AB
+authority; probe-wins and dispatch-wins are the only orderings, no third outcome; a probe
+that wins BETWEEN N+1's context build and boundary commit bumps `causal_version`, so the
+stale build loses the boundary CAS pre-POST and rebuilds — PASS. AB
 Stop(N) delayed until Retry minted N+1 → STOP_ATTEMPT_TARGET_STABILITY: the attempt-scoped
 command replays N's terminal state and never touches N+1 — PASS. No scenario yields two
 plausible outcomes, missing authority, an unbounded
