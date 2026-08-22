@@ -78,7 +78,7 @@ recorded grant — not a relaxation of the default.)
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
 | Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque |
 | Evidence Link | `govai.ai_conversation_evidence_links` | Additive projection turn/attempt → `{govai_request_id, capture_id, audit_event_id?}` (§14). Never mutates audit tables |
-| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7) and must survive purge until cleanup consumes them (§19). Justification recorded here so the exception can never silently generalize |
+| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7) and must survive purge until cleanup consumes them (§19). The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
 | Content blob | `govai.ai_conversation_content` | Envelope-encrypted payload store owned by THIS domain (§6) — deliberately not `audit_event_payloads` |
 
 Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
@@ -267,6 +267,9 @@ Normative rules:
 
 1. `accepted` is COMMITTED (turn row + encrypted user items durable) BEFORE any provider dispatch
    (§8, §9). Reload after `accepted` always shows the user turn.
+1b. A reservation is never attempt-less: the reserve-commit mints attempt 1 and sets
+   `current_attempt_id` atomically (§9 step 1), keeping input items turn-owned — so
+   attempt-scoped Stop, deletion fencing and worker recovery have their target from birth.
 2. **A terminal provider event outranks local abort semantics** — the U1.5 lesson, already
    enforced client-side (`run-turn.ts:237-254`) and now enforced server-side: if the terminal
    frame was observed, the attempt is `completed` even if the user pressed Stop or the browser
@@ -343,7 +346,9 @@ Normative rules:
      append-only cleanup ledger that is branch-state-INDEPENDENT and, by the §3 exception,
      CONVERSATION-LIFECYCLE-INDEPENDENT: the append works even after the conversation was
      purged, so a zombie that resumes post-deletion still hands its provider identifier to
-     cleanup instead of stranding a provider object behind a completed deletion. Without it, a fenced chaining
+     cleanup instead of stranding a provider object behind a completed deletion. The ledger's
+     `provider_object_id` is envelope-encrypted at append time (§3/§6) — the fenced writer
+     encrypts before the append, and only an owner-context worker decrypts. Without it, a fenced chaining
      runner that received a stored provider response would discard the only copy of that
      response's id, and §19's provider cleanup could never delete an orphan it has no
      identifier for; provider-retained content would survive user deletion. The ledger is a
@@ -521,7 +526,13 @@ Normative rules:
 
 The durable-turn runner is a server-side component (apps/api) that:
 
-1. commits the reservation + user items (`accepted`, born UNCLAIMED — §8's claim lifecycle:
+1. commits the reservation + user items + the INITIAL ATTEMPT ROW, with `current_attempt_id`
+   set, in ONE transaction — a turn NEVER exists without an attempt, because every control and
+   recovery surface is attempt-scoped: §13's Stop names an `attemptId`, §19's deletion
+   stop-requests non-terminal ATTEMPTS, and the §9 worker holds SELECT/UPDATE (not INSERT) on
+   attempts — a crash immediately after an attempt-less reservation would otherwise strand the
+   turn beyond every recovery path, blocking its branch queue and its conversation's deletion
+   (`accepted`, born UNCLAIMED — §8's claim lifecycle:
    a claim, and the deadline that belongs to it, is acquired only by a successful
    head-of-queue claim CAS, whether by this creating request when the turn is at head, by a
    terminal-transition wake, or by the sweep; deadlines attach to CLAIMS, never to
