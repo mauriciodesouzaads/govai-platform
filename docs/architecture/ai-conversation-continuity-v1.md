@@ -299,10 +299,15 @@ Normative rules:
      a zombie can still SPEND provider tokens on a discarded response — the protocol guarantees
      durable-state integrity, context/provider-state ordering, and (via §11) shared-state
      hygiene, not zombie-spend prevention.
-   - **The lease covers `streaming` too — a dead pump cannot strand a branch.** The owning
-     runner RENEWS its claim lease periodically while pumping (heartbeat on the same claim row);
-     persistence of stream items continues incrementally, so the durable prefix always reflects
-     what was relayed. **Every incremental write is fenced, not just the finalize:** each
+   - **The lease covers the ENTIRE post-boundary window — `dispatching` and `streaming` alike —
+     and the heartbeat is TIMER-driven, never event-driven.** The owning runner renews its claim
+     on a concurrent timer from the moment the boundary commits: while the provider POST is in
+     flight (before the first byte — a slow non-stream response or slow time-to-first-byte is a
+     LIVE attempt, and must not be ratcheted out from under a healthy runner), and while
+     pumping. The same timer tick also READS the durable stop-request flag (§13 Stop), so both
+     lease renewal and stop observation are bounded by the heartbeat interval even when the
+     provider produces no events at all. Persistence of stream items continues incrementally,
+     so the durable prefix always reflects what was relayed. **Every incremental write is fenced, not just the finalize:** each
      heartbeat and each item-append transaction is conditional on
      `claim_token = <mine> AND state = 'streaming'` — zero rows touched means the pump has been
      fenced out (or the attempt ratcheted) and MUST abort its relay. Without this, a stalled
@@ -546,11 +551,16 @@ rejected with a fork pointer when the turn is not the last on its branch ·
 stream makes NECESSARY (§9/§10: browser disconnect is delivery-only, so aborting the SSE
 re-attach is NOT Stop). Authenticated like every conversation operation, idempotent (stop of an
 already-terminal turn replays the current state), and DURABLE: it records a stop-request flag on
-the turn's claim row, so it reaches the owning runner cross-process; the runner observes the
-flag between pump iterations, aborts its provider request, and finalizes `stopped` under the
-normal fenced finalize — with terminal-outranks-abort intact (a terminal frame already observed
-wins, exactly the U1.5 rule). Stop of a QUEUED turn takes the §7 `accepted → stopped` discard
-edge and releases the queue.
+the turn's claim row AND actively wakes the owner — in-process via a claim-keyed abort registry
+(the endpoint triggers the owning runner's `AbortController` directly), cross-process via a
+notification channel (Postgres LISTEN/NOTIFY is the in-house primitive). Delivery is
+GUARANTEED-bounded independent of notification delivery, because the §7.7 heartbeat timer reads
+the flag on every tick — a stalled provider stream produces no pump iterations, so
+"check between events" alone would let Stop pend indefinitely while the heartbeat kept the
+lease alive; the timer check closes exactly that hole. On observing Stop, the runner aborts its
+provider request and finalizes `stopped` under the normal fenced finalize — with
+terminal-outranks-abort intact (a terminal frame already observed wins, exactly the U1.5 rule).
+Stop of a QUEUED turn takes the §7 `accepted → stopped` discard edge and releases the queue.
 
 - NO generic provider request schema is invented: the turn-send body embeds the provider-native
   request fragment; execution continues through provider-specific adapters over the existing
