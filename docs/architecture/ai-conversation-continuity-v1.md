@@ -553,11 +553,49 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
   `govai_audit_writer`, `govai_evidence_enumerator` — including the complete entry-time
   lifecycle section the INV-1 lesson requires: provision/deprovision, NOINHERIT,
   no-login-until-provisioned, separate credential and connection-pool lifecycle);
-- the worker identity holds EXECUTE on the two discovery functions and NOTHING broader — no
-  table-level conversation grants; having discovered a candidate, it establishes that owner's
-  FULL context (`set_config` of `app.org_id` AND `app.user_id` from the candidate row) for
-  that specific work item only, after which every content/provider-identifier read passes
-  through ordinary owner-scoped RLS.
+- **WORKER_LEAST_PRIVILEGE_UNDER_FORCE_RLS:** table privilege and RLS are CUMULATIVE controls
+  — RLS answers "which rows may this authorized operation touch?", never "may this role
+  SELECT/UPDATE at all?" — so "zero table grants + ordinary RLS-scoped work" is internally
+  inconsistent and is NOT the model. The worker identity holds EXECUTE on the two discovery
+  functions PLUS the MINIMUM ordinary table privileges its flows require (matrix below), under
+  FORCE RLS like every other session: no `BYPASSRLS`, no table ownership, no superuser,
+  `NOINHERIT`, never grantable to or `SET ROLE`-able from `govai_app`. The detached workflow is
+  therefore: worker identity → SECURITY DEFINER discovery (opaque candidate + minimum owner
+  identity) → transaction-local owner context → ordinary least-privilege SQL → FORCE RLS
+  row-scoping → candidate processing. SECURITY DEFINER surface stays MINIMAL — discovery only;
+  worker logic is NOT folded into large definer procedures to dodge grants (that would enlarge
+  privileged code and hollow out auditability); if implementation proves one narrow definer
+  mutation safer for a specific step, it is documented as an explicit exception.
+- **Worker privilege matrix (conceptual, least-privilege; the implementation mission derives
+  exact grants from it — column-level narrowing preferred where the house conventions support
+  it and it meaningfully reduces authority):**
+
+  | Flow | Resource | Privileges | Rationale |
+  |---|---|---|---|
+  | Recovery/queue-head pickup, reclaim | `ai_conversation_turns` | SELECT, UPDATE | claim CAS, lease/heartbeat, stop-flag read, state transitions |
+  | Dispatch/stream recovery, ratchets, eligibility handoff on recovery | `ai_conversation_attempts` | SELECT, UPDATE | ratchet to `outcome_unknown`/probe upgrades, `context_excluded` marking |
+  | Context build + incremental stream persistence (worker-driven runner) | `ai_conversation_items`, `ai_conversation_content` | SELECT, INSERT | replay projection reads; fenced item/blob appends |
+  | Provider-state reconciliation/rotation/taint | `ai_conversation_provider_state` | SELECT, INSERT, UPDATE | anchors, taint flags, rotation supersession |
+  | Branch reads (single-flight predicate, fork ancestry checks) | `ai_conversation_branches` | SELECT | no branch creation — fork is request-plane |
+  | `deleted_pending` completion + purge | `ai_conversations` + child tables | SELECT, UPDATE; DELETE (purge step ONLY) | status transitions; §19 step-4 row purge |
+  | Orphan-disposal processing | disposal ledger | SELECT, UPDATE, INSERT | read job under owner RLS, record outcomes/retries; INSERT for worker-side enqueue during recovery |
+  | Evidence-link post-processing | `ai_conversation_evidence_links` | SELECT, INSERT — CONDITIONAL | only if §14 linkage is materialized by the worker; otherwise no grant |
+
+  No worker privilege on anything else (titles are readable via `ai_conversations` SELECT the
+  lifecycle flow already requires; attachments/artifacts are request-plane in V1).
+- **Owner-context lifecycle (no cross-candidate leakage):** the worker sets BOTH GUCs
+  TRANSACTION-LOCALLY (`set_config(..., true)`) at the start of each candidate's transaction;
+  commit/rollback clears them, so a pooled connection cannot carry candidate A's identity into
+  candidate B's work even on reuse — plus a defensive context reset on connection checkout.
+  Candidate processing never begins without explicit context establishment; negative
+  integration proofs (context-leak and cross-candidate tests) are required at implementation.
+  Doctrine: `app.org_id`/`app.user_id` are APPLICATION-established database security context
+  derived from authenticated identity or from a discovered candidate under the worker's
+  authority — never end-user-supplied tokens. Threat-model honesty: compromise of the worker
+  DATABASE CREDENTIAL is a privileged-component compromise; least privilege + FORCE RLS bound
+  the blast radius and catch programming mistakes, they do not make a stolen worker credential
+  harmless — credential custody follows the same secret-handling rules as every other
+  privileged credential in the platform.
 **Detached-flow sweep (no worker security model left implicit)** — every cross-owner background
 flow uses exactly this shape: DB identity = the worker role; discovery primitive = one of the
 two functions above; discovery data = claim/job metadata only; owner context = per-item
@@ -935,5 +973,137 @@ Everything above lands via the follow-up mission **EP-AI-CONVERSATION-CONTINUITY
 spec's acceptance for THAT mission includes: reload acceptance in a real browser, second-browser
 same-key acceptance, RLS negative proof, terminal-outranks-abort proof, duplicate-send proof
 under StrictMode, and correlation-triple proof against a live capture row.
+
+## 24. REFERENCE ARCHITECTURE — SYSTEM LAWS
+
+The eighteen laws below are the normative index of this specification. Each law BINDS the
+sections it cites; any sentence elsewhere in this document that contradicts a law is a defect
+in that sentence, not a second doctrine. Laws 1–15, 17, 18 consolidate invariants already
+normative above; LAW 16 is introduced here.
+
+- **LAW 1 — IDENTITY AND OWNERSHIP.** Canonical ownership is `(org_id, owner_user_id)`;
+  dual-predicate FORCE RLS everywhere; NO_SECURITY_OR_CAUSAL_POINTER_BY_ID_ALONE — every
+  authorization/context/causality/execution/cleanup pointer is composite-lineage-bound
+  (branch→conversation, turn→branch, attempt→turn, `current_attempt_id`→same-turn ancestry
+  via CURRENT_ATTEMPT_LINEAGE_BINDING, fork→exact immutable source ancestry, provider
+  state→owning branch, cleanup→owning conversation). (§3)
+- **LAW 2 — TURN OWNS INPUT; ATTEMPT OWNS OUTPUT.** User/input items are turn-owned and
+  immutable from the reservation commit; assistant/tool output is attempt-owned; retries mint
+  NEW attempts and never mutate a completed one; only the current, non-excluded attempt
+  contributes output. (§3, §7.5, §7.6)
+- **LAW 3 — BRANCH CAUSALITY IS MONOTONIC.** BRANCH_CAUSAL_CONTEXT_MONOTONICITY: after the
+  branch advanced past an ambiguous ancestor, late recovery is transcript-only
+  (`context_excluded`); continuation with the recovered result is an explicit fork;
+  pre-advance restoration requires both context domains reconciled to the same boundary. (§7.8)
+- **LAW 4 — RETRY IS CAUSAL REPLACEMENT.** RETRY_REGENERATE_CONTEXT_BOUNDARY: attempt N+1 =
+  context-before-N-output + same immutable user input; the boundary is identical in the durable
+  projection AND provider continuation (chaining rewinds to the parent anchor or stateless
+  replay; shared objects rotate; Anthropic rebuilds statelessly; coding harnesses use their own
+  fork/session semantics). (§7.6, §11)
+- **LAW 5 — SERVER OWNS EXECUTION AFTER DURABLE ACCEPTANCE.** Browser disconnect is
+  delivery-only; reload hydrates durable truth; Stop is a durable authenticated control-plane
+  operation, never an SSE abort. (§9, §10, §13)
+- **LAW 6 — SINGLE-FLIGHT PROVIDER EXECUTION PER BRANCH.** Reservations are concurrent;
+  execution is ordered by `turn_seq`; terminalization actively wakes/claims the next head —
+  never deadline-waited when normal progression is possible. (§8)
+- **LAW 7 — CLAIM = LEASE + FENCING.** Every post-claim durable mutation proves current
+  authority: boundary CAS, timer-driven heartbeat across `dispatching` AND `streaming`,
+  fenced incremental writes, fenced finalize; an expired claimant never regains authority by
+  resuming. (§7.7)
+- **LAW 8 — OUTCOME_UNKNOWN IS HONEST.** Post-side-effect ambiguity is never auto-retried;
+  `outcome_unknown` is real, queue-terminal, not context-eligible; probes may resolve it under
+  LAW 3; no exactly-once claim, ever. (§7, §8)
+- **LAW 9 — SHARED PROVIDER STATE REQUIRES RECEIVER-SIDE SAFETY.** Taint on any post-boundary
+  non-completed attempt; cleared only by provider terminal evidence, else rotate/abandon;
+  local harnesses (app-server, Agent SDK) additionally get real process/connection
+  termination as a receiver-side fence — strategies stay provider-specific. (§11)
+- **LAW 10 — LIFECYCLE SERIALIZES WITH CHILD CREATION.**
+  CONVERSATION_LIFECYCLE_RESERVATION_SERIALIZATION: send/retry/fork and
+  `active|archived → deleted_pending` serialize on the conversation-root authority; both lock
+  orderings are safe by construction; queued claims require an execution-eligible root. (§8, §19)
+- **LAW 11 — REQUEST IDENTITY ≠ WORKER IDENTITY.** WORKER_IDENTITY_SEPARATION,
+  OWNER_DISCOVERY_NON_IMPERSONATION, and WORKER_LEAST_PRIVILEGE_UNDER_FORCE_RLS: discovery is
+  worker-only; the request role can neither enumerate owners nor assume the worker; the worker
+  carries minimum table privileges under FORCE RLS with transaction-local owner context. (§9)
+- **LAW 12 — OPERATIONAL STORE ≠ FORENSIC STORE.** Purpose-aware envelope encryption + KEYED
+  operational digests; evidence-plane hashes separate; the audit payload table is never the
+  conversation database. (§5, §6)
+- **LAW 13 — DELETE IS A PROTOCOL.** The §19 ordered fencing pipeline, with durable provider
+  cleanup whose identifiers are never purged before cleanup completes or is durably handed
+  off; evidence-plane retention reported honestly. (§19)
+- **LAW 14 — CONVERSATION ≠ WORKROOM ≠ PROJECT.** No workroom-as-chat-storage, no
+  workroom-per-conversation, `project_id` optional and future-compatible. (§4, §16)
+- **LAW 15 — COMMON CONTROL PLANE, PROVIDER-NATIVE DATA PLANE.** GovAI standardizes identity,
+  metadata, lifecycle, governance, receipts, evidence linkage; content/continuation stays
+  provider-native — never `role+text` as the central persistence or continuation abstraction.
+  (§1, §12; ADR-021)
+- **LAW 16 — LOCK ORDER MUST BE EXPLICIT (introduced here, normative).** Canonical acquisition
+  order: **(1) conversation root lifecycle authority (§8/§10 row lock) → (2) branch execution
+  authority (per-branch `turn_seq` advisory lock / single-flight predicate) → (3) turn/attempt
+  row mutation (claim CAS, fenced writes)**. No flow acquires a higher level after holding a
+  lower one. Sweep: SEND/RETRY/FORK take (1)→(2)→(3); DELETE takes (1), then per-turn (3) via
+  the Stop flags (no branch lock needed — it stops, never dispatches); STOP touches only (3);
+  QUEUE WAKE and RECOVERY claim at (3) and read (2)'s predicate without holding (1) — they
+  never escalate upward; CLEANUP/purge re-enters at (1) then (3) in a fresh transaction. A
+  future flow that cannot fit this order must document its safe reason explicitly.
+- **LAW 17 — PROVIDER CONTINUATION COMMIT MATCHES DURABLE CAUSAL COMMIT.** No operation may
+  leave the two domains claiming different ancestry; where atomic remote mutation is
+  impossible, enough local state is persisted to recover/rebuild honestly; no local
+  transaction implies provider exactly-once. (§7.6, §7.8, §11)
+- **LAW 18 — HONESTY / NON-OVERCLAIM.** Never claim exactly-once, universal parity, production
+  human auth, evidence-by-id-assignment, unproven provider deletion, or native status for
+  product-only capability; `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` until runtime lands.
+  (§14, §18-§20; parity baseline §11)
+
+## 25. ARCHITECTURE CONSISTENCY MATRIX
+
+One row per critical operation; cells cite the governing law/section. OWN = ownership check
+(LAW 1 RLS + composite lineage, always); ROOT = root lifecycle check; LOCKS in LAW 16 order;
+FENCE = claim/fence discipline (LAW 7); CTX = context boundary; PSTATE = provider-state effect
+(LAW 9/17); RLSID = executing DB identity; REC = recovery path; TERM = terminality; EVID =
+evidence link (§14); TRUTH = user-visible truth.
+
+| Operation | ROOT | LOCKS | FENCE | CTX | PSTATE | RLSID | REC | TERM | EVID | TRUTH |
+|---|---|---|---|---|---|---|---|---|---|---|
+| SEND | §8 root lock + status revalidate | (1)→(2)→(3) | reservation PK; claim at head | §7.5 projection | adapter builds anchor at boundary | request (`govai_app`) | §7.7 stranded/lapse | §7 machine | §14 triple | queued/live/terminal state |
+| RETRY (last turn) | same as SEND | (1)→(2)→(3) | new attempt, handoff CAS | LAW 4 before-N-output, both domains | rewind anchor / rotate object | request | same | same | new attempt triple | replaced answer; prior attempt visible |
+| EARLIER-TURN REGENERATE | same | (1)→(2)→(3) | fork + new child turn/attempt | `before_attempt_output` mode | child branch state fresh/rotated | request | same | same | child triples | new branch, old intact |
+| FORK / CROSS-PROVIDER FORK | §8 root lock | (1)→(2) | pinned completed attempt | §3 boundary modes; §17 portable projection | branch-owned provider triple; fresh state | request | n/a (no dispatch yet) | n/a | inherits at dispatch | labeled quality loss (§17) |
+| STOP | none (turn-level) | (3) only | durable flag + active wake + heartbeat-tick read | terminal-outranks-abort | §11 taint if post-boundary non-completed | request | flag survives crashes | `stopped` | attempt triple | honest stop state |
+| RELOAD / RE-ATTACH | none | none (reads) | n/a | hydrate durable prefix/terminal | none | request | §10 | n/a | n/a | partial marked partial |
+| DUPLICATE SEND | none | (3) read | replay, never verdict | current state | none | request | drives stranded head | n/a | existing | queued/live/terminal replay |
+| CRASH PRE-BOUNDARY | n/a | (3) reclaim | token rotation | none emitted | none | worker | §7.7 re-drive (provably undispatched) | continues | n/a | seamless |
+| CRASH POST-BOUNDARY | n/a | (3) | fenced finalize loses; ledger append allowed | not eligible | §11 taint/rotation | worker | probe or ratchet | `outcome_unknown` | orphan ledger | honest ambiguity |
+| STREAM CRASH | n/a | (3) | fenced item writes stop; lease lapses | prefix marked partial | taint per §11 | worker | §7.7 ratchet | `outcome_unknown` | partial prefix | partial, labeled |
+| LATE RECOVERY | n/a | (3) | probe upgrade CAS | LAW 3 advance check | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
+| QUEUE WAKE | root still eligible (LAW 10) | (3), reads (2) predicate | claim CAS unclaimed head | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
+| DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
+| PROVIDER CLEANUP | deleted or superseded state | (1)→(3) fresh txn | durable job outcomes/retries | n/a | provider deletion recorded, never assumed | worker | re-runnable | job terminal | outcome recorded | provider-deletion outcome shown |
+| ORPHAN CLEANUP | n/a | (3) ledger rows | opaque job id; owner context first | n/a | orphan object deleted | worker | keyset re-discovery | job terminal | ledger row | n/a (background) |
+
+## 26. ADVERSARIAL COUNTEREXAMPLE SWEEP (executed pre-review; one deterministic outcome each)
+
+A concurrent-sends → LAW 6/10: both reserve, one dispatches, wake chains — PASS. B duplicate
+id during streaming → §8 live replay + re-attach, no verdict — PASS. C crash pre-dispatch →
+§7.7 provably-undispatched re-drive — PASS. D pause boundary→POST → lease revalidation +
+grace window; fenced boundary already won, zombie fenced at finalize — PASS. E pause
+POST→first-byte → timer heartbeat covers `dispatching` — PASS. F stream pause + lease loss →
+fenced item writes abort the resumed pump — PASS. G unknown→advance→recovered → LAW 3
+transcript-only + fork — PASS. H retry w/ chaining → parent-anchor rewind — PASS. I retry w/
+conversation object → mandatory rotation — PASS. J earlier-turn retry → regeneration fork,
+child turn copies user items — PASS. K fork source later retried → fork pins the attempt, not
+the mutable turn — PASS. L Stop on stalled stream → active wake + heartbeat-tick flag read —
+PASS. M/N/O delete vs send/retry/fork → LAW 10 lock orderings, both safe — PASS. P worker
+crash post-discovery → nothing mutated; keyset re-discovery — PASS. Q pooled connection reuse
+→ transaction-local GUCs + checkout reset — PASS. R `govai_app` tries discovery → no EXECUTE,
+permission denied — PASS. S cleanup provider id → opaque job id, owner-RLS read — PASS. T
+tainted shared object → provider-terminal-evidence-or-rotate — PASS. U old Codex runner vs
+newer owner → process/connection termination + thread fork — PASS. V old Agent-SDK session
+runner → same receiver-side fence — PASS. W provider success + lost fence → finalize
+discarded; orphan-disposal record preserves the id — PASS. X orphan after advance → never
+referenced; ledger cleanup — PASS. Y legal hold during delete → §19 hold row blocks
+purge/shred; fencing proceeds, purge waits — PASS. Z archived→deleted → §19.1 admits both
+origins — PASS. No scenario yields two plausible outcomes, missing authority, an unbounded
+stranded state, cross-owner reach, retroactive causal rewrite, or domain divergence.
 
 END OF SPEC.
