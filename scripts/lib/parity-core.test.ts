@@ -157,14 +157,20 @@ describe('validateParityManifest', () => {
       'https://.',
       'https://-bad-.example.com',
       'https://localhost',
+      'https://example.com/docs',
+      'https://github.com/random/repo',
     ]) {
       const m = mkManifest([mkRow({ official_source: bad })]);
       expect(validateParityManifest(m).join('\n')).toContain(
-        'official_source must be a parseable https URL'
+        'official_source must be a parseable FIRST-PARTY https URL'
       );
     }
-    const ok = mkManifest([mkRow({ official_source: 'https://platform.claude.com/docs' })]);
-    expect(validateParityManifest(ok)).toEqual([]);
+    for (const good of [
+      'https://platform.claude.com/docs',
+      'https://github.com/openai/codex/blob/main/README.md',
+    ]) {
+      expect(validateParityManifest(mkManifest([mkRow({ official_source: good })]))).toEqual([]);
+    }
   });
 
   it('rejects malformed kebab-case ids (trailing, doubled, leading hyphens)', () => {

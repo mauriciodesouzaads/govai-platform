@@ -302,12 +302,49 @@ function oneOf<T extends string>(v: unknown, vocab: readonly T[]): v is T {
  */
 const HOST_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
 
+/**
+ * The baseline's research contract is FIRST-PARTY sources only, so the validator enforces it:
+ * a syntactically fine URL on example.com would otherwise let a hand edit "support" a
+ * classification with an arbitrary page. Exact-host allowlist of the two providers' official
+ * properties; shared hosts (github.com) additionally require a provider-owned organization path.
+ */
+export const FIRST_PARTY_SOURCE_HOSTS: readonly string[] = [
+  // OpenAI properties
+  'developers.openai.com',
+  'platform.openai.com',
+  'openai.com',
+  'help.openai.com',
+  'chatgpt.com',
+  'learn.chatgpt.com',
+  // Anthropic properties
+  'platform.claude.com',
+  'docs.anthropic.com',
+  'docs.claude.com',
+  'anthropic.com',
+  'claude.com',
+  'support.anthropic.com',
+  'support.claude.com',
+  'code.claude.com',
+];
+
+const SHARED_HOST_ORG_PREFIXES: Record<string, readonly string[]> = {
+  'github.com': ['/openai/', '/anthropics/'],
+  'raw.githubusercontent.com': ['/openai/', '/anthropics/'],
+};
+
+function isFirstPartySource(u: URL): boolean {
+  if (FIRST_PARTY_SOURCE_HOSTS.includes(u.hostname)) return true;
+  const prefixes = SHARED_HOST_ORG_PREFIXES[u.hostname];
+  return prefixes !== undefined && prefixes.some((p) => u.pathname.startsWith(p));
+}
+
 function isHttpsUrl(v: string): boolean {
   try {
     const u = new URL(v);
     if (u.protocol !== 'https:') return false;
     const labels = u.hostname.split('.');
-    return labels.length >= 2 && labels.every((l) => HOST_LABEL_RE.test(l));
+    if (labels.length < 2 || !labels.every((l) => HOST_LABEL_RE.test(l))) return false;
+    return isFirstPartySource(u);
   } catch {
     return false;
   }
@@ -435,7 +472,7 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
       push(`${where()}: invalid source_type ${String(r['source_type'])}`);
     }
     if (typeof r['official_source'] !== 'string' || !isHttpsUrl(r['official_source'])) {
-      push(`${where()}: official_source must be a parseable https URL with a hostname (required for every row)`);
+      push(`${where()}: official_source must be a parseable FIRST-PARTY https URL (provider-owned host; shared hosts need a provider org path)`);
     }
     if (r['verified_at'] !== snap) {
       push(`${where()}: verified_at must equal research_snapshot_date (single-snapshot semantics)`);

@@ -308,10 +308,13 @@ Normative rules:
      pumping. The same timer tick also READS the durable stop-request flag (§13 Stop), so both
      lease renewal and stop observation are bounded by the heartbeat interval even when the
      provider produces no events at all. Persistence of stream items continues incrementally,
-     so the durable prefix always reflects what was relayed. **Every incremental write is fenced, not just the finalize:** each
-     heartbeat and each item-append transaction is conditional on
-     `claim_token = <mine> AND state = 'streaming'` — zero rows touched means the pump has been
-     fenced out (or the attempt ratcheted) and MUST abort its relay. Without this, a stalled
+     so the durable prefix always reflects what was relayed. **Every incremental write is fenced, not just the finalize:** each item-append
+     transaction is conditional on `claim_token = <mine> AND state = 'streaming'`, and each
+     HEARTBEAT on `claim_token = <mine> AND state IN ('dispatching', 'streaming')` — the
+     heartbeat predicate accepts BOTH post-boundary states, because the timer starts at the
+     boundary commit and a time-to-first-byte longer than one interval would otherwise make a
+     healthy runner's first tick touch zero rows and self-abort. Zero rows touched means the
+     writer has been fenced out (or the attempt ratcheted) and MUST abort its relay. Without this, a stalled
      pump that resumes after the recovery ratchet could keep appending to a prefix the ratchet
      already declared terminal-partial, silently mutating "terminal" state the finalize CAS
      alone does not protect. A `streaming` turn whose lease has lapsed past `deadline + δ` is resolved
