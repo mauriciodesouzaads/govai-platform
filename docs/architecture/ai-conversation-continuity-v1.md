@@ -102,7 +102,18 @@ attempt to be **`completed`** — the one state that is both a ratchet (immutabl
 `eligible_for_context` (§7.5). Forking a `stopped`/`failed`/`rejected` attempt would replay a
 partial or ineligible prefix §7.5 excludes from every other context computation, and an
 `outcome_unknown` attempt may still mutate; fork requests naming any non-completed attempt are
-rejected with a wait-or-retry pointer. A CHECK requires the fork columns all-null on a root branch and all-set
+rejected with a wait-or-retry pointer.
+**A fork declares its BOUNDARY MODE**, recorded durably on the branch, because "continue from
+here" and "regenerate this answer" need different replay boundaries:
+- `after_attempt` (continuation, the default): the child's context includes the pinned
+  attempt's output and everything before it.
+- `before_attempt_output` (regeneration of an earlier turn): the child's context includes every
+  EARLIER turn's completed output plus the source TURN's USER items — which are TURN-owned and
+  immutable from the reservation commit (§7.1), not attempt-owned — and EXCLUDES the pinned
+  attempt's output; the fork mints a fresh attempt on that turn's user input immediately. The
+  pinned completed attempt still serves as the immutable ancestry marker in both modes.
+Without the second mode, redirecting earlier-turn retry to the fork protocol would replay the
+very response being regenerated and then answer AFTER it instead of REPLACING it. A CHECK requires the fork columns all-null on a root branch and all-set
 on a fork. Fork-context replay reads THAT
 attempt's items, so a later retry of the source turn changes nothing behind the fork — retry
 after a fork stays permitted without ancestry drift, and a fork can never take its context from
@@ -259,8 +270,8 @@ Normative rules:
    N+1 on the same turn (same `client_turn_id` reservation, fresh `govai_request_id`), returning
    the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard three-commit
    flow. Retry is permitted only while the turn is the LAST turn on its branch — retrying an
-   earlier turn is a FORK from that turn (§3 branches), the same semantics reference products
-   ship. At most one non-terminal attempt exists per turn (single-flight applies unchanged), and
+   earlier turn is a REGENERATION FORK from that turn (`before_attempt_output` boundary mode,
+   §3), the same semantics reference products ship. At most one non-terminal attempt exists per turn (single-flight applies unchanged), and
    a prior attempt's taint consequences (§11) survive its successor.
 7. **No stranded states, and claimants are FENCED.** `accepted` and `dispatching` each carry a
    claim — `{claim_token, claimant, deadline}` — and each crash window has a defined recovery
@@ -563,7 +574,9 @@ are stored verbatim-encrypted (forward-compatible by construction, ADR-021 postu
 archived) · `DELETE /v1/ai/conversations/:id` (lifecycle per §19) ·
 `GET /v1/ai/conversations/:id/turns` (items hydrated per attempt) ·
 `POST /v1/ai/conversations/:id/branches` (fork; names its `forked_from_turn_id` AND
-`forked_from_attempt_id`, §3, and accepts the target `provider/surface/model` triple — omitted
+`forked_from_attempt_id` plus the §3 boundary mode (`after_attempt` default,
+`before_attempt_output` for earlier-turn regeneration), and accepts the target
+`provider/surface/model` triple — omitted
 means inherit the parent branch's; supplied is what makes a §17 cross-provider or model-switch
 fork durable and reload-replayable) ·
 `POST /v1/ai/conversations/:id/turns` (durable send, §8) + `GET .../turns/:turnId` (hydrate) +
