@@ -406,6 +406,25 @@ Normative rules:
 
 ## 8. Durable send / idempotency
 
+- **CONVERSATION_LIFECYCLE_RESERVATION_SERIALIZATION:** every operation that creates an
+  execution-capable descendant of a conversation — a Send reservation, a Retry attempt mint, a
+  Fork branch creation — serializes against lifecycle transitions on the SAME conversation root
+  inside ONE transaction: take the conversation row lock (`SELECT … FOR UPDATE` on
+  `ai_conversations`, or a conditional write with source-proven equivalent serialization),
+  REVALIDATE `status` under the lock, then write. A check-then-write sequence (validate
+  `active` → deletion commits `deleted_pending` → child insert succeeds) is forbidden: it
+  creates a late execution-capable descendant deletion never enumerated — unfenced,
+  unclaimable after `deleted_pending`, and able to strand deletion at its wait-for-terminal
+  step or race the purge. The lock yields exactly two orderings, both safe:
+  (A) the reservation wins — it validates `active`, commits its child, and the deletion
+  (acquiring the lock afterward) SEES and fences the now-existing work in its §19 enumeration;
+  (B) the deletion wins — `active|archived → deleted_pending` commits atomically, the waiting
+  reservation rechecks status under the lock and REJECTS, and no new descendant exists. The
+  same discipline yields the remaining proofs: a queued reservation can never claim after the
+  root is `deleted_pending` (the §7.7/§8 claim CAS predicates exclude `deleted_pending`
+  conversations); already-in-flight attempts remain covered by §19's stop-and-wait fencing;
+  archived deletion is unchanged (§19 admits both origins); and duplicate idempotent
+  operations stay coherent because replay reads current state under the same lock discipline.
 - The client generates `client_turn_id` (UUID) at Send. Uniqueness arbiter:
   **`PRIMARY KEY (org_id, conversation_id, client_turn_id)`** on the turn-reservation row —
   the `run_idempotency` composite-PK pattern (`0030:22-31`, `INSERT … ON CONFLICT DO NOTHING
@@ -504,34 +523,51 @@ six direct routes remain untouched for API-native callers; the conversation runn
 ADDITIONAL caller of the same provider pipeline, not a fork of it (two-speed doctrine, ADR-029
 posture, without adjudicating that Proposed ADR).
 
-**Detached recovery discovery under FORCE RLS (the sweep is not structurally blind).** The
-dual-predicate RLS of §3 makes every `ai_*` table invisible to a session without BOTH
+**Detached recovery discovery under FORCE RLS (the sweep is not structurally blind), executed
+under a SEPARATE WORKER IDENTITY (WORKER_IDENTITY_SEPARATION / OWNER_DISCOVERY_NON_IMPERSONATION).**
+The dual-predicate RLS of §3 makes every `ai_*` table invisible to a session without BOTH
 `app.org_id` and `app.user_id` — which a detached sweep does not have, and §22 forbids handing
 any broad reader identity conversation-table grants. The resolution is the repo's own 0029
-precedent (`govai.run_dispatch_recovery_candidates`, SECURITY DEFINER, keyset cursor): a narrow
-**claim-plane discovery function** — e.g. `govai.ai_turn_recovery_candidates(...)` — SECURITY
-DEFINER, `REVOKE ALL FROM PUBLIC`, EXECUTE granted to `govai_app` only, returning ONLY claim
-metadata (`org_id`, `owner_user_id`, `conversation_id`, `turn_id`, `state`, claim token/deadline,
-branch-head flags) with a keyset cursor — never titles, never content refs, never provider
-state. The SAME pattern serves the second detached worker this spec creates — §19's provider-cleanup /
-orphan-disposal processor, which after a crash must rediscover pending cleanup rows it did not
-enqueue in its own lifetime: a sibling function — e.g. `govai.ai_cleanup_candidates(...)`, same
-SECURITY DEFINER + `REVOKE ALL FROM PUBLIC` + EXECUTE-to-`govai_app`-only + keyset-cursor
-discipline — returns ONLY `{org_id, owner_user_id, conversation_id, cleanup_job_id (an OPAQUE
-row id), cleanup state/attempts}` so a `deleted_pending` conversation can never strand for want
-of a discoverable worklist. It deliberately does NOT return provider, `object_kind` or
-`provider_object_id`: §21 classifies provider object identifiers as sensitive (they unlock
-provider-stored content), and a definer function readable by the shared app identity must not
-become a cross-owner identifier oracle. The worker takes the opaque job id, enters the
-candidate's owner context, and only THEN reads/decrypts the provider identifier from the
-disposal ledger through ordinary owner-scoped RLS. Having discovered a
-candidate, either worker drives it by entering that owner's FULL context (`set_config` of
-`app.org_id` AND `app.user_id` from the candidate row, the server acting for the owner), after
-which every content read passes through ordinary RLS — these TWO definer functions are the only
-RLS bypasses, and both are content-free by construction. Role lifecycle per the INV-1 lesson:
-these are FUNCTION-scoped privileges on the existing app identity, not a new DB role; if a
-dedicated recovery/cleanup identity is ever split out, it gets its own complete lifecycle
-section at entry and still never receives table-level conversation grants.
+precedent (`govai.run_dispatch_recovery_candidates`, SECURITY DEFINER, keyset cursor): two
+narrow **claim-plane discovery functions** — `govai.ai_turn_recovery_candidates(...)`
+(returning ONLY claim metadata: `org_id`, `owner_user_id`, `conversation_id`, `turn_id`,
+`state`, claim token/deadline, branch-head flags) and `govai.ai_cleanup_candidates(...)`
+(returning ONLY `{org_id, owner_user_id, conversation_id, cleanup_job_id (an OPAQUE row id),
+cleanup state/attempts}` — deliberately never provider, `object_kind` or `provider_object_id`,
+which §21 classifies as sensitive) — both SECURITY DEFINER with a FIXED `search_path`,
+`REVOKE ALL FROM PUBLIC`, keyset-cursor bounded, content-free.
+**EXECUTE is granted to a DEDICATED worker identity — never to `govai_app`.** The RLS trust
+model treats `app.org_id`/`app.user_id` as APPLICATION-established security context derived
+from authenticated identity — they are authorization, not data. A discovery result containing
+`(org_id, owner_user_id)` is therefore a set of REUSABLE CREDENTIALS for every policy in the
+domain: if the shared request role could invoke discovery, any ordinary API database session
+could enumerate valid owner identities and then follow the prescribed `set_config` step to
+assume each owner's RLS context and read their conversations — stripping content from the
+result does not preserve isolation when the result IS the credential. Consequently, the
+ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAINS:
+- the request pool (`govai_app`) holds NO EXECUTE on either discovery function, cannot
+  `SET ROLE` to the worker, and the worker role is NOINHERIT and never granted to `govai_app`
+  — renaming without this separation would create no boundary;
+- the detached workers run on a dedicated least-privilege identity (source-adjudicated
+  equivalent of `govai_conversation_worker`, following the repo's dedicated-role precedents —
+  `govai_audit_writer`, `govai_evidence_enumerator` — including the complete entry-time
+  lifecycle section the INV-1 lesson requires: provision/deprovision, NOINHERIT,
+  no-login-until-provisioned, separate credential and connection-pool lifecycle);
+- the worker identity holds EXECUTE on the two discovery functions and NOTHING broader — no
+  table-level conversation grants; having discovered a candidate, it establishes that owner's
+  FULL context (`set_config` of `app.org_id` AND `app.user_id` from the candidate row) for
+  that specific work item only, after which every content/provider-identifier read passes
+  through ordinary owner-scoped RLS.
+**Detached-flow sweep (no worker security model left implicit)** — every cross-owner background
+flow uses exactly this shape: DB identity = the worker role; discovery primitive = one of the
+two functions above; discovery data = claim/job metadata only; owner context = per-item
+`set_config` from the candidate row; `govai_app` = no access; provider/content identifiers =
+read only after owner-context entry. This covers: the recovery sweep, head-of-queue pickup
+after a process crash, the cleanup worker, provider-object deletion, orphan-disposal retry,
+`deleted_pending` completion, and any future background reconciliation — a new detached flow
+must either fit one of the two functions or add its own, under the same identity and the same
+constraints. These TWO definer functions remain the only RLS bypasses, and both are
+content-free by construction.
 
 ## 10. Reload / reconnection contract
 
@@ -816,7 +852,11 @@ active turns, and provider cleanup must not lose its tracking data:
 
 1. BOTH `active` and `archived` transition atomically to `deleted_pending` — deleting an
    archived conversation enters the SAME fencing protocol, never a bypass and never a forced
-   restore-first detour. The transition closes the conversation to new work:
+   restore-first detour. The transition acquires the SAME conversation-root row lock §8's
+   reservation serialization uses, so it strictly orders against every in-flight
+   send/retry/fork: whatever committed before it is enumerated and fenced; whatever waited
+   behind it rechecks and rejects (CONVERSATION_LIFECYCLE_RESERVATION_SERIALIZATION). The
+   transition closes the conversation to new work:
    the control plane rejects sends/retries/forks/re-attaches, and the claim CAS predicates
    (§7.7/§8) exclude `deleted_pending` conversations, so no new claim and no queue pickup can
    start after the commit.
@@ -866,6 +906,8 @@ entry is human login.
 | Replay/fork authorization | fork requires read right on source branch; cross-provider fork re-runs DLP on the portable projection |
 | Concurrent sends | §8 reservation PK (duplicate) + per-branch single-flight boundary predicate (distinct turns) + §7.7 fencing CAS (competing claimants) |
 | Late recovery vs branch causality | BRANCH_CAUSAL_CONTEXT_MONOTONICITY (§7.8): atomic advance-check on probe upgrade; post-advance recovery is transcript-only + `context_excluded`; continuation via explicit fork — acceptance proof required at implementation |
+| Delete racing reservation | CONVERSATION_LIFECYCLE_RESERVATION_SERIALIZATION (§8/§19): root-row lock + status revalidation in one transaction on every descendant-creating operation and on the `deleted_pending` transition — the check-then-write race is an acceptance-proof item at implementation |
+| Owner impersonation via discovery | WORKER_IDENTITY_SEPARATION / OWNER_DISCOVERY_NON_IMPERSONATION (§9): discovery EXECUTE confined to the dedicated NOINHERIT worker identity with its own credential/pool lifecycle; `govai_app` holds no discovery access and cannot SET ROLE to the worker — negative-privilege proof required at implementation |
 | Cross-turn attempt corruption | CURRENT_ATTEMPT_LINEAGE_BINDING (§3): composite-FK-bound reverse pointer — a turn cannot select another turn's attempt |
 | Stream hijacking | re-attach requires the same auth as the turn; relay carries no provider credentials; no cross-user attach |
 | Future shared Projects | out of V1; sharing model gated on R14 |
@@ -880,8 +922,9 @@ precedent (narrow SECURITY DEFINER + monotonic transition + chained event); (6) 
 canonicalization reuse for intent hashes; (7) no high-cardinality ids in metrics labels; (8) no
 sealer/enumerator grants on conversation tables (INV-1 discipline — a new reader identity needs
 its own lifecycle section at entry; the ONLY sanctioned RLS bypasses are §9's TWO content-free
-SECURITY DEFINER claim-plane discovery functions — turn-recovery and cleanup candidates — both
-function-scoped, never role grants);
+SECURITY DEFINER claim-plane discovery functions — turn-recovery and cleanup candidates —
+EXECUTE-able solely by the dedicated `govai_conversation_worker` identity, never by
+`govai_app`, per WORKER_IDENTITY_SEPARATION);
 (9) no `packages/signing` dependency (DevSigner only); (10)
 no claim above `hmac_internal` evidence strength.
 
