@@ -690,7 +690,9 @@ Adjudicated semantics:
 **`deleted_pending` is an ordered fencing protocol, not a label** — deletion must not race
 active turns, and provider cleanup must not lose its tracking data:
 
-1. The `active → deleted_pending` transition ATOMICALLY closes the conversation to new work:
+1. BOTH `active` and `archived` transition atomically to `deleted_pending` — deleting an
+   archived conversation enters the SAME fencing protocol, never a bypass and never a forced
+   restore-first detour. The transition closes the conversation to new work:
    the control plane rejects sends/retries/forks/re-attaches, and the claim CAS predicates
    (§7.7/§8) exclude `deleted_pending` conversations, so no new claim and no queue pickup can
    start after the commit.
