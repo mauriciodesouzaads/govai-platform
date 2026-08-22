@@ -205,6 +205,11 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(mkManifest([posing])).join('\n')).toContain(
       'must not set native_route_available'
     );
+    // App-surface row claiming continuity proof axes:
+    const posingContinuity = mkRow({ ...APP_ROW, persistence_supported: true, fork_supported: true });
+    const outC = validateParityManifest(mkManifest([posingContinuity])).join('\n');
+    expect(outC).toContain('must not set persistence_supported');
+    expect(outC).toContain('must not set fork_supported');
     // API-surface row claiming PRODUCT_ONLY:
     const inverted = mkRow({ classification: 'PRODUCT_ONLY' });
     expect(validateParityManifest(mkManifest([inverted])).join('\n')).toContain(

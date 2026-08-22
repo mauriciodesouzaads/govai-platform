@@ -511,6 +511,12 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
         'ui_tested',
         'ui_live_accepted',
         'evidence_wired',
+        // Continuity proof fields are GovAI-owned axes too — a PRODUCT_ONLY reference row must
+        // not claim persistence/resume/fork/correlation work gated on the continuity mission.
+        'exact_turn_evidence_correlation',
+        'persistence_supported',
+        'resume_supported',
+        'fork_supported',
       ];
       for (const f of apiAxes) {
         if (b(f)) push(`${where()}: app-surface rows must not set ${f}`);
