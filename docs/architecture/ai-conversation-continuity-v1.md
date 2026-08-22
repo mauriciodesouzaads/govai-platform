@@ -210,11 +210,13 @@ States (adjudicated; supersets the UI's in-memory `TurnState`):
 
 ```
 draft → accepted → dispatching → streaming → completed
-                        │            │
-                        │            ├→ stopped          (user Stop; terminal event absent)
-                        │            ├→ failed           (provider/transport error, classified)
-                        │            └→ outcome_unknown  (dispatch fate unprovable)
-                        └→ rejected                      (governance 403 / validation / 4xx before dispatch)
+           │            │            │
+           │            │            ├→ stopped          (user Stop; terminal event absent)
+           │            │            ├→ failed           (provider/transport error, classified)
+           │            │            └→ outcome_unknown  (dispatch fate unprovable)
+           │            ├→ stopped / failed / outcome_unknown   (post-boundary, pre-stream — same semantics)
+           │            └→ rejected                      (governance 403 / validation / 4xx before provider processing)
+           └→ stopped                                    (user discards a QUEUED turn pre-dispatch — releases the branch queue, §8)
 ```
 
 Normative rules:
@@ -356,7 +358,11 @@ The durable-turn runner is a server-side component (apps/api) that:
 2. builds the provider request via the adapter (§11) from durable context — not from browser
    memory;
 3. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on its claim token —
-   losing the CAS means another claimant owns the turn: abort with no POST — and only THEN
+   losing the CAS means another claimant owns the turn: abort with no POST — minting and
+   persisting the attempt's `govai_request_id` and then ENTERING the identity scope itself
+   (§14.1: the runner constructs the `AuditBridgeRequestIdentity` and wraps the pipeline call
+   in `requestIdentityAls.run()`, because neither `/v1/ai/*` requests nor detached
+   sweep/wake-driven workers pass the ingress identity hook), and only THEN
    dispatches to the SAME provider-native pipeline the direct routes use (credential resolution,
    DLP, tool classifier, beta policy, capture — unchanged semantics; the governed/passthrough
    distinction is carried per conversation mode); boundary-before-POST plus the fenced CAS is
@@ -417,14 +423,17 @@ Per-provider adjudication (provider facts verified 2026-08-21, first-party):
   released. Chaining and stateless replay are structurally insulated — a zombie's stored
   response is simply never referenced (the next turn chains from the last KNOWN completed
   response id), leaving only an orphaned provider object for §19 cleanup. A shared
-  `conversation` OBJECT is not insulated: the provider appends the zombie's output to state
-  every later turn implicitly consumes. Therefore, on a branch using the conversation-object
-  strategy, resolving ANY attempt to `outcome_unknown` marks that branch's `provider_state`
-  **TAINTED**, and the next turn MUST NOT blindly reuse the conversation object: the adapter
-  first reconciles against provider truth (list the conversation's items; adopt-or-record any
-  zombie append) or rotates — a fresh conversation object (or stateless replay) seeded from the
-  durable items. Untainted turns proceed normally; the taint clears only by reconcile-or-rotate,
-  never by time.
+  `conversation` OBJECT is not insulated: the provider appends output to state every later turn
+  implicitly consumes. Therefore, on a branch using the conversation-object strategy, ANY
+  post-boundary attempt that ends NOT `completed` — `outcome_unknown`, `stopped` (a user Stop
+  after the POST began can still leave a full provider-side append behind the abort), or a
+  `failed` whose error class does not PROVE the provider never processed the request — marks
+  that branch's `provider_state` **TAINTED**, and the next turn MUST NOT blindly reuse the
+  conversation object: the adapter first reconciles against provider truth (list the
+  conversation's items; adopt-or-record any phantom append) or rotates — a fresh conversation
+  object (or stateless replay) seeded from the durable items. Only a pre-boundary outcome or a
+  provably-unprocessed failure (e.g. a 4xx rejected before processing) leaves the object clean.
+  The taint clears only by reconcile-or-rotate, never by time.
 - **ANTHROPIC (Messages)**: the API is stateless — full message list resent per call (verified;
   the only server-stored state in the platform is beta Managed Agents, out of V1 scope).
   Strategy: stateless replay from durable items with STRICT preservation of thinking blocks +
@@ -484,8 +493,16 @@ stream re-attach endpoint.
 
 Closes `EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION` WITHOUT event-schema change:
 
-1. The server-side runner (§9) executes inside the request-identity ALS boundary, so it KNOWS
-   `govai_request_id` for each attempt at write time — no header echo needed, which is why
+1. The runner OWNS attempt identity — it never inherits it from an inbound request, because no
+   inbound scope exists to inherit: the ingress identity hook installs the ALS store only for
+   the four direct-route prefixes (`request-identity-hook.ts:21-31`), the `/v1/ai/*`
+   control-plane routes are outside that set, a sweep- or wake-driven worker has no inbound
+   request at all, and the AuditBridge DROPS captures when the store is empty
+   (`audit-bridge.ts:129`). Rule: at claim time the runner MINTS `govai_request_id`
+   (`randomUUID()`), PERSISTS it on the attempt row FIRST, and then explicitly enters the
+   identity scope (`requestIdentityAls.run()` with a constructed `AuditBridgeRequestIdentity`)
+   around its provider-pipeline call — for browser-attached sends and detached worker dispatch
+   alike. This also means no header echo is needed, which is why
    `DIRECT_STREAM_REQUEST_ID_HEADER_GAP` (`current-state.md:591`) does not block this design
    (it remains a separate, unresolved gap for external stream callers).
 2. `capture_id` is DERIVABLE: `uuidv5(pinned-namespace, scoped-name)` over
