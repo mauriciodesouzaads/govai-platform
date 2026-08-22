@@ -451,13 +451,20 @@ precedent (`govai.run_dispatch_recovery_candidates`, SECURITY DEFINER, keyset cu
 DEFINER, `REVOKE ALL FROM PUBLIC`, EXECUTE granted to `govai_app` only, returning ONLY claim
 metadata (`org_id`, `owner_user_id`, `conversation_id`, `turn_id`, `state`, claim token/deadline,
 branch-head flags) with a keyset cursor — never titles, never content refs, never provider
-state. Having discovered a candidate, the sweep drives it by entering that owner's FULL context
-(`set_config` of `app.org_id` AND `app.user_id` from the candidate row, the server acting for
-the owner), after which every content read passes through ordinary RLS — the definer function is
-the only RLS bypass, and it is content-free by construction. Role lifecycle per the INV-1
-lesson: this is a FUNCTION-scoped privilege on the existing app identity, not a new DB role;
-if a dedicated recovery identity is ever split out, it gets its own complete lifecycle section
-at entry and still never receives table-level conversation grants.
+state. The SAME pattern serves the second detached worker this spec creates — §19's provider-cleanup /
+orphan-disposal processor, which after a crash must rediscover pending cleanup rows it did not
+enqueue in its own lifetime: a sibling function — e.g. `govai.ai_cleanup_candidates(...)`, same
+SECURITY DEFINER + `REVOKE ALL FROM PUBLIC` + EXECUTE-to-`govai_app`-only + keyset-cursor
+discipline — returns ONLY disposal metadata (`org_id`, `owner_user_id`, `conversation_id`,
+provider, `object_kind`, `provider_object_id`, cleanup state/attempts) so a `deleted_pending`
+conversation can never strand for want of a discoverable worklist. Having discovered a
+candidate, either worker drives it by entering that owner's FULL context (`set_config` of
+`app.org_id` AND `app.user_id` from the candidate row, the server acting for the owner), after
+which every content read passes through ordinary RLS — these TWO definer functions are the only
+RLS bypasses, and both are content-free by construction. Role lifecycle per the INV-1 lesson:
+these are FUNCTION-scoped privileges on the existing app identity, not a new DB role; if a
+dedicated recovery/cleanup identity is ever split out, it gets its own complete lifecycle
+section at entry and still never receives table-level conversation grants.
 
 ## 10. Reload / reconnection contract
 
@@ -779,8 +786,9 @@ events; (5) no mutation of sealed rows ever — post-hoc linkage only via the sh
 precedent (narrow SECURITY DEFINER + monotonic transition + chained event); (6) no evidence
 canonicalization reuse for intent hashes; (7) no high-cardinality ids in metrics labels; (8) no
 sealer/enumerator grants on conversation tables (INV-1 discipline — a new reader identity needs
-its own lifecycle section at entry; the ONLY sanctioned RLS bypass is §9's content-free
-SECURITY DEFINER claim-plane discovery function, which is function-scoped, not a role grant);
+its own lifecycle section at entry; the ONLY sanctioned RLS bypasses are §9's TWO content-free
+SECURITY DEFINER claim-plane discovery functions — turn-recovery and cleanup candidates — both
+function-scoped, never role grants);
 (9) no `packages/signing` dependency (DevSigner only); (10)
 no claim above `hmac_internal` evidence strength.
 
