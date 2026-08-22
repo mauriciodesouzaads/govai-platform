@@ -200,6 +200,15 @@ Normative rules:
 6. Transitions are total: every state names its successors and its inverse-or-ratchet
    (`completed/stopped/failed/rejected` are ratchets; `outcome_unknown` may resolve once to
    `completed`/`failed` by a recovery probe, never the reverse).
+7. **No stranded states.** `accepted` and `dispatching` each carry a claim + deadline, and each
+   crash window has a defined recovery (the 0029 dispatch-boundary discipline, applied per turn):
+   the runner's SECOND commit — the dispatch-boundary commit — is written BEFORE any provider
+   POST. A turn found past its deadline still in `accepted` (no boundary commit) is PROVABLY
+   undispatched: a recovery claimant (or the next duplicate send, §8) may safely re-claim and
+   drive it — re-dispatch cannot double-send because no provider call can precede the boundary
+   commit. A turn past its deadline in `dispatching` (boundary committed, no terminal recorded)
+   resolves to `outcome_unknown` (§7.4) — never silently re-dispatched. `accepted` is therefore
+   a state with an exit on every path, not a promise that can dangle.
 
 ## 8. Durable send / idempotency
 
@@ -209,7 +218,11 @@ Normative rules:
   RETURNING`), immutable-by-privilege (SELECT+INSERT grants only).
 - One UI Send = at most one provider POST, regardless of StrictMode double-invoke, double click,
   browser retry or reconnection: the duplicate reservation returns the existing turn (replay
-  semantics, `x-govai-…-replay` header convention of `routes/runs.ts:126`).
+  semantics, `x-govai-…-replay` header convention of `routes/runs.ts:126`). Replay is NOT
+  abandonment: if the existing turn is a stranded pre-dispatch `accepted` (deadline elapsed, no
+  dispatch-boundary commit — §7.7), the duplicate send re-claims and DRIVES it rather than
+  merely echoing a turn that will never execute; if it is post-boundary without a terminal, the
+  reply reports `outcome_unknown` honestly.
 - A NEW header (e.g. `X-GovAI-Client-Turn-Id`) and a NEW reservation table are minted. The
   existing `X-GovAI-Idempotency-Key` (evidence-capture identity, stripped at ingress,
   `request-identity-hook.ts:79`) and `X-GovAI-Run-Idempotency-Key` (run intent) are NOT
@@ -220,18 +233,23 @@ Normative rules:
   terminal record, the attempt resolves to `outcome_unknown` (§7); a bounded recovery probe (via
   provider-side state where it exists: OpenAI `GET /v1/responses/:id`; else none) may upgrade it.
 - Provider dispatch NEVER occurs inside a long DB transaction — the P0.3-A durable-dispatch
-  boundary law (0029): reserve+commit → dispatch → finalize in a second transaction.
+  boundary law (0029), as a three-commit protocol: reserve-commit (`accepted`) →
+  dispatch-boundary commit (`dispatching`, claim + deadline, BEFORE any provider POST) →
+  provider POST → finalize-commit (terminal state). Each inter-commit crash window has the
+  defined recovery of §7.7.
 
 ## 9. Dispatch boundary and server-owned stream
 
 The durable-turn runner is a server-side component (apps/api) that:
 
-1. commits the reservation + user items (`accepted`);
+1. commits the reservation + user items (`accepted`, with a claim deadline);
 2. builds the provider request via the adapter (§11) from durable context — not from browser
    memory;
-3. dispatches to the SAME provider-native pipeline the direct routes use (credential resolution,
-   DLP, tool classifier, beta policy, capture — unchanged semantics; the governed/passthrough
-   distinction is carried per conversation mode);
+3. commits the dispatch boundary (`dispatching`) and only THEN dispatches to the SAME
+   provider-native pipeline the direct routes use (credential resolution, DLP, tool classifier,
+   beta policy, capture — unchanged semantics; the governed/passthrough distinction is carried
+   per conversation mode); the boundary-before-POST order is what makes §7.7's stranded-turn
+   recovery provably double-send-safe;
 4. owns the SSE pump to terminal (the `provider-stream-http` primitives —
    `pumpStreamWithTerminalEmit` — are the template), persisting items incrementally and the
    terminal state durably;
