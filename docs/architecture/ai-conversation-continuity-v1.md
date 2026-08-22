@@ -608,8 +608,8 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
 
   | Flow | Resource | Privileges | Rationale |
   |---|---|---|---|
-  | Recovery/queue-head pickup, reclaim | `ai_conversation_turns` | SELECT, UPDATE | claim CAS, lease/heartbeat, stop-flag read, state transitions |
-  | Dispatch/stream recovery, ratchets, eligibility handoff on recovery | `ai_conversation_attempts` | SELECT, UPDATE | ratchet to `outcome_unknown`/probe upgrades, `context_excluded` marking |
+  | Recovery/queue-head pickup, reclaim, lifecycle mutation | `ai_conversation_attempts` | SELECT, UPDATE | claim CAS, lease/heartbeat, stop-flag read, state transitions, ratchets/probe upgrades, `context_excluded` — ALL lifecycle authority lives on the attempt (§3) |
+  | Queue predicates, reservation identity reads | `ai_conversation_turns` | SELECT | turn rows carry no lifecycle state (§3); recovery reads reservation identity, `turn_seq` ordering and `current_attempt_id` only |
   | Context build + incremental stream persistence (worker-driven runner) | `ai_conversation_items`, `ai_conversation_content` | SELECT, INSERT | replay projection reads; fenced item/blob appends |
   | Provider-state reconciliation/rotation/taint | `ai_conversation_provider_state` | SELECT, INSERT, UPDATE | anchors, taint flags, rotation supersession |
   | Branch reads (single-flight predicate, fork ancestry checks) | `ai_conversation_branches` | SELECT | no branch creation — fork is request-plane |
