@@ -295,13 +295,19 @@ function oneOf<T extends string>(v: unknown, vocab: readonly T[]): v is T {
 
 /**
  * A row's source must be a REAL https URL, not merely https-prefixed text: every baseline row
- * relies on official_source for traceability, and a prefix check accepts `https://` or
- * `https://not a url`. URL parsing + protocol + non-empty hostname is the actual contract.
+ * relies on official_source for traceability. URL parsing alone is not enough either — the
+ * WHATWG constructor accepts junk hosts like `https://-` and `https://.` — so the hostname must
+ * be dot-separated valid DNS labels (LDH: alphanumeric edges, hyphens inside), and at least two
+ * of them: every legitimate first-party doc source is a registered domain, never a bare label.
  */
+const HOST_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
+
 function isHttpsUrl(v: string): boolean {
   try {
     const u = new URL(v);
-    return u.protocol === 'https:' && u.hostname.length > 0;
+    if (u.protocol !== 'https:') return false;
+    const labels = u.hostname.split('.');
+    return labels.length >= 2 && labels.every((l) => HOST_LABEL_RE.test(l));
   } catch {
     return false;
   }

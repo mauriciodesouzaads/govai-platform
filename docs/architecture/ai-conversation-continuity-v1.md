@@ -98,10 +98,11 @@ forked_from_attempt_id) REFERENCES ai_conversation_attempts (org_id, owner_user_
 conversation_id, branch_id, turn_id, id)` — one composite FK that simultaneously forces the
 fork point to belong to the SAME conversation, the DECLARED parent branch, the named turn, and
 a SPECIFIC attempt whose items never change. Fork creation additionally REQUIRES the pinned
-attempt to be in a RATCHET state (`completed | stopped | failed | rejected`, §7.6) — an
-`outcome_unknown` attempt is NOT forkable, because it is the one state that may still mutate
-(a recovery probe can resolve it once); a fork request naming one is rejected with a
-wait-or-retry pointer. A CHECK requires the fork columns all-null on a root branch and all-set
+attempt to be **`completed`** — the one state that is both a ratchet (immutable items) AND
+`eligible_for_context` (§7.5). Forking a `stopped`/`failed`/`rejected` attempt would replay a
+partial or ineligible prefix §7.5 excludes from every other context computation, and an
+`outcome_unknown` attempt may still mutate; fork requests naming any non-completed attempt are
+rejected with a wait-or-retry pointer. A CHECK requires the fork columns all-null on a root branch and all-set
 on a fork. Fork-context replay reads THAT
 attempt's items, so a later retry of the source turn changes nothing behind the fork — retry
 after a fork stays permitted without ancestry drift, and a fork can never take its context from
@@ -483,21 +484,24 @@ Per-provider adjudication (provider facts verified 2026-08-21, first-party):
   after the POST began can still leave a full provider-side append behind the abort), or a
   `failed` whose error class does not PROVE the provider never processed the request — marks
   that branch's `provider_state` **TAINTED**, and the next turn MUST NOT blindly reuse the
-  conversation object. How the taint clears depends on WHO reported the outcome, because a
-  reconcile that observes "no phantom append yet" proves nothing about a zombie that has not
-  POSTed YET:
-  - **Self-reported taint** (the owning runner itself finalized `stopped`/`failed` — it is
-    alive, its HTTP request is closed, no later POST from it can exist): reconcile-or-rotate.
-    Reconciling against provider truth (list the conversation's items; adopt-or-record any
-    append) is sound here and may clear the taint.
-  - **Recovery-ratchet taint** (`outcome_unknown` — the owner was not heard from and may be an
-    unbounded-pause zombie whose POST is still in flight): **ROTATION IS MANDATORY.** The next
-    turn abandons the shared object — a fresh conversation object or stateless replay seeded
-    from the durable items — and the abandoned object becomes a §19 cleanup orphan; whatever a
-    late zombie appends lands in state no later turn will ever read. No observation can clear
-    this taint: absence of an append is not evidence the zombie is finished.
+  conversation object. The clearing criterion is single and strict: **was the PROVIDER'S
+  terminal verdict for the tainting request observed?** A reconcile that sees "no phantom
+  append yet" proves nothing — not for a zombie that has not POSTed yet, and not for an aborted
+  request either: closing the runner's LOCAL HTTP request does not prove the provider stopped
+  processing what it had already buffered, so a delayed append can land after the observation.
+  - **Provider-terminal-evidence taint** (the provider's own verdict for that request was
+    received: a terminal error RESPONSE body, or a terminal stream frame — the request's fate
+    is settled provider-side): reconcile-or-rotate. Listing the conversation's items and
+    adopting-or-recording what is there is sound, because nothing more from that request can
+    arrive.
+  - **No provider terminal evidence** (aborted mid-flight, transport failure, timeout,
+    `outcome_unknown` — regardless of who reported the local state): **ROTATION IS MANDATORY.**
+    The next turn abandons the shared object — a fresh conversation object or stateless replay
+    seeded from the durable items — and the abandoned object becomes a §19 cleanup orphan;
+    whatever lands late arrives in state no later turn will ever read.
   Only a pre-boundary outcome or a provably-unprocessed failure (e.g. a 4xx rejected before
-  processing) leaves the object clean. The taint never clears by time.
+  processing — which IS provider terminal evidence) leaves the object clean. The taint never
+  clears by time.
 - **ANTHROPIC (Messages)**: the API is stateless — full message list resent per call (verified;
   the only server-stored state in the platform is beta Managed Agents, out of V1 scope).
   Strategy: stateless replay from durable items with STRICT preservation of thinking blocks +

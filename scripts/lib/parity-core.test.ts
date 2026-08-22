@@ -148,7 +148,16 @@ describe('validateParityManifest', () => {
   });
 
   it('requires a REAL parseable https official_source on every row', () => {
-    for (const bad of ['see notes', 'https://', 'https://not a url', 'http://example.com']) {
+    for (const bad of [
+      'see notes',
+      'https://',
+      'https://not a url',
+      'http://example.com',
+      'https://-',
+      'https://.',
+      'https://-bad-.example.com',
+      'https://localhost',
+    ]) {
       const m = mkManifest([mkRow({ official_source: bad })]);
       expect(validateParityManifest(m).join('\n')).toContain(
         'official_source must be a parseable https URL'
