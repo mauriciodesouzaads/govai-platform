@@ -72,8 +72,8 @@ recorded grant — not a relaxation of the default.)
 | Conversation | `govai.ai_conversations` | Root container: org/owner scope, provider+surface+model defaults, title (encrypted), status (`active\|archived\|deleted_pending\|deleted`), `project_id uuid NULL` (future, §16), `workroom_id uuid NULL` (optional attribution, §4), retention class, timestamps |
 | Branch | `govai.ai_conversation_branches` | A named line of turns, and the DURABLE owner of execution identity: each branch carries its own `provider + surface + model` (copied from the conversation defaults at root-branch creation; supplied by the fork operation for provider/model switches). Adapter selection reads the BRANCH, never the conversation root — a cross-provider fork must be replayable after reload with no in-memory hint and possibly no provider_state yet. Every conversation has one root branch; fork creates a new branch with `parent_branch_id` + `forked_from_turn_id`/`forked_from_attempt_id`. Cross-provider continuation is ALWAYS a new branch (§17) |
 | Turn | `govai.ai_conversation_turns` | One user send on a branch: `(org_id, conversation_id, client_turn_id)` unique (§8), per-branch `turn_seq` (advisory-lock + `MAX+1` + UNIQUE backstop, the technique of `workroom-transcript.ts:127-136` — technique reuse, not table reuse), state (§7), `govai_request_id` per attempt (§14) |
-| Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`). Exactly one attempt may be `eligible_for_context` |
-| Provider-native Item | `govai.ai_conversation_items` | Ordered typed items per attempt: provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12). Content encrypted (§6) |
+| Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`). The TURN carries a `current_attempt_id` pointer — the atomic eligibility handoff of §7.6: at most the CURRENT attempt's completed output is context-eligible; prior attempts stay immutable and visible but never contribute |
+| Provider-native Item | `govai.ai_conversation_items` | Ordered typed items with an explicit OWNER discriminator: USER/INPUT items are TURN-owned (`attempt_id` NULL — they are committed at the §7.1 reservation, before any attempt exists, and survive every retry), while assistant/tool OUTPUT items are ATTEMPT-owned. Both owners are reached through the same composite lineage chain. Provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12); content encrypted (§6) |
 | Attachment | `govai.ai_conversation_attachments` | File references (GovAI-stored bytes or provider `file_id` refs). V1 design carries the entity; upload flows land in a later wave |
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
 | Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque |
@@ -264,7 +264,10 @@ Normative rules:
    credential_unavailable | provider_error`, `run-turn.ts:323-331`); `outcome_unknown` is the
    honest ambiguous-upstream state, named identically to the run-dispatch vocabulary
    (`core-events` `RunStatus`, 0029).
-5. Only `completed` attempts are `eligible_for_context` (matches `types.ts:75-77`).
+5. Only `completed` attempts are `eligible_for_context` (matches `types.ts:75-77`) — AND only a
+   turn's CURRENT attempt contributes: a turn's context contribution is exactly its turn-owned
+   user items plus its `current_attempt_id` attempt's completed output. A superseded attempt is
+   NEVER context, however completed it is.
 6. Transitions are total, and ratchets are PER-ATTEMPT: every state names its successors and its
    inverse-or-ratchet (`completed/stopped/failed/rejected` are ratchets; `outcome_unknown` may
    resolve once to `completed`/`failed` by a recovery probe, never the reverse). A terminal
@@ -272,7 +275,12 @@ Normative rules:
    and **retry/regenerate is a defined operation, not an illegal un-ratchet**: it mints attempt
    N+1 on the same turn (same `client_turn_id` reservation, fresh `govai_request_id`), returning
    the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard three-commit
-   flow. Retry is permitted only while the turn is the LAST turn on its branch — retrying an
+   flow. Minting N+1 is an ATOMIC ELIGIBILITY HANDOFF: the same commit repoints the turn's
+   `current_attempt_id` to N+1, so attempt N's completed output leaves the context domain
+   immediately — without mutating attempt N's ratcheted rows — and N+1's request context is
+   built from the earlier turns plus THIS turn's user items only, never any prior attempt's
+   output. Without the handoff, retrying a COMPLETED last turn would include the very answer
+   being regenerated and continue after it instead of replacing it. Retry is permitted only while the turn is the LAST turn on its branch — retrying an
    earlier turn is a REGENERATION FORK from that turn (`before_attempt_output` boundary mode,
    §3), the same semantics reference products ship. At most one non-terminal attempt exists per turn (single-flight applies unchanged), and
    a prior attempt's taint consequences (§11) survive its successor.
