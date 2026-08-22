@@ -200,15 +200,24 @@ Normative rules:
 6. Transitions are total: every state names its successors and its inverse-or-ratchet
    (`completed/stopped/failed/rejected` are ratchets; `outcome_unknown` may resolve once to
    `completed`/`failed` by a recovery probe, never the reverse).
-7. **No stranded states.** `accepted` and `dispatching` each carry a claim + deadline, and each
-   crash window has a defined recovery (the 0029 dispatch-boundary discipline, applied per turn):
-   the runner's SECOND commit — the dispatch-boundary commit — is written BEFORE any provider
-   POST. A turn found past its deadline still in `accepted` (no boundary commit) is PROVABLY
-   undispatched: a recovery claimant (or the next duplicate send, §8) may safely re-claim and
-   drive it — re-dispatch cannot double-send because no provider call can precede the boundary
-   commit. A turn past its deadline in `dispatching` (boundary committed, no terminal recorded)
-   resolves to `outcome_unknown` (§7.4) — never silently re-dispatched. `accepted` is therefore
-   a state with an exit on every path, not a promise that can dangle.
+7. **No stranded states, and claimants are FENCED.** `accepted` and `dispatching` each carry a
+   claim — `{claim_token, claimant, deadline}` — and each crash window has a defined recovery
+   (the 0029 dispatch-boundary + `dispatch_token` discipline, applied per turn):
+   - The runner's SECOND commit — the dispatch-boundary commit (`accepted → dispatching`) — is
+     written BEFORE any provider POST, and it is a CONDITIONAL compare-and-swap: it succeeds
+     only where the committing runner's `claim_token` is still the turn's current token
+     (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ?`). Zero rows
+     updated = fenced out: abort without dispatching.
+   - Re-claiming a past-deadline `accepted` turn (by the recovery sweep or by the next duplicate
+     send, §8) ROTATES the claim token in its own committed CAS. From that commit on, the
+     expired owner — merely stalled, not dead — can no longer pass its boundary CAS, so it can
+     never POST. Boundary-before-POST alone does NOT serialize two claimants; the fencing token
+     is what makes re-drive at-most-one-POST safe (§8), and the DB row is the single arbiter.
+   - A turn past its deadline in `dispatching` (boundary committed, no terminal recorded)
+     resolves to `outcome_unknown` (§7.4) — NEVER re-dispatched, by any claimant: post-boundary,
+     a provider POST may already exist, so re-drive is forbidden and only the recovery probe may
+     upgrade the state.
+   `accepted` is therefore a state with an exit on every path, and every exit is single-writer.
 
 ## 8. Durable send / idempotency
 
@@ -220,9 +229,10 @@ Normative rules:
   browser retry or reconnection: the duplicate reservation returns the existing turn (replay
   semantics, `x-govai-…-replay` header convention of `routes/runs.ts:126`). Replay is NOT
   abandonment: if the existing turn is a stranded pre-dispatch `accepted` (deadline elapsed, no
-  dispatch-boundary commit — §7.7), the duplicate send re-claims and DRIVES it rather than
-  merely echoing a turn that will never execute; if it is post-boundary without a terminal, the
-  reply reports `outcome_unknown` honestly.
+  dispatch-boundary commit — §7.7), the duplicate send re-claims it via the fencing CAS
+  (rotating the claim token, which locks the stalled owner out at its boundary commit) and
+  DRIVES it rather than merely echoing a turn that will never execute; if it is post-boundary
+  without a terminal, the reply reports `outcome_unknown` honestly — never a second POST.
 - A NEW header (e.g. `X-GovAI-Client-Turn-Id`) and a NEW reservation table are minted. The
   existing `X-GovAI-Idempotency-Key` (evidence-capture identity, stripped at ingress,
   `request-identity-hook.ts:79`) and `X-GovAI-Run-Idempotency-Key` (run intent) are NOT
@@ -245,11 +255,12 @@ The durable-turn runner is a server-side component (apps/api) that:
 1. commits the reservation + user items (`accepted`, with a claim deadline);
 2. builds the provider request via the adapter (§11) from durable context — not from browser
    memory;
-3. commits the dispatch boundary (`dispatching`) and only THEN dispatches to the SAME
-   provider-native pipeline the direct routes use (credential resolution, DLP, tool classifier,
-   beta policy, capture — unchanged semantics; the governed/passthrough distinction is carried
-   per conversation mode); the boundary-before-POST order is what makes §7.7's stranded-turn
-   recovery provably double-send-safe;
+3. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on its claim token —
+   losing the CAS means another claimant owns the turn: abort with no POST — and only THEN
+   dispatches to the SAME provider-native pipeline the direct routes use (credential resolution,
+   DLP, tool classifier, beta policy, capture — unchanged semantics; the governed/passthrough
+   distinction is carried per conversation mode); boundary-before-POST plus the fenced CAS is
+   what makes §7.7's stranded-turn recovery at-most-one-POST safe;
 4. owns the SSE pump to terminal (the `provider-stream-http` primitives —
    `pumpStreamWithTerminalEmit` — are the template), persisting items incrementally and the
    terminal state durably;
