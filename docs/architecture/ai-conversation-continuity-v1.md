@@ -525,8 +525,25 @@ Per-provider adjudication (provider facts verified 2026-08-21, first-party):
   GovAI implements over the encrypted conversation store — the sanctioned hook for owning
   session durability. No TUI scraping; the Agent SDK is the only integration surface.
 
-Cross-adapter rule: `provider_state` is opaque outside its adapter; nothing global assumes
-OpenAI state ≡ Anthropic state (§17).
+Cross-adapter rules:
+
+- `provider_state` is opaque outside its adapter; nothing global assumes OpenAI state ≡
+  Anthropic state (§17).
+- **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
+  case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
+  conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a
+  post-boundary attempt that ends without provider terminal evidence taints that shared state,
+  and the next turn must not blindly reuse it. Codex specifics: an expired runner can resume
+  against the same persisted thread (rollout/SQLite) and reorder the context later turns
+  consume; on a recovery-ratchet taint the adapter ROTATES via `thread/fork` from the last
+  known-good boundary (fork is a first-class thread primitive) or a fresh thread seeded from
+  GovAI's durable items — and, because the app-server is a GovAI-OWNED LOCAL runtime (unlike a
+  remote HTTP provider), the supervisor additionally holds a real receiver-side fence: it
+  terminates the expired runner's app-server process/connection before releasing the queue,
+  making the Codex zombie killable rather than merely isolated. Claude Code mirrors Codex: fork
+  or fresh session via the SessionStore, plus process-level termination of the expired SDK
+  runner. Stateless-replay strategies (Anthropic Messages; OpenAI chaining) remain structurally
+  insulated as stated above.
 
 ## 12. Preserve raw/native semantics
 

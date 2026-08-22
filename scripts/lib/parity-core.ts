@@ -667,6 +667,14 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     if (cls === 'PARTIAL' && !b('native_route_available')) {
       push(`${where()}: PARTIAL requires native_route_available (a GovAI path must exist)`);
     }
+    // BLOCKED_BY_GOVAI is a claim that GovAI actively intercepts the capability — impossible
+    // without a registered route to receive it on. Both legitimate rows carry registration and
+    // the route; a route-less row can be MISSING, never "blocked".
+    if (cls === 'BLOCKED_BY_GOVAI' && !(b('govai_registered') && b('native_route_available'))) {
+      push(
+        `${where()}: BLOCKED_BY_GOVAI requires govai_registered and native_route_available (blocking needs a path to intercept)`
+      );
+    }
   });
 
   // Deterministic ordering: surface (declared order), then family, then capability_id.

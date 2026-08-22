@@ -285,6 +285,19 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(ok)).toEqual([]);
   });
 
+  it('BLOCKED_BY_GOVAI requires a registered route to intercept on', () => {
+    const m = mkManifest([
+      mkRow({ classification: 'BLOCKED_BY_GOVAI', govai_registered: false, native_route_available: true }),
+    ]);
+    expect(validateParityManifest(m).join('\n')).toContain(
+      'BLOCKED_BY_GOVAI requires govai_registered and native_route_available'
+    );
+    const ok = mkManifest([
+      mkRow({ classification: 'BLOCKED_BY_GOVAI', govai_registered: true, native_route_available: true }),
+    ]);
+    expect(validateParityManifest(ok)).toEqual([]);
+  });
+
   it('native_route_available requires provider_exposed, globally', () => {
     const m = mkManifest([
       mkRow({ provider_exposed: false, native_route_available: true, classification: 'PARTIAL' }),
