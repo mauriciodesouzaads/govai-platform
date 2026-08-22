@@ -156,7 +156,9 @@ export interface ParityManifest {
   capabilities: ParityRow[];
 }
 
-const CAPABILITY_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+// Strict kebab-case: hyphen-separated non-empty alphanumeric segments — no leading/trailing
+// or doubled hyphens (the permissive form certified ids like `messages-` / `messages--create`).
+const CAPABILITY_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 

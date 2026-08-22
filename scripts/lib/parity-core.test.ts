@@ -156,6 +156,16 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(ok)).toEqual([]);
   });
 
+  it('rejects malformed kebab-case ids (trailing, doubled, leading hyphens)', () => {
+    for (const bad of ['messages-', 'messages--create', '-messages', 'a-']) {
+      const m = mkManifest([mkRow({ capability_id: bad })]);
+      expect(validateParityManifest(m).join('\n')).toContain('capability_id must be kebab-case');
+    }
+    expect(validateParityManifest(mkManifest([mkRow({ capability_id: 'messages-create' })]))).toEqual(
+      []
+    );
+  });
+
   it('rejects calendar-impossible snapshot dates that pass the shape regex', () => {
     for (const bad of ['2026-02-31', '2026-99-99', '2026-00-10']) {
       const m = mkManifest([mkRow({ verified_at: bad })]);

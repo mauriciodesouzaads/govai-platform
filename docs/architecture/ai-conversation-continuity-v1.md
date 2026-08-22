@@ -241,9 +241,17 @@ Normative rules:
    honest ambiguous-upstream state, named identically to the run-dispatch vocabulary
    (`core-events` `RunStatus`, 0029).
 5. Only `completed` attempts are `eligible_for_context` (matches `types.ts:75-77`).
-6. Transitions are total: every state names its successors and its inverse-or-ratchet
-   (`completed/stopped/failed/rejected` are ratchets; `outcome_unknown` may resolve once to
-   `completed`/`failed` by a recovery probe, never the reverse).
+6. Transitions are total, and ratchets are PER-ATTEMPT: every state names its successors and its
+   inverse-or-ratchet (`completed/stopped/failed/rejected` are ratchets; `outcome_unknown` may
+   resolve once to `completed`/`failed` by a recovery probe, never the reverse). A terminal
+   ATTEMPT is never mutated — but the TURN's displayed state is DERIVED from its latest attempt,
+   and **retry/regenerate is a defined operation, not an illegal un-ratchet**: it mints attempt
+   N+1 on the same turn (same `client_turn_id` reservation, fresh `govai_request_id`), returning
+   the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard three-commit
+   flow. Retry is permitted only while the turn is the LAST turn on its branch — retrying an
+   earlier turn is a FORK from that turn (§3 branches), the same semantics reference products
+   ship. At most one non-terminal attempt exists per turn (single-flight applies unchanged), and
+   a prior attempt's taint consequences (§11) survive its successor.
 7. **No stranded states, and claimants are FENCED.** `accepted` and `dispatching` each carry a
    claim — `{claim_token, claimant, deadline}` — and each crash window has a defined recovery
    (the 0029 dispatch-boundary + `dispatch_token` discipline, applied per turn):
@@ -285,7 +293,13 @@ Normative rules:
    - **The lease covers `streaming` too — a dead pump cannot strand a branch.** The owning
      runner RENEWS its claim lease periodically while pumping (heartbeat on the same claim row);
      persistence of stream items continues incrementally, so the durable prefix always reflects
-     what was relayed. A `streaming` turn whose lease has lapsed past `deadline + δ` is resolved
+     what was relayed. **Every incremental write is fenced, not just the finalize:** each
+     heartbeat and each item-append transaction is conditional on
+     `claim_token = <mine> AND state = 'streaming'` — zero rows touched means the pump has been
+     fenced out (or the attempt ratcheted) and MUST abort its relay. Without this, a stalled
+     pump that resumes after the recovery ratchet could keep appending to a prefix the ratchet
+     already declared terminal-partial, silently mutating "terminal" state the finalize CAS
+     alone does not protect. A `streaming` turn whose lease has lapsed past `deadline + δ` is resolved
      by the recovery sweep exactly like a lapsed `dispatching` turn: provider recovery probe
      where one exists (OpenAI response retrieval), otherwise ratchet to `outcome_unknown` — with
      the durable item prefix retained and MARKED PARTIAL, never presented as a completed
