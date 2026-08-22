@@ -89,9 +89,14 @@ references its parent by a COMPOSITE key that carries that ancestry. Branches ca
 `UNIQUE (org_id, owner_user_id, conversation_id, id)`; turns reference
 `(org_id, owner_user_id, conversation_id, branch_id) REFERENCES ai_conversation_branches
 (org_id, owner_user_id, conversation_id, id)`; attempts/items/content/provider_state/
-evidence_links continue the same chain, and the branch fork self-reference
-(`parent_branch_id`) uses the same composite — a fork stays inside its conversation by
-construction. Two corruption shapes are therefore structurally unrepresentable, not
+evidence_links continue the same chain, and the branch FORK references are lineage-bound as one
+unit: `(org_id, owner_user_id, conversation_id, parent_branch_id, forked_from_turn_id)
+REFERENCES ai_conversation_turns (org_id, owner_user_id, conversation_id, branch_id, id)` — a
+single composite FK that simultaneously forces the fork-point turn to belong to the SAME
+conversation AND to the DECLARED parent branch (with a CHECK that `parent_branch_id` and
+`forked_from_turn_id` are both null on a root branch and both set on a fork). A fork therefore
+cannot name a parent in conversation A while taking its fork point from conversation B or from
+a sibling branch — the adapter can never restore context from the wrong lineage. Two corruption shapes are therefore structurally unrepresentable, not
 query-discipline-dependent: a child whose stamped ownership disagrees with its parent's
 (cross-OWNER grafting), and a child whose stamped `conversation_id` disagrees with its
 parent branch's conversation (cross-CONVERSATION grafting within one owner — a turn keyed to
@@ -354,7 +359,11 @@ Normative rules:
 
 The durable-turn runner is a server-side component (apps/api) that:
 
-1. commits the reservation + user items (`accepted`, with a claim deadline);
+1. commits the reservation + user items (`accepted`, born UNCLAIMED — §8's claim lifecycle:
+   a claim, and the deadline that belongs to it, is acquired only by a successful
+   head-of-queue claim CAS, whether by this creating request when the turn is at head, by a
+   terminal-transition wake, or by the sweep; deadlines attach to CLAIMS, never to
+   reservations, so a queued turn is always claimable the moment it reaches head);
 2. builds the provider request via the adapter (§11) from durable context — not from browser
    memory;
 3. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on its claim token —
