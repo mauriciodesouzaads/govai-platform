@@ -159,6 +159,10 @@ describe('validateParityManifest', () => {
       'https://localhost',
       'https://example.com/docs',
       'https://github.com/random/repo',
+      // Cross-provider sources: the default fixture is an ANTHROPIC row, so OpenAI-owned
+      // properties (and OpenAI's GitHub org) cannot support it.
+      'https://developers.openai.com/api/docs',
+      'https://github.com/openai/codex/blob/main/README.md',
     ]) {
       const m = mkManifest([mkRow({ official_source: bad })]);
       expect(validateParityManifest(m).join('\n')).toContain(
@@ -167,10 +171,25 @@ describe('validateParityManifest', () => {
     }
     for (const good of [
       'https://platform.claude.com/docs',
-      'https://github.com/openai/codex/blob/main/README.md',
+      'https://github.com/anthropics/claude-code/blob/main/README.md',
     ]) {
       expect(validateParityManifest(mkManifest([mkRow({ official_source: good })]))).toEqual([]);
     }
+    // And the mirror: an OpenAI-surface row accepts OpenAI properties, rejects Anthropic's.
+    const oaiRow = mkRow({
+      provider: 'openai',
+      surface: 'OPENAI_API',
+      official_source: 'https://github.com/openai/codex/blob/main/README.md',
+    });
+    expect(validateParityManifest(mkManifest([oaiRow]))).toEqual([]);
+    const oaiBad = mkRow({
+      provider: 'openai',
+      surface: 'OPENAI_API',
+      official_source: 'https://platform.claude.com/docs',
+    });
+    expect(validateParityManifest(mkManifest([oaiBad])).join('\n')).toContain(
+      'official_source must be a parseable FIRST-PARTY https URL'
+    );
   });
 
   it('rejects malformed kebab-case ids (trailing, doubled, leading hyphens)', () => {
