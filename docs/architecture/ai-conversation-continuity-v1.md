@@ -90,13 +90,18 @@ references its parent by a COMPOSITE key that carries that ancestry. Branches ca
 `(org_id, owner_user_id, conversation_id, branch_id) REFERENCES ai_conversation_branches
 (org_id, owner_user_id, conversation_id, id)`; attempts/items/content/provider_state/
 evidence_links continue the same chain, and the branch FORK references are lineage-bound as one
-unit: `(org_id, owner_user_id, conversation_id, parent_branch_id, forked_from_turn_id)
-REFERENCES ai_conversation_turns (org_id, owner_user_id, conversation_id, branch_id, id)` — a
-single composite FK that simultaneously forces the fork-point turn to belong to the SAME
-conversation AND to the DECLARED parent branch (with a CHECK that `parent_branch_id` and
-`forked_from_turn_id` are both null on a root branch and both set on a fork). A fork therefore
-cannot name a parent in conversation A while taking its fork point from conversation B or from
-a sibling branch — the adapter can never restore context from the wrong lineage. Two corruption shapes are therefore structurally unrepresentable, not
+unit AND pinned to an IMMUTABLE ancestor: because retry makes a turn's eligible attempt mutable
+(§7.6), a fork that named only a turn could silently change ancestry when the source turn is
+regenerated. The fork therefore references the specific attempt:
+`(org_id, owner_user_id, conversation_id, parent_branch_id, forked_from_turn_id,
+forked_from_attempt_id) REFERENCES ai_conversation_attempts (org_id, owner_user_id,
+conversation_id, branch_id, turn_id, id)` — one composite FK that simultaneously forces the
+fork point to belong to the SAME conversation, the DECLARED parent branch, the named turn, and
+a SPECIFIC attempt whose terminal items never change (attempt ratchets, §7.6). A CHECK requires
+the fork columns all-null on a root branch and all-set on a fork. Fork-context replay reads THAT
+attempt's items, so a later retry of the source turn changes nothing behind the fork — retry
+after a fork stays permitted without ancestry drift, and a fork can never take its context from
+conversation B, a sibling branch, or a regenerated attempt it did not name. Two corruption shapes are therefore structurally unrepresentable, not
 query-discipline-dependent: a child whose stamped ownership disagrees with its parent's
 (cross-OWNER grafting), and a child whose stamped `conversation_id` disagrees with its
 parent branch's conversation (cross-CONVERSATION grafting within one owner — a turn keyed to
@@ -524,9 +529,15 @@ are stored verbatim-encrypted (forward-compatible by construction, ADR-021 postu
 `GET /v1/ai/conversations/:id` · `PATCH /v1/ai/conversations/:id` (guarded fields: title,
 archived) · `DELETE /v1/ai/conversations/:id` (lifecycle per §19) ·
 `GET /v1/ai/conversations/:id/turns` (items hydrated per attempt) ·
-`POST /v1/ai/conversations/:id/branches` (fork) ·
+`POST /v1/ai/conversations/:id/branches` (fork; names its `forked_from_turn_id` AND
+`forked_from_attempt_id`, §3) ·
 `POST /v1/ai/conversations/:id/turns` (durable send, §8) + `GET .../turns/:turnId` (hydrate) +
-stream re-attach endpoint.
+stream re-attach endpoint ·
+`POST /v1/ai/conversations/:id/turns/:turnId/retry` — the explicit operation that invokes §7.6
+retry/regenerate: mints attempt N+1 and re-enters the queue; idempotent via a client-supplied
+`client_attempt_id` unique per `(org_id, turn_id)` (the §8 reservation pattern at attempt
+granularity — a duplicate retry replays the existing attempt, it never mints a second one);
+rejected with a fork pointer when the turn is not the last on its branch.
 
 - NO generic provider request schema is invented: the turn-send body embeds the provider-native
   request fragment; execution continues through provider-specific adapters over the existing
