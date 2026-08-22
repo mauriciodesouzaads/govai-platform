@@ -667,6 +667,31 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     if (cls === 'PARTIAL' && !b('native_route_available')) {
       push(`${where()}: PARTIAL requires native_route_available (a GovAI path must exist)`);
     }
+    // NOT_APPLICABLE declares "no parity effort applies" — it cannot coexist with any GovAI
+    // axis, or the artifact would simultaneously claim implementation and inapplicability.
+    if (cls === 'NOT_APPLICABLE') {
+      const govai = [
+        'govai_registered',
+        'native_route_available',
+        'native_tested',
+        'native_live_accepted',
+        'governed_applicable',
+        'governed_route_available',
+        'governed_tested',
+        'governed_live_accepted',
+        'ui_exposed',
+        'ui_tested',
+        'ui_live_accepted',
+        'evidence_wired',
+        'exact_turn_evidence_correlation',
+        'persistence_supported',
+        'resume_supported',
+        'fork_supported',
+      ];
+      for (const f of govai) {
+        if (b(f)) push(`${where()}: NOT_APPLICABLE rows must not set ${f}`);
+      }
+    }
     // BLOCKED_BY_GOVAI is a claim that GovAI actively intercepts the capability — impossible
     // without a registered route to receive it on. Both legitimate rows carry registration and
     // the route; a route-less row can be MISSING, never "blocked".

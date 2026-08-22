@@ -110,8 +110,11 @@ here" and "regenerate this answer" need different replay boundaries:
 - `before_attempt_output` (regeneration of an earlier turn): the child's context includes every
   EARLIER turn's completed output plus the source TURN's USER items — which are TURN-owned and
   immutable from the reservation commit (§7.1), not attempt-owned — and EXCLUDES the pinned
-  attempt's output; the fork mints a fresh attempt on that turn's user input immediately. The
-  pinned completed attempt still serves as the immutable ancestry marker in both modes.
+  attempt's output. Mechanically, the fork creates a NEW TURN on the CHILD branch that COPIES
+  the source turn's immutable user items, and the fresh attempt attaches to THAT turn — never
+  to the source turn, which belongs to the parent branch and whose composite lineage FKs (§3
+  above) would otherwise be violated. The pinned completed attempt still serves as the
+  immutable ancestry marker in both modes.
 Without the second mode, redirecting earlier-turn retry to the fork protocol would replay the
 very response being regenerated and then answer AFTER it instead of REPLACING it. A CHECK requires the fork columns all-null on a root branch and all-set
 on a fork. Fork-context replay reads THAT
@@ -303,14 +306,24 @@ Normative rules:
      unbounded pause between its lease check and its POST cannot write ANY durable state: its
      finalize loses the CAS and is discarded with a diagnostic, its attempt stays
      `outcome_unknown`/superseded, its output never becomes `eligible_for_context`, and
-     `provider_state` keeps a single fenced writer. Where the branch uses PROVIDER-HELD shared
-     continuation state (the OpenAI conversation-object strategy), the fence cannot reach the
-     provider's copy — that exposure is closed by §11's taint/reconcile-or-rotate rule, which
-     forbids blind reuse of the shared object after any `outcome_unknown`. Honest residual,
-     stated not hidden: without receiver-side fencing (providers accept no fencing token), such
-     a zombie can still SPEND provider tokens on a discarded response — the protocol guarantees
-     durable-state integrity, context/provider-state ordering, and (via §11) shared-state
-     hygiene, not zombie-spend prevention.
+     `provider_state` keeps a single fenced writer. ONE narrowly-typed write survives the
+     fence: a discarded finalize MAY append an ORPHAN-DISPOSAL record —
+     `{org, owner, conversation, provider, object_kind, provider_object_id}` — to a dedicated
+     append-only cleanup ledger that is branch-state-INDEPENDENT. Without it, a fenced chaining
+     runner that received a stored provider response would discard the only copy of that
+     response's id, and §19's provider cleanup could never delete an orphan it has no
+     identifier for; provider-retained content would survive user deletion. The ledger is a
+     disposal queue, never context or provider_state — writing to it asserts nothing about the
+     turn. (Rotation-abandoned shared objects have the same guarantee differently: superseded
+     `provider_state` rows stay durable until §19 cleanup consumes them.) Where the branch uses
+     PROVIDER-HELD shared continuation state (the OpenAI conversation-object strategy), the
+     fence cannot reach the provider's copy — that exposure is closed by §11's
+     taint/reconcile-or-rotate rule, which forbids blind reuse of the shared object after any
+     `outcome_unknown`. Honest residual, stated not hidden: without receiver-side fencing
+     (providers accept no fencing token), such a zombie can still SPEND provider tokens on a
+     discarded response — the protocol guarantees durable-state integrity,
+     context/provider-state ordering, shared-state hygiene (§11) and orphan disposability, not
+     zombie-spend prevention.
    - **The lease covers the ENTIRE post-boundary window — `dispatching` and `streaming` alike —
      and the heartbeat is TIMER-driven, never event-driven.** The owning runner renews its claim
      on a concurrent timer from the moment the boundary commits: while the provider POST is in

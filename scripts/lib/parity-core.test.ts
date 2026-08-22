@@ -285,6 +285,19 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(ok)).toEqual([]);
   });
 
+  it('NOT_APPLICABLE rows must carry zero GovAI axes', () => {
+    const m = mkManifest([
+      mkRow({ classification: 'NOT_APPLICABLE', native_route_available: true, ui_exposed: true }),
+    ]);
+    const out = validateParityManifest(m).join('\n');
+    expect(out).toContain('NOT_APPLICABLE rows must not set native_route_available');
+    expect(out).toContain('NOT_APPLICABLE rows must not set ui_exposed');
+    const ok = mkManifest([
+      mkRow({ classification: 'NOT_APPLICABLE', native_route_available: false }),
+    ]);
+    expect(validateParityManifest(ok)).toEqual([]);
+  });
+
   it('BLOCKED_BY_GOVAI requires a registered route to intercept on', () => {
     const m = mkManifest([
       mkRow({ classification: 'BLOCKED_BY_GOVAI', govai_registered: false, native_route_available: true }),
