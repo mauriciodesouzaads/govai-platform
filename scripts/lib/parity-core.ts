@@ -611,6 +611,13 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     if ((cls === 'FULL' || cls === 'PARTIAL' || cls === 'BLOCKED_BY_GOVAI') && !b('provider_exposed')) {
       push(`${where()}: ${cls} requires provider_exposed=true`);
     }
+    // PARTIAL must be distinguishable from MISSING by an actual GovAI capability path — every
+    // legitimate PARTIAL row reaches the capability through a registered native route (directly
+    // or as a body/tool feature riding one). Without this, flipping a route-less MISSING row to
+    // PARTIAL would certify partial support with every proof axis false.
+    if (cls === 'PARTIAL' && !b('native_route_available')) {
+      push(`${where()}: PARTIAL requires native_route_available (a GovAI path must exist)`);
+    }
   });
 
   // Deterministic ordering: surface (declared order), then family, then capability_id.

@@ -31,7 +31,8 @@ function mkRow(overrides: Partial<ParityRow>): ParityRow {
     model_constraints: null,
     provider_exposed: true,
     govai_registered: false,
-    native_route_available: false,
+    // Default fixture is a legitimate PARTIAL: the capability rides a registered native route.
+    native_route_available: true,
     native_tested: false,
     native_live_accepted: false,
     governed_applicable: false,
@@ -89,6 +90,7 @@ const FULL_ROW = mkRow({
 const APP_ROW = mkRow({
   provider: 'anthropic',
   surface: 'CLAUDE_APP',
+  native_route_available: false,
   family: 'work',
   capability_id: 'artifacts',
   capability_name: 'Artifacts',
@@ -238,6 +240,17 @@ describe('validateParityManifest', () => {
     expect(out).toContain('PROVIDER_NOT_EXPOSED rows must not set persistence_supported');
   });
 
+  it('PARTIAL requires a GovAI path (native_route_available)', () => {
+    const m = mkManifest([mkRow({ classification: 'PARTIAL', native_route_available: false })]);
+    expect(validateParityManifest(m).join('\n')).toContain(
+      'PARTIAL requires native_route_available'
+    );
+    const ok = mkManifest([
+      mkRow({ classification: 'PARTIAL', native_route_available: true }),
+    ]);
+    expect(validateParityManifest(ok)).toEqual([]);
+  });
+
   it('native_route_available requires provider_exposed, globally', () => {
     const m = mkManifest([
       mkRow({ provider_exposed: false, native_route_available: true, classification: 'PARTIAL' }),
@@ -247,7 +260,7 @@ describe('validateParityManifest', () => {
   });
 
   it('axis implications: tested/accepted require the route; ui axes require exposure', () => {
-    const m1 = mkManifest([mkRow({ native_tested: true })]);
+    const m1 = mkManifest([mkRow({ native_tested: true, native_route_available: false })]);
     expect(validateParityManifest(m1).join('\n')).toContain('require native_route_available');
     const m2 = mkManifest([mkRow({ governed_tested: true })]);
     expect(validateParityManifest(m2).join('\n')).toContain('governed_* axes require governed_applicable');

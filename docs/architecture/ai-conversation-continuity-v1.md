@@ -469,11 +469,21 @@ Per-provider adjudication (provider facts verified 2026-08-21, first-party):
   after the POST began can still leave a full provider-side append behind the abort), or a
   `failed` whose error class does not PROVE the provider never processed the request — marks
   that branch's `provider_state` **TAINTED**, and the next turn MUST NOT blindly reuse the
-  conversation object: the adapter first reconciles against provider truth (list the
-  conversation's items; adopt-or-record any phantom append) or rotates — a fresh conversation
-  object (or stateless replay) seeded from the durable items. Only a pre-boundary outcome or a
-  provably-unprocessed failure (e.g. a 4xx rejected before processing) leaves the object clean.
-  The taint clears only by reconcile-or-rotate, never by time.
+  conversation object. How the taint clears depends on WHO reported the outcome, because a
+  reconcile that observes "no phantom append yet" proves nothing about a zombie that has not
+  POSTed YET:
+  - **Self-reported taint** (the owning runner itself finalized `stopped`/`failed` — it is
+    alive, its HTTP request is closed, no later POST from it can exist): reconcile-or-rotate.
+    Reconciling against provider truth (list the conversation's items; adopt-or-record any
+    append) is sound here and may clear the taint.
+  - **Recovery-ratchet taint** (`outcome_unknown` — the owner was not heard from and may be an
+    unbounded-pause zombie whose POST is still in flight): **ROTATION IS MANDATORY.** The next
+    turn abandons the shared object — a fresh conversation object or stateless replay seeded
+    from the durable items — and the abandoned object becomes a §19 cleanup orphan; whatever a
+    late zombie appends lands in state no later turn will ever read. No observation can clear
+    this taint: absence of an append is not evidence the zombie is finished.
+  Only a pre-boundary outcome or a provably-unprocessed failure (e.g. a 4xx rejected before
+  processing) leaves the object clean. The taint never clears by time.
 - **ANTHROPIC (Messages)**: the API is stateless — full message list resent per call (verified;
   the only server-stored state in the platform is beta Managed Agents, out of V1 scope).
   Strategy: stateless replay from durable items with STRICT preservation of thinking blocks +
