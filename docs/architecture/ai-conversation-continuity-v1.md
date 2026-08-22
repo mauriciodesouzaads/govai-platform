@@ -83,15 +83,19 @@ recorded grant — not a relaxation of the default.)
 Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
 from `govai.api_key_lookup_v2`, `pipeline/auth.ts:52-53`), both enforced by RLS as above.
 Authorization = owner (or, post-R14, explicit sharing) — NOT participant rosters (§4).
-**Denormalized ownership is FK-BOUND to the parent, not merely stamped:** every parent table
-carries `UNIQUE (org_id, owner_user_id, id)`, and every child references its parent by the
-COMPOSITE key — e.g. turns `(org_id, owner_user_id, branch_id) REFERENCES
-ai_conversation_branches (org_id, owner_user_id, id)`, and so on down the chain
-(conversation → branch → turn → attempt → item/content/provider_state/evidence_link). A child
-row whose stamped ownership disagrees with its parent's is therefore structurally
-unrepresentable: an insert that names a foreign `conversation_id` while stamping the caller's
-own org/owner fails the FK, so cross-owner grafting cannot depend on any query remembering a
-parent-consistency lookup.
+**Denormalized ownership AND lineage are FK-BOUND to the parent, not merely stamped:** every
+child row denormalizes its full ancestry `(org_id, owner_user_id, conversation_id, …)` and
+references its parent by a COMPOSITE key that carries that ancestry. Branches carry
+`UNIQUE (org_id, owner_user_id, conversation_id, id)`; turns reference
+`(org_id, owner_user_id, conversation_id, branch_id) REFERENCES ai_conversation_branches
+(org_id, owner_user_id, conversation_id, id)`; attempts/items/content/provider_state/
+evidence_links continue the same chain, and the branch fork self-reference
+(`parent_branch_id`) uses the same composite — a fork stays inside its conversation by
+construction. Two corruption shapes are therefore structurally unrepresentable, not
+query-discipline-dependent: a child whose stamped ownership disagrees with its parent's
+(cross-OWNER grafting), and a child whose stamped `conversation_id` disagrees with its
+parent branch's conversation (cross-CONVERSATION grafting within one owner — a turn keyed to
+conversation A silently following a branch of conversation B).
 
 ## 4. Conversation ≠ Workroom (adjudicated boundary)
 
@@ -170,7 +174,14 @@ Rules (normative, from the evidence-plane adjudication):
   (`packages/core-identity/src/kms/index.ts:40-53`; AWS adapter `kms/aws-kms.ts` with versioned
   envelope magic `GVK1`). A NEW KMS purpose (e.g. `conversation_content`) is added to the closed
   purpose enum (`kms/index.ts:7-11`) so conversation keys are derivationally isolated from
-  `audit_hmac`/`payload_dek`/`provider_credential`.
+  `audit_hmac`/`payload_dek`/`provider_credential`. ADJUDICATED PREREQUISITE, because the enum
+  value alone would be inert: the CURRENT envelope API accepts no purpose — both implementations
+  hard-code `payload_dek` into the wrapping-key derivation (`kms/index.ts:128`,
+  `kms/aws-kms.ts:229`) — so the continuity implementation must first EXTEND the envelope
+  surface (purpose-parameterized `envelopeEncrypt`/`envelopeDecrypt`, or purpose-specific
+  methods), with `payload_dek` remaining the default for every existing caller. A small,
+  additive `core-identity` change, named here so the isolation claim is real rather than
+  nominal.
 - Key id/version are persisted per row (house convention); rotation remains an explicit future
   ADR (`audit-keys.ts:9-10`) — V1 inherits the frozen-key limitation and says so.
 - **Titles are encrypted too.** Adjudication: titles are derived from user content (§18) and can
@@ -237,7 +248,25 @@ Normative rules:
      resolves to `outcome_unknown` (§7.4) — NEVER re-dispatched, by any claimant: post-boundary,
      a provider POST may already exist, so re-drive is forbidden and only the recovery probe may
      upgrade the state.
-   `accepted` is therefore a state with an exit on every path, and every exit is single-writer.
+   - **The post-boundary window is governed as a LEASE, and the finalize-commit is fenced too.**
+     A boundary CAS win alone cannot stop a runner that stalls between boundary and POST, then
+     resumes after recovery has marked the turn `outcome_unknown` and released the branch queue
+     — its first POST would race the next turn. Three rules bound that zombie:
+     (1) the runner re-validates its lease immediately before the provider POST and aborts if
+     the claim was rotated/expired; (2) the recovery sweep may not act on a `dispatching` turn
+     before `deadline + δ` (an explicit grace window over the lease check, so a runner that
+     validates in time POSTs before recovery moves); (3) the FINALIZE-commit carries the same
+     claim-token CAS as the boundary commit — a zombie that slips through (1)/(2) via an
+     unbounded pause between its lease check and its POST cannot write ANY durable state: its
+     finalize loses the CAS and is discarded with a diagnostic, its attempt stays
+     `outcome_unknown`/superseded, its output never becomes `eligible_for_context`, and
+     `provider_state` keeps a single fenced writer. Honest residual, stated not hidden: without
+     receiver-side fencing (providers accept no fencing token), such a zombie can still SPEND
+     provider tokens on a discarded response and its POST may land after a later turn's — the
+     protocol guarantees durable-state integrity and context/provider-state ordering, not
+     zombie-spend prevention.
+   `accepted` is therefore a state with an exit on every path, and every durable exit — boundary
+   AND finalize — is single-writer.
 
 ## 8. Durable send / idempotency
 

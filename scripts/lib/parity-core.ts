@@ -458,6 +458,9 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     const isApp = (APP_SURFACES as readonly string[]).includes(surface);
 
     // --- axis coherence -----------------------------------------------------
+    if (b('native_route_available') && !b('provider_exposed')) {
+      push(`${where()}: native_route_available requires provider_exposed (a route to a capability the provider does not expose is a fiction)`);
+    }
     if ((b('native_tested') || b('native_live_accepted')) && !b('native_route_available')) {
       push(`${where()}: native_tested/live_accepted require native_route_available`);
     }
@@ -558,8 +561,34 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
         if (b(f)) push(`${where()}: MISSING rows must not set ${f}`);
       }
     }
-    if (cls === 'PROVIDER_NOT_EXPOSED' && b('provider_exposed')) {
-      push(`${where()}: PROVIDER_NOT_EXPOSED contradicts provider_exposed=true`);
+    if (cls === 'PROVIDER_NOT_EXPOSED') {
+      if (b('provider_exposed')) {
+        push(`${where()}: PROVIDER_NOT_EXPOSED contradicts provider_exposed=true`);
+      }
+      // Same complete axis discipline as MISSING: a capability the provider does not expose
+      // cannot carry any GovAI proof axis — otherwise the baseline mechanically "proves" a
+      // provider-native path to something that does not exist.
+      const govai = [
+        'govai_registered',
+        'native_route_available',
+        'native_tested',
+        'native_live_accepted',
+        'governed_applicable',
+        'governed_route_available',
+        'governed_tested',
+        'governed_live_accepted',
+        'ui_exposed',
+        'ui_tested',
+        'ui_live_accepted',
+        'evidence_wired',
+        'exact_turn_evidence_correlation',
+        'persistence_supported',
+        'resume_supported',
+        'fork_supported',
+      ];
+      for (const f of govai) {
+        if (b(f)) push(`${where()}: PROVIDER_NOT_EXPOSED rows must not set ${f}`);
+      }
     }
     if ((cls === 'FULL' || cls === 'PARTIAL' || cls === 'BLOCKED_BY_GOVAI') && !b('provider_exposed')) {
       push(`${where()}: ${cls} requires provider_exposed=true`);

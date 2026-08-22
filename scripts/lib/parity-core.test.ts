@@ -197,9 +197,28 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(m).join('\n')).toContain('MISSING rows must not set govai_registered');
   });
 
-  it('PROVIDER_NOT_EXPOSED contradicts provider_exposed=true', () => {
+  it('PROVIDER_NOT_EXPOSED contradicts provider_exposed=true and rejects every GovAI axis', () => {
     const m = mkManifest([mkRow({ classification: 'PROVIDER_NOT_EXPOSED' })]);
     expect(validateParityManifest(m).join('\n')).toContain('contradicts provider_exposed=true');
+    const posing = mkManifest([
+      mkRow({
+        classification: 'PROVIDER_NOT_EXPOSED',
+        provider_exposed: false,
+        govai_registered: true,
+        persistence_supported: true,
+      }),
+    ]);
+    const out = validateParityManifest(posing).join('\n');
+    expect(out).toContain('PROVIDER_NOT_EXPOSED rows must not set govai_registered');
+    expect(out).toContain('PROVIDER_NOT_EXPOSED rows must not set persistence_supported');
+  });
+
+  it('native_route_available requires provider_exposed, globally', () => {
+    const m = mkManifest([
+      mkRow({ provider_exposed: false, native_route_available: true, classification: 'PARTIAL' }),
+    ]);
+    const out = validateParityManifest(m).join('\n');
+    expect(out).toContain('native_route_available requires provider_exposed');
   });
 
   it('axis implications: tested/accepted require the route; ui axes require exposure', () => {
