@@ -386,8 +386,16 @@ Normative rules:
    history: without this rule, §7.5 would automatically restore recovered-N to eligibility and
    turn N+2 would be generated WITH an output N+1 was generated WITHOUT — and the provider
    continuation state (already causally rooted in N+1) would diverge from the durable replay
-   projection. The probe's upgrade commit therefore decides, ATOMICALLY with the upgrade, by
-   checking the branch-advance predicate:
+   projection. **RECOVERY_ADVANCE_SERIALIZATION:** the advance check and the eligibility
+   decision execute UNDER THE BRANCH EXECUTION AUTHORITY — the same per-branch serialization
+   primitive every dispatch-boundary commit holds (§8/LAW 16) — atomically with the upgrade.
+   An atomic-but-unserialized check would race a concurrent N+1 boundary transaction (probe
+   observes "not advanced" while N+1 builds context without N; both commit; monotonicity
+   broken). Under the shared authority exactly two orderings exist and both are safe: PROBE
+   WINS — N's eligibility resolves first, and N+1's boundary (acquiring the authority
+   afterward) builds the resulting context; DISPATCH WINS — N+1's boundary commits first
+   without N, and the probe (acquiring the authority afterward) observes the advance and
+   records `context_excluded`. There is no third outcome. The probe's decision branches:
    - **Branch NOT advanced** (no later turn on the branch has crossed its dispatch boundary
      since N was ratcheted — queued reservations do not count): the recovered attempt regains
      ordinary eligibility. This is safe by construction, because every strategy derives its
@@ -485,7 +493,9 @@ Normative rules:
   `client_turn_id`s both succeed and would otherwise dispatch concurrently, letting the later
   turn build context without the earlier result and racing writes to per-branch
   `provider_state` (e.g. `previous_response_id`). Rule: a branch is SINGLE-FLIGHT. The
-  dispatch-boundary CAS (§7.7) carries a second predicate — it succeeds only when no
+  dispatch-boundary CAS (§7.7) executes UNDER the branch execution authority (the per-branch
+  serialization primitive of LAW 16 — the same authority §7.8's recovery decision must hold)
+  and carries a second predicate — it succeeds only when no
   earlier-`turn_seq` turn on the branch is in a non-terminal state — so reservations form a
   durable per-branch queue that dispatches strictly in `turn_seq` order, each turn's context
   includes every earlier terminal outcome, and `provider_state` has one writer at a time. A
@@ -771,11 +781,24 @@ retry/regenerate: mints attempt N+1 and re-enters the queue; idempotent via a cl
 `client_attempt_id` unique per `(org_id, turn_id)` (the §8 reservation pattern at attempt
 granularity — a duplicate retry replays the existing attempt, it never mints a second one);
 rejected with a fork pointer when the turn is not the last on its branch ·
-`POST /v1/ai/conversations/:id/turns/:turnId/stop` — the explicit Stop command the server-owned
-stream makes NECESSARY (§9/§10: browser disconnect is delivery-only, so aborting the SSE
-re-attach is NOT Stop). Authenticated like every conversation operation, idempotent (stop of an
-already-terminal turn replays the current state), and DURABLE: it records a stop-request flag on
-the turn's claim row AND actively wakes the owner — in-process via a claim-keyed abort registry
+`POST /v1/ai/conversations/:id/turns/:turnId/attempts/:attemptId/stop` — the explicit Stop
+command the server-owned stream makes NECESSARY (§9/§10: browser disconnect is delivery-only,
+so aborting the SSE re-attach is NOT Stop), and it is **ATTEMPT-scoped
+(STOP_ATTEMPT_TARGET_STABILITY)**: a control command that changes execution state must be bound
+to the execution instance it intends to control. A turn-scoped Stop would resolve "the current
+attempt" at arrival time, so a delayed or HTTP-retried Stop meant for attempt N could abort the
+regenerated attempt N+1 — violating idempotency, attempt immutability and user intent. The
+contract: Stop names its `attemptId` (full §3 lineage authorization — org, owner, conversation,
+branch, turn, attempt; NO_SECURITY_OR_CAUSAL_POINTER_BY_ID_ALONE); it carries a
+`client_stop_id` unique within the target attempt (the §8 reservation pattern at stop
+granularity); a stale Stop NEVER retargets to a newer `current_attempt_id`. Semantics: target
+attempt active → durable stop-request flag + active wake of THAT attempt's current claimant
+(the abort/wake registry is keyed by attempt/claim, never by the mutable turn; clients hold
+stable attempt identity, the server resolves the current claimant internally); target attempt
+already terminal → replay its terminal state, mutate nothing — especially not a later attempt;
+repeated Stop → replay the same outcome. Stopping a QUEUED turn stops its accepted attempt
+(the §7 `accepted → stopped` discard edge). Authenticated and DURABLE: the flag lives on
+the attempt's claim row AND actively wakes the owner — in-process via a claim-keyed abort registry
 (the endpoint triggers the owning runner's `AbortController` directly), cross-process via a
 notification channel (Postgres LISTEN/NOTIFY is the in-house primitive). Delivery is
 GUARANTEED-bounded independent of notification delivery, because the §7.7 heartbeat timer reads
@@ -994,7 +1017,9 @@ normative above; LAW 16 is introduced here.
 - **LAW 3 — BRANCH CAUSALITY IS MONOTONIC.** BRANCH_CAUSAL_CONTEXT_MONOTONICITY: after the
   branch advanced past an ambiguous ancestor, late recovery is transcript-only
   (`context_excluded`); continuation with the recovered result is an explicit fork;
-  pre-advance restoration requires both context domains reconciled to the same boundary. (§7.8)
+  pre-advance restoration requires both context domains reconciled to the same boundary, and
+  the advance check itself is SERIALIZED on the branch execution authority
+  (RECOVERY_ADVANCE_SERIALIZATION). (§7.8, LAW 16)
 - **LAW 4 — RETRY IS CAUSAL REPLACEMENT.** RETRY_REGENERATE_CONTEXT_BOUNDARY: attempt N+1 =
   context-before-N-output + same immutable user input; the boundary is identical in the durable
   projection AND provider continuation (chaining rewinds to the parent anchor or stateless
@@ -1009,7 +1034,8 @@ normative above; LAW 16 is introduced here.
 - **LAW 7 — CLAIM = LEASE + FENCING.** Every post-claim durable mutation proves current
   authority: boundary CAS, timer-driven heartbeat across `dispatching` AND `streaming`,
   fenced incremental writes, fenced finalize; an expired claimant never regains authority by
-  resuming. (§7.7)
+  resuming; execution-control commands bind to the execution INSTANCE they target
+  (STOP_ATTEMPT_TARGET_STABILITY, §13). (§7.7, §13)
 - **LAW 8 — OUTCOME_UNKNOWN IS HONEST.** Post-side-effect ambiguity is never auto-retried;
   `outcome_unknown` is real, queue-terminal, not context-eligible; probes may resolve it under
   LAW 3; no exactly-once claim, ever. (§7, §8)
@@ -1041,11 +1067,17 @@ normative above; LAW 16 is introduced here.
   order: **(1) conversation root lifecycle authority (§8/§10 row lock) → (2) branch execution
   authority (per-branch `turn_seq` advisory lock / single-flight predicate) → (3) turn/attempt
   row mutation (claim CAS, fenced writes)**. No flow acquires a higher level after holding a
-  lower one. Sweep: SEND/RETRY/FORK take (1)→(2)→(3); DELETE takes (1), then per-turn (3) via
-  the Stop flags (no branch lock needed — it stops, never dispatches); STOP touches only (3);
-  QUEUE WAKE and RECOVERY claim at (3) and read (2)'s predicate without holding (1) — they
-  never escalate upward; CLEANUP/purge re-enters at (1) then (3) in a fresh transaction. A
-  future flow that cannot fit this order must document its safe reason explicitly.
+  lower one. **Any decision that establishes or reads the branch's CAUSAL BOUNDARY — a
+  dispatch-boundary commit, or a late-recovery eligibility decision (§7.8's
+  RECOVERY_ADVANCE_SERIALIZATION) — must HOLD (2), the branch execution authority; the
+  advance-absence predicate and the boundary crossing may never race.** Sweep:
+  SEND/RETRY/FORK take (1)→(2)→(3); DELETE takes (1), then per-turn (3) via the Stop flags
+  (no branch authority needed — it stops, never dispatches); STOP touches only (3);
+  QUEUE WAKE claims at (3) after taking (2) for its boundary commit; LATE RECOVERY that may
+  change context eligibility takes (2)→(3); lease-lapse ratchets that CANNOT change
+  eligibility (to `outcome_unknown`) remain (3)-only; CLEANUP/purge re-enters at (1) then (3)
+  in a fresh transaction. A future flow that cannot fit this order must document its safe
+  reason explicitly.
 - **LAW 17 — PROVIDER CONTINUATION COMMIT MATCHES DURABLE CAUSAL COMMIT.** No operation may
   leave the two domains claiming different ancestry; where atomic remote mutation is
   impossible, enough local state is persisted to recover/rebuild honestly; no local
@@ -1069,13 +1101,13 @@ evidence link (§14); TRUTH = user-visible truth.
 | RETRY (last turn) | same as SEND | (1)→(2)→(3) | new attempt, handoff CAS | LAW 4 before-N-output, both domains | rewind anchor / rotate object | request | same | same | new attempt triple | replaced answer; prior attempt visible |
 | EARLIER-TURN REGENERATE | same | (1)→(2)→(3) | fork + new child turn/attempt | `before_attempt_output` mode | child branch state fresh/rotated | request | same | same | child triples | new branch, old intact |
 | FORK / CROSS-PROVIDER FORK | §8 root lock | (1)→(2) | pinned completed attempt | §3 boundary modes; §17 portable projection | branch-owned provider triple; fresh state | request | n/a (no dispatch yet) | n/a | inherits at dispatch | labeled quality loss (§17) |
-| STOP | none (turn-level) | (3) only | durable flag + active wake + heartbeat-tick read | terminal-outranks-abort | §11 taint if post-boundary non-completed | request | flag survives crashes | `stopped` | attempt triple | honest stop state |
+| STOP | none (attempt-scoped, lineage-authorized) | (3) only | attempt-keyed flag + active wake + heartbeat-tick read; `client_stop_id` idempotency; never retargets (STOP_ATTEMPT_TARGET_STABILITY) | terminal-outranks-abort | §11 taint if post-boundary non-completed | request | flag survives crashes | `stopped` (target attempt only) | attempt triple | honest stop state |
 | RELOAD / RE-ATTACH | none | none (reads) | n/a | hydrate durable prefix/terminal | none | request | §10 | n/a | n/a | partial marked partial |
 | DUPLICATE SEND | none | (3) read | replay, never verdict | current state | none | request | drives stranded head | n/a | existing | queued/live/terminal replay |
 | CRASH PRE-BOUNDARY | n/a | (3) reclaim | token rotation | none emitted | none | worker | §7.7 re-drive (provably undispatched) | continues | n/a | seamless |
 | CRASH POST-BOUNDARY | n/a | (3) | fenced finalize loses; ledger append allowed | not eligible | §11 taint/rotation | worker | probe or ratchet | `outcome_unknown` | orphan ledger | honest ambiguity |
 | STREAM CRASH | n/a | (3) | fenced item writes stop; lease lapses | prefix marked partial | taint per §11 | worker | §7.7 ratchet | `outcome_unknown` | partial prefix | partial, labeled |
-| LATE RECOVERY | n/a | (3) | probe upgrade CAS | LAW 3 advance check | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
+| LATE RECOVERY | n/a | (2)→(3) — RECOVERY_ADVANCE_SERIALIZATION | probe upgrade CAS under branch authority | LAW 3 advance check, serialized | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
 | QUEUE WAKE | root still eligible (LAW 10) | (3), reads (2) predicate | claim CAS unclaimed head | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
 | DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
 | PROVIDER CLEANUP | deleted or superseded state | (1)→(3) fresh txn | durable job outcomes/retries | n/a | provider deletion recorded, never assumed | worker | re-runnable | job terminal | outcome recorded | provider-deletion outcome shown |
@@ -1103,7 +1135,12 @@ runner → same receiver-side fence — PASS. W provider success + lost fence �
 discarded; orphan-disposal record preserves the id — PASS. X orphan after advance → never
 referenced; ledger cleanup — PASS. Y legal hold during delete → §19 hold row blocks
 purge/shred; fencing proceeds, purge waits — PASS. Z archived→deleted → §19.1 admits both
-origins — PASS. No scenario yields two plausible outcomes, missing authority, an unbounded
+origins — PASS. AA concurrent probe upgrade vs
+N+1 dispatch boundary → RECOVERY_ADVANCE_SERIALIZATION: both hold the branch execution
+authority; probe-wins and dispatch-wins are the only orderings, no third outcome — PASS. AB
+Stop(N) delayed until Retry minted N+1 → STOP_ATTEMPT_TARGET_STABILITY: the attempt-scoped
+command replays N's terminal state and never touches N+1 — PASS. No scenario yields two
+plausible outcomes, missing authority, an unbounded
 stranded state, cross-owner reach, retroactive causal rewrite, or domain divergence.
 
 END OF SPEC.

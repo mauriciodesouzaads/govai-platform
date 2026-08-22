@@ -537,6 +537,11 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     if ((b('ui_tested') || b('ui_live_accepted')) && !b('ui_exposed')) {
       push(`${where()}: ui_tested/live_accepted require ui_exposed`);
     }
+    // Exact turn<->evidence correlation is a claim ABOUT the evidence path — it cannot be true
+    // where evidence is not wired at all, on any classification (no-overclaim, global).
+    if (b('exact_turn_evidence_correlation') && !b('evidence_wired')) {
+      push(`${where()}: exact_turn_evidence_correlation requires evidence_wired`);
+    }
 
     // --- product-only cannot masquerade as provider API --------------------
     if (isApp) {

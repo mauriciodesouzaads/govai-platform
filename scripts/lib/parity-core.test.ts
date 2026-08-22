@@ -319,6 +319,30 @@ describe('validateParityManifest', () => {
     expect(out).toContain('native_route_available requires provider_exposed');
   });
 
+  it('exact correlation requires evidence wiring, on every classification', () => {
+    for (const cls of ['PARTIAL', 'BLOCKED_BY_GOVAI'] as const) {
+      const m = mkManifest([
+        mkRow({
+          classification: cls,
+          govai_registered: true,
+          exact_turn_evidence_correlation: true,
+          evidence_wired: false,
+        }),
+      ]);
+      expect(validateParityManifest(m).join('\n')).toContain(
+        'exact_turn_evidence_correlation requires evidence_wired'
+      );
+    }
+    const ok = mkManifest([
+      mkRow({
+        classification: 'PARTIAL',
+        exact_turn_evidence_correlation: true,
+        evidence_wired: true,
+      }),
+    ]);
+    expect(validateParityManifest(ok)).toEqual([]);
+  });
+
   it('axis implications: tested/accepted require the route; ui axes require exposure', () => {
     const m1 = mkManifest([mkRow({ native_tested: true, native_route_available: false })]);
     expect(validateParityManifest(m1).join('\n')).toContain('require native_route_available');
