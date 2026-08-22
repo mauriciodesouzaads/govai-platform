@@ -591,6 +591,27 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
   | Orphan-disposal processing | disposal ledger | SELECT, UPDATE, INSERT | read job under owner RLS, record outcomes/retries; INSERT for worker-side enqueue during recovery |
   | Evidence-link post-processing | `ai_conversation_evidence_links` | SELECT, INSERT — CONDITIONAL | only if §14 linkage is materialized by the worker; otherwise no grant |
 
+  **Provider-pipeline execution privileges (worker-driven dispatch):** the worker does not
+  only manage conversation rows — a claimed turn DISPATCHES through the SAME provider-native
+  pipeline (§9), and that pipeline reads and writes beyond the `ai_*` domain. Denying the
+  worker everything else would make background dispatch fail at credential resolution
+  (`pipeline/provider-credentials.ts:124-137` SELECTs `govai.provider_credentials`, which 0009
+  grants to `govai_app` only) and silently drop evidence capture. The matrix therefore
+  includes, org-scoped under the entered owner context and FORCE RLS:
+
+  | Flow | Resource | Privileges | Rationale |
+  |---|---|---|---|
+  | Credential resolution | `govai.provider_credentials` | SELECT | tenant-key decrypt path; 0009's org-scoped RLS applies; never outside the entered org context |
+  | Evidence capture | `govai.audit_capture_insert_locked(...)` (+ the bridge's read surface) | EXECUTE | a worker-driven dispatch must capture identically to a request-driven one — never a silent evidence gap |
+  | Tenant governance inputs | `govai.org_tier_lookup(...)`; org-scoped governance config the pipeline reads (capability/beta overrides, DLP custom patterns) | EXECUTE / SELECT | governed-lane resolution needs tier/mode + org config; exact object list is TRACED FROM THE PIPELINE at implementation, not guessed |
+
+  Acceptance proofs at implementation: (positive) a worker-driven dispatch resolves
+  credentials, applies governance and captures evidence byte-equivalently to a request-driven
+  dispatch; (negative) the worker cannot read `provider_credentials` outside the entered org
+  context, and holds no privilege the traced pipeline does not require. The alternative — a
+  separate-identity "handoff" that re-enters dispatch through an app-identity execution
+  service — is REJECTED: it would blur the §9 trust boundary by making the worker able to
+  invoke app-identity execution anyway, while doubling the execution paths to audit.
   No worker privilege on anything else (titles are readable via `ai_conversations` SELECT the
   lifecycle flow already requires; attachments/artifacts are request-plane in V1).
 - **Owner-context lifecycle (no cross-candidate leakage):** the worker sets BOTH GUCs
