@@ -160,6 +160,16 @@ const CAPABILITY_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 
+/** Shape AND calendar validity — the regex alone accepts impossible dates like 2026-02-31. */
+function isCalendarDate(v: string): boolean {
+  if (!DATE_RE.test(v)) return false;
+  const y = Number(v.slice(0, 4));
+  const m = Number(v.slice(5, 7));
+  const d = Number(v.slice(8, 10));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
 function isBool(v: unknown): v is boolean {
   return typeof v === 'boolean';
 }
@@ -336,8 +346,8 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     push('name must be "native-experience-parity-v1"');
   }
   const snap = man['research_snapshot_date'];
-  if (typeof snap !== 'string' || !DATE_RE.test(snap)) {
-    push('research_snapshot_date must be a YYYY-MM-DD string');
+  if (typeof snap !== 'string' || !isCalendarDate(snap)) {
+    push('research_snapshot_date must be a real YYYY-MM-DD calendar date');
   }
   if (typeof man['source_anchor'] !== 'string' || !SHA_RE.test(man['source_anchor'] as string)) {
     push('source_anchor must be a 40-hex commit sha');

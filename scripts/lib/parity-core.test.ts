@@ -156,6 +156,16 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(ok)).toEqual([]);
   });
 
+  it('rejects calendar-impossible snapshot dates that pass the shape regex', () => {
+    for (const bad of ['2026-02-31', '2026-99-99', '2026-00-10']) {
+      const m = mkManifest([mkRow({ verified_at: bad })]);
+      m.research_snapshot_date = bad;
+      expect(validateParityManifest(m).join('\n')).toContain(
+        'research_snapshot_date must be a real YYYY-MM-DD calendar date'
+      );
+    }
+  });
+
   it('pins every verified_at to the single research snapshot date', () => {
     const m = mkManifest([mkRow({ verified_at: '2026-08-20' })]);
     expect(validateParityManifest(m).join('\n')).toContain(

@@ -266,7 +266,12 @@ The dispatch's expected shape was adjudicated against source and provider contra
 keeps its order with explicit dependencies:
 
 - **P0 — Conversation Continuity Foundation** (`EP-AI-CONVERSATION-CONTINUITY-V1-01`, §10).
-  Depends on: nothing new. Everything else that touches "the user lives here" depends on P0.
+  Depends on: no preceding parity wave. P0 itself CONTAINS required internal prerequisites the
+  continuity spec names — notably the purpose-aware envelope-encryption extension of
+  `core-identity` (continuity spec §6: today's `envelopeEncrypt`/`envelopeDecrypt` hard-code
+  the `payload_dek` purpose) and the keyed-digest integrity purpose — "no prior wave
+  dependency" is not "no implementation prerequisite". Everything else that touches "the user
+  lives here" depends on P0.
 - **P1 — Rich chat: multimodal input + files.** Vision/PDF/file inputs already ride the lanes;
   the work is UI + attachment model + (OpenAI) Files/Uploads route completion + closing findings
   B/C/D for the files/vector-stores families. Depends on P0 (attachments hang off turns).

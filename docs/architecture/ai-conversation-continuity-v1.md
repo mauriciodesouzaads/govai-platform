@@ -189,9 +189,16 @@ Rules (normative, from the evidence-plane adjudication):
   Sidebar listing decrypts titles server-side per page (page cap ≤ 50, §13), which is bounded and
   acceptable; a derived REDACTED display title (DLP-scrubbed) may later be stored alongside as a
   search accelerator — recorded as future work, not silently plaintext.
-- Hashes: each content blob stores `sha256(plaintext)` (payload-hash convention,
-  `workroom-transcript.ts:215-222` wire order: hash → encrypt → store) so promotion-to-evidence
-  and export can prove integrity without decryption.
+- Hashes: each content blob stores a **KEYED digest** — `hmacSha256` under a dedicated,
+  purpose-isolated integrity key (the `Kms.hmacSha256` primitive with its own purpose), NOT a
+  raw `sha256(plaintext)`: a deterministic unkeyed hash beside the ciphertext would let anyone
+  holding a DB dump or backup — without KMS access — CONFIRM guesses of low-entropy content
+  (titles, short replies, tool statuses, boilerplate prompts), quietly undercutting the
+  encryption-at-rest boundary. The wire order stays hash → encrypt → store
+  (`workroom-transcript.ts:215-222` convention). Where content is later PROMOTED to workroom
+  evidence, the promotion path decrypts anyway and computes the evidence-plane `sha256`
+  payload hash at that moment, in that domain — the operational keyed digest never doubles as
+  an evidence hash.
 - The browser stores nothing: the credential stays in the module-scoped holder
   (`apps/ui/src/lib/session/credential.ts`), and no conversation content enters
   localStorage/sessionStorage/IndexedDB (today's invariant, `persistence.test.tsx`, carried
@@ -492,10 +499,17 @@ Adjudicated semantics:
   background provider-generated title is an explicit tenant policy (costs a paid call and sends
   content to the provider — privacy consequence stated); manual rename always wins
   (guarded-update column).
-- Search V1: title search within the caller's org — server-side decrypt-scan bounded by keyset
-  pagination (titles only, small). Full-content search over encrypted items requires a dedicated
-  later indexing design (client-side index, or DLP-scrubbed derived index) — recorded honestly as
-  NOT part of V1; no org-wide decrypt-everything on sidebar search.
+- Search V1: title search over the CALLER'S OWN conversations only, and EXHAUSTIVE by explicit
+  design, not silently window-bounded: the server decrypt-scans the owner's titles in keyset
+  order with a bounded per-request budget and returns matches plus a continuation cursor; the
+  client (or the server loop) continues until the cursor is exhausted, so a match beyond the
+  first window is found, not silently unreachable. This is tractable because the scan domain is
+  one owner's title set (small at pilot scale), never the org's — the prohibition stands against
+  ORG-WIDE decrypt-everything, which owner-scoped exhaustive scan does not violate. The scale
+  path — a privacy-preserving derived title index (DLP-scrubbed or keyed-token) — is a named
+  follow-up, required before search is offered over large multi-thousand-conversation tenants.
+  Full-content search over encrypted items requires the same class of dedicated indexing design
+  — recorded honestly as NOT part of V1.
 
 ## 19. Delete / archive / retention (truth table)
 
