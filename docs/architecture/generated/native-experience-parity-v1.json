@@ -6,7 +6,7 @@
   "source_anchor": "55eae8835c7fb3b4cad35d3f470a1163fc5eb356",
   "verify": "pnpm docs:parity:check",
   "doc": "docs/architecture/native-experience-parity-v1.md",
-  "capability_count": 244,
+  "capability_count": 245,
   "capabilities": [
     {
       "provider": "openai",
@@ -618,7 +618,7 @@
       "risk_class_if_known": "A",
       "govai_product_equivalent_required": false,
       "classification": "PARTIAL",
-      "notes": "Registered; live ?limit=1 verbatim (freeze); UI model picker consumes it; browser acceptance exercised on Anthropic lane. Model object now carries shutdown_date. Flagships 2026-08: GPT-5.6 Sol/Terra/Luna (+Cyber gated), GPT-5.5, GPT-5.4, GPT-5.3-Codex."
+      "notes": "Registered; LIST live ?limit=1 verbatim (freeze); UI model picker consumes the list; retrieval-by-id shares the registry but has no independent live or UI proof; browser acceptance exercised on Anthropic lane. Model object now carries shutdown_date. Flagships 2026-08: GPT-5.6 Sol/Terra/Luna (+Cyber gated), GPT-5.5, GPT-5.4, GPT-5.3-Codex."
     },
     {
       "provider": "openai",
@@ -3107,7 +3107,7 @@
       "surface": "ANTHROPIC_API",
       "family": "models",
       "capability_id": "models",
-      "capability_name": "Model discovery (GET /v1/models, GET /v1/models/{id})",
+      "capability_name": "Model discovery — list (GET /v1/models)",
       "official_status": "GA",
       "protocol_stability": null,
       "official_source": "https://platform.claude.com/docs/en/api/models/list",
@@ -3134,7 +3134,41 @@
       "risk_class_if_known": "A",
       "govai_product_equivalent_required": false,
       "classification": "FULL",
-      "notes": "Registered; live ?limit=1 verbatim; console model picker consumes it (cursor-paged) and browser acceptance exercised discovery on this lane. Since 2026-03-18 returns max_input_tokens/max_tokens/capabilities. Lineup 2026-08: Fable 5, Mythos 5 (gated), Opus 5, Sonnet 5, Haiku 4.5 (+ 4.6/4.7/4.8 line); claude-3 family fully retired."
+      "notes": "Registered; live ?limit=1 verbatim; console model picker consumes the LIST (cursor-paged) and browser acceptance exercised discovery on this lane. Retrieval-by-id is split into models-retrieve (PARTIAL) — its proofs are registry/route coverage only. Since 2026-03-18 the API returns max_input_tokens/max_tokens/capabilities. Lineup 2026-08: Fable 5, Mythos 5 (gated), Opus 5, Sonnet 5, Haiku 4.5 (+ 4.6/4.7/4.8 line); claude-3 family fully retired."
+    },
+    {
+      "provider": "anthropic",
+      "surface": "ANTHROPIC_API",
+      "family": "models",
+      "capability_id": "models-retrieve",
+      "capability_name": "Model retrieval (GET /v1/models/{model_id})",
+      "official_status": "GA",
+      "protocol_stability": null,
+      "official_source": "https://platform.claude.com/docs/en/api/models/get",
+      "source_type": "api-reference",
+      "verified_at": "2026-08-21",
+      "model_constraints": null,
+      "provider_exposed": true,
+      "govai_registered": true,
+      "native_route_available": true,
+      "native_tested": true,
+      "native_live_accepted": false,
+      "governed_applicable": false,
+      "governed_route_available": false,
+      "governed_tested": false,
+      "governed_live_accepted": false,
+      "ui_exposed": false,
+      "ui_tested": false,
+      "ui_live_accepted": false,
+      "evidence_wired": true,
+      "exact_turn_evidence_correlation": false,
+      "persistence_supported": false,
+      "resume_supported": false,
+      "fork_supported": false,
+      "risk_class_if_known": "A",
+      "govai_product_equivalent_required": false,
+      "classification": "PARTIAL",
+      "notes": "Registered (shares the anthropic.models endpoint_coverage) and routed; hermetic proof is registry/route coverage only — no retrieval-specific live acceptance and the console model picker uses the list, not per-id retrieval."
     },
     {
       "provider": "anthropic",

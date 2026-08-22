@@ -97,8 +97,12 @@ regenerated. The fork therefore references the specific attempt:
 forked_from_attempt_id) REFERENCES ai_conversation_attempts (org_id, owner_user_id,
 conversation_id, branch_id, turn_id, id)` — one composite FK that simultaneously forces the
 fork point to belong to the SAME conversation, the DECLARED parent branch, the named turn, and
-a SPECIFIC attempt whose terminal items never change (attempt ratchets, §7.6). A CHECK requires
-the fork columns all-null on a root branch and all-set on a fork. Fork-context replay reads THAT
+a SPECIFIC attempt whose items never change. Fork creation additionally REQUIRES the pinned
+attempt to be in a RATCHET state (`completed | stopped | failed | rejected`, §7.6) — an
+`outcome_unknown` attempt is NOT forkable, because it is the one state that may still mutate
+(a recovery probe can resolve it once); a fork request naming one is rejected with a
+wait-or-retry pointer. A CHECK requires the fork columns all-null on a root branch and all-set
+on a fork. Fork-context replay reads THAT
 attempt's items, so a later retry of the source turn changes nothing behind the fork — retry
 after a fork stays permitted without ancestry drift, and a fork can never take its context from
 conversation B, a sibling branch, or a regenerated attempt it did not name. Two corruption shapes are therefore structurally unrepresentable, not
@@ -537,7 +541,16 @@ stream re-attach endpoint ·
 retry/regenerate: mints attempt N+1 and re-enters the queue; idempotent via a client-supplied
 `client_attempt_id` unique per `(org_id, turn_id)` (the §8 reservation pattern at attempt
 granularity — a duplicate retry replays the existing attempt, it never mints a second one);
-rejected with a fork pointer when the turn is not the last on its branch.
+rejected with a fork pointer when the turn is not the last on its branch ·
+`POST /v1/ai/conversations/:id/turns/:turnId/stop` — the explicit Stop command the server-owned
+stream makes NECESSARY (§9/§10: browser disconnect is delivery-only, so aborting the SSE
+re-attach is NOT Stop). Authenticated like every conversation operation, idempotent (stop of an
+already-terminal turn replays the current state), and DURABLE: it records a stop-request flag on
+the turn's claim row, so it reaches the owning runner cross-process; the runner observes the
+flag between pump iterations, aborts its provider request, and finalizes `stopped` under the
+normal fenced finalize — with terminal-outranks-abort intact (a terminal frame already observed
+wins, exactly the U1.5 rule). Stop of a QUEUED turn takes the §7 `accepted → stopped` discard
+edge and releases the queue.
 
 - NO generic provider request schema is invented: the turn-send body embeds the provider-native
   request fragment; execution continues through provider-specific adapters over the existing

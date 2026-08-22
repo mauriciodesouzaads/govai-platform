@@ -4,7 +4,7 @@ STATUS: `BASELINE_COMPLETE — TARGET_NOT_IMPLEMENTED`
 MISSION: EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01
 SOURCE ANCHOR: main `55eae8835c7fb3b4cad35d3f470a1163fc5eb356` (tree `5742151e`)
 RESEARCH SNAPSHOT: 2026-08-21 (all provider facts verified against first-party sources on this date)
-MACHINE ARTIFACT: `docs/architecture/generated/native-experience-parity-v1.json` (244 rows) —
+MACHINE ARTIFACT: `docs/architecture/generated/native-experience-parity-v1.json` (245 rows) —
 validated by `pnpm docs:parity:check` and by the unit lane
 (`scripts/native-experience-parity-manifest.test.ts`); canonicalized by `pnpm docs:parity:format`.
 PRECEDENCE: `current-state.md` and `foundation-v1-freeze.md` prevail over this baseline wherever
@@ -97,9 +97,9 @@ The exact per-row truth lives in the machine manifest; this section is its narra
 
 ## 4. The four surface baselines (summary of the manifest)
 
-Row counts at this snapshot: OPENAI_API 62 · ANTHROPIC_API 57 · CODEX 38 · CLAUDE_CODE 28 ·
+Row counts at this snapshot: OPENAI_API 62 · ANTHROPIC_API 58 · CODEX 38 · CLAUDE_CODE 28 ·
 product surfaces 59 (CHATGPT_APP 24, CLAUDE_APP 16, CODEX_APP 7, CLAUDE_CODE_APP 12).
-Classification totals: FULL 3 · PARTIAL 81 · MISSING 88 · BLOCKED_BY_GOVAI 2 ·
+Classification totals: FULL 3 · PARTIAL 82 · MISSING 88 · BLOCKED_BY_GOVAI 2 ·
 PROVIDER_NOT_EXPOSED 2 · NOT_APPLICABLE 9 · PRODUCT_ONLY 59.
 
 ### 4.1 OPENAI_API — `OPENAI_BASELINE=COMPLETE`
@@ -118,7 +118,7 @@ self-serve wind-down, DALL·E removed. Flagship families at snapshot: GPT-5.6 So
 
 ### 4.2 ANTHROPIC_API — `ANTHROPIC_BASELINE=COMPLETE`
 
-The only FULL rows of the baseline live here: `messages-create`, `messages-stream`, `models`.
+The only FULL rows of the baseline live here: `messages-create`, `messages-stream`, `models` (the LIST — retrieval-by-id is a separate PARTIAL row, its proofs being registry/route coverage only).
 `/v1/messages` remains STATELESS as of the snapshot (fact row; the stateless-replay continuation
 strategy in continuity §11 rests on it; the only server-stored session state on the platform is
 beta Managed Agents). Body-level features (thinking + signatures, effort, structured outputs GA,
