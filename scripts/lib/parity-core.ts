@@ -282,6 +282,20 @@ function oneOf<T extends string>(v: unknown, vocab: readonly T[]): v is T {
 }
 
 /**
+ * A row's source must be a REAL https URL, not merely https-prefixed text: every baseline row
+ * relies on official_source for traceability, and a prefix check accepts `https://` or
+ * `https://not a url`. URL parsing + protocol + non-empty hostname is the actual contract.
+ */
+function isHttpsUrl(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return u.protocol === 'https:' && u.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Validate the full manifest. Returns typed findings (empty array = valid); every finding
  * names the offending row as `surface/capability_id` so a hand editor can locate it without
  * line numbers. Repairability lives in `code` (§ParityFinding), never in message text.
@@ -402,11 +416,8 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     if (!oneOf(r['source_type'], SOURCE_TYPES)) {
       push(`${where()}: invalid source_type ${String(r['source_type'])}`);
     }
-    if (
-      typeof r['official_source'] !== 'string' ||
-      !(r['official_source'] as string).startsWith('https://')
-    ) {
-      push(`${where()}: official_source must be an https URL (required for every row)`);
+    if (typeof r['official_source'] !== 'string' || !isHttpsUrl(r['official_source'])) {
+      push(`${where()}: official_source must be a parseable https URL with a hostname (required for every row)`);
     }
     if (r['verified_at'] !== snap) {
       push(`${where()}: verified_at must equal research_snapshot_date (single-snapshot semantics)`);

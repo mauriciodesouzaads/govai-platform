@@ -83,6 +83,15 @@ recorded grant — not a relaxation of the default.)
 Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
 from `govai.api_key_lookup_v2`, `pipeline/auth.ts:52-53`), both enforced by RLS as above.
 Authorization = owner (or, post-R14, explicit sharing) — NOT participant rosters (§4).
+**Denormalized ownership is FK-BOUND to the parent, not merely stamped:** every parent table
+carries `UNIQUE (org_id, owner_user_id, id)`, and every child references its parent by the
+COMPOSITE key — e.g. turns `(org_id, owner_user_id, branch_id) REFERENCES
+ai_conversation_branches (org_id, owner_user_id, id)`, and so on down the chain
+(conversation → branch → turn → attempt → item/content/provider_state/evidence_link). A child
+row whose stamped ownership disagrees with its parent's is therefore structurally
+unrepresentable: an insert that names a foreign `conversation_id` while stamping the caller's
+own org/owner fails the FK, so cross-owner grafting cannot depend on any query remembering a
+parent-consistency lookup.
 
 ## 4. Conversation ≠ Workroom (adjudicated boundary)
 
@@ -244,6 +253,14 @@ Normative rules:
   (rotating the claim token, which locks the stalled owner out at its boundary commit) and
   DRIVES it rather than merely echoing a turn that will never execute; if it is post-boundary
   without a terminal, the reply reports `outcome_unknown` honestly — never a second POST.
+- **`outcome_unknown` is QUEUE-TERMINAL.** The branch-order predicate blocks only on
+  `accepted | dispatching | streaming`; every other state — `completed`, `stopped`, `failed`,
+  `rejected` AND `outcome_unknown` — releases the queue. Where no recovery probe exists
+  (Anthropic has none, §8 above), an unknown outcome would otherwise block the branch forever.
+  Context honesty follows §7.5 unchanged: an unknown attempt is not `eligible_for_context`, so
+  later turns dispatch without it; if a probe later upgrades it to `completed`, that upgrade is
+  visible in the transcript but does NOT retroactively join the context of turns that already
+  dispatched — the same semantics as a user continuing past a failed attempt.
 - A NEW header (e.g. `X-GovAI-Client-Turn-Id`) and a NEW reservation table are minted. The
   existing `X-GovAI-Idempotency-Key` (evidence-capture identity, stripped at ingress,
   `request-identity-hook.ts:79`) and `X-GovAI-Run-Idempotency-Key` (run intent) are NOT

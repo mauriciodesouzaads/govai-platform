@@ -145,9 +145,15 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(m).join('\n')).toContain('provider must be anthropic');
   });
 
-  it('requires an https official_source on every row', () => {
-    const m = mkManifest([mkRow({ official_source: 'see notes' })]);
-    expect(validateParityManifest(m).join('\n')).toContain('official_source must be an https URL');
+  it('requires a REAL parseable https official_source on every row', () => {
+    for (const bad of ['see notes', 'https://', 'https://not a url', 'http://example.com']) {
+      const m = mkManifest([mkRow({ official_source: bad })]);
+      expect(validateParityManifest(m).join('\n')).toContain(
+        'official_source must be a parseable https URL'
+      );
+    }
+    const ok = mkManifest([mkRow({ official_source: 'https://platform.claude.com/docs' })]);
+    expect(validateParityManifest(ok)).toEqual([]);
   });
 
   it('pins every verified_at to the single research snapshot date', () => {
