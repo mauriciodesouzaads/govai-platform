@@ -72,7 +72,7 @@ recorded grant — not a relaxation of the default.)
 | Conversation | `govai.ai_conversations` | Root container: org/owner scope, provider+surface+model defaults, title (encrypted), status (`active\|archived\|deleted_pending\|deleted`), `project_id uuid NULL` (future, §16), `workroom_id uuid NULL` (optional attribution, §4), retention class, timestamps |
 | Branch | `govai.ai_conversation_branches` | A named line of turns, and the DURABLE owner of execution identity: each branch carries its own `provider + surface + model` (copied from the conversation defaults at root-branch creation; supplied by the fork operation for provider/model switches). Adapter selection reads the BRANCH, never the conversation root — a cross-provider fork must be replayable after reload with no in-memory hint and possibly no provider_state yet. Every conversation has one root branch; fork creates a new branch with `parent_branch_id` + `forked_from_turn_id`/`forked_from_attempt_id`. Cross-provider continuation is ALWAYS a new branch (§17) |
 | Turn | `govai.ai_conversation_turns` | One user send on a branch: `(org_id, conversation_id, client_turn_id)` unique (§8), per-branch `turn_seq` (advisory-lock + `MAX+1` + UNIQUE backstop, the technique of `workroom-transcript.ts:127-136` — technique reuse, not table reuse), state (§7), `govai_request_id` per attempt (§14) |
-| Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`). The TURN carries a `current_attempt_id` pointer — the atomic eligibility handoff of §7.6: at most the CURRENT attempt's completed output is context-eligible; prior attempts stay immutable and visible but never contribute |
+| Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`). The TURN carries a `current_attempt_id` pointer — the atomic eligibility handoff of §7.6: at most the CURRENT attempt's completed output is context-eligible; prior attempts stay immutable and visible but never contribute. Each attempt also durably records the provider CONTINUATION ANCHOR it chained from (e.g. `continuation_parent_response_id`, §11 retry mechanics), so a retry can rewind provider state to the same boundary the durable projection uses |
 | Provider-native Item | `govai.ai_conversation_items` | Ordered typed items with an explicit OWNER discriminator: USER/INPUT items are TURN-owned (`attempt_id` NULL — they are committed at the §7.1 reservation, before any attempt exists, and survive every retry), while assistant/tool OUTPUT items are ATTEMPT-owned. Both owners are reached through the same composite lineage chain. Provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12); content encrypted (§6) |
 | Attachment | `govai.ai_conversation_attachments` | File references (GovAI-stored bytes or provider `file_id` refs). V1 design carries the entity; upload flows land in a later wave |
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
@@ -280,7 +280,14 @@ Normative rules:
    immediately — without mutating attempt N's ratcheted rows — and N+1's request context is
    built from the earlier turns plus THIS turn's user items only, never any prior attempt's
    output. Without the handoff, retrying a COMPLETED last turn would include the very answer
-   being regenerated and continue after it instead of replacing it. Retry is permitted only while the turn is the LAST turn on its branch — retrying an
+   being regenerated and continue after it instead of replacing it.
+   **RETRY_REGENERATE_CONTEXT_BOUNDARY (invariant):** the handoff governs BOTH context domains
+   or it governs nothing — the boundary excluding attempt N's output must be identical in the
+   GovAI durable-item projection AND in the provider continuation state the adapter will use.
+   Repointing `current_attempt_id` alone is NOT a complete retry on any strategy that carries
+   provider-side continuation: the same operation must rewind or rotate that state to the same
+   before-N-output boundary (per-strategy mechanics in §11), and N+1 may not dispatch until
+   both agree. Retry is permitted only while the turn is the LAST turn on its branch — retrying an
    earlier turn is a REGENERATION FORK from that turn (`before_attempt_output` boundary mode,
    §3), the same semantics reference products ship. At most one non-terminal attempt exists per turn (single-flight applies unchanged), and
    a prior attempt's taint consequences (§11) survive its successor.
@@ -367,12 +374,20 @@ Normative rules:
   RETURNING`), immutable-by-privilege (SELECT+INSERT grants only).
 - One UI Send = at most one provider POST, regardless of StrictMode double-invoke, double click,
   browser retry or reconnection: the duplicate reservation returns the existing turn (replay
-  semantics, `x-govai-…-replay` header convention of `routes/runs.ts:126`). Replay is NOT
-  abandonment: if the existing turn is a stranded pre-dispatch `accepted` (deadline elapsed, no
-  dispatch-boundary commit — §7.7), the duplicate send re-claims it via the fencing CAS
-  (rotating the claim token, which locks the stalled owner out at its boundary commit) and
-  DRIVES it rather than merely echoing a turn that will never execute; if it is post-boundary
-  without a terminal, the reply reports `outcome_unknown` honestly — never a second POST.
+  semantics, `x-govai-…-replay` header convention of `routes/runs.ts:126`). Replay reflects the
+  turn's CURRENT durable state — a duplicate is a read, never a verdict:
+  - queued `accepted` → "queued" (position visible);
+  - stranded pre-dispatch `accepted` (deadline elapsed, no boundary commit — §7.7) → the
+    duplicate re-claims via the fencing CAS (rotating the claim token, locking the stalled
+    owner out at its boundary commit) and DRIVES the turn rather than echoing one that will
+    never execute;
+  - LIVE `dispatching`/`streaming` under a valid heartbeating lease → the current live state
+    plus the §10 re-attach pointer. A healthy post-boundary turn is NEVER reported
+    `outcome_unknown` merely for lacking a terminal event — StrictMode, double-click and
+    browser-retry duplicates are routine, and an ambiguous-failure reply for a healthy turn
+    would be a false verdict;
+  - `outcome_unknown` appears in a duplicate's reply ONLY when recovery actually ratcheted the
+    attempt there (§7.7). Never a second POST in any branch.
 - **`outcome_unknown` is QUEUE-TERMINAL.** The branch-order predicate blocks only on
   `accepted | dispatching | streaming`; every other state — `completed`, `stopped`, `failed`,
   `rejected` AND `outcome_unknown` — releases the queue. Where no recovery probe exists
@@ -463,9 +478,14 @@ state. The SAME pattern serves the second detached worker this spec creates — 
 orphan-disposal processor, which after a crash must rediscover pending cleanup rows it did not
 enqueue in its own lifetime: a sibling function — e.g. `govai.ai_cleanup_candidates(...)`, same
 SECURITY DEFINER + `REVOKE ALL FROM PUBLIC` + EXECUTE-to-`govai_app`-only + keyset-cursor
-discipline — returns ONLY disposal metadata (`org_id`, `owner_user_id`, `conversation_id`,
-provider, `object_kind`, `provider_object_id`, cleanup state/attempts) so a `deleted_pending`
-conversation can never strand for want of a discoverable worklist. Having discovered a
+discipline — returns ONLY `{org_id, owner_user_id, conversation_id, cleanup_job_id (an OPAQUE
+row id), cleanup state/attempts}` so a `deleted_pending` conversation can never strand for want
+of a discoverable worklist. It deliberately does NOT return provider, `object_kind` or
+`provider_object_id`: §21 classifies provider object identifiers as sensitive (they unlock
+provider-stored content), and a definer function readable by the shared app identity must not
+become a cross-owner identifier oracle. The worker takes the opaque job id, enters the
+candidate's owner context, and only THEN reads/decrypts the provider identifier from the
+disposal ledger through ordinary owner-scoped RLS. Having discovered a
 candidate, either worker drives it by entering that owner's FULL context (`set_config` of
 `app.org_id` AND `app.user_id` from the candidate row, the server acting for the owner), after
 which every content read passes through ordinary RLS — these TWO definer functions are the only
@@ -515,6 +535,24 @@ Per-provider adjudication (provider facts verified 2026-08-21, first-party):
   `context_management: [{type:"compaction"}]` + `POST /v1/responses/compact`.
   Chat Completions lane: stateless replay only. Provider-stored state creates provider-side
   deletion obligations (§19).
+  **Retry mechanics per strategy (§7.6's RETRY_REGENERATE_CONTEXT_BOUNDARY):**
+  - *Chaining (`previous_response_id`)*: every attempt durably records, at dispatch, the
+    CONTINUATION ANCHOR it chained FROM (`continuation_parent_response_id` on the attempt row).
+    A retry of completed attempt N chains N+1 from N's recorded PARENT anchor — never from N's
+    own response id, which the branch's provider_state still names as latest and which §11's
+    preference order would otherwise select, silently continuing after the answer being
+    regenerated. If the parent anchor is unavailable (expired, or stored with `store:false`),
+    the retry is FORCED through stateless replay, whose durable-item projection already
+    excludes superseded attempts.
+  - *Conversation objects*: attempt N's completed answer is INSIDE the shared object, and a
+    normal completion never taints it — so a completed-turn retry MUST NOT reuse the object.
+    The retry rotates: a fresh conversation object (or stateless replay) seeded to the
+    before-N-output boundary from durable items; the superseded object follows the standard
+    §19 cleanup path via its retained provider_state row.
+  - *Stateless replay*: inherently boundary-correct — the projection is the boundary.
+  - *Codex / Claude Code*: regenerate maps to the harness's own fork-from-boundary primitive
+    (`thread/fork` before N's turn; session fork via the SessionStore) — never in-place
+    mutation of the shared thread/session an expired or superseded attempt already touched.
   **Zombie-vs-shared-state rule (the §7.7 fence does not reach the provider):** the three
   strategies are NOT equally exposed to a zombie POST that lands after the branch queue is
   released. Chaining and stateless replay are structurally insulated — a zombie's stored
