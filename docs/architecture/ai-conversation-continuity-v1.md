@@ -70,7 +70,7 @@ recorded grant — not a relaxation of the default.)
 | Entity | Table (target) | Purpose |
 |---|---|---|
 | Conversation | `govai.ai_conversations` | Root container: org/owner scope, provider+surface+model defaults, title (encrypted), status (`active\|archived\|deleted_pending\|deleted`), `project_id uuid NULL` (future, §16), `workroom_id uuid NULL` (optional attribution, §4), retention class, timestamps |
-| Branch | `govai.ai_conversation_branches` | A named line of turns. Every conversation has one root branch; fork creates a new branch with `parent_branch_id` + `forked_from_turn_id`. Cross-provider continuation is ALWAYS a new branch (§17) |
+| Branch | `govai.ai_conversation_branches` | A named line of turns, and the DURABLE owner of execution identity: each branch carries its own `provider + surface + model` (copied from the conversation defaults at root-branch creation; supplied by the fork operation for provider/model switches). Adapter selection reads the BRANCH, never the conversation root — a cross-provider fork must be replayable after reload with no in-memory hint and possibly no provider_state yet. Every conversation has one root branch; fork creates a new branch with `parent_branch_id` + `forked_from_turn_id`/`forked_from_attempt_id`. Cross-provider continuation is ALWAYS a new branch (§17) |
 | Turn | `govai.ai_conversation_turns` | One user send on a branch: `(org_id, conversation_id, client_turn_id)` unique (§8), per-branch `turn_seq` (advisory-lock + `MAX+1` + UNIQUE backstop, the technique of `workroom-transcript.ts:127-136` — technique reuse, not table reuse), state (§7), `govai_request_id` per attempt (§14) |
 | Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`). Exactly one attempt may be `eligible_for_context` |
 | Provider-native Item | `govai.ai_conversation_items` | Ordered typed items per attempt: provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12). Content encrypted (§6) |
@@ -546,7 +546,9 @@ are stored verbatim-encrypted (forward-compatible by construction, ADR-021 postu
 archived) · `DELETE /v1/ai/conversations/:id` (lifecycle per §19) ·
 `GET /v1/ai/conversations/:id/turns` (items hydrated per attempt) ·
 `POST /v1/ai/conversations/:id/branches` (fork; names its `forked_from_turn_id` AND
-`forked_from_attempt_id`, §3) ·
+`forked_from_attempt_id`, §3, and accepts the target `provider/surface/model` triple — omitted
+means inherit the parent branch's; supplied is what makes a §17 cross-provider or model-switch
+fork durable and reload-replayable) ·
 `POST /v1/ai/conversations/:id/turns` (durable send, §8) + `GET .../turns/:turnId` (hydrate) +
 stream re-attach endpoint ·
 `POST /v1/ai/conversations/:id/turns/:turnId/retry` — the explicit operation that invokes §7.6

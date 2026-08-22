@@ -6,7 +6,7 @@
   "source_anchor": "55eae8835c7fb3b4cad35d3f470a1163fc5eb356",
   "verify": "pnpm docs:parity:check",
   "doc": "docs/architecture/native-experience-parity-v1.md",
-  "capability_count": 245,
+  "capability_count": 246,
   "capabilities": [
     {
       "provider": "openai",
@@ -591,7 +591,7 @@
       "surface": "OPENAI_API",
       "family": "models",
       "capability_id": "models",
-      "capability_name": "Model discovery (GET /v1/models, GET /v1/models/{id})",
+      "capability_name": "Model discovery — list (GET /v1/models)",
       "official_status": "GA",
       "protocol_stability": null,
       "official_source": "https://developers.openai.com/api/reference/resources/models/methods/list.md",
@@ -618,7 +618,7 @@
       "risk_class_if_known": "A",
       "govai_product_equivalent_required": false,
       "classification": "PARTIAL",
-      "notes": "Registered; LIST live ?limit=1 verbatim (freeze); UI model picker consumes the list; retrieval-by-id shares the registry but has no independent live or UI proof; browser acceptance exercised on Anthropic lane. Model object now carries shutdown_date. Flagships 2026-08: GPT-5.6 Sol/Terra/Luna (+Cyber gated), GPT-5.5, GPT-5.4, GPT-5.3-Codex."
+      "notes": "Registered; LIST live ?limit=1 verbatim (freeze); UI model picker consumes the list; browser acceptance was executed on the Anthropic lane. Retrieval-by-id is split into models-retrieve (PARTIAL). Model object now carries shutdown_date. Flagships 2026-08: GPT-5.6 Sol/Terra/Luna (+Cyber gated), GPT-5.5, GPT-5.4, GPT-5.3-Codex."
     },
     {
       "provider": "openai",
@@ -653,6 +653,40 @@
       "govai_product_equivalent_required": false,
       "classification": "PARTIAL",
       "notes": "Registered and reachable but untested and not live-accepted; declared enforcement_default \"ask\" is inert (residual R12)."
+    },
+    {
+      "provider": "openai",
+      "surface": "OPENAI_API",
+      "family": "models",
+      "capability_id": "models-retrieve",
+      "capability_name": "Model retrieval (GET /v1/models/{model_id})",
+      "official_status": "GA",
+      "protocol_stability": null,
+      "official_source": "https://developers.openai.com/api/reference/resources/models/methods/retrieve.md",
+      "source_type": "api-reference",
+      "verified_at": "2026-08-21",
+      "model_constraints": null,
+      "provider_exposed": true,
+      "govai_registered": true,
+      "native_route_available": true,
+      "native_tested": true,
+      "native_live_accepted": false,
+      "governed_applicable": false,
+      "governed_route_available": false,
+      "governed_tested": false,
+      "governed_live_accepted": false,
+      "ui_exposed": false,
+      "ui_tested": false,
+      "ui_live_accepted": false,
+      "evidence_wired": true,
+      "exact_turn_evidence_correlation": false,
+      "persistence_supported": false,
+      "resume_supported": false,
+      "fork_supported": false,
+      "risk_class_if_known": "A",
+      "govai_product_equivalent_required": false,
+      "classification": "PARTIAL",
+      "notes": "Registered (shares the openai.models endpoint_coverage) and routed; hermetic proof is registry/route coverage only — no retrieval-specific live acceptance and the console model picker uses the list, not per-id retrieval."
     },
     {
       "provider": "openai",
