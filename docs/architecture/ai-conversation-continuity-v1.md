@@ -267,11 +267,24 @@ Normative rules:
      unbounded pause between its lease check and its POST cannot write ANY durable state: its
      finalize loses the CAS and is discarded with a diagnostic, its attempt stays
      `outcome_unknown`/superseded, its output never becomes `eligible_for_context`, and
-     `provider_state` keeps a single fenced writer. Honest residual, stated not hidden: without
-     receiver-side fencing (providers accept no fencing token), such a zombie can still SPEND
-     provider tokens on a discarded response and its POST may land after a later turn's — the
-     protocol guarantees durable-state integrity and context/provider-state ordering, not
-     zombie-spend prevention.
+     `provider_state` keeps a single fenced writer. Where the branch uses PROVIDER-HELD shared
+     continuation state (the OpenAI conversation-object strategy), the fence cannot reach the
+     provider's copy — that exposure is closed by §11's taint/reconcile-or-rotate rule, which
+     forbids blind reuse of the shared object after any `outcome_unknown`. Honest residual,
+     stated not hidden: without receiver-side fencing (providers accept no fencing token), such
+     a zombie can still SPEND provider tokens on a discarded response — the protocol guarantees
+     durable-state integrity, context/provider-state ordering, and (via §11) shared-state
+     hygiene, not zombie-spend prevention.
+   - **The lease covers `streaming` too — a dead pump cannot strand a branch.** The owning
+     runner RENEWS its claim lease periodically while pumping (heartbeat on the same claim row);
+     persistence of stream items continues incrementally, so the durable prefix always reflects
+     what was relayed. A `streaming` turn whose lease has lapsed past `deadline + δ` is resolved
+     by the recovery sweep exactly like a lapsed `dispatching` turn: provider recovery probe
+     where one exists (OpenAI response retrieval), otherwise ratchet to `outcome_unknown` — with
+     the durable item prefix retained and MARKED PARTIAL, never presented as a completed
+     answer. Reload during this window hydrates the partial prefix and then observes the
+     ratchet; it never waits on a dead runner. Since `streaming` is branch-blocking in §8, this
+     rule is what guarantees the queue always drains after a crash.
    `accepted` is therefore a state with an exit on every path, and every durable exit — boundary
    AND finalize — is single-writer.
 
@@ -311,6 +324,18 @@ Normative rules:
   dispatch-boundary commit (`dispatching`, claim + deadline, BEFORE any provider POST) →
   provider POST → finalize-commit (terminal state). Each inter-commit crash window has the
   defined recovery of §7.7.
+- **Terminalization WAKES the queue — a queued turn never waits for luck.** A turn that loses
+  the branch-order predicate is reserved durably and returned to its sender as queued, but no
+  one would otherwise drive it: the design therefore defines the dequeue mechanism explicitly.
+  (1) In-process: whichever runner commits ANY terminal transition on a branch (finalize,
+  rejection, stop, or a recovery ratchet) immediately attempts a normal claim CAS on the
+  branch's next `accepted` turn and, on success, drives it through the standard three-commit
+  flow. (2) Cross-process / crash: the periodic recovery sweep claims any UNCLAIMED `accepted`
+  turn standing at the head of its branch (no earlier non-terminal turn) — head-of-queue
+  pickup is NOT deadline-gated; deadlines govern only the RE-claiming of already-claimed turns
+  (§7.7). Claim lifecycle stated plainly: a reservation is born unclaimed; its creating request
+  claims and drives it only if it is at head; otherwise it waits for the terminal-transition
+  wake or the sweep, whichever comes first.
 - **Distinct sends on one branch are SERIALIZED at dispatch, not just at numbering.** The
   per-branch advisory lock orders `turn_seq` assignment only — two tabs reserving different
   `client_turn_id`s both succeed and would otherwise dispatch concurrently, letting the later
@@ -387,6 +412,19 @@ Per-provider adjudication (provider facts verified 2026-08-21, first-party):
   `context_management: [{type:"compaction"}]` + `POST /v1/responses/compact`.
   Chat Completions lane: stateless replay only. Provider-stored state creates provider-side
   deletion obligations (§19).
+  **Zombie-vs-shared-state rule (the §7.7 fence does not reach the provider):** the three
+  strategies are NOT equally exposed to a zombie POST that lands after the branch queue is
+  released. Chaining and stateless replay are structurally insulated — a zombie's stored
+  response is simply never referenced (the next turn chains from the last KNOWN completed
+  response id), leaving only an orphaned provider object for §19 cleanup. A shared
+  `conversation` OBJECT is not insulated: the provider appends the zombie's output to state
+  every later turn implicitly consumes. Therefore, on a branch using the conversation-object
+  strategy, resolving ANY attempt to `outcome_unknown` marks that branch's `provider_state`
+  **TAINTED**, and the next turn MUST NOT blindly reuse the conversation object: the adapter
+  first reconciles against provider truth (list the conversation's items; adopt-or-record any
+  zombie append) or rotates — a fresh conversation object (or stateless replay) seeded from the
+  durable items. Untainted turns proceed normally; the taint clears only by reconcile-or-rotate,
+  never by time.
 - **ANTHROPIC (Messages)**: the API is stateless — full message list resent per call (verified;
   the only server-stored state in the platform is beta Managed Agents, out of V1 scope).
   Strategy: stateless replay from durable items with STRICT preservation of thinking blocks +
