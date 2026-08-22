@@ -103,6 +103,20 @@ attempt to be **`completed`** — the one state that is both a ratchet (immutabl
 partial or ineligible prefix §7.5 excludes from every other context computation, and an
 `outcome_unknown` attempt may still mutate; fork requests naming any non-completed attempt are
 rejected with a wait-or-retry pointer.
+**CURRENT_ATTEMPT_LINEAGE_BINDING:** the REVERSE pointer that controls eligibility is
+composite-bound exactly like the forward chain. `current_attempt_id` on a turn is constrained
+by `(org_id, owner_user_id, conversation_id, branch_id, id, current_attempt_id) REFERENCES
+ai_conversation_attempts (org_id, owner_user_id, conversation_id, branch_id, turn_id, id)` —
+a turn structurally CANNOT select another turn's attempt, so a corrupt or accidental handoff
+assignment cannot make the context builder consume unrelated output. The Turn→Attempt /
+Attempt→Turn relationship is intentionally circular; the implementation mission resolves it
+with a nullable `current_attempt_id` plus guarded transactional update and/or a DEFERRABLE
+composite FK — a migration-time technique, deliberately not designed further here. Sweep
+doctrine applied across the model — NO SECURITY/CAUSAL POINTER BY ID ALONE: every in-domain
+causal pointer above is composite-bound; cross-DOMAIN attribution pointers
+(`workroom_id`, future `project_id`) bind at least `(org_id, id)` to their target so an
+attribution can never cross tenants, while carrying no owner column because those domains are
+not owner-scoped.
 **A fork declares its BOUNDARY MODE**, recorded durably on the branch, because "continue from
 here" and "regenerate this answer" need different replay boundaries:
 - `after_attempt` (continuation, the default): the child's context includes the pinned
@@ -265,9 +279,10 @@ Normative rules:
    honest ambiguous-upstream state, named identically to the run-dispatch vocabulary
    (`core-events` `RunStatus`, 0029).
 5. Only `completed` attempts are `eligible_for_context` (matches `types.ts:75-77`) — AND only a
-   turn's CURRENT attempt contributes: a turn's context contribution is exactly its turn-owned
-   user items plus its `current_attempt_id` attempt's completed output. A superseded attempt is
-   NEVER context, however completed it is.
+   turn's CURRENT attempt contributes, AND the attempt must not carry the `context_excluded`
+   marker (§7.8): a turn's context contribution is exactly its turn-owned user items plus its
+   `current_attempt_id` attempt's completed, non-excluded output. A superseded attempt is NEVER
+   context, however completed it is.
 6. Transitions are total, and ratchets are PER-ATTEMPT: every state names its successors and its
    inverse-or-ratchet (`completed/stopped/failed/rejected` are ratchets; `outcome_unknown` may
    resolve once to `completed`/`failed` by a recovery probe, never the reverse). A terminal
@@ -365,6 +380,29 @@ Normative rules:
      rule is what guarantees the queue always drains after a crash.
    `accepted` is therefore a state with an exit on every path, and every durable exit — boundary
    AND finalize — is single-writer.
+8. **BRANCH_CAUSAL_CONTEXT_MONOTONICITY.** `outcome_unknown` is queue-terminal (§8), so turn
+   N+1 may legitimately dispatch WITHOUT N's output. If a later provider recovery probe then
+   discovers that N actually completed, the upgrade must not rewrite the branch's causal
+   history: without this rule, §7.5 would automatically restore recovered-N to eligibility and
+   turn N+2 would be generated WITH an output N+1 was generated WITHOUT — and the provider
+   continuation state (already causally rooted in N+1) would diverge from the durable replay
+   projection. The probe's upgrade commit therefore decides, ATOMICALLY with the upgrade, by
+   checking the branch-advance predicate:
+   - **Branch NOT advanced** (no later turn on the branch has crossed its dispatch boundary
+     since N was ratcheted — queued reservations do not count): the recovered attempt regains
+     ordinary eligibility. This is safe by construction, because every strategy derives its
+     next continuation from the durable projection at dispatch time (§11): stateless replay and
+     chaining anchors are computed from context-eligible attempts, and the recovery-ratchet
+     taint already forces conversation-object ROTATION seeded from durable items — both
+     domains reconcile to the same boundary with no extra machinery.
+   - **Branch ADVANCED** (any later turn crossed the boundary after the ratchet): the upgrade
+     records `completed` WITH a durable `context_excluded` marker, permanently. The recovered
+     answer is TRANSCRIPT-ONLY on that branch: visible to the user, honestly labeled, never
+     context (§7.5). Continuing WITH the recovered answer is an explicit FORK pinned to the
+     recovered completed attempt (§3 — fork requires `completed`, which it now is); the fork's
+     child branch is where that causal line lives.
+   No retroactive context insertion after branch advance — the branch's context history only
+   ever moves forward.
 
 ## 8. Durable send / idempotency
 
@@ -392,10 +430,11 @@ Normative rules:
   `accepted | dispatching | streaming`; every other state — `completed`, `stopped`, `failed`,
   `rejected` AND `outcome_unknown` — releases the queue. Where no recovery probe exists
   (Anthropic has none, §8 above), an unknown outcome would otherwise block the branch forever.
-  Context honesty follows §7.5 unchanged: an unknown attempt is not `eligible_for_context`, so
-  later turns dispatch without it; if a probe later upgrades it to `completed`, that upgrade is
-  visible in the transcript but does NOT retroactively join the context of turns that already
-  dispatched — the same semantics as a user continuing past a failed attempt.
+  Context honesty: an unknown attempt is not `eligible_for_context`, so later turns dispatch
+  without it; what a LATER probe upgrade may or may not restore is governed entirely by
+  §7.8's BRANCH_CAUSAL_CONTEXT_MONOTONICITY — pre-advance recovery restores eligibility,
+  post-advance recovery is transcript-only with `context_excluded`, and continuation with the
+  recovered answer is an explicit fork.
 - A NEW header (e.g. `X-GovAI-Client-Turn-Id`) and a NEW reservation table are minted. The
   existing `X-GovAI-Idempotency-Key` (evidence-capture identity, stripped at ingress,
   `request-identity-hook.ts:79`) and `X-GovAI-Run-Idempotency-Key` (run intent) are NOT
@@ -606,6 +645,12 @@ Cross-adapter rules:
 
 - `provider_state` is opaque outside its adapter; nothing global assumes OpenAI state ≡
   Anthropic state (§17).
+- **Continuation roots in CONTEXT-ELIGIBLE attempts only** (§7.5/§7.8): every strategy derives
+  its next-dispatch continuation — the stateless replay projection, the chaining anchor, the
+  rotation seed — from attempts that are completed, current AND not `context_excluded`, so the
+  provider continuation domain and the durable replay domain are causally rooted in the same
+  boundary by construction (the mechanism behind BRANCH_CAUSAL_CONTEXT_MONOTONICITY's
+  pre-advance restoration being safe).
 - **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
   case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
   conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a
@@ -820,6 +865,8 @@ entry is human login.
 | Provider-state identifiers | provider ids treated as sensitive (they unlock provider-stored content); encrypted at rest in `provider_state` |
 | Replay/fork authorization | fork requires read right on source branch; cross-provider fork re-runs DLP on the portable projection |
 | Concurrent sends | §8 reservation PK (duplicate) + per-branch single-flight boundary predicate (distinct turns) + §7.7 fencing CAS (competing claimants) |
+| Late recovery vs branch causality | BRANCH_CAUSAL_CONTEXT_MONOTONICITY (§7.8): atomic advance-check on probe upgrade; post-advance recovery is transcript-only + `context_excluded`; continuation via explicit fork — acceptance proof required at implementation |
+| Cross-turn attempt corruption | CURRENT_ATTEMPT_LINEAGE_BINDING (§3): composite-FK-bound reverse pointer — a turn cannot select another turn's attempt |
 | Stream hijacking | re-attach requires the same auth as the turn; relay carries no provider credentials; no cross-user attach |
 | Future shared Projects | out of V1; sharing model gated on R14 |
 | Workroom promotion | one-way copy/reference with its own audit event; never silent |
