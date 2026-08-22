@@ -253,6 +253,13 @@ describe('validateParityManifest', () => {
     );
   });
 
+  it('MISSING requires provider exposure (else the row is PROVIDER_NOT_EXPOSED)', () => {
+    const m = mkManifest([
+      mkRow({ classification: 'MISSING', provider_exposed: false, native_route_available: false }),
+    ]);
+    expect(validateParityManifest(m).join('\n')).toContain('MISSING requires provider_exposed=true');
+  });
+
   it('MISSING rows must not carry GovAI axes', () => {
     const m = mkManifest([mkRow({ classification: 'MISSING', govai_registered: true })]);
     expect(validateParityManifest(m).join('\n')).toContain('MISSING rows must not set govai_registered');

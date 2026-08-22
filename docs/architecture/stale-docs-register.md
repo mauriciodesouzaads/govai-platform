@@ -630,7 +630,7 @@ migration, no event schema, no auth change. Open provider-hardening findings
 This movement is documentation + manifest + validator tooling ONLY: no backend runtime, no
 provider behaviour, no migration, no event schema, no auth change, no residual fixed. It adds
 `native-experience-parity-v1.md`, `ai-conversation-continuity-v1.md`,
-`generated/native-experience-parity-v1.json` (246 rows, research snapshot 2026-08-21; gated by
+`generated/native-experience-parity-v1.json` (248 rows, research snapshot 2026-08-21; gated by
 `pnpm docs:parity:check` + the unit lane) and the `scripts/` parity validator with tests.
 
 | Document | Was | Now |

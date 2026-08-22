@@ -301,7 +301,7 @@ interface. The doctrine it must hold to:
 
 Its first movement, `EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`, is **COMPLETE in this tree**
 (research snapshot 2026-08-21): the machine-readable parity matrix
-(`generated/native-experience-parity-v1.json`, 246 rows, validated by `pnpm docs:parity:check`
+(`generated/native-experience-parity-v1.json`, 248 rows, validated by `pnpm docs:parity:check`
 and the unit lane), the surface baselines and findings
 ([native-experience-parity-v1.md](./native-experience-parity-v1.md)) and the owner-accepted P0
 prerequisite `CONVERSATION_CONTINUITY=P0_NATIVE_EXPERIENCE_PREREQUISITE` with its DESIGN spec

@@ -607,6 +607,9 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
         push(`${where()}: FULL with governed_applicable requires the governed axes proven`);
       }
     }
+    if (cls === 'MISSING' && !b('provider_exposed')) {
+      push(`${where()}: MISSING requires provider_exposed=true (a capability the provider does not expose is PROVIDER_NOT_EXPOSED, not MISSING)`);
+    }
     if (cls === 'MISSING') {
       // EVERY GovAI-owned axis, including the continuity fields — the baseline doc states
       // `MISSING ⇒ no GovAI axes` as a mechanically enforced invariant, so the allowlist must
