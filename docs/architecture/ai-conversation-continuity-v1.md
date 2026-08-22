@@ -664,11 +664,31 @@ Adjudicated semantics:
 | Operation | Operational store | Evidence plane | UI truth |
 |---|---|---|---|
 | Archive | `archived_at` set; hidden from default list | untouched | "archived, recoverable" |
-| User delete | status → `deleted_pending` → rows purged; content blobs crypto-shred eligible | hash-only v4 captures REMAIN | "conversation content deleted; hash-only invocation evidence is retained by audit policy" |
+| User delete | status → `deleted_pending` (a real FENCING phase, protocol below) → rows purged; content blobs crypto-shred eligible | hash-only v4 captures REMAIN | "conversation content deleted; hash-only invocation evidence is retained by audit policy" |
 | Tenant retention expiry | scheduled purge per retention class | untouched | policy text |
 | Legal hold | blocks purge/shred for the hold scope | untouched | hold surfaced |
 | Crypto-shred | `ai_conversation_content` DEK nulled via a SECURITY DEFINER shred function copied from the `audit_event_payload_crypto_shred` precedent (`0001:399-426` — RBAC session flag + chained admin event) | shred is itself evidenced | "content cryptographically destroyed" |
 | Provider-side state | adapter deletes provider-stored objects where they exist (OpenAI conversation/response deletion, GA; Codex `thread/delete`; Claude Code session delete via SessionStore) — best-effort with recorded outcome | n/a | provider-deletion outcome shown, never assumed |
+
+**`deleted_pending` is an ordered fencing protocol, not a label** — deletion must not race
+active turns, and provider cleanup must not lose its tracking data:
+
+1. The `active → deleted_pending` transition ATOMICALLY closes the conversation to new work:
+   the control plane rejects sends/retries/forks/re-attaches, and the claim CAS predicates
+   (§7.7/§8) exclude `deleted_pending` conversations, so no new claim and no queue pickup can
+   start after the commit.
+2. Every non-terminal attempt is stop-requested via the durable §13 Stop machinery (flag +
+   active wake); owning runners observe within a heartbeat interval and finalize under the
+   fenced finalize; a dead owner's turn resolves through the ordinary lease-lapse recovery.
+   Purge WAITS until every turn on the conversation is terminal.
+3. Provider-side cleanup then runs as a DURABLE scheduled step with recorded outcomes and
+   retries — honoring §11's terminal-evidence rule: an aborted request's provider-side mutation
+   may still land late, so cleanup of provider-stored objects is re-runnable, not
+   fire-and-forget.
+4. Row purge is LAST, and only after provider cleanup has completed or been durably handed to a
+   cleanup queue that itself carries the provider identifiers it needs — purging must never
+   orphan the very data the cleanup requires. Content blobs become crypto-shred eligible at
+   this point.
 
 A UI "Delete conversation" never promises evidence erasure the audit plane legitimately prevents;
 it states exactly what is deleted and what hash-only evidence remains. LGPD erasure of CONTENT is
