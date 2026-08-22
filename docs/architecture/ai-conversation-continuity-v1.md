@@ -54,8 +54,18 @@ Verdict recorded: `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`. Continuity is a gr
 ## 3. Domain model
 
 New domain, prefix `ai_` (grep-clean separation from `workroom_*`). All tables follow the house
-conventions proven in 0012/0013: `uuid` PKs, `org_id` column, RLS `ENABLE + FORCE` with
-`org_id::text = current_setting('app.org_id', true)`, per-command policies, least-privilege grants.
+conventions proven in 0012/0013 — `uuid` PKs, RLS `ENABLE + FORCE`, per-command policies,
+least-privilege grants — with ONE deliberate strengthening: because a conversation is
+OWNER-authorized (not org-authorized like the read surfaces, and not participant-authorized like
+workrooms), the tenant predicate alone is insufficient inside a multi-user org. Every `ai_*`
+table therefore carries BOTH `org_id` and a denormalized `owner_user_id`, and its RLS policies
+require both `org_id::text = current_setting('app.org_id', true)` AND
+`owner_user_id::text = current_setting('app.user_id', true)` — the authenticated `user_id` the
+key lookup already resolves is propagated into the session context alongside `app.org_id` by the
+tenant helper. Ownership is enforced IN POLICY, never left to per-query `WHERE` discipline: a
+forgotten predicate in a list/hydrate/attachment/re-attach query must return nothing, not a
+same-org neighbour's conversation. (Post-R14 sharing is an explicit policy evolution — owner OR
+recorded grant — not a relaxation of the default.)
 
 | Entity | Table (target) | Purpose |
 |---|---|---|
@@ -70,8 +80,8 @@ conventions proven in 0012/0013: `uuid` PKs, `org_id` column, RLS `ENABLE + FORC
 | Evidence Link | `govai.ai_conversation_evidence_links` | Additive projection turn/attempt → `{govai_request_id, capture_id, audit_event_id?}` (§14). Never mutates audit tables |
 | Content blob | `govai.ai_conversation_content` | Envelope-encrypted payload store owned by THIS domain (§6) — deliberately not `audit_event_payloads` |
 
-Ownership/tenant scope: every row carries `org_id`; conversations additionally carry
-`owner_user_id` (the stable `user_id` from `govai.api_key_lookup_v2`, `pipeline/auth.ts:52-53`).
+Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
+from `govai.api_key_lookup_v2`, `pipeline/auth.ts:52-53`), both enforced by RLS as above.
 Authorization = owner (or, post-R14, explicit sharing) — NOT participant rosters (§4).
 
 ## 4. Conversation ≠ Workroom (adjudicated boundary)
@@ -206,8 +216,9 @@ Normative rules:
    - The runner's SECOND commit — the dispatch-boundary commit (`accepted → dispatching`) — is
      written BEFORE any provider POST, and it is a CONDITIONAL compare-and-swap: it succeeds
      only where the committing runner's `claim_token` is still the turn's current token
-     (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ?`). Zero rows
-     updated = fenced out: abort without dispatching.
+     (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ?`, plus §8's
+     branch-order predicate — no earlier non-terminal turn on the branch). Zero rows updated =
+     fenced out or not yet at the head of the branch queue: abort without dispatching.
    - Re-claiming a past-deadline `accepted` turn (by the recovery sweep or by the next duplicate
      send, §8) ROTATES the claim token in its own committed CAS. From that commit on, the
      expired owner — merely stalled, not dead — can no longer pass its boundary CAS, so it can
@@ -247,6 +258,17 @@ Normative rules:
   dispatch-boundary commit (`dispatching`, claim + deadline, BEFORE any provider POST) →
   provider POST → finalize-commit (terminal state). Each inter-commit crash window has the
   defined recovery of §7.7.
+- **Distinct sends on one branch are SERIALIZED at dispatch, not just at numbering.** The
+  per-branch advisory lock orders `turn_seq` assignment only — two tabs reserving different
+  `client_turn_id`s both succeed and would otherwise dispatch concurrently, letting the later
+  turn build context without the earlier result and racing writes to per-branch
+  `provider_state` (e.g. `previous_response_id`). Rule: a branch is SINGLE-FLIGHT. The
+  dispatch-boundary CAS (§7.7) carries a second predicate — it succeeds only when no
+  earlier-`turn_seq` turn on the branch is in a non-terminal state — so reservations form a
+  durable per-branch queue that dispatches strictly in `turn_seq` order, each turn's context
+  includes every earlier terminal outcome, and `provider_state` has one writer at a time. A
+  queued turn is visible to the UI as pending; Stop/discard of a queued turn is an ordinary
+  pre-dispatch transition (`accepted → stopped`), which unblocks the queue behind it.
 
 ## 9. Dispatch boundary and server-owned stream
 
@@ -460,7 +482,8 @@ entry is human login.
 | Threat | Control (implementation gate) |
 |---|---|
 | Cross-tenant history leakage | RLS ENABLE+FORCE on every `ai_*` table; negative-privilege integration proof (the I2 pattern) BEFORE first release |
-| IDOR / conversation enumeration | UUID ids + owner scoping in every query; 404-not-403 on foreign ids; no sequential ids |
+| Same-org cross-USER leakage | owner_user_id in every `ai_*` RLS policy via paired session context (`app.org_id` + `app.user_id`, §3) — policy-enforced, never query-discipline; per-user negative proof added to the I2-style suite |
+| IDOR / conversation enumeration | UUID ids + policy-level owner scoping (§3); 404-not-403 on foreign ids; no sequential ids |
 | Cache leakage | `cache-control: no-store` on all conversation reads from day one (AUTH-READ-CACHE-01 must not grow) |
 | Provider credential leakage | unchanged pipeline (§9); credentials never in conversation rows/URLs |
 | Browser storage | nothing conversational client-persisted; acceptance-pinned |
@@ -470,7 +493,7 @@ entry is human login.
 | Deleted-conversation reappearance | purge covers items+blobs+provider_state+links; provider-side deletion recorded; restore only from explicit archive |
 | Provider-state identifiers | provider ids treated as sensitive (they unlock provider-stored content); encrypted at rest in `provider_state` |
 | Replay/fork authorization | fork requires read right on source branch; cross-provider fork re-runs DLP on the portable projection |
-| Concurrent sends | §8 reservation PK; per-branch advisory-lock sequencing |
+| Concurrent sends | §8 reservation PK (duplicate) + per-branch single-flight boundary predicate (distinct turns) + §7.7 fencing CAS (competing claimants) |
 | Stream hijacking | re-attach requires the same auth as the turn; relay carries no provider credentials; no cross-user attach |
 | Future shared Projects | out of V1; sharing model gated on R14 |
 | Workroom promotion | one-way copy/reference with its own audit event; never silent |
