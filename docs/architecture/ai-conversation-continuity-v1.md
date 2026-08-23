@@ -655,7 +655,15 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
 - **WORKER_LEAST_PRIVILEGE_UNDER_FORCE_RLS:** table privilege and RLS are CUMULATIVE controls
   — RLS answers "which rows may this authorized operation touch?", never "may this role
   SELECT/UPDATE at all?" — so "zero table grants + ordinary RLS-scoped work" is internally
-  inconsistent and is NOT the model. The worker identity holds EXECUTE on the two discovery
+  inconsistent and is NOT the model. The cumulativity CUTS BOTH WAYS: under FORCE RLS a table
+  privilege with NO policy applicable to the executing role yields ZERO rows, silently — so
+  EVERY grant in the matrix below implies a matching org/owner-scoped POLICY for the worker
+  role on that resource, and the implementation mission derives policies TOGETHER with grants.
+  This matters concretely for pre-existing tables whose policies name other roles: e.g.
+  `0009_provider_credentials.sql:73-76,100-104` scopes its policies to `govai_app` and
+  `govai_audit_writer` only, so the worker's credential SELECT requires a NEW owner-scoped
+  policy for the worker role — without it, recovery dispatch and historical-credential cleanup
+  fail at credential resolution with zero rows, not an error. The worker identity holds EXECUTE on the two discovery
   functions PLUS the MINIMUM ordinary table privileges its flows require (matrix below), under
   FORCE RLS like every other session: no `BYPASSRLS`, no table ownership, no superuser,
   `NOINHERIT`, never grantable to or `SET ROLE`-able from `govai_app`. The detached workflow is
@@ -690,7 +698,7 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
 
   | Flow | Resource | Privileges | Rationale |
   |---|---|---|---|
-  | Credential resolution | `govai.provider_credentials` | SELECT | tenant-key decrypt path; 0009's org-scoped RLS applies; never outside the entered org context. Dispatch resolves the ACTIVE credential; cleanup resolves BY RECORDED `provider_credential_id` (the historical, possibly-revoked row — §19.3 credential provenance), still under the same org-scoped RLS |
+  | Credential resolution | `govai.provider_credentials` | SELECT + a NEW org-scoped SELECT policy FOR THE WORKER ROLE (0009's existing policies name only `govai_app`/`govai_audit_writer`, `0009:73-76,100-104` — under FORCE RLS the grant alone yields zero rows) | tenant-key decrypt path; never outside the entered org context. Dispatch resolves the ACTIVE credential; cleanup resolves BY RECORDED `provider_credential_id` (the historical, possibly-revoked row — §19.3 credential provenance), both under the worker's own org-scoped policy |
   | Evidence capture | `govai.audit_capture_insert_locked(...)` (+ the bridge's read surface) | EXECUTE | a worker-driven dispatch must capture identically to a request-driven one — never a silent evidence gap |
   | Tenant governance inputs | `govai.org_tier_lookup(...)`; org-scoped governance config the pipeline reads (capability/beta overrides, DLP custom patterns) | EXECUTE / SELECT | governed-lane resolution needs tier/mode + org config; exact object list is TRACED FROM THE PIPELINE at implementation, not guessed |
 
