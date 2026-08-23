@@ -101,77 +101,200 @@ export async function seedTurn(
   return { turnId: r.rows[0]!.id, configContentId };
 }
 
-/** Insert an attempt. Defaults to the born state: accepted, unclaimed. */
+export type AttemptTargetState =
+  | 'accepted'
+  | 'dispatching'
+  | 'streaming'
+  | 'completed'
+  | 'stopped'
+  | 'failed'
+  | 'rejected'
+  | 'outcome_unknown';
+
+export type AttemptAdvanceOverrides = {
+  /** Target durable state, reached through LEGAL transitions only. */
+  state?: AttemptTargetState;
+  /** Claim token; post-boundary targets always claim (a fresh one if omitted). */
+  claimToken?: string;
+  /** Error taxonomy for `failed` (defaults to provider_error). */
+  errorClass?: string;
+  /**
+   * Commit-4 provenance. Post-POST targets (streaming/completed/
+   * outcome_unknown) REQUIRE it and auto-seed a credential when omitted;
+   * `null` skips commit 4 (lawful only inside the dispatching window).
+   */
+  providerCredentialId?: string | null;
+  /** Minted at the boundary commit (§14.1); post-boundary targets always
+   *  carry one (a fresh mint if omitted). */
+  govaiRequestId?: string;
+  /** Derived identity (§14.2); written once post-boundary when provided. */
+  captureId?: string;
+  /** Record an encrypted continuation anchor at the boundary (§11). */
+  continuationAnchor?: boolean;
+  contextExcluded?: boolean;
+  stopRequested?: boolean;
+};
+
+/**
+ * Advance a BORN (accepted/unclaimed) attempt to the requested durable state
+ * through the §7/§8 legal path only — claim commit, boundary commit (minting
+ * govai_request_id), commit-4 provenance, stream start, finalize. The helper
+ * never bypasses the birth guard, the transition graph or the CHECK matrix:
+ * a fixture that needs an impossible shape does not belong here (§23 — write
+ * that malformed SQL explicitly inside the negative test that needs it).
+ */
+export async function advanceSeededAttempt(
+  admin: Pool,
+  ids: OwnerIds,
+  attemptId: string,
+  overrides?: AttemptAdvanceOverrides,
+): Promise<void> {
+  const target = overrides?.state ?? 'accepted';
+  const setFlags = async (): Promise<void> => {
+    if (overrides?.stopRequested) {
+      await admin.query(
+        `UPDATE govai.ai_conversation_attempts SET stop_requested = true WHERE id = $1::uuid`,
+        [attemptId],
+      );
+    }
+    if (overrides?.contextExcluded) {
+      await admin.query(
+        `UPDATE govai.ai_conversation_attempts SET context_excluded = true WHERE id = $1::uuid`,
+        [attemptId],
+      );
+    }
+  };
+  const claim = async (): Promise<void> => {
+    await admin.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET claim_token = $1::uuid, claimant = 'test-claimant',
+              claim_deadline_at = now() + interval '5 minutes'
+        WHERE id = $2::uuid`,
+      [overrides?.claimToken ?? randomUUID(), attemptId],
+    );
+  };
+
+  if (target === 'accepted') {
+    if (overrides?.claimToken !== undefined) await claim();
+    await setFlags();
+    return;
+  }
+
+  if (target === 'stopped' || target === 'failed' || target === 'rejected') {
+    // Pre-boundary terminal: queued discard (§8), pre-dispatch failure
+    // (e.g. credential_unavailable) or governance/validation rejection (§7).
+    if (overrides?.claimToken !== undefined) await claim();
+    await setFlags();
+    await admin.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = $1::text, error_class = $2::text, terminal_at = now(), updated_at = now()
+        WHERE id = $3::uuid`,
+      [
+        target,
+        target === 'failed' ? (overrides?.errorClass ?? 'provider_error') : null,
+        attemptId,
+      ],
+    );
+    return;
+  }
+
+  // Post-boundary walk: claim commit → boundary commit → commit 4 → onward.
+  await claim();
+  await admin.query(
+    `UPDATE govai.ai_conversation_attempts
+        SET state = 'dispatching', dispatch_boundary_committed_at = now(),
+            govai_request_id = $1::uuid, causal_version_at_build = 0,
+            heartbeat_at = now(),
+            continuation_parent_ciphertext = CASE WHEN $2::boolean THEN $3::bytea ELSE NULL END,
+            continuation_parent_dek_wrapped = CASE WHEN $2::boolean THEN $4::bytea ELSE NULL END,
+            continuation_parent_kms_key_id = CASE WHEN $2::boolean THEN 'k' ELSE NULL END,
+            continuation_parent_kms_key_version = CASE WHEN $2::boolean THEN 1 ELSE NULL END,
+            updated_at = now()
+      WHERE id = $5::uuid`,
+    [
+      overrides?.govaiRequestId ?? randomUUID(),
+      overrides?.continuationAnchor ?? false,
+      randomBytes(32),
+      randomBytes(64),
+      attemptId,
+    ],
+  );
+  const needsProvenance =
+    target === 'streaming' || target === 'completed' || target === 'outcome_unknown';
+  if (overrides?.providerCredentialId !== null && (needsProvenance || overrides?.providerCredentialId)) {
+    // Reuse the org's active credential when one exists (0009 allows only one
+    // active row per (org, provider)); otherwise seed it.
+    const existing =
+      overrides?.providerCredentialId === undefined
+        ? await admin.query<{ id: string }>(
+            `SELECT id FROM govai.provider_credentials
+              WHERE org_id = $1::uuid AND provider = 'anthropic' AND status = 'active'`,
+            [ids.orgId],
+          )
+        : null;
+    const credId =
+      overrides?.providerCredentialId ??
+      existing?.rows[0]?.id ??
+      (await seedProviderCredential(admin, ids.orgId));
+    await admin.query(
+      `UPDATE govai.ai_conversation_attempts SET provider_credential_id = $1::uuid
+        WHERE id = $2::uuid`,
+      [credId, attemptId],
+    );
+  }
+  if (overrides?.captureId) {
+    await admin.query(
+      `UPDATE govai.ai_conversation_attempts SET capture_id = $1::uuid WHERE id = $2::uuid`,
+      [overrides.captureId, attemptId],
+    );
+  }
+  await setFlags();
+  if (target === 'dispatching') return;
+  if (target === 'outcome_unknown') {
+    await admin.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'outcome_unknown', terminal_at = now(), updated_at = now()
+        WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    return;
+  }
+  await admin.query(
+    `UPDATE govai.ai_conversation_attempts SET state = 'streaming', updated_at = now()
+      WHERE id = $1::uuid`,
+    [attemptId],
+  );
+  if (target === 'completed') {
+    await admin.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'completed', terminal_at = now(), updated_at = now()
+        WHERE id = $1::uuid`,
+      [attemptId],
+    );
+  }
+}
+
+/** Insert an attempt in the §7.1b BORN shape (accepted, unclaimed,
+ *  pre-boundary), then advance it to the requested state through legal
+ *  transitions only (see advanceSeededAttempt). */
 export async function seedAttempt(
   admin: Pool,
   ids: OwnerIds,
   conversationId: string,
   branchId: string,
   turnId: string,
-  overrides?: {
-    attemptSeq?: number;
-    state?: string;
-    claimToken?: string | null;
-    terminalAt?: boolean;
-    errorClass?: string | null;
-    boundaryCommitted?: boolean;
-    providerCredentialId?: string | null;
-    govaiRequestId?: string | null;
-    contextExcluded?: boolean;
-    stopRequested?: boolean;
-  },
+  overrides?: AttemptAdvanceOverrides & { attemptSeq?: number },
 ): Promise<string> {
-  const state = overrides?.state ?? 'accepted';
-  const claimed =
-    overrides?.claimToken !== undefined
-      ? overrides.claimToken
-      : state === 'dispatching' || state === 'streaming'
-        ? randomUUID()
-        : null;
-  const terminal =
-    overrides?.terminalAt ??
-    ['completed', 'stopped', 'failed', 'rejected', 'outcome_unknown'].includes(state);
-  const boundary =
-    overrides?.boundaryCommitted ??
-    (['dispatching', 'streaming', 'outcome_unknown'].includes(state) ||
-      (overrides?.providerCredentialId !== null && overrides?.providerCredentialId !== undefined));
   const r = await admin.query<{ id: string }>(
     `INSERT INTO govai.ai_conversation_attempts
-       (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_seq, state,
-        claim_token, claimant, claim_deadline_at,
-        terminal_at, error_class, dispatch_boundary_committed_at,
-        provider_credential_id, govai_request_id, context_excluded, stop_requested)
-     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::int, $7::text,
-             $8::uuid, CASE WHEN $8::uuid IS NULL THEN NULL ELSE 'test-claimant' END,
-             CASE WHEN $8::uuid IS NULL THEN NULL ELSE now() + interval '5 minutes' END,
-             CASE WHEN $9::boolean THEN now() ELSE NULL END,
-             $10::text,
-             CASE WHEN $11::boolean THEN now() ELSE NULL END,
-             $12::uuid, $13::uuid, $14::boolean, $15::boolean)
+       (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_seq)
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::int)
      RETURNING id`,
-    [
-      ids.orgId,
-      ids.ownerUserId,
-      conversationId,
-      branchId,
-      turnId,
-      overrides?.attemptSeq ?? 1,
-      state,
-      claimed,
-      terminal,
-      overrides?.errorClass !== undefined
-        ? overrides.errorClass
-        : state === 'failed'
-          ? 'provider_error'
-          : null,
-      boundary,
-      overrides?.providerCredentialId ?? null,
-      overrides?.govaiRequestId ?? null,
-      overrides?.contextExcluded ?? false,
-      overrides?.stopRequested ?? false,
-    ],
+    [ids.orgId, ids.ownerUserId, conversationId, branchId, turnId, overrides?.attemptSeq ?? 1],
   );
-  return r.rows[0]!.id;
+  const attemptId = r.rows[0]!.id;
+  await advanceSeededAttempt(admin, ids, attemptId, overrides);
+  return attemptId;
 }
 
 /** Full chain: conversation → root branch → turn 1 → attempt 1 (+ current_attempt_id). */

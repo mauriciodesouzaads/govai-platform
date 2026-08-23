@@ -55,8 +55,8 @@ is one collected test module.
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
 | Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 140 | 1610 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 80 | 1167 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 220 | 2777 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 80 | 1186 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 220 | 2796 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
 
@@ -620,7 +620,10 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-A1 canonical state (this tree)
 
 - `EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS`;
-  `P0_A1_STORAGE_SECURITY_FOUNDATION=IMPLEMENTED`;
+  `P0_A1_STORAGE_SECURITY_FOUNDATION=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`
+  (independent Opus 5 Max audit of head `ff08a8ea`: KMS/RLS/lineage/migration-safety PASS,
+  three P2 MATERIAL integrity classes C1/C2/C3 — remediated in this tree; exact-new-head
+  independent confirmation pending);
   `CONVERSATION_CONTINUITY_ARCHITECTURE=SPECIFIED_IMPLEMENTATION_IN_PROGRESS`;
   **`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`** — there is still no durable user-facing
   Send/hydrate/reload path; the AI Console transcript remains memory-only
@@ -634,10 +637,22 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     `ai_conversation_provider_state`, `ai_conversation_evidence_links`), all with
     dual-predicate FORCE RLS (`app.org_id` AND `app.user_id`), composite-lineage FKs
     (no pointer by id alone; `current_attempt_id` is a DEFERRABLE composite FK; the fork pin
-    is one composite FK to a specific attempt), guarded-update triggers (identity/lineage
-    frozen; per-attempt state ratchets; write-once provenance/request identity), the §7 state
-    CHECK matrix, and an additive `(org_id, id)` UNIQUE key on `govai.provider_credentials`
-    for org-composite credential provenance. Grants: `govai_app` SELECT+INSERT only.
+    is one composite FK to a specific attempt), guard triggers realizing §7's PHYSICS
+    (identity/lineage frozen; FULL-ROW terminal freeze — a terminal attempt is never
+    mutated; `outcome_unknown` closed probe resolution; write-once
+    provenance/request/capture identity + write-once dispatch boundary; a §7.1b attempt
+    BIRTH guard; the §7 forward transition graph with `dispatching → accepted` gated on
+    provenance ABSENCE — the durable no-POST proof; provider-state ratchets — taint never
+    clears, `superseded` is final with a frozen payload; the conversation lifecycle ratchet
+    — no edge out of `deleted_pending`/`deleted`), the §7 state × authority × provenance
+    CHECK implication matrix (with `B` = boundary committed and `P` = credential provenance
+    defined in-schema: `completed⟹B∧P`, `streaming⟹P`, `outcome_unknown⟹P`, `accepted⟹¬P`,
+    `capture⟹request`, `request⟹B`, `error_class⟹failed`; `rejected` deliberately carries
+    no universal B/P rule — §7 admits pre- and post-boundary rejection), an 8-column
+    evidence-identity composite FK binding each evidence link to its attempt's OWN
+    `{govai_request_id, capture_id}`, and an additive `(org_id, id)` UNIQUE key on
+    `govai.provider_credentials` for org-composite credential provenance. Grants:
+    `govai_app` SELECT+INSERT only.
   - **KMS purpose isolation** (`packages/core-identity`): new purposes `conversation_content`
     (envelope) + `conversation_content_integrity` (keyed digest); `envelopeEncrypt`/
     `envelopeDecrypt` accept an optional narrow `KmsEnvelopePurpose` — omitted purpose is
@@ -658,5 +673,9 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   not exist; an unconstrained pointer is forbidden) and `workroom_id` attribution
   (`govai.workrooms` has an id-only PK — no existing `(org_id, id)` composite identity to
   bind). Carry-forward acceptance notes: final Opus R-1 (provenance-absent lifecycle branching
-  must serialize on the conversation root, §7.7 pattern) and AUTH-READ-CACHE-01
-  (`Cache-Control: no-store` on conversation reads from day one of P0-B).
+  must serialize on the conversation root, §7.7 pattern); AUTH-READ-CACHE-01
+  (`Cache-Control: no-store` on conversation reads from day one of P0-B); P0A1-C4 (fork-pin
+  mode-specific STATE validity is a P0-B acceptance obligation: `after_attempt` pin must be
+  `completed`; `before_attempt_output` pin must be an immutable terminal; `outcome_unknown`
+  rejected in both modes; no non-terminal pin); and P0A1-C5 (`current_attempt_id` backward
+  repoint — monotonic handoff is a P0-B acceptance proof if not taken structurally).

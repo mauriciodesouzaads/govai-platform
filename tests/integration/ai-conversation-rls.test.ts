@@ -11,7 +11,9 @@ import { startPostgres, stopPostgres, type TestDb } from './setup.js';
 import {
   freshOwner,
   seedFullChain,
+  advanceSeededAttempt,
   isPrivilegeViolation,
+  isFkViolation,
   type OwnerIds,
 } from './helpers/ai-conversation-seed.js';
 
@@ -286,6 +288,14 @@ describe('ai-conversation RLS — dual-predicate owner scoping', () => {
     const owner = freshOwner();
     const stranger: OwnerIds = { orgId: owner.orgId, ownerUserId: randomUUID() };
     const chain = await seedFullChain(db.adminPool, owner);
+    // A valid link derives its identities from the pinned attempt (§14.3).
+    const reqId = randomUUID();
+    const capId = randomUUID();
+    await advanceSeededAttempt(db.adminPool, owner, chain.attemptId, {
+      state: 'completed',
+      govaiRequestId: reqId,
+      captureId: capId,
+    });
     await db.adminPool.query(
       `INSERT INTO govai.ai_conversation_evidence_links
          (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_id,
@@ -298,8 +308,8 @@ describe('ai-conversation RLS — dual-predicate owner scoping', () => {
         chain.branchId,
         chain.turnId,
         chain.attemptId,
-        randomUUID(),
-        randomUUID(),
+        reqId,
+        capId,
       ],
     );
     const strangerSees = await withCtx(stranger.orgId, stranger.ownerUserId, async (c) => {
@@ -373,5 +383,141 @@ describe('ai-conversation RLS — dual-predicate owner scoping', () => {
       );
       expect(attempt.rows[0]!.id).toBeTruthy();
     });
+  });
+});
+
+// P0A1-C2/C3 G-1 CLOSURE: the Opus audit proved the birth-coherence and
+// evidence-identity defect classes were LIVE for govai_app — the only role
+// holding any grant on this domain — under its own RLS policy, not merely
+// for the superuser. These proofs re-run the same attack shapes through the
+// real app role and real owner context.
+describe('ai-conversation RLS — govai_app cannot fabricate state or identity (G-1 closure)', () => {
+  async function expectAppError(
+    fn: () => Promise<unknown>,
+    classify: (err: unknown) => boolean,
+    label: string,
+  ): Promise<void> {
+    let caught: unknown = null;
+    try {
+      await fn();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught, `${label}: expected a rejection`).not.toBeNull();
+    expect(
+      classify(caught),
+      `${label}: unexpected error class: ${(caught as Error)?.message}`,
+    ).toBe(true);
+  }
+
+  it('govai_app cannot birth a terminal or provenance-incoherent attempt (G-1 closed)', async () => {
+    const owner = freshOwner();
+    const chain = await seedFullChain(db.adminPool, owner);
+    // Terminal-born, pre-boundary, unclaimed, with fabricated identities —
+    // the exact G-1 shape.
+    await expectAppError(
+      () =>
+        withCtx(owner.orgId, owner.ownerUserId, (c) =>
+          c.query(
+            `INSERT INTO govai.ai_conversation_attempts
+               (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_seq,
+                state, terminal_at, govai_request_id, capture_id)
+             VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, 2,
+                     'completed', now(), $6::uuid, $7::uuid)`,
+            [
+              owner.orgId,
+              owner.ownerUserId,
+              chain.conversationId,
+              chain.branchId,
+              chain.turnId,
+              randomUUID(),
+              randomUUID(),
+            ],
+          ),
+        ),
+      isPrivilegeViolation,
+      'app-role terminal birth',
+    );
+    // Fabricated request identity on an otherwise-born attempt.
+    await expectAppError(
+      () =>
+        withCtx(owner.orgId, owner.ownerUserId, (c) =>
+          c.query(
+            `INSERT INTO govai.ai_conversation_attempts
+               (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_seq,
+                govai_request_id)
+             VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, 2, $6::uuid)`,
+            [
+              owner.orgId,
+              owner.ownerUserId,
+              chain.conversationId,
+              chain.branchId,
+              chain.turnId,
+              randomUUID(),
+            ],
+          ),
+        ),
+      isPrivilegeViolation,
+      'app-role fabricated govai_request_id',
+    );
+    // The genuine §7.1b birth still works through the app role (the grant
+    // itself is untouched — only impossible shapes are closed).
+    await withCtx(owner.orgId, owner.ownerUserId, (c) =>
+      c.query(
+        `INSERT INTO govai.ai_conversation_attempts
+           (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_seq)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, 2)`,
+        [owner.orgId, owner.ownerUserId, chain.conversationId, chain.branchId, chain.turnId],
+      ),
+    );
+  });
+
+  it('govai_app cannot mint an evidence link contradicting the attempt identity (G-1 closed)', async () => {
+    const owner = freshOwner();
+    const chain = await seedFullChain(db.adminPool, owner);
+    const reqId = randomUUID();
+    const capId = randomUUID();
+    await advanceSeededAttempt(db.adminPool, owner, chain.attemptId, {
+      state: 'completed',
+      govaiRequestId: reqId,
+      captureId: capId,
+    });
+    const insertLinkAs = (linkReq: string, linkCap: string): Promise<unknown> =>
+      withCtx(owner.orgId, owner.ownerUserId, (c) =>
+        c.query(
+          `INSERT INTO govai.ai_conversation_evidence_links
+             (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_id,
+              govai_request_id, capture_id)
+           VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, $7::uuid, $8::uuid)`,
+          [
+            owner.orgId,
+            owner.ownerUserId,
+            chain.conversationId,
+            chain.branchId,
+            chain.turnId,
+            chain.attemptId,
+            linkReq,
+            linkCap,
+          ],
+        ),
+      );
+    // The divergent projection G-1 wrote is now structurally unrepresentable.
+    await expectAppError(
+      () => insertLinkAs(randomUUID(), randomUUID()),
+      isFkViolation,
+      'app-role mismatched evidence link',
+    );
+    // The truthful projection binds — and is visible to its owner.
+    await insertLinkAs(reqId, capId);
+    const seen = await withCtx(owner.orgId, owner.ownerUserId, async (c) => {
+      const r = await c.query(
+        `SELECT govai_request_id FROM govai.ai_conversation_evidence_links
+          WHERE attempt_id = $1::uuid`,
+        [chain.attemptId],
+      );
+      return r.rows as Array<{ govai_request_id: string }>;
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.govai_request_id).toBe(reqId);
   });
 });

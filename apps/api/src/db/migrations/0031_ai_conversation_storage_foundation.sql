@@ -305,19 +305,63 @@ CREATE TABLE IF NOT EXISTS govai.ai_conversation_attempts (
     ((claim_token IS NULL) = (claimant IS NULL))
     AND ((claim_token IS NULL) = (claim_deadline_at IS NULL))
   ),
+  -- ── §7/§8 state × authority × provenance implication matrix ──────────────
+  -- Durable notation, used by every constraint below and by the runner's own
+  -- safety proofs (§7.7/§9.4 — the proofs cite these predicates, so they must
+  -- exist IN the schema, never as narrative):
+  --   B := dispatch_boundary_committed_at IS NOT NULL   (the §8 third commit
+  --        happened — a provider POST is POSSIBLE from here on, never before)
+  --   P := provider_credential_id IS NOT NULL           (the §8 fourth commit
+  --        happened — commit 4 precedes EVERY POST, so ¬P is the durable
+  --        provably-no-POST proof the restore paths rely on)
   -- dispatching/streaming are always claimed and always post-boundary (§7.7).
   CONSTRAINT ai_conversation_attempts_post_boundary_claim_check CHECK (
     state NOT IN ('dispatching', 'streaming')
     OR (claim_token IS NOT NULL AND dispatch_boundary_committed_at IS NOT NULL)
+  ),
+  -- completed ⟹ B: completed is reachable only through the boundary (§8).
+  CONSTRAINT ai_conversation_attempts_completed_boundary_check CHECK (
+    state <> 'completed' OR dispatch_boundary_committed_at IS NOT NULL
+  ),
+  -- streaming|completed ⟹ P: a stream or terminal frame proves a POST, and
+  -- commit 4 precedes every POST (§8/§9.4).
+  CONSTRAINT ai_conversation_attempts_post_dispatch_provenance_check CHECK (
+    state NOT IN ('streaming', 'completed') OR provider_credential_id IS NOT NULL
+  ),
+  -- outcome_unknown ⟹ P: provenance-absent ambiguity is provably undispatched
+  -- and NEVER lands in outcome_unknown — it restores to accepted or ratchets
+  -- stopped (§7.7 provenance-absent arm, §25 CRASH POST-BOUNDARY, §26 AD).
+  CONSTRAINT ai_conversation_attempts_unknown_provenance_check CHECK (
+    state <> 'outcome_unknown' OR provider_credential_id IS NOT NULL
+  ),
+  -- accepted ⟹ ¬P: every sanctioned restore to accepted carries provenance
+  -- absence as its durable no-POST proof (§7.7/§9.4) — an accepted attempt
+  -- with provenance would be re-dispatchable after a possible POST.
+  CONSTRAINT ai_conversation_attempts_accepted_no_provenance_check CHECK (
+    state <> 'accepted' OR provider_credential_id IS NULL
+  ),
+  -- capture_id ⟹ govai_request_id: the capture id is uuidv5-DERIVED from the
+  -- request id (§14.2) and cannot exist without it.
+  CONSTRAINT ai_conversation_attempts_capture_requires_request_check CHECK (
+    capture_id IS NULL OR govai_request_id IS NOT NULL
+  ),
+  -- govai_request_id ⟹ B: the ONE authoritative mint site is the
+  -- dispatch-boundary commit (§14.1).
+  CONSTRAINT ai_conversation_attempts_request_boundary_check CHECK (
+    govai_request_id IS NULL OR dispatch_boundary_committed_at IS NOT NULL
   ),
   -- Ratchet states carry their ratchet timestamp.
   CONSTRAINT ai_conversation_attempts_terminal_at_check CHECK (
     state NOT IN ('completed', 'stopped', 'failed', 'rejected', 'outcome_unknown')
     OR terminal_at IS NOT NULL
   ),
-  -- failed carries the classified error taxonomy (§7.4).
+  -- failed carries the classified error taxonomy (§7.4) — and ONLY failed
+  -- carries one (the converse; an error class on completed would be a lie).
   CONSTRAINT ai_conversation_attempts_failed_class_check CHECK (
     state <> 'failed' OR error_class IS NOT NULL
+  ),
+  CONSTRAINT ai_conversation_attempts_error_class_failed_check CHECK (
+    error_class IS NULL OR state = 'failed'
   ),
   -- outcome_unknown is post-boundary by definition (§7.7): pre-boundary
   -- ambiguity is provably-undispatched and resolves to re-drive or stopped.
@@ -325,10 +369,20 @@ CREATE TABLE IF NOT EXISTS govai.ai_conversation_attempts (
     state <> 'outcome_unknown' OR dispatch_boundary_committed_at IS NOT NULL
   ),
   -- Credential provenance is committed inside the dispatching window (§8
-  -- commit 4): provenance present implies the boundary was crossed.
+  -- commit 4): P ⟹ B — provenance present implies the boundary was crossed.
   CONSTRAINT ai_conversation_attempts_provenance_boundary_check CHECK (
     provider_credential_id IS NULL OR dispatch_boundary_committed_at IS NOT NULL
   ),
+  -- NOTE on `rejected` (source-adjudicated): §7's graph admits rejection from
+  -- BOTH accepted (pre-boundary governance/validation denial) AND dispatching
+  -- (post-boundary 4xx before provider processing), so NO universal
+  -- rejected ⟹ B/P implication exists — only the generic P ⟹ B above applies.
+  -- ── §14.3 evidence identity: the referenced key evidence links bind to.
+  -- A superset of the already-unique lineage key, so it stays unique; the
+  -- nullable request/capture columns are lawful in a UNIQUE constraint.
+  CONSTRAINT ai_conversation_attempts_evidence_identity_uniq
+    UNIQUE (org_id, owner_user_id, conversation_id, branch_id, turn_id, id,
+            govai_request_id, capture_id),
   -- Encrypted continuation-anchor group: all present or all absent.
   CONSTRAINT ai_conversation_attempts_continuation_group_check CHECK (
     (continuation_parent_ciphertext IS NULL AND continuation_parent_dek_wrapped IS NULL
@@ -490,6 +544,21 @@ CREATE TABLE IF NOT EXISTS govai.ai_conversation_evidence_links (
     FOREIGN KEY (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_id)
     REFERENCES govai.ai_conversation_attempts
       (org_id, owner_user_id, conversation_id, branch_id, turn_id, id),
+  -- §14.3/§14.4 FORENSIC IDENTITY BINDING: a link asserts "THIS identity was
+  -- assigned", so it must name the identity the ATTEMPT actually carries. The
+  -- link's request/capture columns are NOT NULL, so this composite FK requires
+  -- the attempt to POSSESS both identities and to match them EXACTLY: a link
+  -- cannot exist before the attempt has its request identity, and can never
+  -- name another invocation's request or capture. NO ACTION also freezes the
+  -- attempt's capture_id for as long as a link exists — a second, independent
+  -- guard on the write-once rule. The lineage FK above is retained as the
+  -- documentary composite-ancestry binding (LAW 1); this one adds identity.
+  CONSTRAINT ai_conversation_evidence_links_identity_fk
+    FOREIGN KEY (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_id,
+                 govai_request_id, capture_id)
+    REFERENCES govai.ai_conversation_attempts
+      (org_id, owner_user_id, conversation_id, branch_id, turn_id, id,
+       govai_request_id, capture_id),
   CONSTRAINT ai_conversation_evidence_links_attempt_uniq
     UNIQUE (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_id)
 );
@@ -505,9 +574,21 @@ CREATE INDEX IF NOT EXISTS ai_conversation_evidence_links_request_idx
 -- frozen for EVERY role; mutable columns are whitelisted per table. UPDATE is
 -- not granted to govai_app in P0-A1 — these triggers are defense-in-depth for
 -- the owner path and for every future grant.
+--
+-- STATE PHYSICS (LAW 2/9/13, §7/§11/§19): beyond shape, the triggers encode
+-- irreversibility — the attempt birth guard (§7.1b), the full-row terminal
+-- freeze, the outcome_unknown closed resolution, the §7 forward transition
+-- graph with the ¬P-gated restore, the provider-state taint/supersede
+-- ratchets and the conversation lifecycle ratchet. A durable predicate a
+-- later movement's safety proof cites must be enforced HERE, before any
+-- writer exists.
 -- ===========================================================================
 
--- ai_conversations: identity + immutable execution mode + defaults frozen.
+-- ai_conversations: identity + immutable execution mode + defaults frozen;
+-- the lifecycle status is a RATCHETED graph (LAW 13/§19): active ↔ archived
+-- freely; active|archived → deleted_pending → deleted one-way — there is NO
+-- edge back out of deleted_pending or deleted ("restore only from explicit
+-- archive"; §21's deleted-conversation-reappearance threat).
 CREATE OR REPLACE FUNCTION govai.ai_conversations_guarded_update() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -523,6 +604,18 @@ BEGIN
     AND NEW.model IS NOT DISTINCT FROM OLD.model
     AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
   THEN
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+      IF (OLD.status = 'active'          AND NEW.status IN ('archived', 'deleted_pending'))
+        OR (OLD.status = 'archived'        AND NEW.status IN ('active', 'deleted_pending'))
+        OR (OLD.status = 'deleted_pending' AND NEW.status = 'deleted')
+      THEN
+        NULL; -- lawful lifecycle edge
+      ELSE
+        RAISE EXCEPTION 'ai_conversations: illegal lifecycle transition % -> % (active <-> archived; active|archived -> deleted_pending -> deleted; no reverse edge)',
+          OLD.status, NEW.status
+          USING ERRCODE = 'insufficient_privilege';
+      END IF;
+    END IF;
     RETURN NEW;
   END IF;
   RAISE EXCEPTION 'ai_conversations update is restricted to status/title/retention/archive/updated_at columns'
@@ -600,11 +693,66 @@ CREATE TRIGGER ai_conversation_turns_guarded_update_trg
   BEFORE UPDATE ON govai.ai_conversation_turns
   FOR EACH ROW EXECUTE FUNCTION govai.ai_conversation_turns_guarded_update();
 
--- ai_conversation_attempts: identity/lineage frozen; per-attempt ratchets
--- enforced structurally (§7.6): a terminal state never un-ratchets;
--- outcome_unknown may resolve ONCE to completed/failed (probe upgrade);
--- provenance and govai_request_id are write-once; context_excluded and
--- stop_requested never clear.
+-- ai_conversation_attempts BIRTH GUARD (§7.1b): every attempt — the §9 step-1
+-- reservation or a §7.6 retry mint — is born `accepted`, UNCLAIMED and
+-- pre-boundary, with no fabricated authority, identity, provenance, terminal
+-- metadata or causal record. Later states are REACHED through the guarded
+-- transitions below, never inserted.
+CREATE OR REPLACE FUNCTION govai.ai_conversation_attempts_birth_guard() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp
+AS $$
+BEGIN
+  IF NEW.state = 'accepted'
+    AND NEW.claim_token IS NULL
+    AND NEW.claimant IS NULL
+    AND NEW.claim_deadline_at IS NULL
+    AND NEW.heartbeat_at IS NULL
+    AND NEW.causal_version_at_build IS NULL
+    AND NEW.govai_request_id IS NULL
+    AND NEW.capture_id IS NULL
+    AND NEW.provider_credential_id IS NULL
+    AND NEW.dispatch_boundary_committed_at IS NULL
+    AND NEW.continuation_parent_ciphertext IS NULL
+    AND NEW.continuation_parent_dek_wrapped IS NULL
+    AND NEW.continuation_parent_kms_key_id IS NULL
+    AND NEW.continuation_parent_kms_key_version IS NULL
+    AND NOT NEW.context_excluded
+    AND NOT NEW.stop_requested
+    AND NEW.error_class IS NULL
+    AND NEW.terminal_at IS NULL
+  THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'ai_conversation_attempts: an attempt is born accepted, unclaimed and pre-boundary (§7.1b) — later states are reached, never inserted'
+    USING ERRCODE = 'insufficient_privilege';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS ai_conversation_attempts_birth_guard_trg
+  ON govai.ai_conversation_attempts;
+CREATE TRIGGER ai_conversation_attempts_birth_guard_trg
+  BEFORE INSERT ON govai.ai_conversation_attempts
+  FOR EACH ROW EXECUTE FUNCTION govai.ai_conversation_attempts_birth_guard();
+
+-- ai_conversation_attempts guarded update — the 0015 WHITELIST shape (the
+-- same posture as every other guard in this file), realizing §7's physics:
+--   * identity/lineage columns are immutable on every path;
+--   * LAW 2/§7.6: a terminal ATTEMPT (completed/stopped/failed/rejected) is
+--     NEVER mutated — full-row freeze, not a state-column ratchet;
+--   * outcome_unknown has ONE closed probe-driven resolution (§7.6): only
+--     {state → completed|failed, terminal_at, error_class, context_excluded,
+--     updated_at} may change; every durable execution/causal/provenance
+--     identity stays frozen, and the resolved row enters the terminal freeze;
+--   * write-once: provider_credential_id (§8 commit 4), govai_request_id
+--     (§14.1 mint-if-null), capture_id (§14.2 — derived identity),
+--     dispatch_boundary_committed_at (stamped by the first boundary commit;
+--     a §9.4/§7.7 restore RETAINS it);
+--   * one-way flags: context_excluded, stop_requested;
+--   * the §7 FORWARD TRANSITION GRAPH — with the single most important
+--     predicate: dispatching → accepted is lawful ONLY while
+--     OLD.provider_credential_id IS NULL (¬P — the DURABLE no-POST proof;
+--     commit 4 precedes every POST). streaming → accepted is never lawful.
 CREATE OR REPLACE FUNCTION govai.ai_conversation_attempts_guarded_update() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -622,22 +770,87 @@ BEGIN
     RAISE EXCEPTION 'ai_conversation_attempts identity/lineage columns are immutable'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
-  -- §7.6 per-attempt ratchet: completed/stopped/failed/rejected are final.
-  IF OLD.state IN ('completed', 'stopped', 'failed', 'rejected')
-    AND NEW.state IS DISTINCT FROM OLD.state
-  THEN
-    RAISE EXCEPTION 'ai_conversation_attempts: terminal state % is a ratchet', OLD.state
+
+  -- LAW 2/§7.6 FULL-ROW TERMINAL FREEZE: a terminal attempt is never mutated.
+  -- Whitelist-exhaustive over every non-identity column (the 8 identity
+  -- columns are already pinned above; 8 + 19 = all 27 stored columns). A
+  -- value-identical UPDATE may proceed; any semantic change is rejected.
+  IF OLD.state IN ('completed', 'stopped', 'failed', 'rejected') THEN
+    IF NEW.state IS NOT DISTINCT FROM OLD.state
+      AND NEW.claim_token IS NOT DISTINCT FROM OLD.claim_token
+      AND NEW.claimant IS NOT DISTINCT FROM OLD.claimant
+      AND NEW.claim_deadline_at IS NOT DISTINCT FROM OLD.claim_deadline_at
+      AND NEW.heartbeat_at IS NOT DISTINCT FROM OLD.heartbeat_at
+      AND NEW.stop_requested IS NOT DISTINCT FROM OLD.stop_requested
+      AND NEW.causal_version_at_build IS NOT DISTINCT FROM OLD.causal_version_at_build
+      AND NEW.govai_request_id IS NOT DISTINCT FROM OLD.govai_request_id
+      AND NEW.capture_id IS NOT DISTINCT FROM OLD.capture_id
+      AND NEW.provider_credential_id IS NOT DISTINCT FROM OLD.provider_credential_id
+      AND NEW.dispatch_boundary_committed_at IS NOT DISTINCT FROM OLD.dispatch_boundary_committed_at
+      AND NEW.continuation_parent_ciphertext IS NOT DISTINCT FROM OLD.continuation_parent_ciphertext
+      AND NEW.continuation_parent_dek_wrapped IS NOT DISTINCT FROM OLD.continuation_parent_dek_wrapped
+      AND NEW.continuation_parent_kms_key_id IS NOT DISTINCT FROM OLD.continuation_parent_kms_key_id
+      AND NEW.continuation_parent_kms_key_version IS NOT DISTINCT FROM OLD.continuation_parent_kms_key_version
+      AND NEW.context_excluded IS NOT DISTINCT FROM OLD.context_excluded
+      AND NEW.error_class IS NOT DISTINCT FROM OLD.error_class
+      AND NEW.terminal_at IS NOT DISTINCT FROM OLD.terminal_at
+      AND NEW.updated_at IS NOT DISTINCT FROM OLD.updated_at
+    THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'ai_conversation_attempts: terminal state % is a full-row ratchet — no column may change', OLD.state
       USING ERRCODE = 'insufficient_privilege';
   END IF;
-  -- outcome_unknown resolves only via a recovery probe, only to completed/failed.
-  IF OLD.state = 'outcome_unknown'
-    AND NEW.state IS DISTINCT FROM OLD.state
-    AND NEW.state NOT IN ('completed', 'failed')
-  THEN
-    RAISE EXCEPTION 'ai_conversation_attempts: outcome_unknown may only resolve to completed/failed'
-      USING ERRCODE = 'insufficient_privilege';
+
+  -- §7.6 outcome_unknown CLOSED RESOLUTION: the recovery probe may resolve
+  -- ONCE to completed/failed, touching ONLY {state, terminal_at, error_class,
+  -- context_excluded (§7.8 post-advance marker), updated_at}. All durable
+  -- execution/causal/provenance identity — claim authority, heartbeat,
+  -- causal version, request/capture identity, credential provenance, the
+  -- boundary, the continuation anchor, the stop flag — stays frozen.
+  IF OLD.state = 'outcome_unknown' THEN
+    IF NEW.claim_token IS DISTINCT FROM OLD.claim_token
+      OR NEW.claimant IS DISTINCT FROM OLD.claimant
+      OR NEW.claim_deadline_at IS DISTINCT FROM OLD.claim_deadline_at
+      OR NEW.heartbeat_at IS DISTINCT FROM OLD.heartbeat_at
+      OR NEW.stop_requested IS DISTINCT FROM OLD.stop_requested
+      OR NEW.causal_version_at_build IS DISTINCT FROM OLD.causal_version_at_build
+      OR NEW.govai_request_id IS DISTINCT FROM OLD.govai_request_id
+      OR NEW.capture_id IS DISTINCT FROM OLD.capture_id
+      OR NEW.provider_credential_id IS DISTINCT FROM OLD.provider_credential_id
+      OR NEW.dispatch_boundary_committed_at IS DISTINCT FROM OLD.dispatch_boundary_committed_at
+      OR NEW.continuation_parent_ciphertext IS DISTINCT FROM OLD.continuation_parent_ciphertext
+      OR NEW.continuation_parent_dek_wrapped IS DISTINCT FROM OLD.continuation_parent_dek_wrapped
+      OR NEW.continuation_parent_kms_key_id IS DISTINCT FROM OLD.continuation_parent_kms_key_id
+      OR NEW.continuation_parent_kms_key_version IS DISTINCT FROM OLD.continuation_parent_kms_key_version
+    THEN
+      RAISE EXCEPTION 'ai_conversation_attempts: outcome_unknown resolution may touch only state/terminal_at/error_class/context_excluded/updated_at'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NEW.state IS DISTINCT FROM OLD.state THEN
+      IF NEW.state NOT IN ('completed', 'failed') THEN
+        RAISE EXCEPTION 'ai_conversation_attempts: outcome_unknown may only resolve to completed/failed'
+          USING ERRCODE = 'insufficient_privilege';
+      END IF;
+    ELSE
+      -- Not resolving: the ratchet timestamp and error taxonomy stay frozen.
+      IF NEW.terminal_at IS DISTINCT FROM OLD.terminal_at
+        OR NEW.error_class IS DISTINCT FROM OLD.error_class
+      THEN
+        RAISE EXCEPTION 'ai_conversation_attempts: outcome_unknown terminal_at/error_class change only with a completed/failed resolution'
+          USING ERRCODE = 'insufficient_privilege';
+      END IF;
+    END IF;
+    IF OLD.context_excluded AND NOT NEW.context_excluded THEN
+      RAISE EXCEPTION 'ai_conversation_attempts: context_excluded is permanent'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    RETURN NEW;
   END IF;
-  -- Write-once identity/provenance (§8 commit 4 / §14.1 mint-if-null).
+
+  -- Non-terminal states (accepted/dispatching/streaming) from here on.
+  -- Write-once identity/provenance (§8 commit 4 / §14.1 / §14.2): once
+  -- assigned, never rewritten and never nulled.
   IF OLD.provider_credential_id IS NOT NULL
     AND NEW.provider_credential_id IS DISTINCT FROM OLD.provider_credential_id
   THEN
@@ -650,6 +863,18 @@ BEGIN
     RAISE EXCEPTION 'ai_conversation_attempts: govai_request_id is write-once'
       USING ERRCODE = 'insufficient_privilege';
   END IF;
+  IF OLD.capture_id IS NOT NULL
+    AND NEW.capture_id IS DISTINCT FROM OLD.capture_id
+  THEN
+    RAISE EXCEPTION 'ai_conversation_attempts: capture_id is write-once'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF OLD.dispatch_boundary_committed_at IS NOT NULL
+    AND NEW.dispatch_boundary_committed_at IS DISTINCT FROM OLD.dispatch_boundary_committed_at
+  THEN
+    RAISE EXCEPTION 'ai_conversation_attempts: dispatch_boundary_committed_at records the first boundary crossing and is write-once (a restore RETAINS it, §14.1)'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
   -- Durable one-way flags (§7.8 / §13).
   IF OLD.context_excluded AND NOT NEW.context_excluded THEN
     RAISE EXCEPTION 'ai_conversation_attempts: context_excluded is permanent'
@@ -658,6 +883,40 @@ BEGIN
   IF OLD.stop_requested AND NOT NEW.stop_requested THEN
     RAISE EXCEPTION 'ai_conversation_attempts: stop_requested never clears'
       USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  -- terminal_at is stamped only by the transition INTO a ratchet state.
+  IF NEW.terminal_at IS DISTINCT FROM OLD.terminal_at
+    AND NEW.state NOT IN ('completed', 'stopped', 'failed', 'rejected', 'outcome_unknown')
+  THEN
+    RAISE EXCEPTION 'ai_conversation_attempts: terminal_at is stamped only by a transition into a ratchet state'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  -- §7 FORWARD TRANSITION GRAPH (transitions are total; every edge named).
+  IF NEW.state IS DISTINCT FROM OLD.state THEN
+    IF OLD.state = 'accepted'
+      AND NEW.state IN ('dispatching', 'stopped', 'failed', 'rejected')
+    THEN
+      NULL; -- boundary commit, queued discard, pre-boundary failure, rejection
+    ELSIF OLD.state = 'dispatching'
+      AND NEW.state IN ('streaming', 'stopped', 'failed', 'rejected', 'outcome_unknown')
+    THEN
+      NULL; -- stream start, stop, failure, rejection, recovery ratchet
+    ELSIF OLD.state = 'dispatching' AND NEW.state = 'accepted' THEN
+      -- The ONLY sanctioned restore (§9.4 rotation-restore / §7.7
+      -- provenance-absent reclaim): lawful solely on the durable no-POST
+      -- proof ¬P. The restore RETAINS boundary + govai_request_id (§14.1).
+      IF OLD.provider_credential_id IS NOT NULL THEN
+        RAISE EXCEPTION 'ai_conversation_attempts: dispatching may restore to accepted only while provider provenance is absent (the durable no-POST proof)'
+          USING ERRCODE = 'insufficient_privilege';
+      END IF;
+    ELSIF OLD.state = 'streaming'
+      AND NEW.state IN ('completed', 'stopped', 'failed', 'outcome_unknown')
+    THEN
+      NULL; -- post-POST outcomes only: streaming NEVER returns to accepted
+    ELSE
+      RAISE EXCEPTION 'ai_conversation_attempts: illegal state transition % -> %', OLD.state, NEW.state
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -719,8 +978,14 @@ CREATE TRIGGER ai_conversation_content_guarded_update_trg
   BEFORE UPDATE ON govai.ai_conversation_content
   FOR EACH ROW EXECUTE FUNCTION govai.ai_conversation_content_guarded_update();
 
--- ai_conversation_provider_state: state payload/lifecycle mutable; lineage,
--- credential PROVENANCE (§19.3) and the seed version binding are frozen.
+-- ai_conversation_provider_state: lineage, credential PROVENANCE (§19.3) and
+-- the seed version binding are frozen. Lifecycle is RATCHETED (LAW 9/§11):
+-- the taint NEVER clears (not by time, not by hand — clearing is a
+-- reconcile-or-rotate decision that mints a NEW row); status moves only
+-- active → superseded (a superseded provider object is "historical cleanup
+-- state, not a reusable current anchor"); a superseded row's encrypted
+-- payload + KMS binding freeze. An ACTIVE row's payload stays replaceable —
+-- that is §11's captureProviderState delta.
 CREATE OR REPLACE FUNCTION govai.ai_conversation_provider_state_guarded_update() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
@@ -736,6 +1001,25 @@ BEGIN
     AND NEW.seeded_at_causal_version IS NOT DISTINCT FROM OLD.seeded_at_causal_version
     AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
   THEN
+    IF OLD.tainted AND NOT NEW.tainted THEN
+      RAISE EXCEPTION 'ai_conversation_provider_state: tainted never clears (LAW 9 — reconcile-or-rotate mints a new row)'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NEW.status IS DISTINCT FROM OLD.status
+      AND NOT (OLD.status = 'active' AND NEW.status = 'superseded')
+    THEN
+      RAISE EXCEPTION 'ai_conversation_provider_state: status is monotonic — active -> superseded only'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF OLD.status = 'superseded'
+      AND (NEW.state_ciphertext IS DISTINCT FROM OLD.state_ciphertext
+        OR NEW.state_dek_wrapped IS DISTINCT FROM OLD.state_dek_wrapped
+        OR NEW.kms_key_id IS DISTINCT FROM OLD.kms_key_id
+        OR NEW.kms_key_version IS DISTINCT FROM OLD.kms_key_version)
+    THEN
+      RAISE EXCEPTION 'ai_conversation_provider_state: a superseded row is historical cleanup state — its payload and key binding are frozen'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
     RETURN NEW;
   END IF;
   RAISE EXCEPTION 'ai_conversation_provider_state lineage/provenance/seed-version columns are immutable'
