@@ -1082,7 +1082,18 @@ active turns, and provider cleanup must not lose its tracking data:
    CAS that ROTATES the claim token in the same commit — the merely-stalled owner then loses
    its boundary CAS and can never POST (safe precisely because pre-boundary means provably no
    POST exists yet, the same proof §7.7's pre-boundary re-drive relies on).
-   Purge WAITS until every turn on the conversation is terminal.
+   Purge WAITS until every turn on the conversation is terminal — where, FOR DELETION ONLY, a
+   lease-lapsed `outcome_unknown` attempt counts as DELETION-SETTLED: it is queue-terminal
+   (§7.4); no re-drive is possible under the deletion fencing (claims and boundaries both
+   exclude the conversation); the probe-upgrade path is SUPERSEDED by deletion — where a
+   provider probe exists, this step MAY run one bounded probe and record its outcome before
+   settling, but Anthropic-style providers have none (§8) and settlement must not depend on
+   one; and any LATE provider identifier still reaches cleanup through the post-purge-writable
+   disposal ledger (§7.7). "Deletion-settled" is a PURGE-GATE judgment, NOT a state
+   transition — the attempt row keeps `outcome_unknown` (§7.6's ratchet rules are untouched)
+   and is purged in step 4 like every other row. Without this, a single crashed post-boundary
+   attempt on a probe-less provider would leave the conversation permanently
+   `deleted_pending`.
 3. Provider-side cleanup then runs as a DURABLE scheduled step with recorded outcomes and
    retries — honoring §11's terminal-evidence rule: an aborted request's provider-side mutation
    may still land late, so cleanup of provider-stored objects is re-runnable, not
@@ -1293,7 +1304,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | STREAM CRASH | n/a | (3) | fenced item writes stop; lease lapses | prefix marked partial | taint per §11 | worker | §7.7 ratchet | `outcome_unknown` | partial prefix | partial, labeled |
 | LATE RECOVERY | n/a | (2)→(3) — RECOVERY_ADVANCE_SERIALIZATION | probe upgrade CAS under branch authority | LAW 3 advance check, serialized | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
 | QUEUE WAKE | root still eligible (LAW 10) | claim CAS at (3); boundary commit (1-share)→(2)→(3) (LAW 16 — root KEY SHARE serializes vs §19.1's root FOR UPDATE; reading the (2) predicate without holding it would not serialize against a concurrent eligibility update) | claim CAS on unclaimed head (the CLAIM commit); boundary validates the held token | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
-| DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery + §19.2 stop-ratchet for claimed pre-boundary attempts | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
+| DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery + §19.2 stop-ratchet for claimed pre-boundary attempts; lease-lapsed `outcome_unknown` counts deletion-settled (gate judgment, not a transition) | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
 | PROVIDER CLEANUP | deleted or superseded state | (1)→(3) fresh txn | durable job outcomes/retries | n/a | provider deletion recorded, never assumed | worker | re-runnable | job terminal | outcome recorded | provider-deletion outcome shown |
 | ORPHAN CLEANUP | n/a | (3) ledger rows (lifecycle-independent, post-purge writable) | opaque job id; owner context first | n/a | orphan object deleted | worker | keyset re-discovery | job terminal | ledger row | n/a (background) |
 
