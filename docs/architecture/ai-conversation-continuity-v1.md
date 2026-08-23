@@ -289,7 +289,15 @@ Normative rules:
    turn's CURRENT attempt contributes, AND the attempt must not carry the `context_excluded`
    marker (§7.8): a turn's context contribution is exactly its turn-owned user items plus its
    `current_attempt_id` attempt's completed, non-excluded output. A superseded attempt is NEVER
-   context, however completed it is.
+   context, however completed it is. **FORK-PIN EXEMPTION (the filters are branch-scoped):**
+   currency and `context_excluded` are judgments about an attempt's standing on ITS OWN branch.
+   On a fork CHILD, the §3 pin is itself the explicit selection, so at the fork boundary the
+   PINNED attempt's completed output is context-eligible FOR THE CHILD (per its declared
+   boundary mode) even if, on the parent branch, that attempt is superseded or
+   `context_excluded`. The exemption is exactly ONE attempt wide: every other prefix ancestor
+   is still evaluated under this rule on its own branch, and the pinned attempt remains
+   excluded from its ORIGINAL branch's context. Without this, §7.8's prescribed recovery fork
+   could pin an attempt whose output no strategy would ever replay.
 6. Transitions are total, and ratchets are PER-ATTEMPT: every state names its successors and its
    inverse-or-ratchet (`completed/stopped/failed/rejected` are ratchets; `outcome_unknown` may
    resolve once to `completed`/`failed` by a recovery probe, never the reverse). A terminal
@@ -433,7 +441,9 @@ Normative rules:
      answer is TRANSCRIPT-ONLY on that branch: visible to the user, honestly labeled, never
      context (§7.5). Continuing WITH the recovered answer is an explicit FORK pinned to the
      recovered completed attempt (§3 — fork requires `completed`, which it now is); the fork's
-     child branch is where that causal line lives.
+     child branch is where that causal line lives, and §7.5's fork-pin exemption is what makes
+     the fork EFFECTIVE — the pinned recovered output IS context on the child while remaining
+     excluded from the original branch.
    No retroactive context insertion after branch advance — the branch's context history only
    ever moves forward.
 
@@ -785,7 +795,10 @@ Cross-adapter rules:
   Anthropic state (§17).
 - **Continuation roots in CONTEXT-ELIGIBLE attempts only** (§7.5/§7.8): every strategy derives
   its next-dispatch continuation — the stateless replay projection, the chaining anchor, the
-  rotation seed — from attempts that are completed, current AND not `context_excluded`, so the
+  rotation seed — from attempts that are completed, current AND not `context_excluded`, each
+  filter evaluated per branch under §7.5 INCLUDING its fork-pin exemption (on a fork child the
+  pinned attempt is a valid continuation root at the boundary even when superseded or
+  `context_excluded` on the parent branch), so the
   provider continuation domain and the durable replay domain are causally rooted in the same
   boundary by construction (the mechanism behind BRANCH_CAUSAL_CONTEXT_MONOTONICITY's
   pre-advance restoration being safe).
@@ -1077,7 +1090,8 @@ normative above; LAW 16 is introduced here.
 - **LAW 2 — TURN OWNS INPUT; ATTEMPT OWNS OUTPUT.** User/input items are turn-owned and
   immutable from the reservation commit; assistant/tool output is attempt-owned; retries mint
   NEW attempts and never mutate a completed one; only the current, non-excluded attempt
-  contributes output. (§3, §7.5, §7.6)
+  contributes output (both filters branch-scoped — a fork child includes its pinned attempt at
+  the boundary, §7.5 fork-pin exemption). (§3, §7.5, §7.6)
 - **LAW 3 — BRANCH CAUSALITY IS MONOTONIC.** BRANCH_CAUSAL_CONTEXT_MONOTONICITY: after the
   branch advanced past an ambiguous ancestor, late recovery is transcript-only
   (`context_excluded`); continuation with the recovered result is an explicit fork;
