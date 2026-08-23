@@ -69,9 +69,9 @@ recorded grant — not a relaxation of the default.)
 
 | Entity | Table (target) | Purpose |
 |---|---|---|
-| Conversation | `govai.ai_conversations` | Root container: org/owner scope, provider+surface+model defaults, title (encrypted), status (`active\|archived\|deleted_pending\|deleted`), `project_id uuid NULL` (future, §16), `workroom_id uuid NULL` (optional attribution, §4), retention class, timestamps |
+| Conversation | `govai.ai_conversations` | Root container: org/owner scope, provider+surface+model defaults, the IMMUTABLE execution `mode` (`governed`\|`passthrough`, fixed at creation — a detached wake/sweep dispatch and a post-reload resume must choose the pipeline from durable state alone, §9; without it a governed conversation could replay through the passthrough route), title (encrypted), status (`active\|archived\|deleted_pending\|deleted`), `project_id uuid NULL` (future, §16), `workroom_id uuid NULL` (optional attribution, §4), retention class, timestamps |
 | Branch | `govai.ai_conversation_branches` | A named line of turns, and the DURABLE owner of execution identity: each branch carries its own `provider + surface + model` (copied from the conversation defaults at root-branch creation; supplied by the fork operation for provider/model switches). Adapter selection reads the BRANCH, never the conversation root — a cross-provider fork must be replayable after reload with no in-memory hint and possibly no provider_state yet. Every conversation has one root branch; fork creates a new branch with `parent_branch_id` + `forked_from_turn_id`/`forked_from_attempt_id`. Cross-provider continuation is ALWAYS a new branch (§17) |
-| Turn | `govai.ai_conversation_turns` | One user send on a branch: `(org_id, conversation_id, client_turn_id)` unique (§8), per-branch `turn_seq` (advisory-lock + `MAX+1` + UNIQUE backstop, the technique of `workroom-transcript.ts:127-136` — technique reuse, not table reuse), `current_attempt_id` (lineage-bound, §3). The turn carries NO authoritative lifecycle state: its state is a DERIVED PROJECTION of its current attempt's state — retry could not otherwise keep attempt N's terminal ratchet immutable while N+1 independently becomes `accepted` |
+| Turn | `govai.ai_conversation_turns` | One user send on a branch: `(org_id, conversation_id, client_turn_id)` unique (§8), per-branch `turn_seq` (advisory-lock + `MAX+1` + UNIQUE backstop, the technique of `workroom-transcript.ts:127-136` — technique reuse, not table reuse), `current_attempt_id` (lineage-bound, §3). The turn ALSO owns the IMMUTABLE NATIVE REQUEST CONFIG — the provider-native request fragment accepted at send (the §13 body: tools, tool choice, limits, sampling and the like), persisted IN THE RESERVATION TRANSACTION and immutable from that commit exactly like the user items (LAW 2 — input is turn-owned; stored under the §6 encryption class where sensitive). It exists because a detached wake/sweep claimant must reconstruct the POST from durable state ALONE and the §8 intent hash cannot recover parameters; retry attempt N+1 reuses the SAME turn config (same immutable input). The turn carries NO authoritative lifecycle state: its state is a DERIVED PROJECTION of its current attempt's state — retry could not otherwise keep attempt N's terminal ratchet immutable while N+1 independently becomes `accepted` |
 | Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`) — and THE AUTHORITATIVE HOME of execution lifecycle: the §7 state machine's `state`, the claim `{claim_token, claimant, deadline, heartbeat}`, the durable stop-request flag, the causal-version-at-build, `govai_request_id` (§14), the RESOLVED DISPATCH CREDENTIAL (`provider_credential_id`, persisted in a fenced attempt-row write at credential resolution BEFORE any POST — recovery probes and late upgrades must know which provider account owns any resulting object, §19.3 provenance), and the provider CONTINUATION ANCHOR it chained from (e.g. `continuation_parent_response_id`, §11 retry mechanics). Per-attempt authority is what §7.6's ratchets REQUIRE: attempt N's terminal state is immutable while N+1 independently runs its own lifecycle — one authoritative state per attempt, never two divergent copies. The TURN carries the `current_attempt_id` pointer — the atomic eligibility handoff of §7.6: at most the CURRENT attempt's completed output is context-eligible; prior attempts stay immutable and visible but never contribute |
 | Provider-native Item | `govai.ai_conversation_items` | Ordered typed items with an explicit OWNER discriminator: USER/INPUT items are TURN-owned (`attempt_id` NULL — they are committed at the §7.1 reservation, before any attempt exists, and survive every retry), while assistant/tool OUTPUT items are ATTEMPT-owned. Both owners are reached through the same composite lineage chain. Provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12); content encrypted (§6) |
 | Attachment | `govai.ai_conversation_attachments` | File references (GovAI-stored bytes or provider `file_id` refs). V1 design carries the entity; upload flows land in a later wave |
@@ -473,7 +473,12 @@ Normative rules:
    its boundary commit, leaving a stale request that contradicts the probe-wins outcome. Every
    branch therefore carries a monotonic `causal_version`, bumped by EVERY eligibility-changing
    commit (probe upgrades, eligibility handoffs, `context_excluded` markings); the runner
-   records the version its context was built at, and the dispatch-boundary CAS carries
+   records the version its context was built at — SAMPLED BEFORE THE FIRST PROJECTION READ
+   (or version + projection taken inside one consistent snapshot): under ordinary
+   READ COMMITTED multi-statement reads, sampling the version AFTER the projection can record
+   a version bumped MID-build and pass the CAS with a torn payload (items read at N, a probe
+   commits N+1 mid-build, the builder then records N+1); version-FIRST makes any mid-build
+   eligibility commit fail the CAS instead — and the dispatch-boundary CAS carries
    `causal_version = <as-built>` as one more predicate — a stale build loses the CAS before
    any POST (boundary-before-POST, §7.7) and simply rebuilds. The probe's decision branches:
    - **Branch NOT advanced** (no later turn on the branch has crossed its dispatch boundary
@@ -601,7 +606,8 @@ Normative rules:
 
 The durable-turn runner is a server-side component (apps/api) that:
 
-1. commits the reservation + user items + the INITIAL ATTEMPT ROW, with `current_attempt_id`
+1. commits the reservation + user items + the immutable native request config (§3/§13) + the
+   INITIAL ATTEMPT ROW, with `current_attempt_id`
    set, in ONE transaction — a turn NEVER exists without an attempt, because every control and
    recovery surface is attempt-scoped: §13's Stop names an `attemptId`, §19's deletion
    stop-requests non-terminal ATTEMPTS, and the §9 worker holds SELECT/UPDATE (not INSERT) on
@@ -619,7 +625,8 @@ The durable-turn runner is a server-side component (apps/api) that:
    wake or sweep) — the remaining steps belong to THE CLAIMANT, not necessarily the reserving
    request, and no context construction happens before a claim is held;
 3. builds the provider request via the adapter (§11) from durable context — not from browser
-   memory — recording the as-built `causal_version` (§7.8);
+   memory — recording the as-built `causal_version`, sampled before the first projection read
+   (§7.8);
 4. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on the step-2 claim token —
    losing the CAS means another claimant owns the turn: abort with no POST — minting and
    persisting the attempt's `govai_request_id` IN THIS COMMIT (§14.1's ONE authoritative mint
@@ -629,7 +636,8 @@ The durable-turn runner is a server-side component (apps/api) that:
    sweep/wake-driven workers pass the ingress identity hook), and only THEN
    dispatches to the SAME provider-native pipeline the direct routes use (credential resolution,
    DLP, tool classifier, beta policy, capture — unchanged semantics; the governed/passthrough
-   distinction is carried per conversation mode); boundary-before-POST plus the fenced CAS is
+   distinction is carried by the conversation's durable immutable `mode` column (§3), read at
+   hydration and at EVERY dispatch, request-driven or detached); boundary-before-POST plus the fenced CAS is
    what makes §7.7's stranded-turn recovery at-most-one-POST safe;
 5. owns the SSE pump to terminal (the `provider-stream-http` primitives —
    `pumpStreamWithTerminalEmit` — are the template), persisting items incrementally and the
