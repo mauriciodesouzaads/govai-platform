@@ -304,8 +304,8 @@ Normative rules:
    ATTEMPT is never mutated — but the TURN's displayed state is DERIVED from its CURRENT attempt (state lives authoritatively on the attempt, §3),
    and **retry/regenerate is a defined operation, not an illegal un-ratchet**: it mints attempt
    N+1 on the same turn (same `client_turn_id` reservation, fresh `govai_request_id`), returning
-   the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard three-commit
-   flow. Minting N+1 is an ATOMIC ELIGIBILITY HANDOFF: the same commit repoints the turn's
+   the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard four-commit
+   flow (§8). Minting N+1 is an ATOMIC ELIGIBILITY HANDOFF: the same commit repoints the turn's
    `current_attempt_id` to N+1, so attempt N's completed output leaves the context domain
    immediately — without mutating attempt N's ratcheted rows — and N+1's request context is
    built from the earlier turns plus THIS turn's user items only, never any prior attempt's
@@ -507,17 +507,24 @@ Normative rules:
   terminal record, the attempt resolves to `outcome_unknown` (§7); a bounded recovery probe (via
   provider-side state where it exists: OpenAI `GET /v1/responses/:id`; else none) may upgrade it.
 - Provider dispatch NEVER occurs inside a long DB transaction — the P0.3-A durable-dispatch
-  boundary law (0029), as a three-commit protocol: reserve-commit (`accepted`) →
-  dispatch-boundary commit (`dispatching`, claim + deadline, BEFORE any provider POST) →
-  provider POST → finalize-commit (terminal state). Each inter-commit crash window has the
-  defined recovery of §7.7.
+  boundary law (0029), extended here to a FOUR-commit protocol because reservations are born
+  UNCLAIMED (§7.7/§8): reserve-commit (`accepted`, no claim) → CLAIM commit (the head-of-queue
+  claim CAS on the unclaimed head, minting `{claim_token, claimant, deadline}` — the §8
+  pickup, whether performed by the creating request at head, a terminal-transition wake, or
+  the sweep) → context construction OUTSIDE any lock (recording the as-built `causal_version`,
+  §7.8) → dispatch-boundary commit (`dispatching`, BEFORE any provider POST) → provider POST →
+  finalize-commit (terminal state). The boundary commit VALIDATES the ALREADY-HELD
+  `claim_token` (plus the `causal_version` predicate); it never mints the claim — collapsing
+  claim and boundary into one commit would leave the boundary CAS no previously owned token to
+  fence, and §7.7's fenced writes all presuppose `claim_token = <mine>` from before the
+  boundary. Each inter-commit crash window has the defined recovery of §7.7.
 - **Terminalization WAKES the queue — a queued turn never waits for luck.** A turn that loses
   the branch-order predicate is reserved durably and returned to its sender as queued, but no
   one would otherwise drive it: the design therefore defines the dequeue mechanism explicitly.
   (1) In-process: whichever runner commits ANY terminal transition on a branch (finalize,
   rejection, stop, or a recovery ratchet) immediately attempts a normal claim CAS on the
-  branch's next `accepted` turn and, on success, drives it through the standard three-commit
-  flow. (2) Cross-process / crash: the periodic recovery sweep claims any UNCLAIMED `accepted`
+  branch's next `accepted` turn — that claim CAS IS the four-commit protocol's CLAIM commit —
+  and, on success, drives the remaining commits (context build → boundary → POST → finalize). (2) Cross-process / crash: the periodic recovery sweep claims any UNCLAIMED `accepted`
   turn standing at the head of its branch (no earlier non-terminal turn) — head-of-queue
   pickup is NOT deadline-gated; deadlines govern only the RE-claiming of already-claimed turns
   (§7.7). Claim lifecycle stated plainly: a reservation is born unclaimed; its creating request
@@ -1154,7 +1161,9 @@ normative above; LAW 16 is introduced here.
   advance-absence predicate and the boundary crossing may never race.** Sweep:
   SEND/RETRY/FORK take (1)→(2)→(3); DELETE takes (1), then per-turn (3) via the Stop flags
   (no branch authority needed — it stops, never dispatches); STOP touches only (3);
-  QUEUE WAKE claims at (3) after taking (2) for its boundary commit; LATE RECOVERY that may
+  QUEUE WAKE's claim CAS is (3)-only (claiming changes no
+  context eligibility), and its dispatch-boundary commit takes (2)→(3) — EVERY
+  dispatch-boundary commit holds the branch execution authority, wake-driven or not; LATE RECOVERY that may
   change context eligibility takes (2)→(3); lease-lapse ratchets that CANNOT change
   eligibility (to `outcome_unknown`) remain (3)-only; CLEANUP/purge re-enters at (1) then (3)
   in a fresh transaction. A future flow that cannot fit this order must document its safe
@@ -1189,7 +1198,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | CRASH POST-BOUNDARY | n/a | (3) | fenced finalize loses; ledger append allowed | not eligible | §11 taint/rotation | worker | probe or ratchet | `outcome_unknown` | orphan ledger | honest ambiguity |
 | STREAM CRASH | n/a | (3) | fenced item writes stop; lease lapses | prefix marked partial | taint per §11 | worker | §7.7 ratchet | `outcome_unknown` | partial prefix | partial, labeled |
 | LATE RECOVERY | n/a | (2)→(3) — RECOVERY_ADVANCE_SERIALIZATION | probe upgrade CAS under branch authority | LAW 3 advance check, serialized | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
-| QUEUE WAKE | root still eligible (LAW 10) | (3), reads (2) predicate | claim CAS unclaimed head | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
+| QUEUE WAKE | root still eligible (LAW 10) | claim CAS at (3); boundary commit (2)→(3) (LAW 16 — reading the (2) predicate without holding it would not serialize against a concurrent eligibility update) | claim CAS on unclaimed head (the CLAIM commit); boundary validates the held token | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
 | DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
 | PROVIDER CLEANUP | deleted or superseded state | (1)→(3) fresh txn | durable job outcomes/retries | n/a | provider deletion recorded, never assumed | worker | re-runnable | job terminal | outcome recorded | provider-deletion outcome shown |
 | ORPHAN CLEANUP | n/a | (3) ledger rows (lifecycle-independent, post-purge writable) | opaque job id; owner context first | n/a | orphan object deleted | worker | keyset re-discovery | job terminal | ledger row | n/a (background) |
