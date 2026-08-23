@@ -32,7 +32,7 @@
       "tests"
     ],
     "api_route_files": 19,
-    "db_migrations": 29
+    "db_migrations": 30
   },
   "tests": {
     "root_unit": {

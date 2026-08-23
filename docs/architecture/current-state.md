@@ -50,7 +50,7 @@ is one collected test module.
 | Workspace packages | `packages/*` | 13 |
 | Other workspace members | literal entries in `pnpm-workspace.yaml` | `scripts`, `tests` |
 | API route files | `apps/api/src/routes/*.ts` | 19 |
-| DB migrations | `apps/api/src/db/migrations/*.sql` | 29 |
+| DB migrations | `apps/api/src/db/migrations/*.sql` | 30 |
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
