@@ -648,21 +648,26 @@ The durable-turn runner is a server-side component (apps/api) that:
    3–6 run later under WHICHEVER claimant wins the head-of-queue pickup (terminal-transition
    wake or sweep) — the remaining steps belong to THE CLAIMANT, not necessarily the reserving
    request, and no context construction happens before a claim is held;
-3. builds the provider request via the adapter (§11) from durable context — not from browser
+3. RESOLVES the active credential FIRST and runs §11's CREDENTIAL-ANCHOR RECONCILIATION —
+   a provenance mismatch rotates/reseeds provider state from the durable projection BEFORE
+   anything is built — and only then builds the provider request via the adapter (§11) from
+   durable context — not from browser
    memory — recording the as-built `causal_version`, sampled before the first projection read
-   (§7.8);
+   (§7.8). The resolved credential is an INPUT to request construction, so a mismatch can
+   never strand an already-built request;
 4. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on the step-2 claim token —
    losing the CAS means another claimant owns the turn: abort with no POST — minting and
    persisting the attempt's `govai_request_id` IN THIS COMMIT (§14.1's ONE authoritative mint
    site — never at claim time) and then ENTERING the identity scope itself
    (§14.1: the runner constructs the `AuditBridgeRequestIdentity` and wraps the pipeline call
    in `requestIdentityAls.run()`, because neither `/v1/ai/*` requests nor detached
-   sweep/wake-driven workers pass the ingress identity hook), then RESOLVES THE CREDENTIAL AND
-   PERSISTS ITS PROVENANCE BEFORE FORWARDING — credential resolution is SPLIT from the
-   forward: the resolver must surface the credential ROW ID alongside the decrypt material
+   sweep/wake-driven workers pass the ingress identity hook), then PERSISTS THE PROVENANCE OF
+   THE STEP-3-RESOLVED CREDENTIAL BEFORE FORWARDING — resolution already happened BEFORE the
+   build (step 3), and it is SPLIT from the forward: the resolver must surface the credential
+   ROW ID alongside the decrypt material
    (the current resolver returns ciphertext only, `provider-credentials.ts:130-135`; the
-   implementation mission extends its return rather than guessing), and the runner commits the
-   resolved `provider_credential_id` onto the attempt row in a §7.7 FENCED incremental write
+   implementation mission extends its return rather than guessing), and the runner commits that
+   `provider_credential_id` onto the attempt row in a §7.7 FENCED incremental write
    (`claim_token = <mine> AND state = 'dispatching'`) — the §8 protocol's FOURTH commit, a
    SEPARATE transaction inside the `dispatching` window (never hold the boundary transaction
    open across credential resolution) — BEFORE any provider POST
@@ -933,7 +938,9 @@ Cross-adapter rules:
   the active credential. Dispatching under the HISTORICAL credential instead is rejected as a
   design option: it may already be revoked, and continuing execution under a superseded
   account contradicts active-credential dispatch. Stateless-replay branches (Anthropic) carry
-  no anchor and are unaffected.
+  no anchor and are unaffected. The reconciliation runs BEFORE request construction (§9
+  step 3) — the resolved credential is an INPUT to the build, never a post-build check, so a
+  mismatch can never strand an already-built request holding a stale account-scoped anchor.
 - **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
   case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
   conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a
