@@ -76,7 +76,7 @@ recorded grant — not a relaxation of the default.)
 | Provider-native Item | `govai.ai_conversation_items` | Ordered typed items with an explicit OWNER discriminator: USER/INPUT items are TURN-owned (`attempt_id` NULL — they are committed at the §7.1 reservation, before any attempt exists, and survive every retry), while assistant/tool OUTPUT items are ATTEMPT-owned. Both owners are reached through the same composite lineage chain. Provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12); content encrypted (§6) |
 | Attachment | `govai.ai_conversation_attachments` | File references (GovAI-stored bytes or provider `file_id` refs). V1 design carries the entity; upload flows land in a later wave |
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
-| Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque. Each row also records its IMMUTABLE CREDENTIAL PROVENANCE — the org-composite `(org_id, provider_credential_id)` (LAW 1 shape, FK to the `(org_id, id)` unique key — see the Attempt row) whose key created the provider object — because provider objects are account-scoped: after a credential rotation that moves the org to a DIFFERENT provider project/account, deletion via the currently-active credential would authenticate against the wrong account and silently fail (§19) |
+| Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque. Each row records `seeded_at_causal_version` — the branch causal version sampled at the top of the §9 step-3 build that seeded/rotated it (the staleness binding: after a boundary-version failure the rebuild treats a row seeded at an older version as stale and reseeds, §11) — and also records its IMMUTABLE CREDENTIAL PROVENANCE — the org-composite `(org_id, provider_credential_id)` (LAW 1 shape, FK to the `(org_id, id)` unique key — see the Attempt row) whose key created the provider object — because provider objects are account-scoped: after a credential rotation that moves the org to a DIFFERENT provider project/account, deletion via the currently-active credential would authenticate against the wrong account and silently fail (§19) |
 | Evidence Link | `govai.ai_conversation_evidence_links` | Additive projection turn/attempt → `{govai_request_id, capture_id, audit_event_id?}` (§14). Never mutates audit tables |
 | Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7), must survive purge until cleanup consumes them (§19), and are the SOLE admissible §19 step-4 handoff target for provider-cleanup obligations still pending at purge time (transcribed in the same transaction as the purge). Every ledger row likewise carries the object's immutable credential provenance (the org-composite `(org_id, provider_credential_id)`, FK per the Attempt row — here it additionally RESTRICTs any credential hard-delete while a pending disposal row references it, since the ledger outlives its conversation; sourced per producer: the §19 step-4 transcription copies it from `provider_state`; a fenced zombie's late append (§7.7) and worker-side recovery enqueues supply the credential ACTUALLY used for the POST, from the appender's dispatch context or the attempt row's recorded dispatch credential) so cleanup can resolve the HISTORICAL credential that owns the object. The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
 | Content blob | `govai.ai_conversation_content` | Envelope-encrypted payload store owned by THIS domain (§6) — deliberately not `audit_event_payloads` |
@@ -648,12 +648,18 @@ The durable-turn runner is a server-side component (apps/api) that:
    3–6 run later under WHICHEVER claimant wins the head-of-queue pickup (terminal-transition
    wake or sweep) — the remaining steps belong to THE CLAIMANT, not necessarily the reserving
    request, and no context construction happens before a claim is held;
-3. RESOLVES the active credential FIRST and runs §11's CREDENTIAL-ANCHOR RECONCILIATION —
-   a provenance mismatch rotates/reseeds provider state from the durable projection BEFORE
-   anything is built — and only then builds the provider request via the adapter (§11) from
-   durable context — not from browser
-   memory — recording the as-built `causal_version`, sampled before the first projection read
-   (§7.8). The resolved credential is an INPUT to request construction, so a mismatch can
+3. BEGINS by sampling the branch `causal_version` (§7.8 version-first — the sample precedes
+   EVERYTHING in this step, reconciliation included), then RESOLVES the active credential and
+   runs §11's CREDENTIAL-ANCHOR RECONCILIATION — a provenance mismatch rotates/reseeds
+   provider state from the durable projection, and any reseed records the SAMPLED version on
+   the new state row (`seeded_at_causal_version`, §3) — and only then builds the provider
+   request via the adapter (§11) from durable context — not from browser memory — as the
+   as-built `causal_version`. On a boundary-version failure the WHOLE step re-runs from the
+   sample, and an anchor whose `seeded_at_causal_version` differs from the fresh sample is
+   itself STALE — its seed may omit output restored by the very commit that bumped the
+   version — and is rotated/reseeded again: seed staleness is detected by the VERSION BINDING,
+   never by credential mismatch (a first reseed already carries active provenance). The
+   resolved credential is an INPUT to request construction, so a mismatch can
    never strand an already-built request;
 4. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on the step-2 claim token —
    losing the CAS means another claimant owns the turn: abort with no POST — minting and
@@ -941,6 +947,11 @@ Cross-adapter rules:
   no anchor and are unaffected. The reconciliation runs BEFORE request construction (§9
   step 3) — the resolved credential is an INPUT to the build, never a post-build check, so a
   mismatch can never strand an already-built request holding a stale account-scoped anchor.
+  Reseeds are VERSION-BOUND: the new state row records the `causal_version` sampled at the
+  top of the build (`seeded_at_causal_version`, §3); after a boundary-version failure the
+  rebuild re-runs reconciliation and treats any anchor seeded at an OLDER version as stale —
+  closing the race where a probe restores an attempt after the reseed and the second build
+  would otherwise reuse a seed missing the restored output.
 - **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
   case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
   conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a
