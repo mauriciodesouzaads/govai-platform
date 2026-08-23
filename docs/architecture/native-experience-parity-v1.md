@@ -205,8 +205,9 @@ two-axis discipline as `h1v2-coverage-map.md`.
 Provable at the anchor (full detail in the recovery evidence archive, working files outside the
 repo):
 
-- **A. Route-less provider families** — the MISSING rows of §4.1/§4.2 (28 OpenAI-side + 11
-  Anthropic-side families with zero GovAI route, incl. the continuity-critical OpenAI
+- **A. Route-less provider families** — the MISSING rows of §4.1/§4.2 (manifest-derived at
+  this snapshot: OPENAI_API 18 MISSING rows across 9 families; ANTHROPIC_API 8 MISSING rows
+  across 4 families — zero GovAI route, incl. the continuity-critical OpenAI
   Conversations/response-storage/background family).
 - **B. Registered-but-unproven** — OpenAI embeddings, vector stores, model delete: reachable in
   production with no dedicated tests and no live record.
