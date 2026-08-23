@@ -344,7 +344,17 @@ Normative rules:
      lease is UNEXPIRED AND no Stop has been durably requested
      (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ? AND deadline >
      now() AND stop_requested = false`, plus §8's branch-order predicate — no earlier
-     non-terminal turn on the branch). The `stop_requested` predicate exists because a Stop
+     non-terminal turn on the branch — plus an EXECUTION-ELIGIBLE ROOT predicate: the boundary
+     transaction FIRST takes the conversation root row in `FOR KEY SHARE` (LAW 16 level (1),
+     honoring the lock order) and validates the root is execution-eligible (not
+     `deleted_pending`/`deleted`, LAW 10). The share lock is what makes this RIGOROUS, not
+     merely probabilistic: it CONFLICTS with §19 step 1's root `FOR UPDATE`, so either the
+     boundary commits first (its attempt is then non-terminal and step 2's stop-and-wait
+     fencing covers it), or the `deleted_pending` transition commits first and the boundary's
+     predicate sees it and aborts — a stop flag alone cannot close this, because step 2 sets
+     flags per-attempt AFTER step 1 commits, and a mid-context-build attempt could otherwise
+     pass both the CAS and the pre-POST stop reread inside that gap and POST after deletion
+     fencing began. The `stop_requested` predicate exists because a Stop
      committed during context construction (post-claim, pre-boundary) has ONLY the durable
      flag as its authority — the wake notification can be delayed or lost, and the
      flag-reading heartbeat timer does not start until the boundary commits — so the boundary
@@ -358,8 +368,9 @@ Normative rules:
      the CAS would commit `dispatching`, the rule-(1) pre-POST lease check below would then
      abort with NO POST ever sent, and recovery would ratchet a provably-undispatched attempt
      to `outcome_unknown`; failing the CAS instead leaves the attempt `accepted` and
-     ordinarily reclaimable. Zero rows updated =
-     fenced out, lease-expired, stop-requested, or not yet at the head of the branch queue:
+     ordinarily reclaimable. Zero rows updated (or a failed root predicate) =
+     fenced out, lease-expired, stop-requested, root no longer execution-eligible, or not yet
+     at the head of the branch queue:
      abort without dispatching (reading the row under the still-held claim tells the claimant
      which — and the stop case finalizes `stopped` as above).
    - Re-claiming a past-deadline `accepted` turn (by the recovery sweep or by the next duplicate
@@ -1054,7 +1065,11 @@ active turns, and provider cleanup must not lose its tracking data:
    transition closes the conversation to new work:
    the control plane rejects sends/retries/forks/re-attaches, and the claim CAS predicates
    (§7.7/§8) exclude `deleted_pending` conversations, so no new claim and no queue pickup can
-   start after the commit.
+   start after the commit. The DISPATCH BOUNDARY is serialized against this transition too:
+   every boundary commit holds the root in `FOR KEY SHARE` with an execution-eligibility
+   predicate (§7.7), which conflicts with this step's root `FOR UPDATE` — after this
+   transition commits, no new provider POST can begin anywhere in the conversation;
+   already-post-boundary attempts remain covered by step 2's stop-and-wait fencing.
 2. Every non-terminal attempt is stop-requested via the durable §13 Stop machinery (flag +
    active wake); owning runners observe within a heartbeat interval and finalize under the
    fenced finalize; a dead owner's POST-boundary turn resolves through the ordinary
@@ -1240,8 +1255,9 @@ normative above; LAW 16 is introduced here.
   SEND/RETRY/FORK take (1)→(2)→(3); DELETE takes (1), then per-turn (3) via the Stop flags
   (no branch authority needed — it stops, never dispatches); STOP touches only (3);
   QUEUE WAKE's claim CAS is (3)-only (claiming changes no
-  context eligibility), and its dispatch-boundary commit takes (2)→(3) — EVERY
-  dispatch-boundary commit holds the branch execution authority, wake-driven or not; LATE RECOVERY that may
+  context eligibility), and its dispatch-boundary commit takes (1-share)→(2)→(3) — EVERY
+  dispatch-boundary commit holds the root in KEY SHARE (execution-eligibility, §7.7) and the
+  branch execution authority, wake-driven or not; LATE RECOVERY that may
   change context eligibility takes (2)→(3); lease-lapse ratchets that CANNOT change
   eligibility (to `outcome_unknown`) remain (3)-only; CLEANUP/purge re-enters at (1) then (3)
   in a fresh transaction. A future flow that cannot fit this order must document its safe
@@ -1276,7 +1292,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | CRASH POST-BOUNDARY | n/a | (3) | fenced finalize loses; ledger append allowed | not eligible | §11 taint/rotation | worker | probe or ratchet | `outcome_unknown` | orphan ledger | honest ambiguity |
 | STREAM CRASH | n/a | (3) | fenced item writes stop; lease lapses | prefix marked partial | taint per §11 | worker | §7.7 ratchet | `outcome_unknown` | partial prefix | partial, labeled |
 | LATE RECOVERY | n/a | (2)→(3) — RECOVERY_ADVANCE_SERIALIZATION | probe upgrade CAS under branch authority | LAW 3 advance check, serialized | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
-| QUEUE WAKE | root still eligible (LAW 10) | claim CAS at (3); boundary commit (2)→(3) (LAW 16 — reading the (2) predicate without holding it would not serialize against a concurrent eligibility update) | claim CAS on unclaimed head (the CLAIM commit); boundary validates the held token | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
+| QUEUE WAKE | root still eligible (LAW 10) | claim CAS at (3); boundary commit (1-share)→(2)→(3) (LAW 16 — root KEY SHARE serializes vs §19.1's root FOR UPDATE; reading the (2) predicate without holding it would not serialize against a concurrent eligibility update) | claim CAS on unclaimed head (the CLAIM commit); boundary validates the held token | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
 | DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery + §19.2 stop-ratchet for claimed pre-boundary attempts | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
 | PROVIDER CLEANUP | deleted or superseded state | (1)→(3) fresh txn | durable job outcomes/retries | n/a | provider deletion recorded, never assumed | worker | re-runnable | job terminal | outcome recorded | provider-deletion outcome shown |
 | ORPHAN CLEANUP | n/a | (3) ledger rows (lifecycle-independent, post-purge writable) | opaque job id; owner context first | n/a | orphan object deleted | worker | keyset re-discovery | job terminal | ledger row | n/a (background) |
