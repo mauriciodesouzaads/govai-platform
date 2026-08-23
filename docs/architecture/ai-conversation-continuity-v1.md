@@ -76,9 +76,9 @@ recorded grant — not a relaxation of the default.)
 | Provider-native Item | `govai.ai_conversation_items` | Ordered typed items with an explicit OWNER discriminator: USER/INPUT items are TURN-owned (`attempt_id` NULL — they are committed at the §7.1 reservation, before any attempt exists, and survive every retry), while assistant/tool OUTPUT items are ATTEMPT-owned. Both owners are reached through the same composite lineage chain. Provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12); content encrypted (§6) |
 | Attachment | `govai.ai_conversation_attachments` | File references (GovAI-stored bytes or provider `file_id` refs). V1 design carries the entity; upload flows land in a later wave |
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
-| Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque |
+| Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque. Each row also records its IMMUTABLE CREDENTIAL PROVENANCE — the `provider_credential_id` (0009 row) whose key created the provider object — because provider objects are account-scoped: after a credential rotation that moves the org to a DIFFERENT provider project/account, deletion via the currently-active credential would authenticate against the wrong account and silently fail (§19) |
 | Evidence Link | `govai.ai_conversation_evidence_links` | Additive projection turn/attempt → `{govai_request_id, capture_id, audit_event_id?}` (§14). Never mutates audit tables |
-| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7), must survive purge until cleanup consumes them (§19), and are the SOLE admissible §19 step-4 handoff target for provider-cleanup obligations still pending at purge time (transcribed in the same transaction as the purge). The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
+| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7), must survive purge until cleanup consumes them (§19), and are the SOLE admissible §19 step-4 handoff target for provider-cleanup obligations still pending at purge time (transcribed in the same transaction as the purge). Every ledger row likewise carries the object's immutable credential provenance (`provider_credential_id`, copied from provider_state at enqueue/transcription) so cleanup can resolve the HISTORICAL credential that owns the object. The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
 | Content blob | `govai.ai_conversation_content` | Envelope-encrypted payload store owned by THIS domain (§6) — deliberately not `audit_event_payloads` |
 
 Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
@@ -683,7 +683,7 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
 
   | Flow | Resource | Privileges | Rationale |
   |---|---|---|---|
-  | Credential resolution | `govai.provider_credentials` | SELECT | tenant-key decrypt path; 0009's org-scoped RLS applies; never outside the entered org context |
+  | Credential resolution | `govai.provider_credentials` | SELECT | tenant-key decrypt path; 0009's org-scoped RLS applies; never outside the entered org context. Dispatch resolves the ACTIVE credential; cleanup resolves BY RECORDED `provider_credential_id` (the historical, possibly-revoked row — §19.3 credential provenance), still under the same org-scoped RLS |
   | Evidence capture | `govai.audit_capture_insert_locked(...)` (+ the bridge's read surface) | EXECUTE | a worker-driven dispatch must capture identically to a request-driven one — never a silent evidence gap |
   | Tenant governance inputs | `govai.org_tier_lookup(...)`; org-scoped governance config the pipeline reads (capability/beta overrides, DLP custom patterns) | EXECUTE / SELECT | governed-lane resolution needs tier/mode + org config; exact object list is TRACED FROM THE PIPELINE at implementation, not guessed |
 
@@ -1048,7 +1048,16 @@ active turns, and provider cleanup must not lose its tracking data:
 3. Provider-side cleanup then runs as a DURABLE scheduled step with recorded outcomes and
    retries — honoring §11's terminal-evidence rule: an aborted request's provider-side mutation
    may still land late, so cleanup of provider-stored objects is re-runnable, not
-   fire-and-forget.
+   fire-and-forget. Cleanup authenticates with the RECORDED credential provenance
+   (`provider_credential_id` on the provider_state/ledger row), NEVER the active-credential
+   lookup the dispatch pipeline uses (`provider-credentials.ts:130-135` selects only the
+   current active `(org_id, provider)` row, while 0009 rotation revokes-and-retains the old
+   row — after a rotation to a different provider project/account, the active credential
+   authenticates against the WRONG account and the original account's content would survive
+   while the outcome read "deleted"). A historical credential that is revoked or no longer
+   usable makes deletion honestly IMPOSSIBLE for that object: the outcome is recorded as
+   failed with its reason (`credential_unavailable`) and surfaced per the truth table —
+   never assumed, never silently skipped.
 4. Row purge is LAST, and only after provider cleanup has COMPLETED — or, for any obligation
    still pending, been handed off to the ONE admissible target: the lifecycle-independent
    disposal ledger (§3). No other handoff target exists BY CONSTRUCTION: any other queue row is
