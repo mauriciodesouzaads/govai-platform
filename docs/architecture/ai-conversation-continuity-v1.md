@@ -310,8 +310,12 @@ Normative rules:
    earlier turn is a REGENERATION FORK from that turn (`before_attempt_output` boundary mode,
    §3), the same semantics reference products ship. At most one non-terminal attempt exists per turn (single-flight applies unchanged), and
    a prior attempt's taint consequences (§11) survive its successor.
-7. **No stranded states, and claimants are FENCED.** `accepted` and `dispatching` each carry a
-   claim — `{claim_token, claimant, deadline}` — and each crash window has a defined recovery
+7. **No stranded states, and claimants are FENCED.** An `accepted` attempt is in exactly one of
+   two claim states: UNCLAIMED (queued — no claim, no deadline; exempt from deadline recovery
+   and driven only by the §8 head-of-queue pickup, which is not deadline-gated) or ACTIVELY
+   CLAIMED — `{claim_token, claimant, deadline}`; `dispatching` and `streaming` are always
+   claimed. Deadline-based recovery applies ONLY to claimed attempts — ordinary queued work can
+   never be misread as stranded — and each crash window has a defined recovery
    (the 0029 dispatch-boundary + `dispatch_token` discipline, applied per turn):
    - The runner's SECOND commit — the dispatch-boundary commit (`accepted → dispatching`) — is
      written BEFORE any provider POST, and it is a CONDITIONAL compare-and-swap: it succeeds
