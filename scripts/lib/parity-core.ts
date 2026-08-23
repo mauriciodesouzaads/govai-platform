@@ -677,6 +677,9 @@ export function validateParityManifestFindings(m: unknown): ParityFinding[] {
     }
     // NOT_APPLICABLE declares "no parity effort applies" — it cannot coexist with any GovAI
     // axis, or the artifact would simultaneously claim implementation and inapplicability.
+    if (cls === 'NOT_APPLICABLE' && !b('provider_exposed')) {
+      push(`${where()}: NOT_APPLICABLE requires provider_exposed=true (a provider-unexposed capability is PROVIDER_NOT_EXPOSED)`);
+    }
     if (cls === 'NOT_APPLICABLE') {
       const govai = [
         'govai_registered',

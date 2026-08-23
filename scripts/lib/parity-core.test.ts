@@ -292,6 +292,15 @@ describe('validateParityManifest', () => {
     expect(validateParityManifest(ok)).toEqual([]);
   });
 
+  it('NOT_APPLICABLE requires provider exposure (else PROVIDER_NOT_EXPOSED)', () => {
+    const m = mkManifest([
+      mkRow({ classification: 'NOT_APPLICABLE', provider_exposed: false, native_route_available: false }),
+    ]);
+    expect(validateParityManifest(m).join('\n')).toContain(
+      'NOT_APPLICABLE requires provider_exposed=true'
+    );
+  });
+
   it('NOT_APPLICABLE rows must carry zero GovAI axes', () => {
     const m = mkManifest([
       mkRow({ classification: 'NOT_APPLICABLE', native_route_available: true, ui_exposed: true }),
