@@ -918,6 +918,22 @@ Cross-adapter rules:
   provider continuation domain and the durable replay domain are causally rooted in the same
   boundary by construction (the mechanism behind BRANCH_CAUSAL_CONTEXT_MONOTONICITY's
   pre-advance restoration being safe).
+- **CREDENTIAL-ANCHOR RECONCILIATION (rotation vs continuation state):** provider-held
+  continuation objects are ACCOUNT-scoped, so before any strategy chains from a
+  `provider_state` anchor (`conversation_id`, `previous_response_id`, thread, session), the
+  dispatch compares the RESOLVED active credential's row id against the anchor's recorded
+  provenance (§3 `provider_state.provider_credential_id`). MISMATCH — a rotation moved the
+  org to a different provider project/account — means the anchor is unreachable by the
+  credential that will authenticate the POST: the dispatch must NOT chain from it (it would
+  fail instead of resuming, or worse, resolve a same-shaped id in the wrong account). The
+  mismatch is handled by the EXISTING rotation machinery: rotate/reseed provider state from
+  the durable projection (stateless replay of context-eligible attempts — exactly the taint
+  path's mechanism), the superseded state row stays durable for §19 cleanup under ITS recorded
+  historical credential, and the new anchor is created — and its provenance recorded — under
+  the active credential. Dispatching under the HISTORICAL credential instead is rejected as a
+  design option: it may already be revoked, and continuing execution under a superseded
+  account contradicts active-credential dispatch. Stateless-replay branches (Anthropic) carry
+  no anchor and are unaffected.
 - **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
   case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
   conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a
