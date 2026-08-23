@@ -334,18 +334,27 @@ Normative rules:
      minted the token it fences — is
      written BEFORE any provider POST, and it is a CONDITIONAL compare-and-swap: it succeeds
      only where the committing runner's `claim_token` is still the turn's current token AND the
-     lease is UNEXPIRED
+     lease is UNEXPIRED AND no Stop has been durably requested
      (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ? AND deadline >
-     now()`, plus §8's branch-order predicate — no earlier non-terminal turn on the branch),
-     and the SAME commit stamps a FRESH deadline (the lease's first renewal, consistent with
+     now() AND stop_requested = false`, plus §8's branch-order predicate — no earlier
+     non-terminal turn on the branch). The `stop_requested` predicate exists because a Stop
+     committed during context construction (post-claim, pre-boundary) has ONLY the durable
+     flag as its authority — the wake notification can be delayed or lost, and the
+     flag-reading heartbeat timer does not start until the boundary commits — so the boundary
+     itself must refuse to dispatch a stop-requested attempt: a Stop that linearizes before
+     the boundary prevents the POST outright, and the claimant (still holding the claim,
+     having lost this CAS to its own stop flag) finalizes the attempt to `stopped` under the
+     ordinary fenced finalize with no POST ever sent. The winning CAS commit also stamps a
+     FRESH deadline (the lease's first renewal, consistent with
      the heartbeat timer starting at the boundary). The deadline predicate exists because
      context construction can outlast the lease before any rotation: on token identity alone
      the CAS would commit `dispatching`, the rule-(1) pre-POST lease check below would then
      abort with NO POST ever sent, and recovery would ratchet a provably-undispatched attempt
      to `outcome_unknown`; failing the CAS instead leaves the attempt `accepted` and
      ordinarily reclaimable. Zero rows updated =
-     fenced out, lease-expired, or not yet at the head of the branch queue: abort without
-     dispatching.
+     fenced out, lease-expired, stop-requested, or not yet at the head of the branch queue:
+     abort without dispatching (reading the row under the still-held claim tells the claimant
+     which — and the stop case finalizes `stopped` as above).
    - Re-claiming a past-deadline `accepted` turn (by the recovery sweep or by the next duplicate
      send, §8) ROTATES the claim token in its own committed CAS (for a `deleted_pending`
      conversation, where step-1 fencing forbids every new claim, the sweep's arm is instead the
@@ -362,8 +371,9 @@ Normative rules:
      A boundary CAS win alone cannot stop a runner that stalls between boundary and POST, then
      resumes after recovery has marked the turn `outcome_unknown` and released the branch queue
      — its first POST would race the next turn. Three rules bound that zombie:
-     (1) the runner re-validates its lease immediately before the provider POST and aborts if
-     the claim was rotated/expired; (2) the recovery sweep may not act on a `dispatching` turn
+     (1) the runner re-validates its lease AND re-reads the durable stop-request flag
+     immediately before the provider POST, aborting if the claim was rotated/expired or Stop
+     was requested (a stop observed here finalizes `stopped` with no POST); (2) the recovery sweep may not act on a `dispatching` turn
      before `deadline + δ` (an explicit grace window over the lease check, so a runner that
      validates in time POSTs before recovery moves); (3) the FINALIZE-commit carries the same
      claim-token CAS as the boundary commit — a zombie that slips through (1)/(2) via an
