@@ -136,7 +136,14 @@ here" and "regenerate this answer" need different replay boundaries:
   EARLIER turn's completed output plus the source TURN's USER items — which are TURN-owned and
   immutable from the reservation commit (§7.1), not attempt-owned — and EXCLUDES the pinned
   attempt's output. Mechanically, the fork creates a NEW TURN on the CHILD branch that COPIES
-  the source turn's immutable user items, and the fresh attempt attaches to THAT turn — never
+  the source turn's immutable user items AND its immutable native request config (§3), in the
+  SAME atomic commit — every detached dispatch reads its config from its OWN turn, so a child
+  turn without the copy could not reconstruct its POST from durable state (or would fall back
+  to browser memory, violating LAW 5). The copy is valid for SAME-PROVIDER regeneration; when
+  the fork switches provider (§17), the source config is provider-shaped and does NOT carry
+  over: the fork request must supply a replacement native config valid for the target provider
+  or the operation is REJECTED as incompatible — never silently translated. The fresh attempt
+  attaches to THAT turn — never
   to the source turn, which belongs to the parent branch and whose composite lineage FKs (§3
   above) would otherwise be violated. The pinned attempt (a ratchet state in either mode, §3)
   still serves as the immutable ancestry marker in both modes.
@@ -921,7 +928,14 @@ archived) · `DELETE /v1/ai/conversations/:id` (lifecycle per §19) ·
 `before_attempt_output` for earlier-turn regeneration), and accepts the target
 `provider/surface/model` triple — omitted
 means inherit the parent branch's; supplied is what makes a §17 cross-provider or model-switch
-fork durable and reload-replayable) ·
+fork durable and reload-replayable. Fork creation is IDEMPOTENT with the same discipline as
+Send (§8): the request carries a client-supplied `client_fork_id`, unique per
+`(org_id, conversation_id, client_fork_id)`; a retry whose response was lost REPLAYS the
+already-created branch (returns the same branch, minting nothing — the ancestry tuple alone
+cannot deduplicate because multiple forks from one pinned attempt are legitimate, and for
+`before_attempt_output` a duplicate would mint a duplicate child turn and provider POST);
+same key + different fork intent (pinned attempt, mode, triple, or replacement config) ⇒ 409
+via the §8 local intent-hash rule) ·
 `POST /v1/ai/conversations/:id/turns` (durable send, §8) + `GET .../turns/:turnId` (hydrate) +
 stream re-attach endpoint ·
 `POST /v1/ai/conversations/:id/turns/:turnId/retry` — the explicit operation that invokes §7.6
