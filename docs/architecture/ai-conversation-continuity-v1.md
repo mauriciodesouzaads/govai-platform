@@ -687,8 +687,14 @@ The durable-turn runner is a server-side component (apps/api) that:
    step-3-resolved credential row is STILL the org's active credential for the provider: a
    rotation that slipped into the boundary→commit-4 window FAILS this commit, and the runner
    then performs a FENCED RESTORE CAS — `dispatching → accepted` on `claim_token = <mine> AND
-   state = 'dispatching'`, claim RETAINED with a fresh deadline — which is safe by exactly the
-   provably-no-POST proof (this commit precedes any POST, so no provider request can exist);
+   state = 'dispatching' AND deadline > now()`, claim RETAINED with a fresh deadline — safe by
+   exactly the provably-no-POST proof (this commit precedes any POST, so no provider request
+   can exist). The `deadline > now()` predicate is REQUIRED here for the same reason as on the
+   heartbeat (§7.7): the restore stamps a fresh deadline, making it an authority EXTENSION —
+   without the predicate an expired claimant that stalls inside this window could regain
+   authority and postpone recovery indefinitely. An expired-lease restore therefore FAILS and
+   ordinary lease recovery takes over — the conservative `outcome_unknown` outcome is correct
+   there, because authority expiry forfeits the no-POST knowledge only the live runner held;
    the attempt is again dispatchable, the built request is discarded, and step 3 re-runs from
    a fresh sample (fresh resolution, reconciliation, rebuild) to a NEW boundary CAS. Without
    the restore, aborting here would strand the attempt in `dispatching` until lease recovery
