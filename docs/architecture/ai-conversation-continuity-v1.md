@@ -676,7 +676,16 @@ The durable-turn runner is a server-side component (apps/api) that:
    `provider_credential_id` onto the attempt row in a §7.7 FENCED incremental write
    (`claim_token = <mine> AND state = 'dispatching'`) — the §8 protocol's FOURTH commit, a
    SEPARATE transaction inside the `dispatching` window (never hold the boundary transaction
-   open across credential resolution) — BEFORE any provider POST
+   open across credential resolution). The SAME transaction REVALIDATES that the
+   step-3-resolved credential row is STILL the org's active credential for the provider: a
+   rotation that landed between resolution and this commit ABORTS it — the built request is
+   discarded and step 3 re-runs from a fresh sample (fresh resolution, reconciliation,
+   rebuild) — otherwise the runner would persist and POST with now-superseded material,
+   defeating §11's prohibition on continuing under a superseded account. A rotation landing
+   AFTER this commit but before the POST is the bounded honest residual: the POST either
+   fails provider-side auth (ordinary failure taxonomy) or completes under the superseded
+   credential — recorded TRUTHFULLY by this very provenance — and the NEXT dispatch's
+   reconciliation detects the mismatch and rotates. All of this BEFORE any provider POST
    (§3's recorded dispatch credential: without it an implementation can POST without ever
    persisting which account owns the resulting object, and after rotation recovery probes and
    orphan cleanup cannot identify it), and only THEN
@@ -951,7 +960,19 @@ Cross-adapter rules:
   top of the build (`seeded_at_causal_version`, §3); after a boundary-version failure the
   rebuild re-runs reconciliation and treats any anchor seeded at an OLDER version as stale —
   closing the race where a probe restores an attempt after the reseed and the second build
-  would otherwise reuse a seed missing the restored output.
+  would otherwise reuse a seed missing the restored output. **RESEED SIDE-EFFECT FENCING:**
+  the reseed's provider-side create (a fresh OpenAI conversation object, a coding-agent
+  thread fork/start) is a provider mutation with no fence of its own and it happens BEFORE
+  the dispatch boundary, so it is bracketed by the disposal ledger: IMMEDIATELY after the
+  create, the runner appends a PROVISIONAL disposal record — encrypted object id + credential
+  provenance — using the always-allowed narrowly-typed ledger append (§7.7); the subsequent
+  `provider_state` persist SETTLES that provisional record IN THE SAME TRANSACTION (the
+  anchor became live). Every failure path after the create — claim lapse, causal-version
+  change, local write failure, crash — leaves the provisional record standing, and §19
+  cleanup deletes the unused object under its recorded credential; the only residual is a
+  crash in the instants between create and append — the SAME already-acknowledged residual
+  as a fenced zombie crashing before its late append (an object no one holds an identifier
+  for), minimized by making the two adjacent.
 - **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
   case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
   conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a
