@@ -98,15 +98,22 @@ regenerated. The fork therefore references the specific attempt:
 forked_from_attempt_id) REFERENCES ai_conversation_attempts (org_id, owner_user_id,
 conversation_id, branch_id, turn_id, id)` — one composite FK that simultaneously forces the
 fork point to belong to the SAME conversation, the DECLARED parent branch, the named turn, and
-a SPECIFIC attempt whose items never change. Fork creation additionally REQUIRES the pinned
-attempt to be **`completed`** — the ratchet state with immutable items. Context-eligibility on
+a SPECIFIC attempt whose items never change. Fork creation additionally requires the pinned
+attempt to be in a RATCHET (immutable-terminal) state — and the exact requirement is
+BOUNDARY-MODE-SPECIFIC. `after_attempt` (whose child INCLUDES the pinned attempt's output)
+requires **`completed`**: forking a `stopped`/`failed`/`rejected` attempt in this mode would
+replay a partial or ineligible prefix. `before_attempt_output` (which EXCLUDES the pinned
+attempt's output and copies only the turn-owned immutable user items) accepts ANY immutable
+terminal attempt — `completed`, `stopped`, `failed`, or `rejected` — the partial-prefix
+concern cannot apply to a mode that never replays the attempt's output, and this is exactly
+what lets a user REGENERATE a failed/stopped earlier turn after the branch moved on (the
+terminal outcome released the queue; §7.6 redirects earlier-turn retry to this fork mode). In
+BOTH modes an `outcome_unknown` attempt is rejected — it may still mutate; such fork requests
+get a wait-or-retry pointer. Context-eligibility on
 the attempt's ORIGINAL branch is deliberately NOT required: a completed attempt carrying the
 §7.8 `context_excluded` marker is a VALID fork source — that fork is precisely how §7.8 says a
 post-advance recovered answer is continued (the marker keeps it out of its original branch's
-context; the child branch is where its causal line lives). Forking a
-`stopped`/`failed`/`rejected` attempt would replay a partial or ineligible prefix, and an
-`outcome_unknown` attempt may still mutate; fork requests naming any non-completed attempt are
-rejected with a wait-or-retry pointer.
+context; the child branch is where its causal line lives).
 **CURRENT_ATTEMPT_LINEAGE_BINDING:** the REVERSE pointer that controls eligibility is
 composite-bound exactly like the forward chain. `current_attempt_id` on a turn is constrained
 by `(org_id, owner_user_id, conversation_id, branch_id, id, current_attempt_id) REFERENCES
@@ -131,8 +138,8 @@ here" and "regenerate this answer" need different replay boundaries:
   attempt's output. Mechanically, the fork creates a NEW TURN on the CHILD branch that COPIES
   the source turn's immutable user items, and the fresh attempt attaches to THAT turn — never
   to the source turn, which belongs to the parent branch and whose composite lineage FKs (§3
-  above) would otherwise be violated. The pinned completed attempt still serves as the
-  immutable ancestry marker in both modes.
+  above) would otherwise be violated. The pinned attempt (a ratchet state in either mode, §3)
+  still serves as the immutable ancestry marker in both modes.
 Without the second mode, redirecting earlier-turn retry to the fork protocol would replay the
 very response being regenerated and then answer AFTER it instead of REPLACING it. A CHECK requires the fork columns all-null on a root branch and all-set
 on a fork. Fork-context replay reads THAT
@@ -469,7 +476,8 @@ Normative rules:
      records `completed` WITH a durable `context_excluded` marker, permanently. The recovered
      answer is TRANSCRIPT-ONLY on that branch: visible to the user, honestly labeled, never
      context (§7.5). Continuing WITH the recovered answer is an explicit FORK pinned to the
-     recovered completed attempt (§3 — fork requires `completed`, which it now is); the fork's
+     recovered completed attempt (§3 — the `after_attempt` fork requires `completed`, which it now
+     is); the fork's
      child branch is where that causal line lives, and §7.5's fork-pin exemption is what makes
      the fork EFFECTIVE — the pinned recovered output IS context on the child while remaining
      excluded from the original branch.
@@ -1260,7 +1268,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | SEND | §8 root lock + status revalidate | (1)→(2)→(3) | reservation PK; claim at head | §7.5 projection | adapter builds anchor at boundary | request (`govai_app`) | §7.7 stranded/lapse | §7 machine | §14 triple | queued/live/terminal state |
 | RETRY (last turn) | same as SEND | (1)→(2)→(3) | new attempt, handoff CAS | LAW 4 before-N-output, both domains | rewind anchor / rotate object | request | same | same | new attempt triple | replaced answer; prior attempt visible |
 | EARLIER-TURN REGENERATE | same | (1)→(2)→(3) | fork + new child turn/attempt | `before_attempt_output` mode | child branch state fresh/rotated | request | same | same | child triples | new branch, old intact |
-| FORK / CROSS-PROVIDER FORK | §8 root lock | (1)→(2) | pinned completed attempt | §3 boundary modes; §17 portable projection | branch-owned provider triple; fresh state | request | n/a (no dispatch yet) | n/a | inherits at dispatch | labeled quality loss (§17) |
+| FORK / CROSS-PROVIDER FORK | §8 root lock | (1)→(2) | pinned ratchet attempt (mode-specific, §3: `completed` for `after_attempt`; any immutable terminal for `before_attempt_output`) | §3 boundary modes; §17 portable projection | branch-owned provider triple; fresh state | request | n/a (no dispatch yet) | n/a | inherits at dispatch | labeled quality loss (§17) |
 | STOP | none (attempt-scoped, lineage-authorized) | (3) only | attempt-keyed flag + active wake + heartbeat-tick read; `client_stop_id` idempotency; never retargets (STOP_ATTEMPT_TARGET_STABILITY) | terminal-outranks-abort | §11 taint if post-boundary non-completed | request | flag survives crashes | `stopped` (target attempt only) | attempt triple | honest stop state |
 | RELOAD / RE-ATTACH | none | none (reads) | n/a | hydrate durable prefix/terminal | none | request | §10 | n/a | n/a | partial marked partial |
 | DUPLICATE SEND | none | (3) read | replay, never verdict | current state | none | request | drives stranded head | n/a | existing | queued/live/terminal replay |
