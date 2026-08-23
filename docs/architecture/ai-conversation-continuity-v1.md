@@ -99,9 +99,12 @@ forked_from_attempt_id) REFERENCES ai_conversation_attempts (org_id, owner_user_
 conversation_id, branch_id, turn_id, id)` — one composite FK that simultaneously forces the
 fork point to belong to the SAME conversation, the DECLARED parent branch, the named turn, and
 a SPECIFIC attempt whose items never change. Fork creation additionally REQUIRES the pinned
-attempt to be **`completed`** — the one state that is both a ratchet (immutable items) AND
-`eligible_for_context` (§7.5). Forking a `stopped`/`failed`/`rejected` attempt would replay a
-partial or ineligible prefix §7.5 excludes from every other context computation, and an
+attempt to be **`completed`** — the ratchet state with immutable items. Context-eligibility on
+the attempt's ORIGINAL branch is deliberately NOT required: a completed attempt carrying the
+§7.8 `context_excluded` marker is a VALID fork source — that fork is precisely how §7.8 says a
+post-advance recovered answer is continued (the marker keeps it out of its original branch's
+context; the child branch is where its causal line lives). Forking a
+`stopped`/`failed`/`rejected` attempt would replay a partial or ineligible prefix, and an
 `outcome_unknown` attempt may still mutate; fork requests naming any non-completed attempt are
 rejected with a wait-or-retry pointer.
 **CURRENT_ATTEMPT_LINEAGE_BINDING:** the REVERSE pointer that controls eligibility is
@@ -618,7 +621,7 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
   | Provider-state reconciliation/rotation/taint | `ai_conversation_provider_state` | SELECT, INSERT, UPDATE | anchors, taint flags, rotation supersession |
   | Branch reads (single-flight predicate, fork ancestry checks) | `ai_conversation_branches` | SELECT | no branch creation — fork is request-plane |
   | `deleted_pending` completion + purge | `ai_conversations` + child tables | SELECT, UPDATE; DELETE (purge step ONLY) | status transitions; §19 step-4 row purge |
-  | Orphan-disposal processing | disposal ledger | SELECT, UPDATE, INSERT | read job under owner RLS, record outcomes/retries; INSERT for worker-side enqueue during recovery |
+  | Orphan-disposal processing | disposal ledger | SELECT, UPDATE, INSERT, DELETE | read job under owner RLS, record outcomes/retries; INSERT for worker-side enqueue during recovery; DELETE strictly post-success (§19 removes completed rows — the ledger outlives purge, so without removal its encrypted provider identifiers would accumulate indefinitely) |
   | Evidence-link post-processing | `ai_conversation_evidence_links` | SELECT, INSERT — CONDITIONAL | only if §14 linkage is materialized by the worker; otherwise no grant |
 
   **Provider-pipeline execution privileges (worker-driven dispatch):** the worker does not
