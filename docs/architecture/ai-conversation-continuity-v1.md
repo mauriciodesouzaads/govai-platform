@@ -561,9 +561,15 @@ The durable-turn runner is a server-side component (apps/api) that:
    head-of-queue claim CAS, whether by this creating request when the turn is at head, by a
    terminal-transition wake, or by the sweep; deadlines attach to CLAIMS, never to
    reservations, so a queued turn is always claimable the moment it reaches head);
-2. builds the provider request via the adapter (§11) from durable context — not from browser
-   memory;
-3. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on its claim token —
+2. commits the CLAIM (the §8 four-commit protocol's CLAIM commit): if the turn is at its
+   branch head, the creating request performs the head-of-queue claim CAS, minting
+   `{claim_token, claimant, deadline}`; otherwise it returns "queued" to its sender and steps
+   3–6 run later under WHICHEVER claimant wins the head-of-queue pickup (terminal-transition
+   wake or sweep) — the remaining steps belong to THE CLAIMANT, not necessarily the reserving
+   request, and no context construction happens before a claim is held;
+3. builds the provider request via the adapter (§11) from durable context — not from browser
+   memory — recording the as-built `causal_version` (§7.8);
+4. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on the step-2 claim token —
    losing the CAS means another claimant owns the turn: abort with no POST — minting and
    persisting the attempt's `govai_request_id` and then ENTERING the identity scope itself
    (§14.1: the runner constructs the `AuditBridgeRequestIdentity` and wraps the pipeline call
@@ -573,10 +579,10 @@ The durable-turn runner is a server-side component (apps/api) that:
    DLP, tool classifier, beta policy, capture — unchanged semantics; the governed/passthrough
    distinction is carried per conversation mode); boundary-before-POST plus the fenced CAS is
    what makes §7.7's stranded-turn recovery at-most-one-POST safe;
-4. owns the SSE pump to terminal (the `provider-stream-http` primitives —
+5. owns the SSE pump to terminal (the `provider-stream-http` primitives —
    `pumpStreamWithTerminalEmit` — are the template), persisting items incrementally and the
    terminal state durably;
-5. relays the live stream to the browser as a spectator: the browser reads, the server owns.
+6. relays the live stream to the browser as a spectator: the browser reads, the server owns.
 
 This inverts today's browser-owned flow and is what makes §7's rules enforceable. The existing
 six direct routes remain untouched for API-native callers; the conversation runner is an
