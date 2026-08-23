@@ -328,7 +328,9 @@ Normative rules:
    claimed. Deadline-based recovery applies ONLY to claimed attempts — ordinary queued work can
    never be misread as stranded — and each crash window has a defined recovery
    (the 0029 dispatch-boundary + `dispatch_token` discipline, applied per turn):
-   - The runner's SECOND commit — the dispatch-boundary commit (`accepted → dispatching`) — is
+   - The runner's dispatch-boundary commit (`accepted → dispatching`) — the THIRD commit of
+     the §8 four-commit protocol, after the reservation and the separate CLAIM commit that
+     minted the token it fences — is
      written BEFORE any provider POST, and it is a CONDITIONAL compare-and-swap: it succeeds
      only where the committing runner's `claim_token` is still the turn's current token
      (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ?`, plus §8's
