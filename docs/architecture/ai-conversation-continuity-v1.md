@@ -303,7 +303,8 @@ Normative rules:
    resolve once to `completed`/`failed` by a recovery probe, never the reverse). A terminal
    ATTEMPT is never mutated — but the TURN's displayed state is DERIVED from its CURRENT attempt (state lives authoritatively on the attempt, §3),
    and **retry/regenerate is a defined operation, not an illegal un-ratchet**: it mints attempt
-   N+1 on the same turn (same `client_turn_id` reservation, fresh `govai_request_id`), returning
+   N+1 on the same turn (same `client_turn_id` reservation; its `govai_request_id` is fresh —
+   assigned at N+1's OWN dispatch-boundary commit, §14.1, never at mint), returning
    the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard four-commit
    flow (§8). Minting N+1 is an ATOMIC ELIGIBILITY HANDOFF: the same commit repoints the turn's
    `current_attempt_id` to N+1, so attempt N's completed output leaves the context domain
@@ -573,7 +574,8 @@ The durable-turn runner is a server-side component (apps/api) that:
    memory — recording the as-built `causal_version` (§7.8);
 4. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on the step-2 claim token —
    losing the CAS means another claimant owns the turn: abort with no POST — minting and
-   persisting the attempt's `govai_request_id` and then ENTERING the identity scope itself
+   persisting the attempt's `govai_request_id` IN THIS COMMIT (§14.1's ONE authoritative mint
+   site — never at claim time) and then ENTERING the identity scope itself
    (§14.1: the runner constructs the `AuditBridgeRequestIdentity` and wraps the pipeline call
    in `requestIdentityAls.run()`, because neither `/v1/ai/*` requests nor detached
    sweep/wake-driven workers pass the ingress identity hook), and only THEN
@@ -911,8 +913,13 @@ Closes `EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION` WITHOUT event-schema change:
    the four direct-route prefixes (`request-identity-hook.ts:21-31`), the `/v1/ai/*`
    control-plane routes are outside that set, a sweep- or wake-driven worker has no inbound
    request at all, and the AuditBridge DROPS captures when the store is empty
-   (`audit-bridge.ts:129`). Rule: at claim time the runner MINTS `govai_request_id`
-   (`randomUUID()`), PERSISTS it on the attempt row FIRST, and then explicitly enters the
+   (`audit-bridge.ts:129`). Rule: the ONE authoritative assignment site is the
+   DISPATCH-BOUNDARY COMMIT (the §8 protocol's third commit) — chosen because it succeeds AT
+   MOST ONCE per attempt (pre-boundary claim lapses and reclaims never crossed it; post-boundary
+   re-dispatch is forbidden, §7.7), whereas a claim-time mint could be overwritten or left
+   ambiguous across a lapse-and-reclaim. In that commit the runner MINTS `govai_request_id`
+   (`randomUUID()`) and PERSISTS it on the attempt row — durably BEFORE any provider POST or
+   capture — and then explicitly enters the
    identity scope (`requestIdentityAls.run()` with a constructed `AuditBridgeRequestIdentity`)
    around its provider-pipeline call — for browser-attached sends and detached worker dispatch
    alike. This also means no header echo is needed, which is why
