@@ -1,5 +1,5 @@
 import { createHmac, hkdfSync, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
-import type { Kms, KmsKeyId, KmsPurpose } from './index.js';
+import type { Kms, KmsKeyId, KmsPurpose, KmsEnvelopePurpose } from './index.js';
 
 /**
  * AwsKms — production KMS adapter (Option B / Foundation Release).
@@ -213,6 +213,7 @@ export class AwsKms implements Kms {
     keyId: KmsKeyId;
     version: number;
     plaintext: Uint8Array;
+    purpose?: KmsEnvelopePurpose;
   }): Promise<{ ciphertext: Uint8Array; dekWrapped: Uint8Array }> {
     // Layer 1 — payload under a random DEK.
     const dek = randomBytes(DEK_LEN);
@@ -226,7 +227,7 @@ export class AwsKms implements Kms {
 
     // Layer 2 — wrap the DEK under a KEK derived from the master seed.
     const kekU8 = await this.deriveKey({
-      purpose: 'payload_dek',
+      purpose: input.purpose ?? 'payload_dek',
       orgId: input.orgId,
       keyId: input.keyId,
       version: input.version,
@@ -254,6 +255,7 @@ export class AwsKms implements Kms {
     version: number;
     ciphertext: Uint8Array;
     dekWrapped: Uint8Array;
+    purpose?: KmsEnvelopePurpose;
   }): Promise<Uint8Array> {
     const dw = Buffer.from(input.dekWrapped);
     const ct = Buffer.from(input.ciphertext);
@@ -278,7 +280,7 @@ export class AwsKms implements Kms {
     const payloadCt = ct.subarray(PAYLOAD_HEADER_LEN);
 
     const kekU8 = await this.deriveKey({
-      purpose: 'payload_dek',
+      purpose: input.purpose ?? 'payload_dek',
       orgId: input.orgId,
       keyId: input.keyId,
       version: input.version,

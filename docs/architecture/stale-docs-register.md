@@ -657,5 +657,9 @@ parity-lane classification recorded in `native-experience-parity-v1.md` §8):
   (the OpenAI beta policy has ZERO hard_denied tokens) — already registered; unchanged.
 - All previously open findings above are UNCHANGED in status.
 
-`NATIVE_EXPERIENCE_PARITY_V1=BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`; next movement
-`EP-AI-CONVERSATION-CONTINUITY-V1-01` (not started).
+`NATIVE_EXPERIENCE_PARITY_V1=BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`;
+`EP-AI-CONVERSATION-CONTINUITY-V1-01` is IN_PROGRESS — movement P0-A1 (storage/crypto/owner-RLS
+foundation, migration `0031`) is implemented in this tree; `CONVERSATION_PERSISTENCE` remains
+`NOT_IMPLEMENTED` (no Send/hydrate/reload runtime exists). The continuity spec's schema sections
+(§3/§6) are now PARTIALLY REALIZED by 0031; every runtime section (§7–§14, §19) remains
+design-only.

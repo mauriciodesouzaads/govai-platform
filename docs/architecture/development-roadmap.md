@@ -307,9 +307,14 @@ and the unit lane), the surface baselines and findings
 prerequisite `CONVERSATION_CONTINUITY=P0_NATIVE_EXPERIENCE_PREREQUISITE` with its DESIGN spec
 ([ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) —
 `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`). No capability implementation wave has started.
-The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; the next
-implementation mission is `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated
-candidate scope in the baseline doc §10 — final scope frozen at its own dispatch). Not started.
+The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; the implementation
+mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated candidate scope in the
+baseline doc §10) is **IN_PROGRESS**: its first movement, **P0-A1** (operational storage +
+crypto purpose isolation + owner-scoped FORCE RLS — migration `0031`, KMS
+`conversation_content`/`conversation_content_integrity` purposes, `withOwnerContext`), is
+implemented in this tree. Storage foundation only: no Send, no runner, no worker, no routes —
+`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` remains true (see current-state.md's P0-A1 canonical
+state section). Next movements: P0-A2 (detached worker trust + recovery discovery) onward.
 
 ---
 
