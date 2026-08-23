@@ -72,13 +72,13 @@ recorded grant — not a relaxation of the default.)
 | Conversation | `govai.ai_conversations` | Root container: org/owner scope, provider+surface+model defaults, the IMMUTABLE execution `mode` (`governed`\|`passthrough`, fixed at creation — a detached wake/sweep dispatch and a post-reload resume must choose the pipeline from durable state alone, §9; without it a governed conversation could replay through the passthrough route), title (encrypted), status (`active\|archived\|deleted_pending\|deleted`), `project_id uuid NULL` (future, §16), `workroom_id uuid NULL` (optional attribution, §4), retention class, timestamps |
 | Branch | `govai.ai_conversation_branches` | A named line of turns, and the DURABLE owner of execution identity: each branch carries its own `provider + surface + model` (copied from the conversation defaults at root-branch creation; supplied by the fork operation for provider/model switches). Adapter selection reads the BRANCH, never the conversation root — a cross-provider fork must be replayable after reload with no in-memory hint and possibly no provider_state yet. Every conversation has one root branch; fork creates a new branch with `parent_branch_id` + `forked_from_turn_id`/`forked_from_attempt_id`. Cross-provider continuation is ALWAYS a new branch (§17) |
 | Turn | `govai.ai_conversation_turns` | One user send on a branch: `(org_id, conversation_id, client_turn_id)` unique (§8), per-branch `turn_seq` (advisory-lock + `MAX+1` + UNIQUE backstop, the technique of `workroom-transcript.ts:127-136` — technique reuse, not table reuse), `current_attempt_id` (lineage-bound, §3). The turn ALSO owns the IMMUTABLE NATIVE REQUEST CONFIG — the provider-native request fragment accepted at send (the §13 body: tools, tool choice, limits, sampling and the like), persisted IN THE RESERVATION TRANSACTION and immutable from that commit exactly like the user items (LAW 2 — input is turn-owned; stored under the §6 encryption class where sensitive). It exists because a detached wake/sweep claimant must reconstruct the POST from durable state ALONE and the §8 intent hash cannot recover parameters; retry attempt N+1 reuses the SAME turn config (same immutable input). The turn carries NO authoritative lifecycle state: its state is a DERIVED PROJECTION of its current attempt's state — retry could not otherwise keep attempt N's terminal ratchet immutable while N+1 independently becomes `accepted` |
-| Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`) — and THE AUTHORITATIVE HOME of execution lifecycle: the §7 state machine's `state`, the claim `{claim_token, claimant, deadline, heartbeat}`, the durable stop-request flag, the causal-version-at-build, `govai_request_id` (§14), the RESOLVED DISPATCH CREDENTIAL (`provider_credential_id`, persisted in a fenced attempt-row write at credential resolution BEFORE any POST — recovery probes and late upgrades must know which provider account owns any resulting object, §19.3 provenance), and the provider CONTINUATION ANCHOR it chained from (e.g. `continuation_parent_response_id`, §11 retry mechanics). Per-attempt authority is what §7.6's ratchets REQUIRE: attempt N's terminal state is immutable while N+1 independently runs its own lifecycle — one authoritative state per attempt, never two divergent copies. The TURN carries the `current_attempt_id` pointer — the atomic eligibility handoff of §7.6: at most the CURRENT attempt's completed output is context-eligible; prior attempts stay immutable and visible but never contribute |
+| Attempt | `govai.ai_conversation_attempts` | Retries of one turn (the UI already models `Turn.attempts[]`, `conversation/types.ts:171-176`) — and THE AUTHORITATIVE HOME of execution lifecycle: the §7 state machine's `state`, the claim `{claim_token, claimant, deadline, heartbeat}`, the durable stop-request flag, the causal-version-at-build, `govai_request_id` (§14), the RESOLVED DISPATCH CREDENTIAL — stored as the ORG-COMPOSITE pair `(org_id, provider_credential_id)` with a composite FK to a new `(org_id, id)` UNIQUE key on `govai.provider_credentials` (its PK is id-only, `0009:25-27`: a bare id could cross tenants, and recovery under the owner's RLS would then find NO credential and cleanup would fail; the same composite shape applies wherever provenance is copied — provider_state and the disposal ledger) — persisted in a fenced attempt-row write at credential resolution BEFORE any POST (recovery probes and late upgrades must know which provider account owns any resulting object, §19.3 provenance), and the provider CONTINUATION ANCHOR it chained from (e.g. `continuation_parent_response_id`, §11 retry mechanics). Per-attempt authority is what §7.6's ratchets REQUIRE: attempt N's terminal state is immutable while N+1 independently runs its own lifecycle — one authoritative state per attempt, never two divergent copies. The TURN carries the `current_attempt_id` pointer — the atomic eligibility handoff of §7.6: at most the CURRENT attempt's completed output is context-eligible; prior attempts stay immutable and visible but never contribute |
 | Provider-native Item | `govai.ai_conversation_items` | Ordered typed items with an explicit OWNER discriminator: USER/INPUT items are TURN-owned (`attempt_id` NULL — they are committed at the §7.1 reservation, before any attempt exists, and survive every retry), while assistant/tool OUTPUT items are ATTEMPT-owned. Both owners are reached through the same composite lineage chain. Provider-native content blocks, tool calls/results, citations, refusals, provider ids (§12); content encrypted (§6) |
 | Attachment | `govai.ai_conversation_attachments` | File references (GovAI-stored bytes or provider `file_id` refs). V1 design carries the entity; upload flows land in a later wave |
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
-| Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque. Each row also records its IMMUTABLE CREDENTIAL PROVENANCE — the `provider_credential_id` (0009 row) whose key created the provider object — because provider objects are account-scoped: after a credential rotation that moves the org to a DIFFERENT provider project/account, deletion via the currently-active credential would authenticate against the wrong account and silently fail (§19) |
+| Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque. Each row also records its IMMUTABLE CREDENTIAL PROVENANCE — the org-composite `(org_id, provider_credential_id)` (LAW 1 shape, FK to the `(org_id, id)` unique key — see the Attempt row) whose key created the provider object — because provider objects are account-scoped: after a credential rotation that moves the org to a DIFFERENT provider project/account, deletion via the currently-active credential would authenticate against the wrong account and silently fail (§19) |
 | Evidence Link | `govai.ai_conversation_evidence_links` | Additive projection turn/attempt → `{govai_request_id, capture_id, audit_event_id?}` (§14). Never mutates audit tables |
-| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7), must survive purge until cleanup consumes them (§19), and are the SOLE admissible §19 step-4 handoff target for provider-cleanup obligations still pending at purge time (transcribed in the same transaction as the purge). Every ledger row likewise carries the object's immutable credential provenance (`provider_credential_id` — sourced per producer: the §19 step-4 transcription copies it from `provider_state`; a fenced zombie's late append (§7.7) and worker-side recovery enqueues supply the credential ACTUALLY used for the POST, from the appender's dispatch context or the attempt row's recorded dispatch credential) so cleanup can resolve the HISTORICAL credential that owns the object. The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
+| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7), must survive purge until cleanup consumes them (§19), and are the SOLE admissible §19 step-4 handoff target for provider-cleanup obligations still pending at purge time (transcribed in the same transaction as the purge). Every ledger row likewise carries the object's immutable credential provenance (the org-composite `(org_id, provider_credential_id)`, FK per the Attempt row — here it additionally RESTRICTs any credential hard-delete while a pending disposal row references it, since the ledger outlives its conversation; sourced per producer: the §19 step-4 transcription copies it from `provider_state`; a fenced zombie's late append (§7.7) and worker-side recovery enqueues supply the credential ACTUALLY used for the POST, from the appender's dispatch context or the attempt row's recorded dispatch credential) so cleanup can resolve the HISTORICAL credential that owns the object. The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
 | Content blob | `govai.ai_conversation_content` | Envelope-encrypted payload store owned by THIS domain (§6) — deliberately not `audit_event_payloads` |
 
 Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
@@ -319,7 +319,7 @@ Normative rules:
    and **retry/regenerate is a defined operation, not an illegal un-ratchet**: it mints attempt
    N+1 on the same turn (same `client_turn_id` reservation; its `govai_request_id` is fresh —
    assigned at N+1's OWN dispatch-boundary commit, §14.1, never at mint), returning
-   the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard four-commit
+   the turn to `accepted`-unclaimed so it re-enters the §8 queue and the standard five-commit
    flow (§8). Minting N+1 is an ATOMIC ELIGIBILITY HANDOFF: the same commit repoints the turn's
    `current_attempt_id` to N+1, so attempt N's completed output leaves the context domain
    immediately — without mutating attempt N's ratcheted rows — and N+1's request context is
@@ -344,7 +344,7 @@ Normative rules:
    never be misread as stranded — and each crash window has a defined recovery
    (the 0029 dispatch-boundary + `dispatch_token` discipline, applied per turn):
    - The runner's dispatch-boundary commit (`accepted → dispatching`) — the THIRD commit of
-     the §8 four-commit protocol, after the reservation and the separate CLAIM commit that
+     the §8 five-commit protocol, after the reservation and the separate CLAIM commit that
      minted the token it fences — is
      written BEFORE any provider POST, and it is a CONDITIONAL compare-and-swap: it succeeds
      only where the committing runner's `claim_token` is still the turn's current token AND the
@@ -581,13 +581,18 @@ Normative rules:
   currently-active one, since rotation may have moved the org to a different provider
   account.
 - Provider dispatch NEVER occurs inside a long DB transaction — the P0.3-A durable-dispatch
-  boundary law (0029), extended here to a FOUR-commit protocol because reservations are born
-  UNCLAIMED (§7.7/§8): reserve-commit (`accepted`, no claim) → CLAIM commit (the head-of-queue
+  boundary law (0029), extended here to a FIVE-commit protocol because reservations are born
+  UNCLAIMED (§7.7/§8) and credential provenance must be durable pre-POST (§14.1/§3):
+  reserve-commit (`accepted`, no claim) → CLAIM commit (the head-of-queue
   claim CAS on the unclaimed head, minting `{claim_token, claimant, deadline}` — the §8
   pickup, whether performed by the creating request at head, a terminal-transition wake, or
   the sweep) → context construction OUTSIDE any lock (recording the as-built `causal_version`,
-  §7.8) → dispatch-boundary commit (`dispatching`, BEFORE any provider POST) → provider POST →
-  finalize-commit (terminal state). The boundary commit VALIDATES the ALREADY-HELD
+  §7.8) → dispatch-boundary commit (`dispatching`, BEFORE any provider POST) →
+  CREDENTIAL-PROVENANCE commit (the FOURTH commit: a SEPARATE fenced transaction inside the
+  `dispatching` window persisting the resolved `(org_id, provider_credential_id)` on the
+  attempt row, §9 step 4 — a distinct commit on EVERY dispatch; the boundary transaction is
+  NEVER held open across credential resolution) → provider POST →
+  finalize-commit (terminal state, the FIFTH). The boundary commit VALIDATES the ALREADY-HELD
   `claim_token` (plus the `causal_version` predicate); it never mints the claim — collapsing
   claim and boundary into one commit would leave the boundary CAS no previously owned token to
   fence, and §7.7's fenced writes all presuppose `claim_token = <mine>` from before the
@@ -597,7 +602,7 @@ Normative rules:
   one would otherwise drive it: the design therefore defines the dequeue mechanism explicitly.
   (1) In-process: whichever runner commits ANY terminal transition on a branch (finalize,
   rejection, stop, or a recovery ratchet) immediately attempts a normal claim CAS on the
-  branch's next `accepted` turn — that claim CAS IS the four-commit protocol's CLAIM commit —
+  branch's next `accepted` turn — that claim CAS IS the five-commit protocol's CLAIM commit —
   and, on success, drives the remaining commits (context build → boundary → POST → finalize). (2) Cross-process / crash: the periodic recovery sweep claims any UNCLAIMED `accepted`
   turn standing at the head of its branch (no earlier non-terminal turn) — head-of-queue
   pickup is NOT deadline-gated; deadlines govern only the RE-claiming of already-claimed turns
@@ -636,7 +641,7 @@ The durable-turn runner is a server-side component (apps/api) that:
    head-of-queue claim CAS, whether by this creating request when the turn is at head, by a
    terminal-transition wake, or by the sweep; deadlines attach to CLAIMS, never to
    reservations, so a queued turn is always claimable the moment it reaches head);
-2. commits the CLAIM (the §8 four-commit protocol's CLAIM commit): if the turn is at its
+2. commits the CLAIM (the §8 five-commit protocol's CLAIM commit): if the turn is at its
    branch head, the creating request performs the head-of-queue claim CAS, minting
    `{claim_token, claimant, deadline}`; otherwise it returns "queued" to its sender and steps
    3–6 run later under WHICHEVER claimant wins the head-of-queue pickup (terminal-transition
@@ -657,8 +662,9 @@ The durable-turn runner is a server-side component (apps/api) that:
    (the current resolver returns ciphertext only, `provider-credentials.ts:130-135`; the
    implementation mission extends its return rather than guessing), and the runner commits the
    resolved `provider_credential_id` onto the attempt row in a §7.7 FENCED incremental write
-   (`claim_token = <mine> AND state = 'dispatching'`) — a durable write INSIDE the
-   `dispatching` window, deliberately NOT a fifth protocol commit — BEFORE any provider POST
+   (`claim_token = <mine> AND state = 'dispatching'`) — the §8 protocol's FOURTH commit, a
+   SEPARATE transaction inside the `dispatching` window (never hold the boundary transaction
+   open across credential resolution) — BEFORE any provider POST
    (§3's recorded dispatch credential: without it an implementation can POST without ever
    persisting which account owns the resulting object, and after rotation recovery probes and
    orphan cleanup cannot identify it), and only THEN
