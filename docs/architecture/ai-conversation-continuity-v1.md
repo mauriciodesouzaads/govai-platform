@@ -333,12 +333,24 @@ Normative rules:
      the §8 four-commit protocol, after the reservation and the separate CLAIM commit that
      minted the token it fences — is
      written BEFORE any provider POST, and it is a CONDITIONAL compare-and-swap: it succeeds
-     only where the committing runner's `claim_token` is still the turn's current token
-     (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ?`, plus §8's
-     branch-order predicate — no earlier non-terminal turn on the branch). Zero rows updated =
-     fenced out or not yet at the head of the branch queue: abort without dispatching.
+     only where the committing runner's `claim_token` is still the turn's current token AND the
+     lease is UNEXPIRED
+     (`UPDATE … WHERE turn_id = ? AND state = 'accepted' AND claim_token = ? AND deadline >
+     now()`, plus §8's branch-order predicate — no earlier non-terminal turn on the branch),
+     and the SAME commit stamps a FRESH deadline (the lease's first renewal, consistent with
+     the heartbeat timer starting at the boundary). The deadline predicate exists because
+     context construction can outlast the lease before any rotation: on token identity alone
+     the CAS would commit `dispatching`, the rule-(1) pre-POST lease check below would then
+     abort with NO POST ever sent, and recovery would ratchet a provably-undispatched attempt
+     to `outcome_unknown`; failing the CAS instead leaves the attempt `accepted` and
+     ordinarily reclaimable. Zero rows updated =
+     fenced out, lease-expired, or not yet at the head of the branch queue: abort without
+     dispatching.
    - Re-claiming a past-deadline `accepted` turn (by the recovery sweep or by the next duplicate
-     send, §8) ROTATES the claim token in its own committed CAS. From that commit on, the
+     send, §8) ROTATES the claim token in its own committed CAS (for a `deleted_pending`
+     conversation, where step-1 fencing forbids every new claim, the sweep's arm is instead the
+     §19.2 stop-ratchet — the same fencing rotation, but terminal `stopped` rather than
+     re-drive). From that commit on, the
      expired owner — merely stalled, not dead — can no longer pass its boundary CAS, so it can
      never POST. Boundary-before-POST alone does NOT serialize two claimants; the fencing token
      is what makes re-drive at-most-one-POST safe (§8), and the DB row is the single arbiter.
@@ -1012,7 +1024,16 @@ active turns, and provider cleanup must not lose its tracking data:
    start after the commit.
 2. Every non-terminal attempt is stop-requested via the durable §13 Stop machinery (flag +
    active wake); owning runners observe within a heartbeat interval and finalize under the
-   fenced finalize; a dead owner's turn resolves through the ordinary lease-lapse recovery.
+   fenced finalize; a dead owner's POST-boundary turn resolves through the ordinary
+   lease-lapse recovery (`outcome_unknown`, §7.7). A dead owner's PRE-boundary attempt —
+   CLAIMED but never boundary-committed — has a DELETION-SPECIFIC terminal arm, because step 1
+   excludes `deleted_pending` conversations from every new claim, so the ordinary
+   reclaim-and-re-drive can never run and the attempt would otherwise stay `accepted` forever,
+   hanging this step's purge wait: the recovery sweep ratchets a past-deadline, stop-requested
+   `accepted` attempt of a `deleted_pending` conversation DIRECTLY to `stopped`, in a fencing
+   CAS that ROTATES the claim token in the same commit — the merely-stalled owner then loses
+   its boundary CAS and can never POST (safe precisely because pre-boundary means provably no
+   POST exists yet, the same proof §7.7's pre-boundary re-drive relies on).
    Purge WAITS until every turn on the conversation is terminal.
 3. Provider-side cleanup then runs as a DURABLE scheduled step with recorded outcomes and
    retries — honoring §11's terminal-evidence rule: an aborted request's provider-side mutation
@@ -1214,7 +1235,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | STREAM CRASH | n/a | (3) | fenced item writes stop; lease lapses | prefix marked partial | taint per §11 | worker | §7.7 ratchet | `outcome_unknown` | partial prefix | partial, labeled |
 | LATE RECOVERY | n/a | (2)→(3) — RECOVERY_ADVANCE_SERIALIZATION | probe upgrade CAS under branch authority | LAW 3 advance check, serialized | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
 | QUEUE WAKE | root still eligible (LAW 10) | claim CAS at (3); boundary commit (2)→(3) (LAW 16 — reading the (2) predicate without holding it would not serialize against a concurrent eligibility update) | claim CAS on unclaimed head (the CLAIM commit); boundary validates the held token | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
-| DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
+| DELETE | §19.1 root lock, both origins | (1) then per-turn (3) | stop-flags; claim predicates exclude | frozen | §19 cleanup scheduled | request → worker completes | §19 wait-terminal via recovery + §19.2 stop-ratchet for claimed pre-boundary attempts | `deleted_pending`→purge | hash-only captures remain | truth contract §19 |
 | PROVIDER CLEANUP | deleted or superseded state | (1)→(3) fresh txn | durable job outcomes/retries | n/a | provider deletion recorded, never assumed | worker | re-runnable | job terminal | outcome recorded | provider-deletion outcome shown |
 | ORPHAN CLEANUP | n/a | (3) ledger rows (lifecycle-independent, post-purge writable) | opaque job id; owner context first | n/a | orphan object deleted | worker | keyset re-discovery | job terminal | ledger row | n/a (background) |
 
