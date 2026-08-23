@@ -276,10 +276,10 @@ reconciled to Foundation V1 — see `plans/GOVAI-UI-MASTER-PLAN…` header,
 - a UI must not represent ask/sandbox/enforcement as applied. Claims follow
   `claims-policy.md`.
 
-### `GOVAI_NATIVE_EXPERIENCE_PARITY_V1` — NEXT program target
+### `GOVAI_NATIVE_EXPERIENCE_PARITY_V1` — ACTIVE program (baseline complete in this tree)
 
-`NATIVE_EXPERIENCE_PARITY_V1 = TARGET_NOT_IMPLEMENTED`. Recorded here as the owner's declared
-direction, **not** as work in flight and **not** as anything this tree delivers.
+`NATIVE_EXPERIENCE_PARITY_V1 = BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`. The target itself
+remains NOT implemented; what this tree delivers is the baseline movement only.
 
 The intent: GovAI exposes OpenAI, Anthropic, **Codex** and **Claude Code** capabilities with
 provider-native fidelity wherever an official supported programmatic interface exists, and with
@@ -299,9 +299,17 @@ interface. The doctrine it must hold to:
 - Claude Code integration prioritizes the supported Agent SDK / structured CLI interface over
   TUI scraping.
 
-Its first movement is `EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`: build the machine-readable
-parity matrix and prove the actual current capability gap across `OPENAI_API`, `ANTHROPIC_API`,
-`CODEX` and `CLAUDE_CODE`, **before** any capability implementation wave. Not started.
+Its first movement, `EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`, is **COMPLETE in this tree**
+(research snapshot 2026-08-21): the machine-readable parity matrix
+(`generated/native-experience-parity-v1.json`, 248 rows, validated by `pnpm docs:parity:check`
+and the unit lane), the surface baselines and findings
+([native-experience-parity-v1.md](./native-experience-parity-v1.md)) and the owner-accepted P0
+prerequisite `CONVERSATION_CONTINUITY=P0_NATIVE_EXPERIENCE_PREREQUISITE` with its DESIGN spec
+([ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) —
+`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`). No capability implementation wave has started.
+The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; the next
+implementation mission is `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated
+candidate scope in the baseline doc §10 — final scope frozen at its own dispatch). Not started.
 
 ---
 

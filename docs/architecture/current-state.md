@@ -10,6 +10,7 @@
 - **Provider-native doctrine ACCEPTED (ADR-021)** with an explicit separation between normative doctrine and the currently proven scope; unknown provider semantics pass or are observed by default; the only Native hard floor is provider-hosted computer-use; Phase 5 ask/sandbox/enforce primitives are NOT implemented (recommendation vs applied is honest over HTTP). No universal provider parity is claimed.
 - **Runtime route existence does not imply runtime evidence capture.** See §3 *Runtime-to-evidence wiring* (wired for the four direct routes; `/v1/runs` chain-authoritative).
 - **The `UI_UX_V1_FOUNDATION` product lane has STARTED, and its first milestone — U1, the evidence cockpit — is implemented in this tree** (`apps/ui`, EP-UIUX-V1-U1). It is a read-only static SPA over the three existing read surfaces (`/v1/evidence/*`, `/v1/audit-events`, `/v1/capabilities`); it changes NO backend behaviour (the Foundation V1 runtime anchor is unchanged) and it makes no capability claim the runtime does not support. See §1 *Interface layer*. **EP-UIUX-V1-B2 (this tree) adds the one backend surface U1 was missing: `GET /v1/me`** — a read-only projection of the identity `authenticateApiKey` already resolves — and wires it into the session, so the shell now shows the server-supplied operational mode, principal type and roles instead of correctly showing none. Production human auth/session/API-key lifecycle is still absent (residual R14) — `principal_type` is the literal `api_key` precisely so nothing presents a controlled-pilot org credential as a human login. **EP-UIUX-V1-U1.5 (this tree) adds the AI Console at `/ai`** — a provider-native conversational surface over the six already-registered direct provider routes (OpenAI Responses / Chat Completions and Anthropic Messages, each in Native/Audited and Governed mode). It adds **no route, no migration and no event schema**, and it changes no governance semantics. U2 (Workroom) is not started, and there is no governance-settings, Phase-5-enforcement, Workroom, regulatory or admin UI. **The two backend findings the AI Console's live acceptance produced were owner-adjudicated and are FIXED in this tree** (`EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02`): `AI-CONSOLE-ORIGIN-RELAY-01` — the direct routes relayed the browser's `Origin` header upstream and Anthropic answered 401, making the Anthropic surface unusable from a browser; the server→provider hop now strips it class-wide (both providers, Native/Audited and Governed, streaming and non-streaming) — and `AI-CONSOLE-RESPONSES-DLP-GAP-01` — the governed Responses DLP pre-scan skipped role-shaped `input[]` items; all five accepted message spellings now extract identically. These are the only backend runtime changes this milestone makes, and both are live/wire-proven. Two residuals are OPEN and deliberately unfixed, both `packages/provider-*` route behaviour that the owner adjudicates per finding: `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01` (`referer` / `cookie` describe the inbound hop by the same reasoning as `origin`, and only `origin` is in `STRIP_INBOUND_BROWSER_HOP` — so the server-side outbound header builders **would relay an inbound `cookie`**, and `referer` **is** relayed today. Stated precisely: the official console's `ApiClient` issues every request with `credentials: 'omit'`, so the browser attaches **no** cookie to GovAI calls and none reaches the builders to relay — the measured 6 cookies / 229 bytes on the acceptance origin quantify what a `credentials: 'include'` caller, or any future cookie-based human auth (R14), would hand upstream; that risk is MATERIAL and the residual stays OPEN) and `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01` (the non-stream forward calls `forwardRaw` with no `signal` and awaits an unbounded `res.arrayBuffer()`; pre-existing, made routinely reachable by the console's model discovery, streaming forward unaffected). See [stale-docs-register.md](./stale-docs-register.md).
+- **The Native Experience Parity V1 BASELINE is complete in this tree** (EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01, research snapshot 2026-08-21): parity vocabulary + four provider-surface baselines + product-UX reference + the 248-row machine manifest (`pnpm docs:parity:check`), and the **AI Conversation Continuity V1 DESIGN spec** — documentation, manifest and validator tooling ONLY. `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`; no provider capability was implemented; no runtime behaviour changed. See §*EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01 canonical state* at the end of this document.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
 
@@ -42,7 +43,7 @@ is one collected test module.
 
 | Structure | Source pattern | Count |
 |---|---|---|
-| Architecture docs | `docs/architecture/**/*.md` | 104 |
+| Architecture docs | `docs/architecture/**/*.md` | 106 |
 | Regulatory docs | `docs/architecture/regulatory/*.md` | 20 |
 | ADR decision records | `docs/architecture/adr/ADR-[0-9][0-9][0-9]-*.md` (excludes `ADR-INDEX.md`) | 31 |
 | Workspace apps | `apps/*` | 3 — `apps/api`, `apps/audit-sealer`, `apps/ui` |
@@ -53,9 +54,9 @@ is one collected test module.
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 137 | 1551 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 139 | 1589 |
 | Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 77 | 1122 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 214 | 2673 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 216 | 2711 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
 
@@ -589,3 +590,28 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 
 - **SEEDORG_FLAKE_CANDIDATE** — root cause: **SOURCE-ADJUDICATED (M3)**; classification since sharpened by observation. Observed symptoms: an earlier unrelated integration attempt reported a primary-key prefix collision, and the collision has since **recurred in CI** (an actual `api_keys_pkey` duplicate during the AI Console closeout runs) — it is no longer merely theoretical. The collision domain is the API-key prefix generator and schema, not the fixture: `packages/core-identity/src/api-keys.ts` forms the lookup prefix as `govai_sk_` plus three base64url characters (`PREFIX_LOOKUP_LEN=12`, nominal domain 64³ = 262,144) with no collision retry, and `govai.api_keys.prefix` is the PRIMARY KEY (migration `0005_runtime_patch_1.sql`). No production human/API-key issuance lifecycle exists at the anchor — `generateApiKey()` and every `INSERT INTO govai.api_keys` in the tree are test-only — so the present-tense classification is `EMPIRICALLY_MANIFESTED_TEST_FIXTURE_COLLISION` (the latent design risk `LATENT_AUTH_LIFECYCLE_DESIGN_RISK` has manifested, in the test-fixture domain only), deferred to the named follow-up `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING` (`OPEN_EMPIRICALLY_MANIFESTED`) in the R14 human-auth lane; not a Foundation V1 runtime blocker and it does not block F4 closure. `seedOrg` itself is unmodified.
 - **DIRECT_STREAM_REQUEST_ID_HEADER_GAP** — status: **PRE_EXISTING**; introduced by F4: NO; F4-blocking: NO. Direct streaming responses do not carry the `X-GovAI-Request-Id` echo; resolving it is a separate future behavior-and-compatibility decision.
+
+### EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01 canonical state (this tree)
+
+- `NATIVE_EXPERIENCE_PARITY_V1=BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED` — this tree adds the
+  **baseline only**: [native-experience-parity-v1.md](./native-experience-parity-v1.md) (the
+  parity vocabulary, the four surface baselines OPENAI_API / ANTHROPIC_API / CODEX / CLAUDE_CODE,
+  the PRODUCT_ONLY UX reference, findings, residual classification and implementation waves),
+  [ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) (the P0 conversation
+  continuity DESIGN spec — `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`, no migration, no route,
+  no runtime change), and the machine-readable manifest
+  [generated/native-experience-parity-v1.json](./generated/native-experience-parity-v1.json)
+  (248 capability rows at research snapshot 2026-08-21), validated by `pnpm docs:parity:check` /
+  canonicalized by `pnpm docs:parity:format` and enforced in the default unit lane
+  (`scripts/lib/parity-core.test.ts`, `scripts/native-experience-parity-manifest.test.ts`).
+- **No provider capability was implemented, no residual was fixed, and no governance semantics
+  changed in this movement.** The baseline records (it does not alter) the open findings it
+  proved, including **TOOL-TAXONOMY-DRIFT-2026-08**: the computer-use guardrail matches the
+  legacy tool-type/beta-header shapes, while the providers' 2026 GA computer-use/browser-use
+  shapes would classify `typed_unknown` and forward under the observe doctrine — registered as a
+  `BLOCKER_BEFORE_PARITY_IMPLEMENTATION` for that capability class (P7), with the beta-policy
+  snapshot staleness residual R6 now demonstrably material.
+- `AI_CONSOLE_V1=COMPLETE_UNCHANGED`; `FOUNDATION_V1=UNCHANGED`; `WORKROOM=SEMANTICALLY_SEPARATE`
+  (the Conversation ≠ Workroom adjudication is recorded in the continuity spec §4);
+  `NEXT_IMPLEMENTATION_MISSION=EP-AI-CONVERSATION-CONTINUITY-V1-01` (source-adjudicated candidate
+  scope in native-experience-parity-v1.md §10; not started).

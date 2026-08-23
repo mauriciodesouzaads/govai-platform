@@ -20,7 +20,9 @@
     "acceptance:ai-console": "tsx tests/acceptance/ai-console/run.ts",
     "acceptance:ai-console:live": "tsx tests/acceptance/ai-console/run.ts live",
     "docs:manifest:write": "tsx scripts/canonical-source-manifest.ts write",
-    "docs:manifest:check": "tsx scripts/canonical-source-manifest.ts check"
+    "docs:manifest:check": "tsx scripts/canonical-source-manifest.ts check",
+    "docs:parity:check": "tsx scripts/native-experience-parity-manifest.ts check",
+    "docs:parity:format": "tsx scripts/native-experience-parity-manifest.ts format"
   },
   "devDependencies": {
     "@types/node": "24.10.0",
