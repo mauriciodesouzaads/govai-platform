@@ -665,7 +665,11 @@ The durable-turn runner is a server-side component (apps/api) that:
    losing the CAS means another claimant owns the turn: abort with no POST — the boundary
    transaction ALSO revalidates that the step-3-resolved credential is still the org's active
    credential (a cheap same-transaction read that catches most rotations BEFORE the attempt
-   enters `dispatching`) — minting and
+   enters `dispatching`); a CREDENTIAL-mismatch failure here, with the claim token still held
+   and the lease unexpired, is NOT ownership loss — the runner re-runs step 3 under its
+   still-held claim and retries a NEW boundary (mirroring the commit-4 mismatch path below;
+   merely aborting would leave the attempt `accepted`-but-claimed with no terminal wake,
+   stalled until lease expiry and sweep recovery) — minting and
    persisting the attempt's `govai_request_id` IN THIS COMMIT (§14.1's ONE authoritative mint
    site — never at claim time) and then ENTERING the identity scope itself
    (§14.1: the runner constructs the `AuditBridgeRequestIdentity` and wraps the pipeline call
@@ -1097,9 +1101,15 @@ Closes `EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION` WITHOUT event-schema change:
    (`audit-bridge.ts:129`). Rule: the ONE authoritative assignment site is the
    DISPATCH-BOUNDARY COMMIT (the §8 protocol's third commit) — chosen because it succeeds AT
    MOST ONCE per attempt (pre-boundary claim lapses and reclaims never crossed it; post-boundary
-   re-dispatch is forbidden, §7.7), whereas a claim-time mint could be overwritten or left
+   re-dispatch is forbidden, §7.7 — the ONE exception is §9 step 4's rotation-restore, an
+   explicitly no-POST path that may re-cross the boundary), whereas a claim-time mint could be
+   overwritten or left
    ambiguous across a lapse-and-reclaim. In that commit the runner MINTS `govai_request_id`
-   (`randomUUID()`) and PERSISTS it on the attempt row — durably BEFORE any provider POST or
+   IF NULL (`randomUUID()`) and PERSISTS it on the attempt row — mint-if-null makes identity
+   assignment at-most-once even across a restored re-boundary: a restored attempt RETAINS its
+   already-persisted id (its first pass provably reached no POST and no capture, since the
+   restore precedes commit 4's completion, so the retained id stays truthful, and a client
+   that hydrated between the two boundaries keeps a stable identity) — durably BEFORE any provider POST or
    capture — and then explicitly enters the
    identity scope (`requestIdentityAls.run()` with a constructed `AuditBridgeRequestIdentity`)
    around its provider-pipeline call — for browser-attached sends and detached worker dispatch
