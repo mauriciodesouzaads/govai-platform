@@ -749,6 +749,10 @@ CREATE TRIGGER ai_conversation_attempts_birth_guard_trg
 --     dispatch_boundary_committed_at (stamped by the first boundary commit;
 --     a §9.4/§7.7 restore RETAINS it);
 --   * one-way flags: context_excluded, stop_requested;
+--   * POST-BOUNDARY CAUSAL FREEZE: causal_version_at_build and the four
+--     continuation_parent_* columns are frozen once OLD.state <> 'accepted'
+--     (§11/§7.8/LAW 17) — keyed on the state edge, not the boundary
+--     timestamp, so the §9.4 restore→rebuild→re-cross re-stamp stays lawful;
 --   * the §7 FORWARD TRANSITION GRAPH — with the single most important
 --     predicate: dispatching → accepted is lawful ONLY while
 --     OLD.provider_credential_id IS NULL (¬P — the DURABLE no-POST proof;
@@ -874,6 +878,25 @@ BEGIN
   THEN
     RAISE EXCEPTION 'ai_conversation_attempts: dispatch_boundary_committed_at records the first boundary crossing and is write-once (a restore RETAINS it, §14.1)'
       USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  -- POST-BOUNDARY CAUSAL FREEZE: the as-built causal version and the
+  -- continuation anchor record what THIS dispatch cycle actually chained
+  -- from (§11 "at dispatch", §7.8). They are established by a boundary
+  -- CROSSING and frozen from that commit onward; a lawful restore discards
+  -- the built request, so the NEXT crossing re-stamps them (§9.4). Keyed on
+  -- the STATE EDGE, NOT on dispatch_boundary_committed_at: the boundary
+  -- timestamp is write-once and RETAINED across a restore (§14.1), so a
+  -- boundary-conditioned freeze would block the legitimate rebuild.
+  IF OLD.state <> 'accepted' THEN
+    IF NEW.causal_version_at_build IS DISTINCT FROM OLD.causal_version_at_build
+      OR NEW.continuation_parent_ciphertext IS DISTINCT FROM OLD.continuation_parent_ciphertext
+      OR NEW.continuation_parent_dek_wrapped IS DISTINCT FROM OLD.continuation_parent_dek_wrapped
+      OR NEW.continuation_parent_kms_key_id IS DISTINCT FROM OLD.continuation_parent_kms_key_id
+      OR NEW.continuation_parent_kms_key_version IS DISTINCT FROM OLD.continuation_parent_kms_key_version
+    THEN
+      RAISE EXCEPTION 'ai_conversation_attempts: the as-built causal version and continuation anchor are established by a dispatch-boundary crossing and frozen thereafter (§11/§7.8/LAW 17)'
+        USING ERRCODE = 'insufficient_privilege';
+    END IF;
   END IF;
   -- Durable one-way flags (§7.8 / §13).
   IF OLD.context_excluded AND NOT NEW.context_excluded THEN

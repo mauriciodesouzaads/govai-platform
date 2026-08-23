@@ -55,8 +55,8 @@ is one collected test module.
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
 | Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 140 | 1610 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 80 | 1186 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 220 | 2796 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 80 | 1191 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 220 | 2801 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
 
@@ -622,8 +622,10 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 - `EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS`;
   `P0_A1_STORAGE_SECURITY_FOUNDATION=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`
   (independent Opus 5 Max audit of head `ff08a8ea`: KMS/RLS/lineage/migration-safety PASS,
-  three P2 MATERIAL integrity classes C1/C2/C3 — remediated in this tree; exact-new-head
-  independent confirmation pending);
+  three P2 MATERIAL integrity classes C1/C2/C3; exact-head confirmation of the remediation
+  at `0fc69aa2` closed C2, C3 and ten of eleven C1 manifestations, leaving ONE residual —
+  P0A1-C1-R, the post-boundary causal freeze — which is remediated in this tree;
+  exact-new-head independent confirmation pending);
   `CONVERSATION_CONTINUITY_ARCHITECTURE=SPECIFIED_IMPLEMENTATION_IN_PROGRESS`;
   **`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`** — there is still no durable user-facing
   Send/hydrate/reload path; the AI Console transcript remains memory-only
@@ -640,7 +642,10 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     is one composite FK to a specific attempt), guard triggers realizing §7's PHYSICS
     (identity/lineage frozen; FULL-ROW terminal freeze — a terminal attempt is never
     mutated; `outcome_unknown` closed probe resolution; write-once
-    provenance/request/capture identity + write-once dispatch boundary; a §7.1b attempt
+    provenance/request/capture identity + write-once dispatch boundary; the POST-BOUNDARY
+    CAUSAL FREEZE — `causal_version_at_build` + the `continuation_parent_*` anchor are
+    frozen once `state <> 'accepted'`, keyed on the state edge so the §9.4
+    restore→rebuild→re-cross re-stamp stays lawful; a §7.1b attempt
     BIRTH guard; the §7 forward transition graph with `dispatching → accepted` gated on
     provenance ABSENCE — the durable no-POST proof; provider-state ratchets — taint never
     clears, `superseded` is final with a frozen payload; the conversation lifecycle ratchet

@@ -1777,6 +1777,309 @@ describe('P0A1-C1 — terminal attempts are FULL-ROW ratchets', () => {
   });
 });
 
+describe('P0A1-C1-R — post-boundary causal freeze (Q-D1/Q-D2/Q-D3 closed)', () => {
+  it('a dispatching attempt cannot rewrite or null the causal record — with or without provenance (Q-D1a/b/c)', async () => {
+    const owner = freshOwner();
+    const chain = await seedFullChain(db.adminPool, owner);
+    const cred = await seedProviderCredential(db.adminPool, owner.orgId);
+    // Post-boundary with commit-4 provenance PRESENT: a POST may already
+    // exist, so what this attempt chained FROM is a settled fact (§11).
+    const dispatched = await seedAttempt(
+      db.adminPool, owner, chain.conversationId, chain.branchId, chain.turnId,
+      {
+        attemptSeq: 2,
+        state: 'dispatching',
+        providerCredentialId: cred,
+        govaiRequestId: randomUUID(),
+        continuationAnchor: true,
+      },
+    );
+    const forgeries: Array<{ label: string; set: string; param?: unknown }> = [
+      { label: 'continuation ciphertext rewrite (Q-D1a)', set: `continuation_parent_ciphertext = $2::bytea`, param: randomBytes(32) },
+      { label: 'continuation wrapped-key rewrite (Q-D1a)', set: `continuation_parent_dek_wrapped = $2::bytea`, param: randomBytes(64) },
+      { label: 'continuation key-id rewrite (Q-D1a)', set: `continuation_parent_kms_key_id = 'forged'` },
+      { label: 'continuation key-version rewrite (Q-D1a)', set: `continuation_parent_kms_key_version = 2` },
+      { label: 'causal_version_at_build rewrite (Q-D1b)', set: `causal_version_at_build = 424242` },
+      {
+        label: 'continuation anchor null-out (Q-D1c)',
+        set: `continuation_parent_ciphertext = NULL, continuation_parent_dek_wrapped = NULL,
+              continuation_parent_kms_key_id = NULL, continuation_parent_kms_key_version = NULL`,
+      },
+    ];
+    for (const f of forgeries) {
+      await expectError(
+        () =>
+          db.adminPool.query(
+            `UPDATE govai.ai_conversation_attempts SET ${f.set} WHERE id = $1::uuid`,
+            f.param === undefined ? [dispatched] : [dispatched, f.param],
+          ),
+        isPrivilegeViolation,
+        f.label,
+      );
+    }
+    // Control: the freeze keys on the STATE EDGE, so a provenance-ABSENT
+    // dispatching attempt is equally frozen — the lawful rebuild path runs
+    // through the §9.4 restore to accepted first, never in place.
+    const noProvenance = await seedAttempt(
+      db.adminPool, owner, chain.conversationId, chain.branchId, chain.turnId,
+      {
+        attemptSeq: 3,
+        state: 'dispatching',
+        providerCredentialId: null,
+        govaiRequestId: randomUUID(),
+        continuationAnchor: true,
+      },
+    );
+    await expectError(
+      () =>
+        db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET causal_version_at_build = 424242
+            WHERE id = $1::uuid`,
+          [noProvenance],
+        ),
+      isPrivilegeViolation,
+      'causal rewrite on provenance-absent dispatching',
+    );
+  });
+
+  it('a streaming attempt cannot rewrite the causal record (Q-D2a/b)', async () => {
+    const owner = freshOwner();
+    const chain = await seedFullChain(db.adminPool, owner);
+    const streaming = await seedAttempt(
+      db.adminPool, owner, chain.conversationId, chain.branchId, chain.turnId,
+      { attemptSeq: 2, state: 'streaming', govaiRequestId: randomUUID(), continuationAnchor: true },
+    );
+    await expectError(
+      () =>
+        db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET continuation_parent_ciphertext = $2::bytea
+            WHERE id = $1::uuid`,
+          [streaming, randomBytes(32)],
+        ),
+      isPrivilegeViolation,
+      'streaming anchor rewrite (Q-D2a)',
+    );
+    await expectError(
+      () =>
+        db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET causal_version_at_build = 424242
+            WHERE id = $1::uuid`,
+          [streaming],
+        ),
+      isPrivilegeViolation,
+      'streaming causal_version rewrite (Q-D2b)',
+    );
+  });
+
+  it('a forged causal record can never reach a terminal row — the forging write itself fails (Q-D3)', async () => {
+    const owner = freshOwner();
+    const chain = await seedFullChain(db.adminPool, owner);
+    const streaming = await seedAttempt(
+      db.adminPool, owner, chain.conversationId, chain.branchId, chain.turnId,
+      { attemptSeq: 2, state: 'streaming', govaiRequestId: randomUUID(), continuationAnchor: true },
+    );
+    const before = await db.adminPool.query<{
+      causal_version_at_build: string;
+      continuation_parent_ciphertext: Buffer;
+    }>(
+      `SELECT causal_version_at_build, continuation_parent_ciphertext
+         FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [streaming],
+    );
+    // The live post-boundary window is the LAST writable window before the
+    // terminal full-row freeze: the forgery must fail HERE, or terminalization
+    // would make it permanent (Q-D3).
+    await expectError(
+      () =>
+        db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts
+              SET causal_version_at_build = 424242, continuation_parent_ciphertext = $2::bytea
+            WHERE id = $1::uuid`,
+          [streaming, Buffer.from('FORGED-WHILE-STREAMING')],
+        ),
+      isPrivilegeViolation,
+      'forge while streaming',
+    );
+    // Lawful terminalization…
+    const finalize = await db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'completed', terminal_at = now(), updated_at = now()
+        WHERE id = $1::uuid`,
+      [streaming],
+    );
+    expect(finalize.rowCount).toBe(1);
+    // …permanently records the ORIGINAL causal record, never the forgery.
+    const after = await db.adminPool.query<{
+      causal_version_at_build: string;
+      continuation_parent_ciphertext: Buffer;
+    }>(
+      `SELECT causal_version_at_build, continuation_parent_ciphertext
+         FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [streaming],
+    );
+    expect(after.rows[0]!.causal_version_at_build).toBe(before.rows[0]!.causal_version_at_build);
+    expect(
+      after.rows[0]!.continuation_parent_ciphertext.equals(
+        before.rows[0]!.continuation_parent_ciphertext,
+      ),
+    ).toBe(true);
+    // The terminal full-row ratchet now holds that record forever.
+    await expectError(
+      () =>
+        db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET causal_version_at_build = 424242
+            WHERE id = $1::uuid`,
+          [streaming],
+        ),
+      isPrivilegeViolation,
+      'terminal causal rewrite',
+    );
+  });
+
+  it('the freeze does not over-reach: claim, first crossing, lease authority, provenance, stream and completion all stay lawful', async () => {
+    const owner = freshOwner();
+    const chain = await seedFullChain(db.adminPool, owner);
+    const cred = await seedProviderCredential(db.adminPool, owner.orgId);
+    // BORN accepted, unclaimed (§7.1b).
+    const attempt = await seedAttempt(
+      db.adminPool, owner, chain.conversationId, chain.branchId, chain.turnId,
+      { attemptSeq: 2 },
+    );
+    const lawful = async (label: string, set: string, params: unknown[]): Promise<void> => {
+      const r = await db.adminPool.query(
+        `UPDATE govai.ai_conversation_attempts SET ${set} WHERE id = $1::uuid`,
+        params,
+      );
+      expect(r.rowCount, label).toBe(1);
+    };
+    // Claim commit while accepted (§7.2).
+    await lawful(
+      'claim commit',
+      `claim_token = $2::uuid, claimant = 'runner', claim_deadline_at = now() + interval '5 minutes'`,
+      [attempt, randomUUID()],
+    );
+    // FIRST boundary crossing stamps the causal record (§9 step 4).
+    await lawful(
+      'first boundary crossing',
+      `state = 'dispatching', dispatch_boundary_committed_at = now(),
+       govai_request_id = $2::uuid, causal_version_at_build = 7, heartbeat_at = now(),
+       continuation_parent_ciphertext = $3::bytea, continuation_parent_dek_wrapped = $4::bytea,
+       continuation_parent_kms_key_id = 'k', continuation_parent_kms_key_version = 1,
+       updated_at = now()`,
+      [attempt, randomUUID(), randomBytes(32), randomBytes(64)],
+    );
+    // Lease/fencing AUTHORITY stays mutable post-boundary (§7.7) — it is
+    // authority, not causal record.
+    await lawful('heartbeat renewal', `heartbeat_at = now() + interval '30 seconds'`, [attempt]);
+    await lawful('lease extension', `claim_deadline_at = now() + interval '10 minutes'`, [attempt]);
+    await lawful(
+      'claim rotation (sweep reclaim)',
+      `claim_token = $2::uuid, claimant = 'sweeper'`,
+      [attempt, randomUUID()],
+    );
+    await lawful('stop_requested one-way set', `stop_requested = true`, [attempt]);
+    // Commit-4 provenance write inside the dispatching window (§8).
+    await lawful('commit-4 provenance', `provider_credential_id = $2::uuid`, [attempt, cred]);
+    // Stream start and completion.
+    await lawful('dispatching -> streaming', `state = 'streaming', updated_at = now()`, [attempt]);
+    await lawful(
+      'streaming -> completed',
+      `state = 'completed', terminal_at = now(), updated_at = now()`,
+      [attempt],
+    );
+  });
+
+  it('CRITICAL §9.4 end-to-end: restore retains the boundary, the rebuild re-stamps a FRESH causal record, the re-crossing freezes it again', async () => {
+    const owner = freshOwner();
+    const chain = await seedFullChain(db.adminPool, owner);
+    const reqId = randomUUID();
+    // Crashed inside the boundary→commit-4 window: provenance ABSENT.
+    const attempt = await seedAttempt(
+      db.adminPool, owner, chain.conversationId, chain.branchId, chain.turnId,
+      {
+        attemptSeq: 2,
+        state: 'dispatching',
+        providerCredentialId: null,
+        govaiRequestId: reqId,
+        continuationAnchor: true,
+      },
+    );
+    // Sanctioned restore on the durable no-POST proof (¬P).
+    const restore = await db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'accepted', claim_token = $2::uuid, claimant = 'sweeper',
+              claim_deadline_at = now() + interval '5 minutes', updated_at = now()
+        WHERE id = $1::uuid AND provider_credential_id IS NULL`,
+      [attempt, randomUUID()],
+    );
+    expect(restore.rowCount).toBe(1);
+    const restored = await db.adminPool.query<{
+      state: string;
+      govai_request_id: string;
+      dispatch_boundary_committed_at: Date | null;
+    }>(
+      `SELECT state, govai_request_id, dispatch_boundary_committed_at
+         FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attempt],
+    );
+    // §14.1 mint-if-null: the restored row RETAINS boundary + request id —
+    // which is exactly why the freeze must key on the state edge, not on the
+    // boundary timestamp.
+    expect(restored.rows[0]!.state).toBe('accepted');
+    expect(restored.rows[0]!.govai_request_id).toBe(reqId);
+    expect(restored.rows[0]!.dispatch_boundary_committed_at).not.toBeNull();
+    // While accepted, the causal record is REBUILDABLE: §9 step 3 re-runs
+    // from a fresh sample, discarding the stale build.
+    const freshCipher = randomBytes(32);
+    const rebuilt = await db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET causal_version_at_build = 12,
+              continuation_parent_ciphertext = $2::bytea,
+              continuation_parent_dek_wrapped = $3::bytea,
+              continuation_parent_kms_key_id = 'k2',
+              continuation_parent_kms_key_version = 2,
+              updated_at = now()
+        WHERE id = $1::uuid`,
+      [attempt, freshCipher, randomBytes(64)],
+    );
+    expect(rebuilt.rowCount).toBe(1);
+    // The NEW boundary crossing carries the fresh record into dispatching…
+    const recross = await db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'dispatching', heartbeat_at = now(), updated_at = now()
+        WHERE id = $1::uuid`,
+      [attempt],
+    );
+    expect(recross.rowCount).toBe(1);
+    const recrossed = await db.adminPool.query<{
+      state: string;
+      causal_version_at_build: string;
+      continuation_parent_ciphertext: Buffer;
+      continuation_parent_kms_key_id: string;
+    }>(
+      `SELECT state, causal_version_at_build, continuation_parent_ciphertext,
+              continuation_parent_kms_key_id
+         FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attempt],
+    );
+    expect(recrossed.rows[0]!.state).toBe('dispatching');
+    expect(recrossed.rows[0]!.causal_version_at_build).toBe('12');
+    expect(recrossed.rows[0]!.continuation_parent_ciphertext.equals(freshCipher)).toBe(true);
+    expect(recrossed.rows[0]!.continuation_parent_kms_key_id).toBe('k2');
+    // …and is frozen again from that commit onward.
+    await expectError(
+      () =>
+        db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET causal_version_at_build = 13
+            WHERE id = $1::uuid`,
+          [attempt],
+        ),
+      isPrivilegeViolation,
+      'post-re-cross causal rewrite',
+    );
+  });
+});
+
 describe('P0A1-C1 — provider_state and conversation lifecycle ratchets', () => {
   it('taint never clears; status moves active → superseded only; superseded payload freezes (P-C1/P-C2 closed)', async () => {
     const owner = freshOwner();
