@@ -640,9 +640,19 @@ The durable-turn runner is a server-side component (apps/api) that:
    site — never at claim time) and then ENTERING the identity scope itself
    (§14.1: the runner constructs the `AuditBridgeRequestIdentity` and wraps the pipeline call
    in `requestIdentityAls.run()`, because neither `/v1/ai/*` requests nor detached
-   sweep/wake-driven workers pass the ingress identity hook), and only THEN
-   dispatches to the SAME provider-native pipeline the direct routes use (credential resolution,
-   DLP, tool classifier, beta policy, capture — unchanged semantics; the governed/passthrough
+   sweep/wake-driven workers pass the ingress identity hook), then RESOLVES THE CREDENTIAL AND
+   PERSISTS ITS PROVENANCE BEFORE FORWARDING — credential resolution is SPLIT from the
+   forward: the resolver must surface the credential ROW ID alongside the decrypt material
+   (the current resolver returns ciphertext only, `provider-credentials.ts:130-135`; the
+   implementation mission extends its return rather than guessing), and the runner commits the
+   resolved `provider_credential_id` onto the attempt row in a §7.7 FENCED incremental write
+   (`claim_token = <mine> AND state = 'dispatching'`) — a durable write INSIDE the
+   `dispatching` window, deliberately NOT a fifth protocol commit — BEFORE any provider POST
+   (§3's recorded dispatch credential: without it an implementation can POST without ever
+   persisting which account owns the resulting object, and after rotation recovery probes and
+   orphan cleanup cannot identify it), and only THEN
+   dispatches to the SAME provider-native pipeline the direct routes use (DLP, tool
+   classifier, beta policy, capture — unchanged semantics; the governed/passthrough
    distinction is carried by the conversation's durable immutable `mode` column (§3), read at
    hydration and at EVERY dispatch, request-driven or detached); boundary-before-POST plus the fenced CAS is
    what makes §7.7's stranded-turn recovery at-most-one-POST safe;
