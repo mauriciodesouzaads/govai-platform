@@ -603,7 +603,8 @@ Normative rules:
   (1) In-process: whichever runner commits ANY terminal transition on a branch (finalize,
   rejection, stop, or a recovery ratchet) immediately attempts a normal claim CAS on the
   branch's next `accepted` turn — that claim CAS IS the five-commit protocol's CLAIM commit —
-  and, on success, drives the remaining commits (context build → boundary → POST → finalize). (2) Cross-process / crash: the periodic recovery sweep claims any UNCLAIMED `accepted`
+  and, on success, drives the remaining commits (context build → boundary →
+  credential-provenance commit → POST → finalize). (2) Cross-process / crash: the periodic recovery sweep claims any UNCLAIMED `accepted`
   turn standing at the head of its branch (no earlier non-terminal turn) — head-of-queue
   pickup is NOT deadline-gated; deadlines govern only the RE-claiming of already-claimed turns
   (§7.7). Claim lifecycle stated plainly: a reservation is born unclaimed; its creating request
@@ -1312,7 +1313,10 @@ normative above; LAW 16 is introduced here.
   dispatch-boundary commit, or a late-recovery eligibility decision (§7.8's
   RECOVERY_ADVANCE_SERIALIZATION) — must HOLD (2), the branch execution authority; the
   advance-absence predicate and the boundary crossing may never race.** Sweep:
-  SEND/RETRY/FORK take (1)→(2)→(3); DELETE takes (1), then per-turn (3) via the Stop flags
+  SEND/RETRY take (1)→(2)→(3); FORK takes (1)→(2) in `after_attempt` mode (no child
+  turn/attempt rows are minted at fork time — the child's first send mints them) and
+  (1)→(2)→(3) in `before_attempt_output` mode (the fork transaction itself mints the child
+  turn + fresh attempt, §3); DELETE takes (1), then per-turn (3) via the Stop flags
   (no branch authority needed — it stops, never dispatches); STOP touches only (3);
   QUEUE WAKE's claim CAS is (3)-only (claiming changes no
   context eligibility), and its dispatch-boundary commit takes (1-share)→(2)→(3) — EVERY
@@ -1344,7 +1348,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | SEND | §8 root lock + status revalidate | (1)→(2)→(3) | reservation PK; claim at head | §7.5 projection | adapter builds anchor at boundary | request (`govai_app`) | §7.7 stranded/lapse | §7 machine | §14 triple | queued/live/terminal state |
 | RETRY (last turn) | same as SEND | (1)→(2)→(3) | new attempt, handoff CAS | LAW 4 before-N-output, both domains | rewind anchor / rotate object | request | same | same | new attempt triple | replaced answer; prior attempt visible |
 | EARLIER-TURN REGENERATE | same | (1)→(2)→(3) | fork + new child turn/attempt | `before_attempt_output` mode | child branch state fresh/rotated | request | same | same | child triples | new branch, old intact |
-| FORK / CROSS-PROVIDER FORK | §8 root lock | (1)→(2) | pinned ratchet attempt (mode-specific, §3: `completed` for `after_attempt`; any immutable terminal for `before_attempt_output`) | §3 boundary modes; §17 portable projection | branch-owned provider triple; fresh state | request | n/a (no dispatch yet) | n/a | inherits at dispatch | labeled quality loss (§17) |
+| FORK / CROSS-PROVIDER FORK | §8 root lock | (1)→(2) for `after_attempt` (no child rows minted at fork time); (1)→(2)→(3) for `before_attempt_output` (fork transaction mints child turn + attempt — LAW 16) | pinned ratchet attempt (mode-specific, §3: `completed` for `after_attempt`; any immutable terminal for `before_attempt_output`) | §3 boundary modes; §17 portable projection | branch-owned provider triple; fresh state | request | n/a (no dispatch yet) | n/a | inherits at dispatch | labeled quality loss (§17) |
 | STOP | none (attempt-scoped, lineage-authorized) | (3) only | attempt-keyed flag + active wake + heartbeat-tick read; `client_stop_id` idempotency; never retargets (STOP_ATTEMPT_TARGET_STABILITY) | terminal-outranks-abort | §11 taint if post-boundary non-completed | request | flag survives crashes | `stopped` (target attempt only) | attempt triple | honest stop state |
 | RELOAD / RE-ATTACH | none | none (reads) | n/a | hydrate durable prefix/terminal | none | request | §10 | n/a | n/a | partial marked partial |
 | DUPLICATE SEND | none | (3) read | replay, never verdict | current state | none | request | drives stranded head | n/a | existing | queued/live/terminal replay |
