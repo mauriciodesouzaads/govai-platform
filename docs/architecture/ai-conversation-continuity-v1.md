@@ -275,6 +275,7 @@ draft → accepted → dispatching → streaming → completed
            │            │            ├→ stopped          (user Stop; terminal event absent)
            │            │            ├→ failed           (provider/transport error, classified)
            │            │            └→ outcome_unknown  (dispatch fate unprovable)
+           │            ├→ accepted                      (provenance-absent recovery re-drive — §7.7 sweep reclaim on an execution-eligible root, or §9 step-4 restore; provably no POST. On a `deleted_pending` root the same sweep arm ratchets terminal `stopped` instead, §7.7/§19.2)
            │            ├→ stopped / failed / outcome_unknown   (post-boundary, pre-stream — same semantics)
            │            └→ rejected                      (governance 403 / validation / 4xx before provider processing)
            └→ stopped                                    (user discards a QUEUED turn pre-dispatch — releases the branch queue, §8)
@@ -394,10 +395,30 @@ Normative rules:
      forbidden and only the recovery probe may upgrade the state. A past-deadline
      `dispatching` attempt WITHOUT `provider_credential_id` is PROVABLY UNDISPATCHED — the §8
      protocol commits provenance (the fourth commit) before EVERY POST — so the sweep has a
-     PROVENANCE-ABSENT RECLAIM arm: one CAS ROTATES the claim token and restores the attempt
-     to `accepted` (the rotation fences the stalled owner — its commit-4 and pre-POST checks
-     all carry `claim_token` predicates and can never pass again), and the attempt re-enters
-     ordinary head-of-queue pickup instead of being falsely reported ambiguous.
+     PROVENANCE-ABSENT RECLAIM arm. Its CAS carries the proof EXPLICITLY as durable
+     predicates, never as narrative precondition: `state = 'dispatching' AND claim_token =
+     <expected> AND provider_credential_id IS NULL`, actionable only past `deadline + δ`
+     (the same recovery grace every sweep action on `dispatching` honors), plus the root
+     lifecycle predicate that selects between the two branches below. Provenance-absence
+     must sit IN the CAS because the safety proof is durable-predicate-based: a commit-4
+     landing concurrently with the sweep's decision either commits first — this CAS then
+     matches zero rows and the provenance-PRESENT rule above governs — or loses its own
+     `claim_token` predicate to this CAS's rotation; the two serialize on the attempt row,
+     so a restored attempt can never coexist with an owner still able to complete commit 4
+     and POST. The arm then BRANCHES on the conversation root's lifecycle:
+     - EXECUTION-ELIGIBLE root: the CAS ROTATES the claim token and restores the attempt to
+       `accepted` (the rotation fences the stalled owner — its commit-4 and pre-POST checks
+       all carry `claim_token` predicates and can never pass again), and the attempt
+       re-enters ordinary head-of-queue pickup instead of being falsely reported ambiguous.
+     - `deleted_pending` root: restore-for-re-drive is FORBIDDEN — §19.1's deletion fencing
+       excludes the conversation from every new claim, so a restored `accepted` attempt
+       would be unclaimable (no claim, no deadline, no head-of-queue pickup), could never
+       reach §19.2's past-deadline stop-ratchet, and would hang the purge wait forever. The
+       sweep instead performs the DELETION-SPECIFIC TERMINAL ratchet (§19.2): one atomic
+       CAS — same predicates as above — ROTATES the claim token AND ratchets the attempt
+       DIRECTLY to `stopped`. Terminal is safe by exactly the proof this arm already relies
+       on: absent provenance means commit 4 never ran, commit 4 precedes every POST, so no
+       provider request exists to be ambiguous about.
    - **The post-boundary window is governed as a LEASE, and the finalize-commit is fenced too.**
      A boundary CAS win alone cannot stop a runner that stalls between boundary and POST, then
      resumes after recovery has marked the turn `outcome_unknown` and released the branch queue
@@ -701,9 +722,12 @@ The durable-turn runner is a server-side component (apps/api) that:
    authority and postpone recovery indefinitely. An expired-lease restore therefore FAILS and
    ordinary lease recovery takes over — which lands in §7.7's PROVENANCE-ABSENT RECLAIM arm:
    the no-POST proof is DURABLE (no `provider_credential_id` on the attempt means commit 4
-   never happened, and commit 4 precedes every POST), so the sweep rotates the token and
-   restores the attempt to `accepted` rather than falsely reporting `outcome_unknown`;
-   the attempt is again dispatchable, the built request is discarded, and step 3 re-runs from
+   never happened, and commit 4 precedes every POST), so on an EXECUTION-ELIGIBLE root the
+   sweep rotates the token and restores the attempt to `accepted` rather than falsely
+   reporting `outcome_unknown` (on a `deleted_pending` root the arm's deletion branch
+   rotates and ratchets terminal `stopped` instead, §7.7/§19.2 — deletion fencing would
+   make a restored attempt unclaimable); in the restore case the attempt is again
+   dispatchable, the built request is discarded, and step 3 re-runs from
    a fresh sample (fresh resolution, reconciliation, rebuild) to a NEW boundary CAS. Without
    the restore, aborting here would strand the attempt in `dispatching` until lease recovery
    ratcheted a provably-undispatched attempt to `outcome_unknown`. The restore changes no
@@ -1115,8 +1139,9 @@ Closes `EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION` WITHOUT event-schema change:
    (`audit-bridge.ts:129`). Rule: the ONE authoritative assignment site is the
    DISPATCH-BOUNDARY COMMIT (the §8 protocol's third commit) — chosen because it succeeds AT
    MOST ONCE per attempt (pre-boundary claim lapses and reclaims never crossed it; post-boundary
-   re-dispatch is forbidden, §7.7 — the ONE exception is §9 step 4's rotation-restore, an
-   explicitly no-POST path that may re-cross the boundary), whereas a claim-time mint could be
+   re-dispatch is forbidden, §7.7 — the exceptions are the explicitly no-POST restore paths that
+   may re-cross the boundary: §9 step 4's rotation-restore and §7.7's provenance-absent sweep
+   reclaim on an execution-eligible root), whereas a claim-time mint could be
    overwritten or left
    ambiguous across a lapse-and-reclaim. In that commit the runner MINTS `govai_request_id`
    IF NULL (`randomUUID()`) and PERSISTS it on the attempt row — mint-if-null makes identity
@@ -1221,8 +1246,17 @@ active turns, and provider cleanup must not lose its tracking data:
    already-post-boundary attempts remain covered by step 2's stop-and-wait fencing.
 2. Every non-terminal attempt is stop-requested via the durable §13 Stop machinery (flag +
    active wake); owning runners observe within a heartbeat interval and finalize under the
-   fenced finalize; a dead owner's POST-boundary turn resolves through the ordinary
-   lease-lapse recovery (`outcome_unknown`, §7.7). A dead owner's PRE-boundary attempt —
+   fenced finalize; a dead owner's POST-boundary turn BRANCHES ON CREDENTIAL PROVENANCE.
+   With `provider_credential_id` PRESENT, a provider POST may already exist, so the turn
+   resolves through the ordinary lease-lapse recovery (`outcome_unknown`, §7.7) and is
+   deletion-settled below. With provenance ABSENT — a crash inside the boundary→commit-4
+   window — no POST can exist (commit 4 precedes every POST), and §7.7's PROVENANCE-ABSENT
+   RECLAIM arm takes its `deleted_pending` branch: one fencing CAS rotates the claim token
+   and ratchets the attempt DIRECTLY to terminal `stopped`. Restore-for-re-drive is
+   forbidden for it because step 1 excludes `deleted_pending` conversations from every new
+   claim: a restored `accepted` attempt would be unclaimable and deadline-less, this step's
+   past-deadline stop-ratchet below could never fire on it, and the purge wait would hang
+   forever on a state with no exit. A dead owner's PRE-boundary attempt —
    CLAIMED but never boundary-committed — has a DELETION-SPECIFIC terminal arm, because step 1
    excludes `deleted_pending` conversations from every new claim, so the ordinary
    reclaim-and-re-drive can never run and the attempt would otherwise stay `accepted` forever,
@@ -1272,8 +1306,10 @@ active turns, and provider cleanup must not lose its tracking data:
    is cleaned from there; ledger rows are removed only by cleanup completion.
 
 A UI "Delete conversation" never promises evidence erasure the audit plane legitimately prevents;
-it states exactly what is deleted and what hash-only evidence remains. LGPD erasure of CONTENT is
-satisfied by crypto-shred; the evidence plane holds no content (§2), so no conflict is created.
+it states exactly what is deleted and what hash-only evidence remains. Crypto-shred is the
+TECHNICAL content-erasure measure GovAI provides in support of applicable LGPD erasure
+obligations — a mechanism, not a legal-sufficiency conclusion; the evidence plane holds no
+content (§2), so no conflict is created.
 
 ## 20. Current auth limitation (R14)
 
@@ -1452,7 +1488,7 @@ evidence link (§14); TRUTH = user-visible truth.
 | RELOAD / RE-ATTACH | none | none (reads) | n/a | hydrate durable prefix/terminal | none | request | §10 | n/a | n/a | partial marked partial |
 | DUPLICATE SEND | none | (3) read | replay, never verdict | current state | none | request | drives stranded head | n/a | existing | queued/live/terminal replay |
 | CRASH PRE-BOUNDARY | n/a | (3) reclaim | token rotation | none emitted | none | worker | §7.7 re-drive (provably undispatched) | continues | n/a | seamless |
-| CRASH POST-BOUNDARY | n/a | (3) | fenced finalize loses; ledger append allowed | not eligible | §11 taint/rotation | worker | probe or ratchet | `outcome_unknown` | orphan ledger | honest ambiguity |
+| CRASH POST-BOUNDARY | n/a | (3) | fenced finalize loses; ledger append allowed | not eligible | §11 taint/rotation | worker | provenance PRESENT: probe or ratchet; provenance ABSENT: §7.7 reclaim arm — restore `accepted` (execution-eligible root) or terminal `stopped` (`deleted_pending` root, §19.2) | provenance PRESENT: `outcome_unknown`; ABSENT: re-driven or `stopped` | orphan ledger | honest ambiguity only where a POST may exist; provably-undispatched work is never reported ambiguous |
 | STREAM CRASH | n/a | (3) | fenced item writes stop; lease lapses | prefix marked partial | taint per §11 | worker | §7.7 ratchet | `outcome_unknown` | partial prefix | partial, labeled |
 | LATE RECOVERY | n/a | (2)→(3) — RECOVERY_ADVANCE_SERIALIZATION | probe upgrade CAS under branch authority | LAW 3 advance check, serialized | anchors root in eligible attempts only | worker | §7.8 | completed(+excluded) or failed | upgraded triple | transcript vs context stated |
 | QUEUE WAKE | root still eligible (LAW 10) | claim CAS at (3); boundary commit (1-share)→(2)→(3) (LAW 16 — root KEY SHARE serializes vs §19.1's root FOR UPDATE; reading the (2) predicate without holding it would not serialize against a concurrent eligibility update) | claim CAS on unclaimed head (the CLAIM commit); boundary validates the held token | §7.5 at dispatch | adapter at boundary | worker or terminalizing runner | sweep fallback | continues | n/a | pending→live |
@@ -1490,7 +1526,13 @@ authority; probe-wins and dispatch-wins are the only orderings, no third outcome
 that wins BETWEEN N+1's context build and boundary commit bumps `causal_version`, so the
 stale build loses the boundary CAS pre-POST and rebuilds — PASS. AB
 Stop(N) delayed until Retry minted N+1 → STOP_ATTEMPT_TARGET_STABILITY: the attempt-scoped
-command replays N's terminal state and never touches N+1 — PASS. No scenario yields two
+command replays N's terminal state and never touches N+1 — PASS. AD crash inside the
+dispatch-boundary→commit-4 window concurrent with Delete → provenance absent is durable
+proof no POST exists; past `deadline + δ` the §7.7 provenance-absent CAS (explicit
+`provider_credential_id IS NULL` predicate) branches on the root — execution-eligible:
+rotate + restore `accepted` for re-drive; `deleted_pending`: rotate + terminal `stopped`
+(§19.2) — the purge gate is reached deterministically and no reachable state is left
+without an exit — PASS. No scenario yields two
 plausible outcomes, missing authority, an unbounded
 stranded state, cross-owner reach, retroactive causal rewrite, or domain divergence.
 
