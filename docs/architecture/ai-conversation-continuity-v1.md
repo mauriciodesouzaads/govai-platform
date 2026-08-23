@@ -78,7 +78,7 @@ recorded grant — not a relaxation of the default.)
 | Artifact | (deferred) | Product-equivalent work surfaces; the item model must be able to mark an item as artifact-source, nothing more in V1 |
 | Provider State | `govai.ai_conversation_provider_state` | Per-branch continuation state owned by the adapter (§11): e.g. OpenAI `conversation_id`/`previous_response_id`, Codex thread id, Claude Code session id, encrypted where opaque |
 | Evidence Link | `govai.ai_conversation_evidence_links` | Additive projection turn/attempt → `{govai_request_id, capture_id, audit_event_id?}` (§14). Never mutates audit tables |
-| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7) and must survive purge until cleanup consumes them (§19). The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
+| Disposal ledger | `govai.ai_provider_disposal_ledger` | THE ONE deliberate exception to LAW 1's composite binding: org+owner-scoped (RLS as usual) but LIFECYCLE-INDEPENDENT of its conversation — `conversation_id` is a PLAIN VALUE, not an FK — because disposal records must be appendable AFTER the conversation is purged (a fenced zombie's late stored-response id, §7.7), must survive purge until cleanup consumes them (§19), and are the SOLE admissible §19 step-4 handoff target for provider-cleanup obligations still pending at purge time (transcribed in the same transaction as the purge). The `provider_object_id` it carries is ENVELOPE-ENCRYPTED (§6): §21 classifies provider identifiers as sensitive, and the ledger outlives the purged conversation and its encrypted provider_state — a plaintext column would hand a DB snapshot exactly the identifiers the opaque-discovery design protects; the worker decrypts only after owner-scoped context entry. Justification recorded here so the exception can never silently generalize |
 | Content blob | `govai.ai_conversation_content` | Envelope-encrypted payload store owned by THIS domain (§6) — deliberately not `audit_event_payloads` |
 
 Ownership/tenant scope: every row carries `org_id` AND `owner_user_id` (the stable `user_id`
@@ -621,7 +621,7 @@ ordinary request role and the detached-worker identity are DISTINCT TRUST DOMAIN
   | Provider-state reconciliation/rotation/taint | `ai_conversation_provider_state` | SELECT, INSERT, UPDATE | anchors, taint flags, rotation supersession |
   | Branch causal authority (single-flight predicate, fork ancestry checks, `causal_version` bump, LAW 16 level-2 row lock) | `ai_conversation_branches` | SELECT, UPDATE (column-narrowed to `causal_version` where house conventions support it) | EVERY worker-side eligibility-changing commit (§7.8 probe upgrades, completion eligibility handoffs, `context_excluded` markings) MUST bump the branch `causal_version` in the SAME transaction — SELECT-only would silently omit the bump and let an already-built stale request pass its boundary CAS; and the LAW 16 level-2 branch row lock is itself unrealizable without UPDATE (PostgreSQL row-locking reads — `SELECT … FOR UPDATE`/`FOR NO KEY UPDATE` — require UPDATE privilege). Still NO INSERT/DELETE: branch creation stays request-plane (fork); removal stays §19 purge-step |
   | `deleted_pending` completion + purge | `ai_conversations` + child tables | SELECT, UPDATE; DELETE (purge step ONLY) | status transitions; §19 step-4 row purge |
-  | Orphan-disposal processing | disposal ledger | SELECT, UPDATE, INSERT, DELETE | read job under owner RLS, record outcomes/retries; INSERT for worker-side enqueue during recovery; DELETE strictly post-success (§19 removes completed rows — the ledger outlives purge, so without removal its encrypted provider identifiers would accumulate indefinitely) |
+  | Orphan-disposal processing | disposal ledger | SELECT, UPDATE, INSERT, DELETE | read job under owner RLS, record outcomes/retries; INSERT for worker-side enqueue during recovery AND the §19 step-4 same-transaction transcription of still-pending provider cleanup at purge; DELETE strictly post-success (§19 removes completed rows — the ledger outlives purge, so without removal its encrypted provider identifiers would accumulate indefinitely) |
   | Evidence-link post-processing | `ai_conversation_evidence_links` | SELECT, INSERT — CONDITIONAL | only if §14 linkage is materialized by the worker; otherwise no grant |
 
   **Provider-pipeline execution privileges (worker-driven dispatch):** the worker does not
@@ -983,8 +983,15 @@ active turns, and provider cleanup must not lose its tracking data:
    retries — honoring §11's terminal-evidence rule: an aborted request's provider-side mutation
    may still land late, so cleanup of provider-stored objects is re-runnable, not
    fire-and-forget.
-4. Row purge is LAST, and only after provider cleanup has completed or been durably handed to a
-   cleanup queue that itself carries the provider identifiers it needs — purging must never
+4. Row purge is LAST, and only after provider cleanup has COMPLETED — or, for any obligation
+   still pending, been handed off to the ONE admissible target: the lifecycle-independent
+   disposal ledger (§3). No other handoff target exists BY CONSTRUCTION: any other queue row is
+   composite-bound to its conversation (LAW 1), so it would either hold an FK that blocks this
+   purge or be cascade-destroyed WITH the provider identifier it still needs — leaving
+   provider-held content undeleted while the UI reports deletion. The handoff TRANSCRIBES the
+   pending job (envelope-encrypted provider identifier, plain-value `conversation_id`, retry
+   state) into the ledger IN THE SAME TRANSACTION as the row purge, so there is no window in
+   which the conversation rows are gone but the obligation is unrecorded — purging must never
    orphan the very data the cleanup requires. Content blobs become crypto-shred eligible at
    this point. Purge does NOT delete pending disposal-ledger rows (the ledger is
    lifecycle-independent, §3) and does NOT wait on stale claimants — an unbounded zombie can
