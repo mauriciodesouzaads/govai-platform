@@ -442,11 +442,22 @@ Normative rules:
      provider produces no events at all. Persistence of stream items continues incrementally,
      so the durable prefix always reflects what was relayed. **Every incremental write is fenced, not just the finalize:** each item-append
      transaction is conditional on `claim_token = <mine> AND state = 'streaming'`, and each
-     HEARTBEAT on `claim_token = <mine> AND state IN ('dispatching', 'streaming')` — the
-     heartbeat predicate accepts BOTH post-boundary states, because the timer starts at the
+     HEARTBEAT on `claim_token = <mine> AND state IN ('dispatching', 'streaming') AND
+     deadline > now()` — renewal is an authority EXTENSION, and an expired lease must never be
+     SELF-extended: without the deadline predicate, a runner that pauses past its deadline and
+     resumes before the sweep acts could renew forever and indefinitely postpone recovery,
+     contradicting the rule that expiry loses authority. The heartbeat
+     predicate accepts BOTH post-boundary states, because the timer starts at the
      boundary commit and a time-to-first-byte longer than one interval would otherwise make a
-     healthy runner's first tick touch zero rows and self-abort. Zero rows touched means the
-     writer has been fenced out (or the attempt ratcheted) and MUST abort its relay. Without this, a stalled
+     healthy runner's first tick touch zero rows and self-abort. Item-appends and the
+     finalize deliberately stay token+state-fenced WITHOUT a deadline predicate — they are
+     authority EXERCISE under a not-yet-rotated token, not extension: with renewal refused an
+     expired lease cannot be prolonged, the sweep's ratchet proceeds on schedule and its
+     commit fences all further writes, whereas a deadline predicate on those writes would only
+     discard legitimately completed work (a stream finishing seconds after expiry) without
+     accelerating recovery. Zero rows touched means the
+     writer has been fenced out, the attempt ratcheted, or (on a heartbeat) the lease already
+     expired — and the runner MUST abort its relay. Without this, a stalled
      pump that resumes after the recovery ratchet could keep appending to a prefix the ratchet
      already declared terminal-partial, silently mutating "terminal" state the finalize CAS
      alone does not protect. A `streaming` turn whose lease has lapsed past `deadline + δ` is resolved
