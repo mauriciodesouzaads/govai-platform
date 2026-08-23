@@ -662,7 +662,10 @@ The durable-turn runner is a server-side component (apps/api) that:
    resolved credential is an INPUT to request construction, so a mismatch can
    never strand an already-built request;
 4. commits the dispatch boundary (`dispatching`) as the §7.7 fencing CAS on the step-2 claim token —
-   losing the CAS means another claimant owns the turn: abort with no POST — minting and
+   losing the CAS means another claimant owns the turn: abort with no POST — the boundary
+   transaction ALSO revalidates that the step-3-resolved credential is still the org's active
+   credential (a cheap same-transaction read that catches most rotations BEFORE the attempt
+   enters `dispatching`) — minting and
    persisting the attempt's `govai_request_id` IN THIS COMMIT (§14.1's ONE authoritative mint
    site — never at claim time) and then ENTERING the identity scope itself
    (§14.1: the runner constructs the `AuditBridgeRequestIdentity` and wraps the pipeline call
@@ -678,9 +681,16 @@ The durable-turn runner is a server-side component (apps/api) that:
    SEPARATE transaction inside the `dispatching` window (never hold the boundary transaction
    open across credential resolution). The SAME transaction REVALIDATES that the
    step-3-resolved credential row is STILL the org's active credential for the provider: a
-   rotation that landed between resolution and this commit ABORTS it — the built request is
-   discarded and step 3 re-runs from a fresh sample (fresh resolution, reconciliation,
-   rebuild) — otherwise the runner would persist and POST with now-superseded material,
+   rotation that slipped into the boundary→commit-4 window FAILS this commit, and the runner
+   then performs a FENCED RESTORE CAS — `dispatching → accepted` on `claim_token = <mine> AND
+   state = 'dispatching'`, claim RETAINED with a fresh deadline — which is safe by exactly the
+   provably-no-POST proof (this commit precedes any POST, so no provider request can exist);
+   the attempt is again dispatchable, the built request is discarded, and step 3 re-runs from
+   a fresh sample (fresh resolution, reconciliation, rebuild) to a NEW boundary CAS. Without
+   the restore, aborting here would strand the attempt in `dispatching` until lease recovery
+   ratcheted a provably-undispatched attempt to `outcome_unknown`. The restore changes no
+   context eligibility (no `causal_version` bump). Otherwise the runner would persist and
+   POST with now-superseded material,
    defeating §11's prohibition on continuing under a superseded account. A rotation landing
    AFTER this commit but before the POST is the bounded honest residual: the POST either
    fails provider-side auth (ordinary failure taxonomy) or completes under the superseded
