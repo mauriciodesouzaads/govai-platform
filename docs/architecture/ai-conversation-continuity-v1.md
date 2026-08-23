@@ -972,7 +972,17 @@ Cross-adapter rules:
   cleanup deletes the unused object under its recorded credential; the only residual is a
   crash in the instants between create and append — the SAME already-acknowledged residual
   as a fenced zombie crashing before its late append (an object no one holds an identifier
-  for), minimized by making the two adjacent.
+  for), minimized by making the two adjacent. Because the append commits INDEPENDENTLY (it
+  must survive the very failure paths it protects against), cleanup could otherwise race the
+  settlement and delete an object the runner is about to commit as its live anchor — so
+  provisional rows carry a MATURITY window (`provisional_until`, stamped at append, sized
+  well beyond a build-and-settle cycle): §19 cleanup may not CLAIM a provisional row before
+  it matures, and settlement and cleanup SERIALIZE on the row itself — cleanup claims with a
+  CAS (unclaimed → claimed-for-disposal), settlement settles with a CAS requiring the row
+  UNCLAIMED — so exactly ONE wins: if cleanup won (a runner slow enough to outlive the
+  maturity window), the runner's settle touches zero rows, it must NOT commit the object as
+  its live anchor, and reconciliation reseeds afresh; if settlement won, cleanup's claim
+  touches zero rows and skips.
 - **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
   case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
   conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a
