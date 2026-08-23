@@ -389,9 +389,15 @@ Normative rules:
      never POST. Boundary-before-POST alone does NOT serialize two claimants; the fencing token
      is what makes re-drive at-most-one-POST safe (§8), and the DB row is the single arbiter.
    - A turn past its deadline in `dispatching` (boundary committed, no terminal recorded)
-     resolves to `outcome_unknown` (§7.4) — NEVER re-dispatched, by any claimant: post-boundary,
-     a provider POST may already exist, so re-drive is forbidden and only the recovery probe may
-     upgrade the state.
+     resolves to `outcome_unknown` (§7.4) WHEN its credential provenance is PRESENT —
+     post-boundary with provenance, a provider POST may already exist, so re-drive is
+     forbidden and only the recovery probe may upgrade the state. A past-deadline
+     `dispatching` attempt WITHOUT `provider_credential_id` is PROVABLY UNDISPATCHED — the §8
+     protocol commits provenance (the fourth commit) before EVERY POST — so the sweep has a
+     PROVENANCE-ABSENT RECLAIM arm: one CAS ROTATES the claim token and restores the attempt
+     to `accepted` (the rotation fences the stalled owner — its commit-4 and pre-POST checks
+     all carry `claim_token` predicates and can never pass again), and the attempt re-enters
+     ordinary head-of-queue pickup instead of being falsely reported ambiguous.
    - **The post-boundary window is governed as a LEASE, and the finalize-commit is fenced too.**
      A boundary CAS win alone cannot stop a runner that stalls between boundary and POST, then
      resumes after recovery has marked the turn `outcome_unknown` and released the branch queue
@@ -693,8 +699,10 @@ The durable-turn runner is a server-side component (apps/api) that:
    heartbeat (§7.7): the restore stamps a fresh deadline, making it an authority EXTENSION —
    without the predicate an expired claimant that stalls inside this window could regain
    authority and postpone recovery indefinitely. An expired-lease restore therefore FAILS and
-   ordinary lease recovery takes over — the conservative `outcome_unknown` outcome is correct
-   there, because authority expiry forfeits the no-POST knowledge only the live runner held;
+   ordinary lease recovery takes over — which lands in §7.7's PROVENANCE-ABSENT RECLAIM arm:
+   the no-POST proof is DURABLE (no `provider_credential_id` on the attempt means commit 4
+   never happened, and commit 4 precedes every POST), so the sweep rotates the token and
+   restores the attempt to `accepted` rather than falsely reporting `outcome_unknown`;
    the attempt is again dispatchable, the built request is discarded, and step 3 re-runs from
    a fresh sample (fresh resolution, reconciliation, rebuild) to a NEW boundary CAS. Without
    the restore, aborting here would strand the attempt in `dispatching` until lease recovery
