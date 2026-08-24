@@ -620,12 +620,21 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-A1 canonical state (this tree)
 
 - `EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS`;
-  `P0_A1_STORAGE_SECURITY_FOUNDATION=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`
-  (independent Opus 5 Max audit of head `ff08a8ea`: KMS/RLS/lineage/migration-safety PASS,
-  three P2 MATERIAL integrity classes C1/C2/C3; exact-head confirmation of the remediation
-  at `0fc69aa2` closed C2, C3 and ten of eleven C1 manifestations, leaving ONE residual —
-  P0A1-C1-R, the post-boundary causal freeze — which is remediated in this tree;
-  exact-new-head independent confirmation pending);
+  `P0_A1_STORAGE_SECURITY_FOUNDATION=IMPLEMENTED_AND_INDEPENDENTLY_CONFIRMED`;
+  `PR140=MERGED_AND_VERIFIED` (squash merge; the merge commit's tree is byte-identical to
+  the final independently reviewed technical tree). Review arc: independent Opus 5 Max
+  audit of head `ff08a8ea` (KMS/RLS/lineage/migration-safety PASS; three P2 MATERIAL
+  integrity classes C1/C2/C3) → exact-head confirmation at `0fc69aa2` (closed C2, C3 and
+  ten of eleven C1 manifestations; ONE residual — P0A1-C1-R, the post-boundary causal
+  freeze) → final narrow C1-R remediation and final Opus exact-head confirmation at
+  head `5d786bc913463d145a9284011886bca0721e4d99`
+  (tree `718943ccc84e39724a295e11a7a2dc8ebe440428`): C1=PASS, C2=PASS, C3=PASS,
+  P0=0, P1=0, P2_MATERIAL=0 — `OPUS_5_MAX_P0_A1_FINAL_CONFIRMATION=PASS`.
+  Codex review `UNAVAILABLE_DUE_TO_QUOTA` (quota-limit notices only — NOT a clean review);
+  the independent Opus lane is the documented compensating review control
+  (`PR140-CODEX-UNAVAILABLE-OPUS-INDEPENDENT-COMPENSATION-01`,
+  `PROCESS_CONTROL_SUBSTITUTION` — not a finding waiver).
+  `P0_A2=NOT_STARTED`; next movement: P0-A2 — detached worker trust + recovery discovery;
   `CONVERSATION_CONTINUITY_ARCHITECTURE=SPECIFIED_IMPLEMENTATION_IN_PROGRESS`;
   **`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`** — there is still no durable user-facing
   Send/hydrate/reload path; the AI Console transcript remains memory-only
