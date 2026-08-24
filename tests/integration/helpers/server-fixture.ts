@@ -4,7 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { buildServer } from '../../../apps/api/src/server.js';
-import { generateApiKey, DevKms } from '@govai/core-identity';
+import { generateApiKey, DevKms, type GeneratedApiKey } from '@govai/core-identity';
 import { setLocalAppOrgId } from '@govai/core-tenant';
 import { createProviderCredential } from '@govai/core-governance';
 import {
@@ -117,6 +117,57 @@ export async function stopStack(stack: Stack): Promise<void> {
   await stopPostgres(stack.db);
 }
 
+// EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING (T1): the API-key lookup prefix carries only
+// three random base64url characters (`govai_sk_` = 9 of PREFIX_LOOKUP_LEN = 12; nominal
+// domain 64³ = 262,144) and `govai.api_keys.prefix` is the PRIMARY KEY, so independently
+// generated fixture keys can — and empirically did, twice in CI — collide. The DB
+// uniqueness constraint is correct and stays authoritative; the issuance boundary handles
+// the collision by rolling back the WHOLE failed transaction and retrying it with a fresh
+// candidate, within a small finite bound.
+export const API_KEY_COLLISION_RETRY_BOUND = 8;
+
+const API_KEY_COLLISION_SQLSTATE = '23505';
+const API_KEY_COLLISION_CONSTRAINT = 'api_keys_pkey';
+
+// ONLY the exact target collision class is retryable: PostgreSQL unique_violation (23505)
+// on the api_keys primary key. Any other unique violation (orgs PK, provider-credential
+// uniqueness, …), RLS rejection, connection failure or unexpected error fails immediately.
+function isApiKeyPrefixCollision(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: unknown; constraint?: unknown };
+  return e.code === API_KEY_COLLISION_SQLSTATE && e.constraint === API_KEY_COLLISION_CONSTRAINT;
+}
+
+/**
+ * Run a test-only API-key issuance transaction with bounded retry on the exact
+ * `api_keys_pkey` prefix collision.
+ *
+ * The `insert` callback owns its transaction: BEGIN → INSERT(s) → COMMIT, with ROLLBACK
+ * before rethrowing on failure (a collision aborts the whole transaction, so recovery is
+ * always a full-transaction retry — never a partial one). Every attempt receives a NEWLY
+ * generated candidate; the same plaintext/prefix is never retried, and an existing row
+ * that won the uniqueness race is never touched. On exhaustion this throws a
+ * deterministic error that names the attempt count but no secret material (no plaintext,
+ * no hash — the pg error detail, which echoes the colliding prefix, is deliberately not
+ * chained).
+ */
+export async function withGeneratedApiKeyCollisionRetry<T>(
+  insert: (key: GeneratedApiKey) => Promise<T>,
+): Promise<T> {
+  for (let attempt = 1; attempt <= API_KEY_COLLISION_RETRY_BOUND; attempt++) {
+    const key = await generateApiKey();
+    try {
+      return await insert(key);
+    } catch (err) {
+      if (!isApiKeyPrefixCollision(err)) throw err;
+      // Target collision: loop for a fresh candidate.
+    }
+  }
+  throw new Error(
+    `api key prefix collision retry exhausted after ${API_KEY_COLLISION_RETRY_BOUND} attempts (${API_KEY_COLLISION_SQLSTATE}/${API_KEY_COLLISION_CONSTRAINT})`,
+  );
+}
+
 /**
  * Seed an org + user + active API key into the test DB. Returns the plaintext key
  * (only available at creation time).
@@ -131,27 +182,35 @@ export async function seedOrg(stack: Stack, name = `org-${randomUUID().slice(0, 
   const orgId = randomUUID();
   const userId = randomUUID();
   const workspaceId = randomUUID();
-  const key = await generateApiKey();
 
-  // Insert under writer role (admin pool) — bypasses tenant RLS for setup.
-  const c = await stack.db.adminPool.connect();
-  try {
-    await c.query('BEGIN');
-    await c.query('SET LOCAL ROLE govai_audit_writer');
-    await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
-    await c.query(
-      `INSERT INTO govai.orgs (id, name, operational_mode) VALUES ($1::uuid, $2::text, 'test')`,
-      [orgId, name],
-    );
-    await c.query(
-      `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status)
-       VALUES ($1, $2, $3::uuid, $4::uuid, 'active')`,
-      [key.prefix, key.hash, orgId, userId],
-    );
-    await c.query('COMMIT');
-  } finally {
-    c.release();
-  }
+  // org + key stay atomic: a prefix collision aborts the whole transaction, and the
+  // retry re-runs the COMPLETE issuance for the SAME logical org identity with a
+  // fresh generated key.
+  const key = await withGeneratedApiKeyCollisionRetry(async (candidate) => {
+    // Insert under writer role (admin pool) — bypasses tenant RLS for setup.
+    const c = await stack.db.adminPool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('SET LOCAL ROLE govai_audit_writer');
+      await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
+      await c.query(
+        `INSERT INTO govai.orgs (id, name, operational_mode) VALUES ($1::uuid, $2::text, 'test')`,
+        [orgId, name],
+      );
+      await c.query(
+        `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status)
+         VALUES ($1, $2, $3::uuid, $4::uuid, 'active')`,
+        [candidate.prefix, candidate.hash, orgId, userId],
+      );
+      await c.query('COMMIT');
+      return candidate;
+    } catch (err) {
+      await c.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      c.release();
+    }
+  });
 
   return {
     org_id: orgId,
@@ -175,21 +234,29 @@ export async function addApiKey(
     'admin' | 'data_protection_officer' | 'dlp_admin' | 'developer' | 'auditor'
   > = [],
 ): Promise<{ api_key: string; api_key_prefix: string }> {
-  const key = await generateApiKey();
-  const c = await stack.db.adminPool.connect();
-  try {
-    await c.query('BEGIN');
-    await c.query('SET LOCAL ROLE govai_audit_writer');
-    await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
-    await c.query(
-      `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status, roles)
-       VALUES ($1, $2, $3::uuid, $4::uuid, 'active', $5::text[])`,
-      [key.prefix, key.hash, orgId, userId, roles as string[]],
-    );
-    await c.query('COMMIT');
-  } finally {
-    c.release();
-  }
+  // Same T1 issuance contract as seedOrg: on the exact api_keys_pkey collision the failed
+  // attempt rolls back and a FRESH candidate retries in a fresh transaction, preserving
+  // orgId/userId/roles. The returned plaintext/prefix is always the committed candidate.
+  const key = await withGeneratedApiKeyCollisionRetry(async (candidate) => {
+    const c = await stack.db.adminPool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('SET LOCAL ROLE govai_audit_writer');
+      await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
+      await c.query(
+        `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status, roles)
+         VALUES ($1, $2, $3::uuid, $4::uuid, 'active', $5::text[])`,
+        [candidate.prefix, candidate.hash, orgId, userId, roles as string[]],
+      );
+      await c.query('COMMIT');
+      return candidate;
+    } catch (err) {
+      await c.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      c.release();
+    }
+  });
   return { api_key: key.plaintext, api_key_prefix: key.prefix };
 }
 
