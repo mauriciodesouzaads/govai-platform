@@ -3,9 +3,14 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { setLocalAppOrgId } from '@govai/core-tenant';
-import { generateApiKey } from '@govai/core-identity';
 import { authenticateApiKey } from '../../apps/api/src/pipeline/auth.js';
-import { startStack, stopStack, seedOrg, type Stack } from './helpers/server-fixture.js';
+import {
+  startStack,
+  stopStack,
+  seedOrg,
+  withGeneratedApiKeyCollisionRetry,
+  type Stack,
+} from './helpers/server-fixture.js';
 
 let stack: Stack;
 
@@ -28,25 +33,32 @@ async function seedOrgWithDbDefaults(
 ): Promise<{ org_id: string; api_key: string }> {
   const orgId = randomUUID();
   const userId = randomUUID();
-  const key = await generateApiKey();
-  const c = await s.db.adminPool.connect();
-  try {
-    await c.query('BEGIN');
-    await c.query('SET LOCAL ROLE govai_audit_writer');
-    await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
-    await c.query(
-      `INSERT INTO govai.orgs (id, name) VALUES ($1::uuid, 'hae004-default')`,
-      [orgId],
-    );
-    await c.query(
-      `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status)
-       VALUES ($1, $2, $3::uuid, $4::uuid, 'active')`,
-      [key.prefix, key.hash, orgId, userId],
-    );
-    await c.query('COMMIT');
-  } finally {
-    c.release();
-  }
+  // T1: same bounded api_keys_pkey collision retry as seedOrg — this local seeder is the
+  // one other generated-key insertion boundary in the CI integration lane.
+  const key = await withGeneratedApiKeyCollisionRetry(async (candidate) => {
+    const c = await s.db.adminPool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('SET LOCAL ROLE govai_audit_writer');
+      await c.query("SELECT set_config('app.org_id', $1, true)", [orgId]);
+      await c.query(
+        `INSERT INTO govai.orgs (id, name) VALUES ($1::uuid, 'hae004-default')`,
+        [orgId],
+      );
+      await c.query(
+        `INSERT INTO govai.api_keys (prefix, hash, org_id, user_id, status)
+         VALUES ($1, $2, $3::uuid, $4::uuid, 'active')`,
+        [candidate.prefix, candidate.hash, orgId, userId],
+      );
+      await c.query('COMMIT');
+      return candidate;
+    } catch (err) {
+      await c.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      c.release();
+    }
+  });
   return { org_id: orgId, api_key: key.plaintext };
 }
 

@@ -40,12 +40,12 @@
       "tests": 1610
     },
     "root_integration_only": {
-      "files": 80,
-      "tests": 1191
+      "files": 81,
+      "tests": 1198
     },
     "root_full_integration_gate": {
-      "files": 220,
-      "tests": 2801
+      "files": 221,
+      "tests": 2808
     },
     "ui": {
       "files": 33,
