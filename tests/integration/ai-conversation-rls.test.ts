@@ -238,25 +238,89 @@ describe('ai-conversation RLS — dual-predicate owner scoping', () => {
     expect(blocked).toBe(true);
   });
 
-  it('the table owner (govai_audit_writer) has no policy: FORCE RLS yields zero rows', async () => {
+  // UPDATED BY P0-A2 (was: "the table owner has no policy: FORCE RLS yields zero rows").
+  // 0031 itself recorded that this was a P0-A1 fact with a scheduled successor — "Only
+  // govai_app has policies in P0-A1 ... and the worker role is P0-A2". Migration 0032 now
+  // gives the table owner three NARROW `FOR SELECT` policies, because a SECURITY DEFINER
+  // function owned by govai_audit_writer is itself subject to FORCE RLS and would otherwise
+  // read nothing (the 0029 §H / 0025 precedent). The invariant that replaces the old one is
+  // STRONGER than "zero rows": the owner's cross-owner visibility is confined to the live
+  // claim plane, it disappears the moment the work is terminal, and it never reaches
+  // encrypted content at all.
+  it('the table owner (govai_audit_writer) sees ONLY the live claim plane, never content', async () => {
     const owner = freshOwner();
     const chain = await seedFullChain(db.adminPool, owner);
-    // Become the table owner on an admin connection with the OWNER's own
-    // context set — FORCE RLS + no policy for the role must still yield 0.
-    const c = await db.adminPool.connect();
-    try {
-      await c.query('BEGIN');
-      await c.query(`SET LOCAL ROLE govai_audit_writer`);
-      await c.query("SELECT set_config('app.org_id', $1, true)", [owner.orgId]);
-      await c.query("SELECT set_config('app.user_id', $1, true)", [owner.ownerUserId]);
-      const r = await c.query(`SELECT id FROM govai.ai_conversations WHERE id = $1::uuid`, [
+    const asOwnerRole = async <T>(fn: (c: PoolClient) => Promise<T>): Promise<T> => {
+      const c = await db.adminPool.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query(`SET LOCAL ROLE govai_audit_writer`);
+        // The OWNER's own context is set too, so a failure here can never be blamed on a
+        // missing GUC — the definer policies deliberately do not read them.
+        await c.query("SELECT set_config('app.org_id', $1, true)", [owner.orgId]);
+        await c.query("SELECT set_config('app.user_id', $1, true)", [owner.ownerUserId]);
+        return await fn(c);
+      } finally {
+        // ★ ROLLBACK in `finally`: a failed assertion must never release a client that is
+        // still inside a transaction with SET LOCAL ROLE in force — the next checkout of that
+        // pooled connection would run as govai_audit_writer and cascade unrelated failures.
+        await c.query('ROLLBACK').catch(() => undefined);
+        c.release();
+      }
+    };
+
+    // The five tables the discovery function never reads have NO owner policy at all.
+    await asOwnerRole(async (c) => {
+      for (const t of [
+        'ai_conversation_branches',
+        'ai_conversation_items',
+        'ai_conversation_content',
+        'ai_conversation_provider_state',
+        'ai_conversation_evidence_links',
+      ]) {
+        const r = await c.query(`SELECT 1 FROM govai.${t}`);
+        expect({ t, rows: r.rowCount }).toEqual({ t, rows: 0 });
+      }
+    });
+
+    // While the attempt is NON-TERMINAL, the three claim-plane tables are visible — that is
+    // the whole point of the narrow policy.
+    await asOwnerRole(async (c) => {
+      const conv = await c.query(`SELECT id FROM govai.ai_conversations WHERE id = $1::uuid`, [
         chain.conversationId,
       ]);
-      expect(r.rowCount).toBe(0);
-      await c.query('ROLLBACK');
-    } finally {
-      c.release();
-    }
+      expect(conv.rowCount).toBe(1);
+      const att = await c.query(
+        `SELECT state FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+        [chain.attemptId],
+      );
+      expect(att.rows[0]!.state).toBe('accepted');
+    });
+
+    // Ratchet the attempt to a terminal state: the owner's visibility DISAPPEARS on all three.
+    // The narrowing is a live predicate on the row class, not a standing grant.
+    await advanceSeededAttempt(db.adminPool, owner, chain.attemptId, { state: 'stopped' });
+    await asOwnerRole(async (c) => {
+      for (const [t, id] of [
+        ['ai_conversations', chain.conversationId],
+        ['ai_conversation_turns', chain.turnId],
+        ['ai_conversation_attempts', chain.attemptId],
+      ] as const) {
+        const r = await c.query(`SELECT 1 FROM govai.${t} WHERE id = $1::uuid`, [id]);
+        expect({ t, rows: r.rowCount }).toEqual({ t, rows: 0 });
+      }
+    });
+
+    // And the owner holds no WRITE policy anywhere in the domain: every policy naming
+    // govai_audit_writer on an ai_* table is a SELECT policy.
+    const pol = await db.adminPool.query<{ policyname: string; cmd: string }>(
+      `SELECT policyname, cmd FROM pg_policies
+        WHERE schemaname = 'govai' AND tablename LIKE 'ai_conversation%'
+          AND roles::text LIKE '%govai_audit_writer%'
+        ORDER BY policyname`,
+    );
+    expect(pol.rowCount).toBe(3);
+    for (const p of pol.rows) expect(p.cmd).toBe('SELECT');
   });
 
   it('the whole encrypted chain is readable ONLY under the exact owner context', async () => {
