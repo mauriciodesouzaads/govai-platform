@@ -50,13 +50,13 @@ is one collected test module.
 | Workspace packages | `packages/*` | 13 |
 | Other workspace members | literal entries in `pnpm-workspace.yaml` | `scripts`, `tests` |
 | API route files | `apps/api/src/routes/*.ts` | 19 |
-| DB migrations | `apps/api/src/db/migrations/*.sql` | 29 |
+| DB migrations | `apps/api/src/db/migrations/*.sql` | 30 |
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 139 | 1589 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 77 | 1122 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 216 | 2711 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 140 | 1610 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 80 | 1191 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 220 | 2801 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
 
@@ -614,4 +614,73 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 - `AI_CONSOLE_V1=COMPLETE_UNCHANGED`; `FOUNDATION_V1=UNCHANGED`; `WORKROOM=SEMANTICALLY_SEPARATE`
   (the Conversation ≠ Workroom adjudication is recorded in the continuity spec §4);
   `NEXT_IMPLEMENTATION_MISSION=EP-AI-CONVERSATION-CONTINUITY-V1-01` (source-adjudicated candidate
-  scope in native-experience-parity-v1.md §10; not started).
+  scope in native-experience-parity-v1.md §10; its P0-A1 movement is implemented in this tree —
+  see the next section).
+
+### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-A1 canonical state (this tree)
+
+- `EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS`;
+  `P0_A1_STORAGE_SECURITY_FOUNDATION=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`
+  (independent Opus 5 Max audit of head `ff08a8ea`: KMS/RLS/lineage/migration-safety PASS,
+  three P2 MATERIAL integrity classes C1/C2/C3; exact-head confirmation of the remediation
+  at `0fc69aa2` closed C2, C3 and ten of eleven C1 manifestations, leaving ONE residual —
+  P0A1-C1-R, the post-boundary causal freeze — which is remediated in this tree;
+  exact-new-head independent confirmation pending);
+  `CONVERSATION_CONTINUITY_ARCHITECTURE=SPECIFIED_IMPLEMENTATION_IN_PROGRESS`;
+  **`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`** — there is still no durable user-facing
+  Send/hydrate/reload path; the AI Console transcript remains memory-only
+  (`apps/ui/tests/ai/persistence.test.tsx` unchanged and truthful). No parity-manifest row
+  changed classification: storage primitives are not user/provider capability.
+- What P0-A1 actually shipped (movement
+  `P0-A1-OPERATIONAL-STORAGE-CRYPTO-OWNER-RLS-FOUNDATION-01`):
+  - **Migration `0031_ai_conversation_storage_foundation.sql`** — eight `ai_*` tables
+    (`ai_conversations`, `ai_conversation_branches`, `ai_conversation_turns`,
+    `ai_conversation_attempts`, `ai_conversation_items`, `ai_conversation_content`,
+    `ai_conversation_provider_state`, `ai_conversation_evidence_links`), all with
+    dual-predicate FORCE RLS (`app.org_id` AND `app.user_id`), composite-lineage FKs
+    (no pointer by id alone; `current_attempt_id` is a DEFERRABLE composite FK; the fork pin
+    is one composite FK to a specific attempt), guard triggers realizing §7's PHYSICS
+    (identity/lineage frozen; FULL-ROW terminal freeze — a terminal attempt is never
+    mutated; `outcome_unknown` closed probe resolution; write-once
+    provenance/request/capture identity + write-once dispatch boundary; the POST-BOUNDARY
+    CAUSAL FREEZE — `causal_version_at_build` + the `continuation_parent_*` anchor are
+    frozen once `state <> 'accepted'`, keyed on the state edge so the §9.4
+    restore→rebuild→re-cross re-stamp stays lawful; a §7.1b attempt
+    BIRTH guard; the §7 forward transition graph with `dispatching → accepted` gated on
+    provenance ABSENCE — the durable no-POST proof; provider-state ratchets — taint never
+    clears, `superseded` is final with a frozen payload; the conversation lifecycle ratchet
+    — no edge out of `deleted_pending`/`deleted`), the §7 state × authority × provenance
+    CHECK implication matrix (with `B` = boundary committed and `P` = credential provenance
+    defined in-schema: `completed⟹B∧P`, `streaming⟹P`, `outcome_unknown⟹P`, `accepted⟹¬P`,
+    `capture⟹request`, `request⟹B`, `error_class⟹failed`; `rejected` deliberately carries
+    no universal B/P rule — §7 admits pre- and post-boundary rejection), an 8-column
+    evidence-identity composite FK binding each evidence link to its attempt's OWN
+    `{govai_request_id, capture_id}`, and an additive `(org_id, id)` UNIQUE key on
+    `govai.provider_credentials` for org-composite credential provenance. Grants:
+    `govai_app` SELECT+INSERT only.
+  - **KMS purpose isolation** (`packages/core-identity`): new purposes `conversation_content`
+    (envelope) + `conversation_content_integrity` (keyed digest); `envelopeEncrypt`/
+    `envelopeDecrypt` accept an optional narrow `KmsEnvelopePurpose` — omitted purpose is
+    byte-identical to the historical `payload_dek` behavior in BOTH DevKms and AwsKms (legacy
+    ciphertext unaffected; cross-purpose decrypt fails closed).
+  - **Owner-scoped tenant context** (`packages/core-tenant`, additive): `setLocalAppUserId` /
+    `clearAppUserId` / `withOwnerContext` (transaction-local `set_config`; commit/rollback
+    clear; UUID-validated). `withTenant` org-only semantics unchanged.
+  - **Security test matrix** (`tests/integration/ai-conversation-*.test.ts`): RLS A–G matrix
+    (same-org cross-owner negative proof, cross-org, missing/partial/no context, WITH CHECK),
+    §29 lineage falsification, guard-trigger ratchets, cross-org credential provenance
+    rejection, owner-context lifecycle + pooled-connection leak proof, and an encrypted-row
+    proof (ciphertext at rest; digest is keyed HMAC, provably not `sha256(plaintext)`).
+- Deliberately NOT in P0-A1 (later movements): worker identity + recovery discovery (P0-A2),
+  HTTP routes/Send/claims/runner/SSE/Stop/retry/fork, delete-protocol execution, provider
+  adapters, attachments (`ai_conversation_attachments`) and the disposal ledger
+  (`ai_provider_disposal_ledger`). **Deferred pointers, recorded:** `project_id` (Projects do
+  not exist; an unconstrained pointer is forbidden) and `workroom_id` attribution
+  (`govai.workrooms` has an id-only PK — no existing `(org_id, id)` composite identity to
+  bind). Carry-forward acceptance notes: final Opus R-1 (provenance-absent lifecycle branching
+  must serialize on the conversation root, §7.7 pattern); AUTH-READ-CACHE-01
+  (`Cache-Control: no-store` on conversation reads from day one of P0-B); P0A1-C4 (fork-pin
+  mode-specific STATE validity is a P0-B acceptance obligation: `after_attempt` pin must be
+  `completed`; `before_attempt_output` pin must be an immutable terminal; `outcome_unknown`
+  rejected in both modes; no non-terminal pin); and P0A1-C5 (`current_attempt_id` backward
+  repoint — monotonic handoff is a P0-B acceptance proof if not taken structurally).

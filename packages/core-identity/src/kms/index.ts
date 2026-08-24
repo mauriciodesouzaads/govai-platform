@@ -8,7 +8,19 @@ export type KmsPurpose =
   | 'audit_hmac'
   | 'payload_dek'
   | 'provider_credential'
-  | 'jwt_refresh';
+  | 'jwt_refresh'
+  | 'conversation_content'
+  | 'conversation_content_integrity';
+
+/**
+ * Purposes admitted as an ENVELOPE wrapping-key derivation input. Deliberately a
+ * NARROW subset of KmsPurpose: HMAC-only purposes (audit_hmac,
+ * conversation_content_integrity) and non-envelope purposes must never select a
+ * KEK, so passing them is a compile-time error rather than a silent new key
+ * domain. `payload_dek` remains the default for every caller that omits the
+ * field — existing ciphertext stays decryptable byte-for-byte.
+ */
+export type KmsEnvelopePurpose = 'payload_dek' | 'conversation_content';
 
 export interface Kms {
   readonly providerName: string;
@@ -36,12 +48,15 @@ export interface Kms {
 
   /**
    * Envelope-encrypt: gera DEK, criptografa data com DEK (AES-256-GCM), retorna ciphertext + dekWrapped.
+   * `purpose` selects the wrapping-KEK derivation domain; omitted = 'payload_dek'
+   * (the historical behavior — pre-existing callers and ciphertext are unchanged).
    */
   envelopeEncrypt(input: {
     orgId: string;
     keyId: KmsKeyId;
     version: number;
     plaintext: Uint8Array;
+    purpose?: KmsEnvelopePurpose;
   }): Promise<{ ciphertext: Uint8Array; dekWrapped: Uint8Array }>;
 
   envelopeDecrypt(input: {
@@ -50,6 +65,7 @@ export interface Kms {
     version: number;
     ciphertext: Uint8Array;
     dekWrapped: Uint8Array;
+    purpose?: KmsEnvelopePurpose;
   }): Promise<Uint8Array>;
 }
 
@@ -112,6 +128,7 @@ export class DevKms implements Kms {
     keyId: KmsKeyId;
     version: number;
     plaintext: Uint8Array;
+    purpose?: KmsEnvelopePurpose;
   }): Promise<{ ciphertext: Uint8Array; dekWrapped: Uint8Array }> {
     // Gera DEK aleatório de 32 bytes.
     const dek = randomBytes(32);
@@ -125,7 +142,7 @@ export class DevKms implements Kms {
     // Embrulha DEK com chave derivada (AES-256-GCM).
     const kek = Buffer.from(
       await this.deriveKey({
-        purpose: 'payload_dek',
+        purpose: input.purpose ?? 'payload_dek',
         orgId: input.orgId,
         keyId: input.keyId,
         version: input.version,
@@ -146,10 +163,11 @@ export class DevKms implements Kms {
     version: number;
     ciphertext: Uint8Array;
     dekWrapped: Uint8Array;
+    purpose?: KmsEnvelopePurpose;
   }): Promise<Uint8Array> {
     const kek = Buffer.from(
       await this.deriveKey({
-        purpose: 'payload_dek',
+        purpose: input.purpose ?? 'payload_dek',
         orgId: input.orgId,
         keyId: input.keyId,
         version: input.version,

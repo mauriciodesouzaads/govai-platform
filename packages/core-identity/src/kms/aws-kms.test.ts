@@ -306,6 +306,127 @@ describe('AwsKms envelope v1', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Purpose-aware envelope (EP-AI-CONVERSATION-CONTINUITY-V1 P0-A1). Same
+// contract as DevKms: omitted purpose === 'payload_dek' (pre-existing
+// ciphertext unchanged); 'conversation_content' selects a derivationally
+// distinct wrapping KEK; cross-purpose decrypts fail closed and sanitized.
+// ---------------------------------------------------------------------------
+describe('AwsKms purpose-aware envelope', () => {
+  const PT = Buffer.from('aws conversation content fixture — never logged');
+
+  it('legacy caller (no purpose) and explicit payload_dek are interchangeable', async () => {
+    const { kms } = newAwsKms();
+    const legacy = await kms.envelopeEncrypt({ orgId: 'o', keyId: 'k', version: 1, plaintext: PT });
+    const outExplicit = await kms.envelopeDecrypt({
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      ciphertext: legacy.ciphertext,
+      dekWrapped: legacy.dekWrapped,
+      purpose: 'payload_dek',
+    });
+    expect(Buffer.from(outExplicit).equals(PT)).toBe(true);
+
+    const explicit = await kms.envelopeEncrypt({
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      plaintext: PT,
+      purpose: 'payload_dek',
+    });
+    const outLegacy = await kms.envelopeDecrypt({
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      ciphertext: explicit.ciphertext,
+      dekWrapped: explicit.dekWrapped,
+    });
+    expect(Buffer.from(outLegacy).equals(PT)).toBe(true);
+  });
+
+  it('conversation_content round-trips under its own purpose', async () => {
+    const { kms } = newAwsKms();
+    const e = await kms.envelopeEncrypt({
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      plaintext: PT,
+      purpose: 'conversation_content',
+    });
+    const out = await kms.envelopeDecrypt({
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      ciphertext: e.ciphertext,
+      dekWrapped: e.dekWrapped,
+      purpose: 'conversation_content',
+    });
+    expect(Buffer.from(out).equals(PT)).toBe(true);
+  });
+
+  it('conversation_content ciphertext fails closed under payload_dek (sanitized error)', async () => {
+    const { kms } = newAwsKms();
+    const e = await kms.envelopeEncrypt({
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      plaintext: PT,
+      purpose: 'conversation_content',
+    });
+    let caught: unknown;
+    try {
+      await kms.envelopeDecrypt({
+        orgId: 'o',
+        keyId: 'k',
+        version: 1,
+        ciphertext: e.ciphertext,
+        dekWrapped: e.dekWrapped,
+        purpose: 'payload_dek',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AwsKmsError);
+    expect((caught as Error).message).toBe('envelope_decrypt_failed');
+  });
+
+  it('payload_dek ciphertext fails closed under conversation_content', async () => {
+    const { kms } = newAwsKms();
+    const e = await kms.envelopeEncrypt({ orgId: 'o', keyId: 'k', version: 1, plaintext: PT });
+    await expect(
+      kms.envelopeDecrypt({
+        orgId: 'o',
+        keyId: 'k',
+        version: 1,
+        ciphertext: e.ciphertext,
+        dekWrapped: e.dekWrapped,
+        purpose: 'conversation_content',
+      }),
+    ).rejects.toThrow(AwsKmsError);
+  });
+
+  it('hmacSha256 digests differ across integrity purposes for the same message', async () => {
+    const { kms } = newAwsKms();
+    const message = Buffer.from('same low-entropy title');
+    const integrity = await kms.hmacSha256({
+      purpose: 'conversation_content_integrity',
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      message,
+    });
+    const audit = await kms.hmacSha256({
+      purpose: 'audit_hmac',
+      orgId: 'o',
+      keyId: 'k',
+      version: 1,
+      message,
+    });
+    expect(Buffer.from(integrity).equals(Buffer.from(audit))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error sanitization
 // ---------------------------------------------------------------------------
 describe('AwsKms error sanitization', () => {
