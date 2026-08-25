@@ -54,9 +54,9 @@ is one collected test module.
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 140 | 1610 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 84 | 1228 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 224 | 2838 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 141 | 1621 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 84 | 1235 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 225 | 2856 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
 
@@ -703,6 +703,16 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   `8f3d250538b14cc3260715db8d1b081dc0e9cec8`. This is a CANDIDATE: the exact-head independent
   review has not run, so it is deliberately NOT recorded as COMPLETE.
   `P0_A1=COMPLETE` and `T1=COMPLETE` are unchanged.
+- **Review arc so far.** `CODEX_REVIEW=EXECUTED` on head `a837ce5a` (PR #143): **2 × P2**, both
+  materially valid, both remediated on the follow-up head — (W1) the worker pool validated that a
+  dedicated env var existed but never proved which database role the URL actually authenticated
+  as, so an admin/superuser credential wired into `GOVAI_CONVERSATION_WORKER_DATABASE_URL` would
+  have run discovery and owner-bound reads while bypassing the very FORCE RLS boundary the module
+  exists to establish; and (W2) the post-commit session sweep declared a never-fail contract that
+  `pg_terminate_backend` could break with `42501`, aborting a migration run AFTER the NOLOGIN had
+  already committed and skipping every remaining schema migration. Both were falsified against the
+  reviewed source before the fix and re-verified after. `INDEPENDENT_REVIEW=PENDING` — Codex is a
+  review lane, not the independent exact-head audit, and nothing here is an independent PASS.
 - What P0-A2 actually shipped:
   - **Role `govai_conversation_worker`** in `infra/postgres/bootstrap.sql` — roles are
     cluster-level and are never created in migrations (the 0028 rule). `NOINHERIT`,
@@ -761,13 +771,36 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     matrix of spec §9 (claim UPDATE, item/content INSERT, provider-state mutation, credential
     SELECT, audit-capture EXECUTE, branch causal UPDATE, purge DELETE) is deliberately NOT
     pre-granted.
+  - **Live database identity attestation (W1 remediation).** Configuration proves nothing about
+    what a connection authenticated as, and an RLS bypass produces MORE rows rather than an
+    error — so it fails silently and greenly. `assertConversationWorkerIdentity` therefore asks
+    PostgreSQL itself, on an AWAITED path that gates every use: `session_user` (the authenticated
+    login — catches an admin credential that then did `SET ROLE`), `current_user` (the effective
+    role), and `rolsuper` / `rolbypassrls` / `rolinherit` read from `pg_roles`. It runs BEFORE
+    `ai_turn_recovery_candidates` and BEFORE any owner context is entered, per CHECKOUT rather
+    than once per pool, so privilege DRIFT is caught too. Failure is a typed
+    `ConversationWorkerIdentityError` carrying role names and boolean attributes only — never a
+    connection string or password. Falsified on the pre-fix source: an admin URL returned 2
+    candidates across 2 orgs and an owner-A-context read saw 2 conversations instead of 1.
+  - **Post-commit sweep never-fail contract, enforced (W2 remediation).** `sweepRoleSessions` now
+    catches and logs failures of the signalling and counting layer with a sanitized SQLSTATE
+    label. Empirically confirmed: a non-superuser that is not a member of `pg_signal_backend` DOES
+    see the target's `pg_stat_activity` rows and CANNOT signal them, so the sweep finds work and
+    raises `42501`. The swallow is deliberately narrow — bootstrap, the deprovision DDL, signal
+    validation and the migration SQL all keep propagating. Applies to BOTH
+    `govai_evidence_enumerator` (a pre-existing latent defect on that path) and
+    `govai_conversation_worker`, since the implementation is shared.
   - **Owner-context entry**, reusing P0-A1's `withOwnerContext` semantics:
     `withConversationWorkerOwnerContext` does checkout → defensive SESSION-scope reset → BEGIN →
     BOTH GUCs `set_config(..., true)` → ordinary SQL under FORCE RLS → COMMIT/ROLLBACK (either
     clears the context). The reset lives at CHECKOUT, not on pg's `connect` event, because pg
     does not await a connect handler and the leak being defended against is per-checkout of a
     REUSED connection. Owner identity may originate ONLY from a discovery row — never from an
-    HTTP request; P0-A2 exposes no route, and the invariant is documented at the helper.
+    HTTP request; P0-A2 exposes no route, and the invariant is documented at the helper. The
+    attestation runs FIRST, before the reset and before any owner GUC is set. A client whose
+    ROLLBACK failed is destroyed rather than pooled — defense in depth, since falsification showed
+    a connection left mid-transaction still leaks nothing (the next entry's explicit `set_config`
+    overwrites the context before any read).
   - **Inert runtime layer** (`apps/api/src/pipeline/ai-conversation-worker.ts`,
     `ai-conversation-recovery-discovery.ts`): a dedicated pool factory reading
     `GOVAI_CONVERSATION_WORKER_DATABASE_URL` that FAILS CLOSED with no fallback to the API's
@@ -778,7 +811,11 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     role attributes, `govai_app` denied EXECUTE and denied `SET ROLE` by any membership path,
     PUBLIC denied, zero-rows-without-context, the owner dual-context matrix, same-connection
     cross-candidate leak proof, the privilege matrix, definer hardening, column-grant denials,
-    the `govai_app` RLS regression and the fail-closed pool factory),
+    the `govai_app` RLS regression, the fail-closed pool factory, and — from the remediation —
+    W15–W21: the attestation passing on a correct pool, a `govai_app` URL and an admin URL each
+    REJECTED before discovery with the counterfactual proving the gate load-bearing, BYPASSRLS /
+    SUPERUSER / INHERIT drift rejected, no credential material in the error, a REAL `42501`
+    surviving, and the ROLLBACK-disposition falsification),
     `ai-conversation-recovery-discovery.test.ts` (D1–D10 — cross-owner/cross-org discovery
     without BYPASSRLS, the full candidate predicate matrix, the PINNED content-free return
     shape, side-effect freedom against a whole-table digest, keyset pagination including an
@@ -786,7 +823,8 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     owner-bound resolution) and `ai-conversation-migration-0032.test.ts` (M1–M6 — byte-identical
     row preservation on a populated 0031 database, guard-trigger regression, `govai_app`
     unchanged, re-runnability, fail-loud on an absent role, and an exact inventory of what the
-    migration adds).
+    migration adds), plus `apps/api/src/db/migrate.test.ts` (11 unit contract tests pinning the
+    sweep's never-fail behaviour for BOTH privileged roles).
 - **`AI_CLEANUP_CANDIDATE_DISCOVERY=DEFERRED_UNTIL_CLEANUP_SCHEMA_EXISTS`** — the spec's SECOND
   sanctioned bypass (`govai.ai_cleanup_candidates`) reads cleanup/disposal-ledger storage that
   0031 explicitly did not create and that does not exist at this anchor. P0-A2 ships NO

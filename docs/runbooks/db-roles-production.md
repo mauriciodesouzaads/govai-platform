@@ -174,6 +174,29 @@ a URL estiver ausente: não há fallback para `DATABASE_URL`, porque rodar
 recuperação como `govai_app` apagaria exatamente a fronteira de confiança que o
 P0-A2 existe para criar.
 
+**Atestação de identidade em runtime (obrigatória).** Configuração não prova
+NADA sobre qual role uma conexão autenticou. Se
+`GOVAI_CONVERSATION_WORKER_DATABASE_URL` for populada por engano com
+`DATABASE_ADMIN_URL` (ou qualquer credencial elevada), a conexão funciona
+normalmente — e discovery + leituras owner-bound passariam a rodar **furando o
+FORCE RLS**, silenciosamente, porque bypass de RLS devolve MAIS linhas em vez de
+erro. Por isso, antes de CADA uso (antes de `ai_turn_recovery_candidates` e antes
+de entrar em qualquer contexto de owner), o código pergunta ao próprio PostgreSQL:
+
+| verificação | fonte | por quê |
+|---|---|---|
+| `session_user = 'govai_conversation_worker'` | servidor | pega credencial admin que fez `SET ROLE` |
+| `current_user = 'govai_conversation_worker'` | servidor | pega login correto que assumiu outra role |
+| `rolsuper = false` | `pg_roles` | superuser é isento de RLS |
+| `rolbypassrls = false` | `pg_roles` | atributo explícito de bypass |
+| `rolinherit = false` | `pg_roles` | NOINHERIT é propriedade declarada da identidade |
+
+Falha ⇒ `ConversationWorkerIdentityError`, com nomes de role e atributos booleanos
+apenas — **nunca** connection string ou senha. Sintoma operacional esperado: um
+worker mal configurado falha ALTO na primeira operação, em vez de rodar com
+privilégio demais. A checagem é por CHECKOUT, então drift de privilégio
+(`ALTER ROLE ... SUPERUSER`/`BYPASSRLS` depois do provisionamento) também é pego.
+
 **Nenhum processo worker existe ainda** (`WORKER_RUNTIME_PROCESS=NOT_IMPLEMENTED`):
 o P0-A2 entrega a fronteira de confiança e a descoberta, não o runner. Em
 production, deixe a role **não provisionada** até que o primeiro processo worker

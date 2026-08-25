@@ -24,6 +24,16 @@
 //  W13 the pool factory fails closed with no worker URL — it never falls back to the app
 //      credential
 //  W14 the defensive checkout reset clears session-scope residue
+//
+// REMEDIATION of the two Codex P2 findings on head a837ce5a:
+//  W15 the live identity attestation PASSES on a correctly wired worker pool
+//  W16 a govai_app credential wired as the worker URL is REJECTED before discovery
+//  W17 an admin/superuser credential wired as the worker URL is REJECTED — with the
+//      counterfactual proving the gate is load-bearing, not decorative
+//  W18 privilege DRIFT (BYPASSRLS / SUPERUSER granted after the fact) is rejected
+//  W19 an identity failure leaks no credential material
+//  W20 a REAL 42501 from pg_terminate_backend does not abort the migration run
+//  W21 falsification of the owner-context ROLLBACK-failure disposition
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client, Pool } from 'pg';
@@ -39,9 +49,18 @@ import {
   loadConversationWorkerDbConfig,
   resetOwnerContext,
   withConversationWorkerOwnerContext,
+  withAttestedConversationWorkerClient,
+  assertConversationWorkerIdentity,
   ConversationWorkerConfigError,
+  ConversationWorkerIdentityError,
   CONVERSATION_WORKER_DATABASE_URL_ENV,
+  CONVERSATION_WORKER_ROLE,
 } from '../../apps/api/src/pipeline/ai-conversation-worker.js';
+import {
+  discoverRecoveryCandidates,
+  loadOwnedRecoveryCandidate,
+} from '../../apps/api/src/pipeline/ai-conversation-recovery-discovery.js';
+import { sweepRoleSessions } from '../../apps/api/src/db/migrate.js';
 
 const WORKER_ROLE = 'govai_conversation_worker';
 const DISCOVERY_FN = 'govai.ai_turn_recovery_candidates(integer,integer,timestamptz,uuid)';
@@ -677,6 +696,268 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
         },
       );
       expect(seen).toBe(0); // owner A's row is NOT visible under owner C's context
+    } finally {
+      await single.end().catch(() => undefined);
+    }
+  });
+
+  // ── REMEDIATION: W1 — live database identity attestation ───────────────────────────────
+
+  it('W15 — the attestation PASSES on a correctly wired worker pool, and gates both entry points', async () => {
+    const c = await workerPool.connect();
+    try {
+      await expect(assertConversationWorkerIdentity(c)).resolves.toBeUndefined();
+      const seen = await c.query<{ cur: string; sess: string }>(
+        `SELECT current_user::text AS cur, session_user::text AS sess`,
+      );
+      expect(seen.rows[0]).toEqual({
+        cur: CONVERSATION_WORKER_ROLE,
+        sess: CONVERSATION_WORKER_ROLE,
+      });
+    } finally {
+      c.release();
+    }
+    // Both real entry points work through the gate.
+    await expect(
+      discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+    ).resolves.toBeDefined();
+    await expect(
+      withAttestedConversationWorkerClient(workerPool, async (client) => {
+        const r = await client.query('SELECT 1 AS ok');
+        return r.rows[0];
+      }),
+    ).resolves.toEqual({ ok: 1 });
+  });
+
+  it('W16 — a govai_app credential wired as the worker URL is REJECTED before discovery', async () => {
+    // The misconfiguration Codex named: the factory accepts any URL, so only a LIVE identity
+    // assertion can catch it. `db.appUrl` authenticates fine — that is the whole problem.
+    const wrong = createConversationWorkerPool({ connectionString: db.appUrl, max: 1 }, () => undefined);
+    try {
+      await expect(
+        discoverRecoveryCandidates(wrong, { recoveryGraceMs: 30_000, limit: 10 }),
+      ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
+      // ★ It must fail on IDENTITY, not on the definer's EXECUTE grant: the gate has to run
+      // BEFORE ai_turn_recovery_candidates, or a credential that DOES hold EXECUTE would sail
+      // straight through.
+      await expect(
+        discoverRecoveryCandidates(wrong, { recoveryGraceMs: 30_000, limit: 10 }),
+      ).rejects.toThrow(/session_user is 'govai_app'/);
+      // Owner-bound reads are gated too, and the failure precedes any owner context.
+      await expect(
+        withConversationWorkerOwnerContext(
+          wrong,
+          { orgId: ownerA.orgId, ownerUserId: ownerA.ownerUserId },
+          async () => 'must not run',
+        ),
+      ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
+      await expect(
+        loadOwnedRecoveryCandidate(wrong, {
+          orgId: ownerA.orgId,
+          ownerUserId: ownerA.ownerUserId,
+          conversationId: chainA.conversationId,
+          attemptId: chainA.attemptId,
+        }),
+      ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
+    } finally {
+      await wrong.end().catch(() => undefined);
+    }
+  });
+
+  it('W17 — an admin/superuser credential wired as the worker URL is REJECTED (gate is load-bearing)', async () => {
+    // COUNTERFACTUAL FIRST: without the gate, this credential really would work — a superuser
+    // bypasses both the EXECUTE check and RLS, so discovery would return cross-owner rows and
+    // every owner-bound read would silently see everything. This is what the attestation stops.
+    const raw = await db.adminPool.query(
+      `SELECT org_id, owner_user_id FROM govai.ai_turn_recovery_candidates(30000, 50)`,
+    );
+    expect(raw.rowCount ?? 0).toBeGreaterThan(0);
+    const rawRows = await db.adminPool.query(`SELECT id FROM govai.ai_conversations`);
+    expect(rawRows.rowCount ?? 0).toBeGreaterThan(0); // cross-owner, no context, no policy
+
+    const elevated = createConversationWorkerPool(
+      { connectionString: db.adminUrl, max: 1 },
+      () => undefined,
+    );
+    try {
+      await expect(
+        discoverRecoveryCandidates(elevated, { recoveryGraceMs: 30_000, limit: 10 }),
+      ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
+      await expect(
+        withConversationWorkerOwnerContext(
+          elevated,
+          { orgId: ownerA.orgId, ownerUserId: ownerA.ownerUserId },
+          async () => 'must not run',
+        ),
+      ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
+    } finally {
+      await elevated.end().catch(() => undefined);
+    }
+  });
+
+  it('W18 — privilege DRIFT after provisioning is rejected (BYPASSRLS and SUPERUSER)', async () => {
+    for (const attr of ['BYPASSRLS', 'SUPERUSER'] as const) {
+      const undo = attr === 'BYPASSRLS' ? 'NOBYPASSRLS' : 'NOSUPERUSER';
+      await db.adminPool.query(`ALTER ROLE ${CONVERSATION_WORKER_ROLE} WITH ${attr}`);
+      try {
+        // The role NAME is still right; only its attributes drifted. Name checks alone would
+        // pass here, which is why the attestation reads rolsuper/rolbypassrls from the catalog.
+        await expect(
+          discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+        ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
+        await expect(
+          discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+        ).rejects.toThrow(/rolsuper=|rolbypassrls=/);
+      } finally {
+        await db.adminPool.query(`ALTER ROLE ${CONVERSATION_WORKER_ROLE} WITH ${undo}`);
+      }
+      // Restored: the same pool is usable again, so the check is live per checkout rather than
+      // a verdict cached at pool construction.
+      await expect(
+        discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+      ).resolves.toBeDefined();
+    }
+
+    // NOINHERIT is part of the declared contract too.
+    await db.adminPool.query(`ALTER ROLE ${CONVERSATION_WORKER_ROLE} WITH INHERIT`);
+    try {
+      await expect(
+        discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+      ).rejects.toThrow(/rolinherit=true/);
+    } finally {
+      await db.adminPool.query(`ALTER ROLE ${CONVERSATION_WORKER_ROLE} WITH NOINHERIT`);
+    }
+    await expect(
+      discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+    ).resolves.toBeDefined();
+  });
+
+  it('W19 — an identity failure leaks no credential material', async () => {
+    const wrong = createConversationWorkerPool({ connectionString: db.appUrl, max: 1 }, () => undefined);
+    try {
+      let caught: unknown = null;
+      try {
+        await discoverRecoveryCandidates(wrong, { recoveryGraceMs: 30_000, limit: 10 });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(ConversationWorkerIdentityError);
+      const text = `${(caught as Error).message}\n${(caught as Error).stack ?? ''}`;
+      expect(text).not.toContain(db.appPassword);
+      expect(text).not.toContain(db.conversationWorkerPassword);
+      expect(text).not.toContain('postgres://');
+      expect(text).not.toContain('postgresql://');
+      // It DOES name the observed and expected roles — the diagnostic an operator needs.
+      expect((caught as Error).message).toContain('govai_app');
+      expect((caught as Error).message).toContain(CONVERSATION_WORKER_ROLE);
+    } finally {
+      await wrong.end().catch(() => undefined);
+    }
+  });
+
+  // ── REMEDIATION: W2 — a REAL insufficient-privilege sweep must not abort migration ────────
+
+  it('W20 — a real 42501 from pg_terminate_backend is survivable: the run continues', async () => {
+    // A faithful reproduction of the production shape Codex described: a migrator that can ALTER
+    // roles but is not a member of pg_signal_backend or of the target role. Empirically such a
+    // role DOES see the target's pg_stat_activity rows (so the sweep finds work) and CANNOT
+    // signal them (so pg_terminate_backend raises 42501).
+    const limitedPassword = 'p0a2_limited_migrator_pw_1234';
+    await db.adminPool.query(
+      `DO $$ BEGIN CREATE ROLE p0a2_limited_migrator LOGIN PASSWORD '${limitedPassword}';
+         EXCEPTION WHEN duplicate_object THEN NULL; END $$`,
+    );
+    // Hold a LIVE worker backend open, so there is a real session to fail to terminate.
+    const victim = await workerPool.connect();
+    const limitedUrl = db.adminUrl.replace(
+      /\/\/[^@]+@/,
+      `//p0a2_limited_migrator:${limitedPassword}@`,
+    );
+    const limited = new Pool({ connectionString: limitedUrl, max: 1 });
+    limited.on('error', () => undefined);
+    try {
+      const c = await limited.connect();
+      try {
+        const visible = await c.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM pg_stat_activity
+            WHERE usename = $1 AND pid <> pg_backend_pid()`,
+          [CONVERSATION_WORKER_ROLE],
+        );
+        expect(Number(visible.rows[0]!.n)).toBeGreaterThan(0); // the sweep will find work
+        // And it genuinely lacks the privilege to signal it.
+        await expect(
+          c.query(
+            `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+              WHERE usename = $1 AND pid <> pg_backend_pid()`,
+            [CONVERSATION_WORKER_ROLE],
+          ),
+        ).rejects.toMatchObject({ code: '42501' });
+
+        // ★ THE FINDING: the shared sweep must absorb that error. Before the fix it propagated
+        // out of applyPrivilegedRoleLifecycles and migrate(), skipping every remaining migration
+        // after a NOLOGIN that had ALREADY committed.
+        const logs: string[] = [];
+        await expect(
+          sweepRoleSessions(c, CONVERSATION_WORKER_ROLE, (m) => logs.push(m)),
+        ).resolves.toBeUndefined();
+        expect(logs.join('\n')).toContain('42501');
+        expect(logs.join('\n')).toContain('Migration continues.');
+
+        // The client is still usable, so the runner's remaining migration SQL would still run.
+        const after = await c.query<{ ok: number }>(`SELECT 1 AS ok`);
+        expect(after.rows[0]!.ok).toBe(1);
+      } finally {
+        c.release();
+      }
+      // Termination really did fail — the victim backend is alive and still serving.
+      const alive = await victim.query<{ ok: number }>(`SELECT 1 AS ok`);
+      expect(alive.rows[0]!.ok).toBe(1);
+    } finally {
+      victim.release();
+      await limited.end().catch(() => undefined);
+    }
+  });
+
+  // ── Owner-context ROLLBACK-failure disposition (falsified, then hardened) ─────────────────
+
+  it('W21 — a client left mid-transaction cannot leak candidate A into candidate B', async () => {
+    // Falsification of the residual behind `client.release(destroyOnRelease)`. Manufacture the
+    // worst case directly: return a client to the pool while it is STILL inside a transaction
+    // that has owner A's context set, then let candidate B use that same physical connection.
+    const single = createConversationWorkerPool(
+      { connectionString: db.conversationWorkerUrl, max: 1 },
+      () => undefined,
+    );
+    try {
+      const dirty = await single.connect();
+      try {
+        await dirty.query('BEGIN');
+        await dirty.query("SELECT set_config('app.org_id', $1, true)", [ownerA.orgId]);
+        await dirty.query("SELECT set_config('app.user_id', $1, true)", [ownerA.ownerUserId]);
+        const leaked = await dirty.query(`SELECT id FROM govai.ai_conversations WHERE id = $1::uuid`, [
+          chainA.conversationId,
+        ]);
+        expect(leaked.rowCount).toBe(1); // inside the stale transaction A really is visible
+      } finally {
+        dirty.release(); // deliberately WITHOUT rollback — the state a failed ROLLBACK could leave
+      }
+      // Candidate C now reuses that same physical connection through the real helper.
+      const seen = await withConversationWorkerOwnerContext(
+        single,
+        { orgId: ownerC.orgId, ownerUserId: ownerC.ownerUserId },
+        async (tx) => {
+          const theirs = await tx.query(
+            `SELECT id FROM govai.ai_conversations WHERE id = $1::uuid`,
+            [chainA.conversationId],
+          );
+          return theirs.rowCount ?? 0;
+        },
+      );
+      // NO LEAK: the helper's explicit set_config overwrites the context before any read, so
+      // owner A's row is invisible to candidate C even on a connection left mid-transaction.
+      // That is why the release(true) hardening is defense in depth rather than a fix for an
+      // exploitable hole — recorded here as evidence, not as narrative.
+      expect(seen).toBe(0);
     } finally {
       await single.end().catch(() => undefined);
     }

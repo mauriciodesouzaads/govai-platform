@@ -13,7 +13,10 @@
 // evidence write, no provider call, no timer, no loop.
 
 import type { Pool, PoolClient } from 'pg';
-import { withConversationWorkerOwnerContext } from './ai-conversation-worker.js';
+import {
+  withAttestedConversationWorkerClient,
+  withConversationWorkerOwnerContext,
+} from './ai-conversation-worker.js';
 
 /**
  * Which §7.7/§8 recovery arm qualified a candidate. Mirrors the `reason` discriminator the 0029
@@ -97,6 +100,11 @@ type CandidateRow = {
  * EXECUTE on `govai.ai_turn_recovery_candidates` and a call on the request pool fails with
  * `permission denied for function` — by design, not by accident.
  *
+ * ★ The connection's database identity is ATTESTED before the definer call runs
+ * (`withAttestedConversationWorkerClient`). A pool wired to an admin or superuser credential
+ * would otherwise execute discovery happily and hand back cross-owner rows while bypassing FORCE
+ * RLS; the attestation makes that fail closed BEFORE the function is invoked.
+ *
  * Bounds are validated by the database and are NOT clamped here: an out-of-range page is a caller
  * bug and fails closed (SQLSTATE 22023, the 0029 contract).
  */
@@ -110,12 +118,14 @@ export async function discoverRecoveryCandidates(
     input.after?.createdAtText ?? null,
     input.after?.attemptId ?? null,
   ];
-  const res = await workerPool.query<CandidateRow>(
-    `SELECT org_id, owner_user_id, conversation_id, turn_id, attempt_id, state, reason,
-            claim_token, claim_deadline_at::text AS claim_deadline_at_text, is_branch_head,
-            attempt_created_at::text AS attempt_created_at_text
-       FROM govai.ai_turn_recovery_candidates($1::integer, $2::integer, $3::timestamptz, $4::uuid)`,
-    params,
+  const res = await withAttestedConversationWorkerClient(workerPool, (client) =>
+    client.query<CandidateRow>(
+      `SELECT org_id, owner_user_id, conversation_id, turn_id, attempt_id, state, reason,
+              claim_token, claim_deadline_at::text AS claim_deadline_at_text, is_branch_head,
+              attempt_created_at::text AS attempt_created_at_text
+         FROM govai.ai_turn_recovery_candidates($1::integer, $2::integer, $3::timestamptz, $4::uuid)`,
+      params,
+    ),
   );
   return res.rows.map((r) => ({
     orgId: r.org_id,

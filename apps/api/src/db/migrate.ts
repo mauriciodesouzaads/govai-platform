@@ -83,12 +83,35 @@ export function resolveEnumeratorMode(signals: EnumeratorSignals): EnumeratorMod
   return 'untouched'; // Cell 3 — routine migration must not drop the gauges by omission
 }
 
+/** Sanitized error label — SQLSTATE when pg supplies one, else the error NAME. Never a raw
+ *  driver/server message body, and never anything carrying connection material (the
+ *  run-dispatch-recovery.ts logging convention). */
+function errorLabel(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && code !== '') return code;
+  return err instanceof Error ? err.name : 'unknown';
+}
+
 /**
  * Post-commit bounded session sweep — reaps already-live sessions of `roleName` AFTER the NOLOGIN
  * has COMMITTED (so no fresh authentication can succeed on the revoked credential). Bounded and
  * it NEVER fails migrate: the role is already NOLOGIN-committed, so any survivor past the cap is
  * benign (it cannot re-authenticate). Idempotent/resumable — a crash before the sweep leaves
  * NOLOGIN committed (safe) and survivors are reaped on the next explicit deprovision run.
+ *
+ * ★ THE NEVER-FAIL CONTRACT IS ENFORCED, NOT MERELY DECLARED. `pg_terminate_backend` RAISES
+ * `42501 insufficient_privilege` when the migrator can ALTER the role but is not a member of
+ * `pg_signal_backend` (or of the target role) — the ordinary shape of a managed/production
+ * migrator. Left uncaught, that exception escapes `applyPrivilegedRoleLifecycles` and
+ * `migrate()`, so a run that had ALREADY committed the NOLOGIN would report failure and SKIP
+ * every remaining schema migration. Session reaping is best-effort OPERATIONAL cleanup, never a
+ * schema-migration success condition, so every failure of the signalling/counting layer is
+ * caught, logged with a sanitized label and swallowed. The client stays usable afterwards: each
+ * statement here runs in its own implicit transaction, so a failed one rolls back only itself.
+ *
+ * ★ SCOPE OF THE SWALLOW — deliberately narrow. Bootstrap, the role deprovision DDL itself,
+ * signal validation and the migration SQL all keep propagating; only this post-commit reaping
+ * layer is best-effort.
  *
  * `roleName` is a fixed in-repo constant, never caller/user input: it is interpolated into the
  * pg_stat_activity predicate as a literal, so it must stay a compile-time constant.
@@ -104,13 +127,35 @@ export async function sweepRoleSessions(
       WHERE usename = '${roleName}' AND pid <> pg_backend_pid()`;
   const CAP = 3;
   for (let i = 0; i < CAP; i++) {
-    const res = await c.query(TERMINATE);
+    let res: { rowCount: number | null };
+    try {
+      res = await c.query(TERMINATE);
+    } catch (err) {
+      log(
+        `[deprovision] WARNING: could not signal ${roleName} session(s) (${errorLabel(err)}); ` +
+          'the role is already NOLOGIN-committed, so no new authentication can succeed. ' +
+          'Reap survivors by restarting the holder, or re-run deprovision from an identity with ' +
+          'pg_signal_backend. Migration continues.',
+      );
+      return; // best-effort: a signalling failure is never a migration failure
+    }
     if ((res.rowCount ?? 0) === 0) return; // no live sessions remain — clean
     // Let the SIGTERM'd backends exit before re-checking on the next iteration.
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const rem = await c.query<{ n: number }>(COUNT);
-  const survivors = rem.rows[0]?.n ?? 0;
+  let survivors: number;
+  try {
+    const rem = await c.query<{ n: number }>(COUNT);
+    survivors = rem.rows[0]?.n ?? 0;
+  } catch (err) {
+    // The survivor COUNT must not contradict the same never-fail contract either.
+    log(
+      `[deprovision] WARNING: could not count surviving ${roleName} session(s) ` +
+        `(${errorLabel(err)}); the role is NOLOGIN (no new authentication possible). ` +
+        'Migration continues.',
+    );
+    return;
+  }
   if (survivors > 0) {
     log(
       `[deprovision] WARNING: ${survivors} ${roleName} session(s) still present after ${CAP} sweeps; ` +
