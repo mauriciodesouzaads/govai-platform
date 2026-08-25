@@ -38,6 +38,20 @@ const MIGRATION_0031 = join(
   '0031_ai_conversation_storage_foundation.sql',
 );
 
+/** The eight tables migration 0031 itself creates — the scope of this suite's own policy
+ *  assertions, so a later movement's lawful additions elsewhere in the `ai_*` namespace cannot
+ *  turn a 0031 invariant into a canary. */
+const P0A1_TABLES = [
+  'ai_conversations',
+  'ai_conversation_branches',
+  'ai_conversation_turns',
+  'ai_conversation_attempts',
+  'ai_conversation_items',
+  'ai_conversation_content',
+  'ai_conversation_provider_state',
+  'ai_conversation_evidence_links',
+];
+
 let db: TestDb;
 beforeAll(async () => {
   db = await startPostgres();
@@ -330,6 +344,14 @@ describe('migration 0031 — composite lineage falsification (dispatch §29)', (
       'cross-conversation fork pin',
     );
     // A coherent pin succeeds.
+    // ★ UPDATED BY P0-B. `seedFullChain` leaves its attempt in the §7.1b BORN state
+    // (`accepted`), which 0031 alone accepted as a fork pin because it enforced LINEAGE only.
+    // Migration 0033 closes P0A1-C4 — the fork-pin MODE-SPECIFIC state rule of spec §3 — so an
+    // `after_attempt` pin must now name a COMPLETED attempt. The fixture is advanced through
+    // the lawful §7/§8 transitions to satisfy it; the assertion this test owns (a coherent
+    // LINEAGE is admitted, an incoherent one is not) is unchanged, and the C4 rule itself is
+    // falsified in both directions by `ai-conversation-fork-control-plane.test.ts`.
+    await advanceSeededAttempt(db.adminPool, owner, chainA.attemptId, { state: 'completed' });
     await db.adminPool.query(
       `INSERT INTO govai.ai_conversation_branches
          (org_id, owner_user_id, conversation_id, provider, surface, model,
@@ -2298,10 +2320,19 @@ describe('migration 0031 — remediation safety re-checks', () => {
           WHERE schemaname = 'govai' AND tablename LIKE 'ai_conversation%'`,
       );
       // 0031's OWN policy surface, isolated from later movements' additions (see below).
+      // ★ UPDATED BY P0-B: scoped to 0031's OWN EIGHT TABLES and its own two COMMANDS. The
+      // previous `tablename LIKE 'ai_conversation%'` proxy silently claimed the whole domain
+      // namespace, so migration 0033's lawful additions — an UPDATE policy on
+      // `ai_conversations` and the SELECT/INSERT pair on the new
+      // `ai_conversation_fork_idempotency` arbiter — would have tripped it for no safety
+      // reason. This is the count the surrounding comment always described.
       const appPolicies = await db.adminPool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM pg_policies
-          WHERE schemaname = 'govai' AND tablename LIKE 'ai_conversation%'
+          WHERE schemaname = 'govai'
+            AND tablename = ANY($1::text[])
+            AND cmd IN ('SELECT', 'INSERT')
             AND roles::text LIKE '%govai_app%'`,
+        [P0A1_TABLES],
       );
       const triggers = await db.adminPool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM pg_trigger

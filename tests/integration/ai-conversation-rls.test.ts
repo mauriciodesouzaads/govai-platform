@@ -114,18 +114,30 @@ describe('ai-conversation RLS — dual-predicate owner scoping', () => {
     });
     expect(childCounts).toEqual([0, 0, 0, 0]);
 
-    // Update: govai_app holds no UPDATE grant at all in P0-A1 (fails closed).
-    let updateBlocked = false;
-    try {
-      await withCtx(u2.orgId, u2.ownerUserId, async (c) => {
-        await c.query(`UPDATE govai.ai_conversations SET status = 'archived' WHERE id = $1::uuid`, [
-          chain.conversationId,
-        ]);
-      });
-    } catch (err) {
-      updateBlocked = isPrivilegeViolation(err);
-    }
-    expect(updateBlocked).toBe(true);
+    // Update: U2 cannot mutate U1's conversation.
+    // ★ UPDATED BY P0-B. In P0-A1 this failed with `insufficient_privilege` because govai_app
+    // held NO UPDATE grant at all. Migration 0033 grants the request role COLUMN-level UPDATE
+    // on the archive/title columns (§13's two guarded fields), so the failure mode moved from
+    // "no privilege" to "no row" — which is the STRONGER statement, and the one that survives
+    // every future grant: the dual-predicate policy filters U1's row out of U2's UPDATE
+    // entirely, so U2's statement touches ZERO rows and U1's conversation is byte-unchanged.
+    const affected = await withCtx(u2.orgId, u2.ownerUserId, async (c) => {
+      const r = await c.query(
+        `UPDATE govai.ai_conversations SET status = 'archived', updated_at = now()
+          WHERE id = $1::uuid`,
+        [chain.conversationId],
+      );
+      return r.rowCount ?? 0;
+    });
+    expect(affected).toBe(0);
+    const stillActive = await withCtx(u1.orgId, u1.ownerUserId, async (c) => {
+      const r = await c.query<{ status: string }>(
+        `SELECT status FROM govai.ai_conversations WHERE id = $1::uuid`,
+        [chain.conversationId],
+      );
+      return r.rows[0]?.status;
+    });
+    expect(stillActive).toBe('active');
 
     // Child insert under U1's conversation: stamped as U2 → the composite
     // lineage FK finds no (org, U2, conversation) parent → rejected.
