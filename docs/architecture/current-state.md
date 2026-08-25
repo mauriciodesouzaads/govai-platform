@@ -634,9 +634,10 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   the independent Opus lane is the documented compensating review control
   (`PR140-CODEX-UNAVAILABLE-OPUS-INDEPENDENT-COMPENSATION-01`,
   `PROCESS_CONTROL_SUBSTITUTION` — not a finding waiver).
-  `P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`
-  (see the P0-A2 section below — a candidate awaiting the exact-head independent review, NOT
-  complete); `CONVERSATION_CONTINUITY_ARCHITECTURE=SPECIFIED_IMPLEMENTATION_IN_PROGRESS`;
+  `P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=COMPLETE` (see the P0-A2 section below — the exact
+  independently reviewed tree landed on main, and the movement is recorded as complete only
+  because that review returned PASS);
+  `CONVERSATION_CONTINUITY_ARCHITECTURE=SPECIFIED_IMPLEMENTATION_IN_PROGRESS`;
   **`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`** — there is still no durable user-facing
   Send/hydrate/reload path; the AI Console transcript remains memory-only
   (`apps/ui/tests/ai/persistence.test.tsx` unchanged and truthful). No parity-manifest row
@@ -682,8 +683,8 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     rejection, owner-context lifecycle + pooled-connection leak proof, and an encrypted-row
     proof (ciphertext at rest; digest is keyed HMAC, provably not `sha256(plaintext)`).
 - Deliberately NOT in P0-A1 (later movements): worker identity + recovery discovery (P0-A2 —
-  now implemented in this tree as a candidate, see the section above),
-  HTTP routes/Send/claims/runner/SSE/Stop/retry/fork, delete-protocol execution, provider
+  now `COMPLETE`: independently confirmed and landed on main, see the P0-A2 canonical section
+  below), HTTP routes/Send/claims/runner/SSE/Stop/retry/fork, delete-protocol execution, provider
   adapters, attachments (`ai_conversation_attachments`) and the disposal ledger
   (`ai_provider_disposal_ledger`). **Deferred pointers, recorded:** `project_id` (Projects do
   not exist; an unconstrained pointer is forbidden) and `workroom_id` attribution
@@ -698,12 +699,17 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-A2 canonical state (this tree)
 
-- `P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION` —
-  implemented in this tree by movement `P0-A2-DETACHED-WORKER-TRUST-RECOVERY-DISCOVERY`, base
-  `8f3d250538b14cc3260715db8d1b081dc0e9cec8`. This is a CANDIDATE: the exact-head independent
-  review has not run, so it is deliberately NOT recorded as COMPLETE.
+- `P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=COMPLETE` — implemented by movement
+  `P0-A2-DETACHED-WORKER-TRUST-RECOVERY-DISCOVERY`, base
+  `8f3d250538b14cc3260715db8d1b081dc0e9cec8`, technical PR **#143**, reviewed head
+  `ef7eba75673f04f35bf54e9c76262ee6da0c1790` (tree
+  `0ac5efba171930cac0e0553bc8767e2c2f80df0b`), squash-merged to main as
+  `dc0b827b3bdc2eaf4e6864f32690c34f3d0b0148` — whose tree IS that reviewed tree, byte for byte,
+  so what landed is exactly what was audited. COMPLETE is written here only because
+  `OPUS_5_MAX_P0_A2_FINAL_CONFIRMATION=PASS` closed the exact-head independent review; it is a
+  record of that review, not a claim made on the executor's own authority.
   `P0_A1=COMPLETE` and `T1=COMPLETE` are unchanged.
-- **Review arc so far.** `CODEX_REVIEW=EXECUTED` on head `a837ce5a` (PR #143): **2 × P2**, both
+- **Codex review arc.** `CODEX_REVIEW=EXECUTED` on head `a837ce5a` (PR #143): **2 × P2**, both
   materially valid, both remediated on the follow-up head — (W1) the worker pool validated that a
   dedicated env var existed but never proved which database role the URL actually authenticated
   as, so an admin/superuser credential wired into `GOVAI_CONVERSATION_WORKER_DATABASE_URL` would
@@ -711,8 +717,38 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   exists to establish; and (W2) the post-commit session sweep declared a never-fail contract that
   `pg_terminate_backend` could break with `42501`, aborting a migration run AFTER the NOLOGIN had
   already committed and skipping every remaining schema migration. Both were falsified against the
-  reviewed source before the fix and re-verified after. `INDEPENDENT_REVIEW=PENDING` — Codex is a
-  review lane, not the independent exact-head audit, and nothing here is an independent PASS.
+  reviewed source before the fix and re-verified after; both threads are resolved and
+  `CODEX_ACTIVE_MATERIAL_THREADS=0`. Codex is a review lane, not the independent exact-head
+  audit, so it was never treated as the PASS.
+- **Independent exact-head review: `INDEPENDENT_REVIEW=PASS`.** A fresh Opus 5 Max read-only
+  auditor — a different session from the executor, with no authorship stake — reviewed head
+  `ef7eba75673f04f35bf54e9c76262ee6da0c1790` / tree
+  `0ac5efba171930cac0e0553bc8767e2c2f80df0b` and returned
+  `OPUS_5_MAX_P0_A2_FINAL_CONFIRMATION=PASS` with `P0=0`, `P1=0`, `P2_MATERIAL=0`,
+  `P2_NON_MATERIAL=0`, `P3=5`. All twenty-four subsystem verdicts PASS, including worker
+  identity separation, runtime identity attestation, `SECURITY DEFINER` hardening and its
+  shared-owner blast radius, definer RLS policy narrowness, worker column-privilege
+  minimization, discovery content minimization and side-effect freedom, cross-candidate context
+  isolation, the W2 deprovision sweep, and P0-A1 / T1 regression. Exact-head CI on the reviewed
+  head: run `32815554924`, attempt 1, `unit` / `integration` / `ui` all success. The audit
+  artifact lives outside the repository at
+  `/Users/Shared/govai-handoff/audits/ai-conversation-continuity-v1/p0a2-worker-trust-discovery/OPUS-5-MAX-P0-A2-INDEPENDENT-EXACT-HEAD-REVIEW-PR143-ef7eba75.md`
+  (SHA-256 `b44200c814e69113bee5f0404247d8a4170d075ec42ea8d92502bbec61f0306f`).
+- **Five P3 carry-forwards from that review, open by design — none was fixed, because fixing one
+  would have moved a tree that had already been reviewed.** (P0A2-P3-A1) checked-out pg-pool
+  clients carry no per-client `error` listener; unreachable today because no worker process
+  constructs the pool, and therefore a **gate: it MUST be adjudicated and implemented before the
+  first real conversation-worker runtime activation**. (P0A2-P3-A2) `govai_audit_writer`, as
+  table owner, can read all columns of the live claim-plane rows the three new definer policies
+  admit — bounded and non-escalating under current role reachability; no tenant or application
+  path reaches it. (P0A2-P3-A3) the 0031 test's app-policy role filter is substring-based; test
+  precision only. (P0A2-P3-A4) `createConversationWorkerPool` returns a bare `pg.Pool`, so a
+  FUTURE caller could call `pool.query` directly and bypass the attested helpers — no current
+  production caller, but **reconsider an opaque / module-private worker DB handle before
+  expanding worker runtime callers**. (P0A2-P3-A5) runtime attestation validates role attributes
+  but not membership drift; `NOINHERIT` blocks implicit privilege and `SET ROLE` changes
+  `current_user` and is rejected, so there is no current attack path — optional future
+  hardening.
 - What P0-A2 actually shipped:
   - **Role `govai_conversation_worker`** in `infra/postgres/bootstrap.sql` — roles are
     cluster-level and are never created in migrations (the 0028 rule). `NOINHERIT`,
