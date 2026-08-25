@@ -2283,6 +2283,7 @@ describe('migration 0031 — remediation safety re-checks', () => {
       rows: number;
       constraints: number;
       policies: number;
+      appPolicies: number;
       triggers: number;
     }> => {
       const rows = await db.adminPool.query<{ n: string }>(
@@ -2296,6 +2297,12 @@ describe('migration 0031 — remediation safety re-checks', () => {
         `SELECT count(*)::text AS n FROM pg_policies
           WHERE schemaname = 'govai' AND tablename LIKE 'ai_conversation%'`,
       );
+      // 0031's OWN policy surface, isolated from later movements' additions (see below).
+      const appPolicies = await db.adminPool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM pg_policies
+          WHERE schemaname = 'govai' AND tablename LIKE 'ai_conversation%'
+            AND roles::text LIKE '%govai_app%'`,
+      );
       const triggers = await db.adminPool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM pg_trigger
           WHERE tgrelid = 'govai.ai_conversation_attempts'::regclass AND NOT tgisinternal`,
@@ -2304,12 +2311,21 @@ describe('migration 0031 — remediation safety re-checks', () => {
         rows: Number(rows.rows[0]!.n),
         constraints: Number(constraints.rows[0]!.n),
         policies: Number(policies.rows[0]!.n),
+        appPolicies: Number(appPolicies.rows[0]!.n),
         triggers: Number(triggers.rows[0]!.n),
       };
     };
     const before = await counts();
     expect(before.rows).toBeGreaterThan(0); // populated by the suites above
-    expect(before.policies).toBe(16);
+    // ★ UPDATED BY P0-A2. This line used to pin the TOTAL policy count on the domain at 16,
+    // which made it a canary that every later movement's lawful additions would trip — 0032
+    // adds six (three definer-visibility, three worker) and would have broken it for no
+    // safety reason. What this suite actually owns is 0031's OWN surface: eight tables ×
+    // {select, insert} for govai_app. That is pinned exactly; the total is only required to
+    // contain it, and the load-bearing assertion below is unchanged — re-applying 0031 must
+    // change NOTHING, whatever else exists in the domain.
+    expect(before.appPolicies).toBe(16);
+    expect(before.policies).toBeGreaterThanOrEqual(before.appPolicies);
     const sql = await readFile(MIGRATION_0031, 'utf8');
     await db.adminPool.query(sql);
     const after = await counts();

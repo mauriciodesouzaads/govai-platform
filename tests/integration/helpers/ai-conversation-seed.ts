@@ -5,8 +5,13 @@
 // FKs, CHECKs and guard triggers still fire — exactly what the falsification
 // tests need. RLS suites write through the app pool instead.
 
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { randomUUID, randomBytes } from 'node:crypto';
+
+/** Pool or checked-out client — so a suite can seed several rows inside ONE transaction and
+ *  give them an IDENTICAL `created_at` (now() is the transaction timestamp). P0-A2's keyset
+ *  pagination proof needs exactly that, to force the (created_at, id) tie-breaker path. */
+export type Seeder = Pick<Pool | PoolClient, 'query'>;
 
 export type OwnerIds = { orgId: string; ownerUserId: string };
 
@@ -16,7 +21,7 @@ export function freshOwner(): OwnerIds {
 
 /** Insert an active provider credential (0009 shape) and return its id. */
 export async function seedProviderCredential(
-  admin: Pool,
+  admin: Seeder,
   orgId: string,
   provider: 'anthropic' | 'openai' = 'anthropic',
 ): Promise<string> {
@@ -32,7 +37,7 @@ export async function seedProviderCredential(
 
 /** Insert an encrypted content row (fixture bytes, 32-byte digest). */
 export async function seedContent(
-  admin: Pool,
+  admin: Seeder,
   ids: OwnerIds,
   conversationId: string,
   overrides?: { ciphertext?: Buffer; contentHmac?: Buffer },
@@ -58,7 +63,7 @@ export async function seedContent(
 
 /** Insert a conversation + its root branch; returns both ids. */
 export async function seedConversation(
-  admin: Pool,
+  admin: Seeder,
   ids: OwnerIds,
   overrides?: { mode?: 'governed' | 'passthrough'; provider?: string },
 ): Promise<{ conversationId: string; branchId: string }> {
@@ -83,7 +88,7 @@ export async function seedConversation(
 
 /** Insert a turn (mints its native-request-config content row first). */
 export async function seedTurn(
-  admin: Pool,
+  admin: Seeder,
   ids: OwnerIds,
   conversationId: string,
   branchId: string,
@@ -116,6 +121,10 @@ export type AttemptAdvanceOverrides = {
   state?: AttemptTargetState;
   /** Claim token; post-boundary targets always claim (a fresh one if omitted). */
   claimToken?: string;
+  /** Lease length as a Postgres interval, relative to now(). Defaults to `'5 minutes'` (a LIVE
+   *  lease). Pass a NEGATIVE interval (e.g. `'-10 minutes'`) to seed a lapsed lease for the
+   *  §7.7 recovery arms. Bound as a query parameter, never interpolated. */
+  claimDeadlineInterval?: string;
   /** Error taxonomy for `failed` (defaults to provider_error). */
   errorClass?: string;
   /**
@@ -144,7 +153,7 @@ export type AttemptAdvanceOverrides = {
  * that malformed SQL explicitly inside the negative test that needs it).
  */
 export async function advanceSeededAttempt(
-  admin: Pool,
+  admin: Seeder,
   ids: OwnerIds,
   attemptId: string,
   overrides?: AttemptAdvanceOverrides,
@@ -168,14 +177,21 @@ export async function advanceSeededAttempt(
     await admin.query(
       `UPDATE govai.ai_conversation_attempts
           SET claim_token = $1::uuid, claimant = 'test-claimant',
-              claim_deadline_at = now() + interval '5 minutes'
-        WHERE id = $2::uuid`,
-      [overrides?.claimToken ?? randomUUID(), attemptId],
+              claim_deadline_at = now() + $2::interval
+        WHERE id = $3::uuid`,
+      [
+        overrides?.claimToken ?? randomUUID(),
+        overrides?.claimDeadlineInterval ?? '5 minutes',
+        attemptId,
+      ],
     );
   };
 
+  const wantsClaim =
+    overrides?.claimToken !== undefined || overrides?.claimDeadlineInterval !== undefined;
+
   if (target === 'accepted') {
-    if (overrides?.claimToken !== undefined) await claim();
+    if (wantsClaim) await claim();
     await setFlags();
     return;
   }
@@ -183,7 +199,7 @@ export async function advanceSeededAttempt(
   if (target === 'stopped' || target === 'failed' || target === 'rejected') {
     // Pre-boundary terminal: queued discard (§8), pre-dispatch failure
     // (e.g. credential_unavailable) or governance/validation rejection (§7).
-    if (overrides?.claimToken !== undefined) await claim();
+    if (wantsClaim) await claim();
     await setFlags();
     await admin.query(
       `UPDATE govai.ai_conversation_attempts
@@ -278,7 +294,7 @@ export async function advanceSeededAttempt(
  *  pre-boundary), then advance it to the requested state through legal
  *  transitions only (see advanceSeededAttempt). */
 export async function seedAttempt(
-  admin: Pool,
+  admin: Seeder,
   ids: OwnerIds,
   conversationId: string,
   branchId: string,
@@ -299,7 +315,7 @@ export async function seedAttempt(
 
 /** Full chain: conversation → root branch → turn 1 → attempt 1 (+ current_attempt_id). */
 export async function seedFullChain(
-  admin: Pool,
+  admin: Seeder,
   ids: OwnerIds,
 ): Promise<{
   conversationId: string;
@@ -316,6 +332,23 @@ export async function seedFullChain(
     [attemptId, turnId],
   );
   return { conversationId, branchId, turnId, attemptId, configContentId };
+}
+
+/** Walk a conversation root along its LAWFUL lifecycle ratchet (0031: active <-> archived;
+ *  active|archived -> deleted_pending -> deleted; no reverse edge). */
+export async function setConversationStatus(
+  admin: Seeder,
+  conversationId: string,
+  status: 'active' | 'archived' | 'deleted_pending' | 'deleted',
+): Promise<void> {
+  await admin.query(
+    `UPDATE govai.ai_conversations
+        SET status = $1::text,
+            archived_at = CASE WHEN $1::text = 'archived' THEN now() ELSE archived_at END,
+            updated_at = now()
+      WHERE id = $2::uuid`,
+    [status, conversationId],
+  );
 }
 
 /** True when the error is a Postgres FK violation (23503). */

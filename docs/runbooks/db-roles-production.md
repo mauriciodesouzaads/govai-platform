@@ -8,6 +8,14 @@
   função SECURITY DEFINER `audit_append_locked` é executada sob esse role.
 - **`govai_app`** (NOINHERIT, LOGIN, sem BYPASSRLS, sem SUPERUSER): role da
   conexão usada pelo API server em runtime.
+- **`govai_conversation_worker`** (NOINHERIT, **NOLOGIN até ser provisionado**,
+  sem BYPASSRLS, sem SUPERUSER, não é owner de nada): identidade do worker
+  destacado de conversação (EP-AI-CONVERSATION-CONTINUITY-V1 P0-A2). Domínio de
+  confiança SEPARADO do `govai_app` (LAW 11): `govai_app` **não** tem EXECUTE na
+  função de discovery e **não** consegue `SET ROLE` para ele. Capacidade total no
+  P0-A2 = `USAGE` no schema + EXECUTE em `govai.ai_turn_recovery_candidates` +
+  `SELECT` **por coluna** em três tabelas `ai_*`, sempre sob FORCE RLS
+  dual-predicate. Ver "Worker de conversação" abaixo.
 
 ## Identidade do migrador × RLS (migrations com guardas de dados, ex. 0029)
 
@@ -123,3 +131,80 @@ nunca como parte de um pipeline rotineiro de migrations.
 Se você precisar rotacionar a senha de `govai_app` em production, faça-o via
 ALTER ROLE explícito em janela de manutenção, não via re-execução de
 bootstrap.
+
+## Worker de conversação (`govai_conversation_worker`)
+
+Criado por `bootstrap.sql` como **NOLOGIN** — a role existe mas é inalcançável
+até ser explicitamente provisionada. LOGIN e PASSWORD são concedidos JUNTOS,
+atomicamente; não existe estado "LOGIN sem senha" em nenhum momento.
+
+O ciclo de vida é a MESMA máquina de cinco células do
+`govai_evidence_enumerator`, dirigida por dois sinais INDEPENDENTES (não existe
+sentinela por ausência de senha — uma migration de rotina nunca deve desativar a
+recuperação de conversação por omissão):
+
+| Sinal | Efeito |
+|---|---|
+| `GOVAI_DB_CONVERSATION_WORKER_PASSWORD` (>= 8 chars), sem deprovision | provisiona / rotaciona o LOGIN |
+| ambos os sinais definidos | **falha alto** (intenção contraditória) |
+| nenhum sinal | role permanece **exatamente como está** |
+| `GOVAI_DB_CONVERSATION_WORKER_DEPROVISION=1`, sem senha | NOLOGIN + senha limpa, e o runner reapa as sessões vivas pós-commit |
+| `..._DEPROVISION` com qualquer valor != `1` | **falha alto** (sinal inválido) |
+
+Provisionar/rotacionar:
+
+```bash
+export GOVAI_DB_CONVERSATION_WORKER_PASSWORD="$(openssl rand -hex 24)"
+pnpm --filter @govai/api run migrate     # aplica bootstrap + migrations
+```
+
+Desativar:
+
+```bash
+export GOVAI_DB_CONVERSATION_WORKER_DEPROVISION=1   # e NÃO defina a senha
+pnpm --filter @govai/api run migrate
+```
+
+**Runtime.** Um processo worker conecta com a URL própria
+`GOVAI_CONVERSATION_WORKER_DATABASE_URL` (opcionalmente
+`GOVAI_CONVERSATION_WORKER_POOL_MAX`, `GOVAI_CONVERSATION_WORKER_ID`). Essa é uma
+config de CONEXÃO — nunca a senha de provisionamento acima, que gerencia a
+credencial e não deve ser lida em runtime. A fábrica de pool **falha fechada** se
+a URL estiver ausente: não há fallback para `DATABASE_URL`, porque rodar
+recuperação como `govai_app` apagaria exatamente a fronteira de confiança que o
+P0-A2 existe para criar.
+
+**Atestação de identidade em runtime (obrigatória).** Configuração não prova
+NADA sobre qual role uma conexão autenticou. Se
+`GOVAI_CONVERSATION_WORKER_DATABASE_URL` for populada por engano com
+`DATABASE_ADMIN_URL` (ou qualquer credencial elevada), a conexão funciona
+normalmente — e discovery + leituras owner-bound passariam a rodar **furando o
+FORCE RLS**, silenciosamente, porque bypass de RLS devolve MAIS linhas em vez de
+erro. Por isso, antes de CADA uso (antes de `ai_turn_recovery_candidates` e antes
+de entrar em qualquer contexto de owner), o código pergunta ao próprio PostgreSQL:
+
+| verificação | fonte | por quê |
+|---|---|---|
+| `session_user = 'govai_conversation_worker'` | servidor | pega credencial admin que fez `SET ROLE` |
+| `current_user = 'govai_conversation_worker'` | servidor | pega login correto que assumiu outra role |
+| `rolsuper = false` | `pg_roles` | superuser é isento de RLS |
+| `rolbypassrls = false` | `pg_roles` | atributo explícito de bypass |
+| `rolinherit = false` | `pg_roles` | NOINHERIT é propriedade declarada da identidade |
+
+Falha ⇒ `ConversationWorkerIdentityError`, com nomes de role e atributos booleanos
+apenas — **nunca** connection string ou senha. Sintoma operacional esperado: um
+worker mal configurado falha ALTO na primeira operação, em vez de rodar com
+privilégio demais. A checagem é por CHECKOUT, então drift de privilégio
+(`ALTER ROLE ... SUPERUSER`/`BYPASSRLS` depois do provisionamento) também é pego.
+
+**Nenhum processo worker existe ainda** (`WORKER_RUNTIME_PROCESS=NOT_IMPLEMENTED`):
+o P0-A2 entrega a fronteira de confiança e a descoberta, não o runner. Em
+production, deixe a role **não provisionada** até que o primeiro processo worker
+seja implantado — uma role NOLOGIN é inalcançável sob qualquer modo de
+autenticação do `pg_hba`.
+
+**Custódia da credencial.** Comprometer a credencial do worker é o
+comprometimento de um componente privilegiado: least privilege + FORCE RLS
+limitam o raio de explosão e pegam erros de programação, mas não tornam uma
+credencial roubada inofensiva. Trate-a com as mesmas regras de segredo de
+qualquer outra credencial privilegiada da plataforma.
