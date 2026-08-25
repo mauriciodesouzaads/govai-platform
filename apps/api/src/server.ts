@@ -10,6 +10,7 @@ import { createPool } from './db/client.js';
 import { healthRoute } from './routes/health.js';
 import { capabilitiesRoute } from './routes/capabilities.js';
 import { meRoute } from './routes/me.js';
+import { aiConversationsRoute } from './routes/ai-conversations.js';
 import { runsRoute } from './routes/runs.js';
 import { auditEventsRoute } from './routes/audit-events.js';
 import { evidenceRoute } from './routes/evidence.js';
@@ -163,6 +164,11 @@ export async function buildServer(overrides: ServerOverrides = {}): Promise<Fast
   await app.register(healthRoute);
   await app.register(capabilitiesRoute);
   await app.register(meRoute);
+  // EP-AI-CONVERSATION-CONTINUITY-V1 P0-B: the owner-authorized conversation control plane.
+  // Registered as its own plugin so its AUTH-READ-CACHE-01 `onRequest` hook (no-store on every
+  // response of the surface) is ENCAPSULATED to these routes. It starts no worker, no timer and
+  // no queue: registration adds routes and nothing else.
+  await app.register(aiConversationsRoute);
   await app.register(runsRoute);
   await app.register(auditEventsRoute);
   await app.register(evidenceRoute);
