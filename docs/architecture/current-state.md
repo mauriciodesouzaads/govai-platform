@@ -683,8 +683,8 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     rejection, owner-context lifecycle + pooled-connection leak proof, and an encrypted-row
     proof (ciphertext at rest; digest is keyed HMAC, provably not `sha256(plaintext)`).
 - Deliberately NOT in P0-A1 (later movements): worker identity + recovery discovery (P0-A2 —
-  now implemented in this tree as a candidate, see the section above),
-  HTTP routes/Send/claims/runner/SSE/Stop/retry/fork, delete-protocol execution, provider
+  now `COMPLETE`: independently confirmed and landed on main, see the P0-A2 canonical section
+  below), HTTP routes/Send/claims/runner/SSE/Stop/retry/fork, delete-protocol execution, provider
   adapters, attachments (`ai_conversation_attachments`) and the disposal ledger
   (`ai_provider_disposal_ledger`). **Deferred pointers, recorded:** `project_id` (Projects do
   not exist; an unconstrained pointer is forbidden) and `workroom_id` attribution
