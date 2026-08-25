@@ -31,21 +31,21 @@
       "scripts",
       "tests"
     ],
-    "api_route_files": 19,
-    "db_migrations": 31
+    "api_route_files": 20,
+    "db_migrations": 32
   },
   "tests": {
     "root_unit": {
-      "files": 141,
-      "tests": 1621
+      "files": 144,
+      "tests": 1646
     },
     "root_integration_only": {
-      "files": 84,
-      "tests": 1235
+      "files": 89,
+      "tests": 1308
     },
     "root_full_integration_gate": {
-      "files": 225,
-      "tests": 2856
+      "files": 233,
+      "tests": 2954
     },
     "ui": {
       "files": 33,
