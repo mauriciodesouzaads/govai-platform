@@ -13,6 +13,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
 import {
   startStack,
@@ -30,6 +31,8 @@ import {
   type AttemptTargetState,
   type OwnerIds,
 } from './helpers/ai-conversation-seed.js';
+import { installPostgresPoolShutdownGuard } from './setup.js';
+import { buildServer } from '../../apps/api/src/server.js';
 import { branchExecutionAuthorityKey } from '../../apps/api/src/ai-conversations/locks.js';
 
 let stack: Stack;
@@ -1084,4 +1087,221 @@ describe('P0-B K — LAW 16: the lock order is (1) root then (2) branch authorit
     // key here is what makes the two proofs above meaningful for P0-C's runner as well.
     expect(branchExecutionAuthorityKey('abc')).toBe('ai_conversation_branch:abc');
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// L — P0B-P2-UNPINNED-TIMESTAMP-PROJECTION-01, on the fork surface
+//
+// `projectFork` renders `branch.created_at.toISOString()`, and under a non-ISO ambient
+// `DateStyle` node-postgres hands the application `null` for that `timestamptz`. Unlike create
+// and patch, BOTH fork paths project INSIDE their transaction — `createFork` projects as the
+// last statement of the candidate transaction, and `resolveCommittedFork` projects inside the
+// fresh replay transaction — so the pre-fix throw ROLLED BACK rather than diverging from a
+// committed result. That distinction is the reason these tests measure the durable deltas
+// alongside the status code: pre-fix the output read `code: 500` beside `branches: 0`,
+// `bindings: 0`, `turns: 0`, `attempts: 0`, which is a clean failure, and NOT the
+// commit-then-500 divergence the create and patch routes showed.
+//
+// The fix is the same one: `withConversationOwnerContext` pins `DateStyle` transaction-locally
+// for every ai-conversation transaction, including both of these.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('P0-B L — the fork control plane survives a hostile ambient DateStyle', () => {
+  /** ONE app for the block, its pool hostile in the connection STARTUP PACKET (the C9c
+   *  mechanism): every connection the fork route borrows is already `German, DMY`. */
+  let hostile: FastifyInstance;
+
+  beforeAll(async () => {
+    hostile = await buildServer({
+      env: {
+        ...stack.env,
+        DATABASE_URL: `${stack.db.appUrl}?options=${encodeURIComponent('-c DateStyle=German,DMY')}`,
+      },
+    });
+    installPostgresPoolShutdownGuard(
+      hostile.govai.pool,
+      stack.db.shuttingDown,
+      'fork-datestyle-projection',
+    );
+  }, 300_000);
+
+  afterAll(async () => {
+    if (hostile) await hostile.close();
+  });
+
+  async function hostileFork(
+    conversationId: string,
+    apiKey: string,
+    body: Record<string, unknown>,
+  ): Promise<{ statusCode: number; body: unknown; headers: Record<string, unknown> }> {
+    const res = await hostile.inject({
+      method: 'POST',
+      url: `/v1/ai/conversations/${conversationId}/branches`,
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': apiKey },
+      payload: body,
+    });
+    let parsed: unknown;
+    try {
+      parsed = res.body.length > 0 ? JSON.parse(res.body) : null;
+    } catch {
+      parsed = res.body;
+    }
+    return { statusCode: res.statusCode, body: parsed, headers: res.headers };
+  }
+
+  /**
+   * The premise, re-measured on the pool under test: the fork route's own session really is
+   * non-ISO, and the driver really returns `null` — not an Invalid Date — for a `timestamptz`
+   * rendered that way. Without this a green regression could simply mean the environment stopped
+   * being hostile.
+   */
+  async function premise(): Promise<{ ambient: string; rawParse: string }> {
+    const c = await hostile.govai.pool.connect();
+    try {
+      const r = await c.query<{ style: string; ts: Date | null }>(
+        `SELECT current_setting('DateStyle') AS style,
+                '2026-08-25 19:49:46.123456+00'::timestamptz AS ts`,
+      );
+      return {
+        ambient: r.rows[0]!.style,
+        rawParse: r.rows[0]!.ts === null ? 'null' : 'date',
+      };
+    } finally {
+      c.release();
+    }
+  }
+
+  const PREMISE = { ambient: 'German, DMY', rawParse: 'null' };
+
+  /** Every durable thing a fork can mint, counted in one shot. */
+  async function forkFootprint(conversationId: string): Promise<{
+    branches: number;
+    bindings: number;
+    turns: number;
+    attempts: number;
+  }> {
+    const r = await admin().query<{
+      branches: string;
+      bindings: string;
+      turns: string;
+      attempts: string;
+    }>(
+      `SELECT (SELECT count(*) FROM govai.ai_conversation_branches
+                WHERE conversation_id = $1::uuid AND parent_branch_id IS NOT NULL)::text AS branches,
+              (SELECT count(*) FROM govai.ai_conversation_fork_idempotency
+                WHERE conversation_id = $1::uuid)::text AS bindings,
+              (SELECT count(*) FROM govai.ai_conversation_turns
+                WHERE conversation_id = $1::uuid)::text AS turns,
+              (SELECT count(*) FROM govai.ai_conversation_attempts
+                WHERE conversation_id = $1::uuid)::text AS attempts`,
+      [conversationId],
+    );
+    return {
+      branches: Number(r.rows[0]!.branches),
+      bindings: Number(r.rows[0]!.bindings),
+      turns: Number(r.rows[0]!.turns),
+      attempts: Number(r.rows[0]!.attempts),
+    };
+  }
+
+  it('L1 — an INITIAL fork answers 201 in both boundary modes, minting exactly one lawful branch', async () => {
+    // Pre-fix this printed `code: 500` beside an all-zero delta set: the projection threw as the
+    // last statement of the candidate transaction, so `withOwnerContext` rolled the branch, the
+    // binding and (for `before_attempt_output`) the minted child turn and attempt ALL back. A
+    // clean failure — recorded here permanently so the two severities are never flattened.
+    const p = await premise();
+    // BOTH modes are measured BEFORE anything is asserted: a per-iteration assertion would abort
+    // the loop on the first arm and hide the second arm's durable deltas — exactly the evidence
+    // this test exists to keep visible.
+    const observed: Array<Record<string, unknown>> = [];
+    for (const mode of ['after_attempt', 'before_attempt_output'] as const) {
+      const src = await seedForkSource(owner);
+      const before = await forkFootprint(src.conversationId);
+      const body = forkBody(src, { boundary_mode: mode });
+
+      const res = await hostileFork(src.conversationId, org.api_key, body);
+
+      const after = await forkFootprint(src.conversationId);
+      const projected = res.statusCode === 201 ? (res.body as ForkBody) : null;
+      observed.push({
+        mode,
+        ...p,
+        code: res.statusCode,
+        cache: res.headers['cache-control'],
+        replayHeader: res.headers['x-govai-ai-fork-idempotent-replay'] ?? 'absent',
+        branches: after.branches - before.branches,
+        bindings: after.bindings - before.bindings,
+        // `before_attempt_output` mints the regeneration child turn + its fresh initial attempt;
+        // `after_attempt` mints no child rows at all (§3).
+        turns: after.turns - before.turns,
+        attempts: after.attempts - before.attempts,
+        createdAtIso: /^\d{4}-\d{2}-\d{2}T/.test(projected?.created_at ?? ''),
+        childTurn: projected === null ? 'no body' : projected.child_turn === null ? 'null' : 'minted',
+        boundaryMode: projected?.boundary_mode ?? null,
+      });
+    }
+
+    expect(observed).toEqual(
+      (['after_attempt', 'before_attempt_output'] as const).map((mode) => ({
+        mode,
+        ...PREMISE,
+        code: 201,
+        cache: 'no-store',
+        replayHeader: 'absent',
+        branches: 1,
+        bindings: 1,
+        turns: mode === 'before_attempt_output' ? 1 : 0,
+        attempts: mode === 'before_attempt_output' ? 1 : 0,
+        createdAtIso: true,
+        childTurn: mode === 'before_attempt_output' ? 'minted' : 'null',
+        boundaryMode: mode,
+      })),
+    );
+  }, 180_000);
+
+  it('L2 — a fork REPLAY reproduces the fork-time result under a hostile session, minting nothing', async () => {
+    // The replay path has its OWN transaction (`resolveCommittedFork`), entered after the losing
+    // candidate rolls back, and it projects inside it — so it needs the domain boundary just as
+    // much as the first write does. `before_attempt_output` is used because it is the mode that
+    // minted child rows: the no-duplicate invariant is then measurable on four counters, not one.
+    const p = await premise();
+    const src = await seedForkSource(owner);
+    const body = forkBody(src, { boundary_mode: 'before_attempt_output' });
+
+    // The FIRST write goes through the ORDINARY (ISO) app, so the committed fork and the answer
+    // it produced are established outside the hostility under test.
+    const first = await fork(org.api_key, src.conversationId, body);
+    expect(first.statusCode).toBe(201);
+    const committed = first.body as ForkBody;
+    const afterFirst = await forkFootprint(src.conversationId);
+
+    // The REPLAY — same `client_fork_id`, byte-identical intent — through the hostile app.
+    const replay = await hostileFork(src.conversationId, org.api_key, body);
+
+    const afterReplay = await forkFootprint(src.conversationId);
+    expect({
+      ...p,
+      code: replay.statusCode,
+      cache: replay.headers['cache-control'],
+      replayHeader: replay.headers['x-govai-ai-fork-idempotent-replay'] ?? 'absent',
+      // §13: a duplicate is a READ. Nothing new commits on ANY counter.
+      branches: afterReplay.branches - afterFirst.branches,
+      bindings: afterReplay.bindings - afterFirst.bindings,
+      turns: afterReplay.turns - afterFirst.turns,
+      attempts: afterReplay.attempts - afterFirst.attempts,
+      // P0B-P2-FORK-REPLAY-RECONSTRUCTION-01: the replay reproduces the FORK-TIME projection,
+      // byte for byte, `created_at` and the minted child turn included.
+      identicalProjection: replay.statusCode === 200 ? replay.body : null,
+    }).toEqual({
+      ...PREMISE,
+      code: 200,
+      cache: 'no-store',
+      replayHeader: 'true',
+      branches: 0,
+      bindings: 0,
+      turns: 0,
+      attempts: 0,
+      identicalProjection: committed,
+    });
+  }, 180_000);
 });

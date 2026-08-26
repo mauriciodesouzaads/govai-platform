@@ -55,6 +55,70 @@ export class InvalidCursorError extends Error {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// The conversation transaction boundary
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * EVERY ai-conversation transaction enters HERE. Owner RLS context AND an ISO `DateStyle` are one
+ * indivisible service-layer boundary (P0B-P2-UNPINNED-TIMESTAMP-PROJECTION-01).
+ *
+ * ★ WHY THE PIN IS PART OF THE TRANSACTION CONTRACT. A `timestamptz` reaches this process as TEXT
+ * rendered by PostgreSQL under the SESSION's `DateStyle`, and nothing in this system pins that:
+ * not the bootstrap, not the role, not the pool, not the connection string. Under `German`, `SQL`
+ * or `Postgres` the driver's timestamptz parser does not recognise its own input and hands the
+ * application a bare `null` — measured, not inferred: `German, DMY` renders
+ * `25.08.2026 19:49:46.123456 UTC`, node-postgres returns `null` for it, and
+ * `row.created_at.toISOString()` then throws a TypeError. Every projection in this file is built
+ * from such a column, so the whole control plane was unusable on such a session.
+ *
+ * ★ AND IT WAS WORSE THAN A 500 ON TWO OF THE FIVE ROUTES, because the projection sits on
+ * DIFFERENT SIDES of the transaction boundary depending on the route. `createConversation` and
+ * `patchConversation` project AFTER their transaction has COMMITTED, so the client was told the
+ * operation had failed when it had durably succeeded — and create carries no idempotency key
+ * (§13 gives one to the fork and none to create), so the natural client retry minted a SECOND
+ * conversation. `createFork` and `resolveCommittedFork` project INSIDE their transaction, so
+ * those rolled the whole candidate back and failed cleanly. The three integration arms that keep
+ * that distinction visible are `ai-conversation-control-plane.test.ts` G1/G3/G5 and
+ * `ai-conversation-fork-control-plane.test.ts` L1/L2.
+ *
+ * ★ THE PARSE HAPPENS INSIDE THE TRANSACTION, WHICH IS WHY A TRANSACTION-LOCAL PIN IS ENOUGH.
+ * node-postgres converts a `timestamptz` when the ROW ARRIVES, not when a projection later reads
+ * it, so a `created_at` that reaches `projectConversation` after COMMIT was already parsed under
+ * this pin. That is what lets create and patch keep projecting outside their transaction: the
+ * value they carry out is a real `Date`, never a deferred rendering.
+ *
+ * ★ WHY HERE, AND NOT AT THE POOL, THE ROLE OR THE DATABASE. The parser behaviour is app-wide, and
+ * a global default would close it once for everything — which is precisely why it is not this
+ * movement's change to make: it would alter how EVERY query in the system renders timestamps, a
+ * far larger claim than this defect supports, and an owner-level architectural decision rather
+ * than a side effect of a narrow remediation. What this movement owns is the conversation domain,
+ * and the honest fix at that scope is to put the pin on the ONE boundary every conversation
+ * transaction already passes through — not to scatter `SET LOCAL` across the store's call sites,
+ * where the next store function added would silently not have it.
+ *
+ * ★ WHY NOT INSIDE `withOwnerContext` ITSELF. That primitive is `@govai/core-tenant`'s and serves
+ * every owner-scoped domain in the system; changing its semantics would make this narrow fix a
+ * platform-wide behaviour change by the back door. It keeps owning `BEGIN`, both GUCs and
+ * COMMIT/ROLLBACK; this wrapper adds the conversation domain's own requirement on top of it.
+ *
+ * ★ TRANSACTION-LOCAL, and proven so on a `max: 1` pool. `SET LOCAL` dies with the transaction —
+ * after COMMIT and after ROLLBACK alike — so the next borrower of that pooled connection finds the
+ * session exactly as it was. `DateStyle` is a `USERSET` GUC (`pg_settings.context = 'user'`), so
+ * no grant, role or bootstrap change is involved. The pin lands AFTER `BEGIN` and BEFORE any
+ * domain statement, which is what makes it cover every read this file performs.
+ */
+async function withConversationOwnerContext<T>(
+  client: PoolClient,
+  scope: OwnerScope,
+  fn: (c: PoolClient) => Promise<T>,
+): Promise<T> {
+  return withOwnerContext(client, scope.orgId, scope.ownerUserId, async (c) => {
+    await c.query(`SET LOCAL DateStyle = 'ISO, MDY'`);
+    return fn(c);
+  });
+}
+
 /**
  * P0-B ADDRESSABILITY (bounded, and deliberately narrower than the schema).
  *
@@ -151,10 +215,9 @@ export async function createConversation(
 ): Promise<ConversationDetail> {
   const client = await deps.pool.connect();
   try {
-    const { conversation, branch } = await withOwnerContext(
+    const { conversation, branch } = await withConversationOwnerContext(
       client,
-      scope.orgId,
-      scope.ownerUserId,
+      scope,
       async (c) => {
         const conversationRow = await store.insertConversation(c, scope, input);
         const branchRow = await store.insertRootBranch(c, scope, {
@@ -201,7 +264,7 @@ export async function listConversations(
 
   const client = await deps.pool.connect();
   try {
-    const page = await withOwnerContext(client, scope.orgId, scope.ownerUserId, (c) =>
+    const page = await withConversationOwnerContext(client, scope, (c) =>
       store.listConversations(c, scope, {
         status: input.status,
         limit: input.limit,
@@ -237,7 +300,7 @@ export async function getConversation(
 ): Promise<ConversationDetail> {
   const client = await deps.pool.connect();
   try {
-    const found = await withOwnerContext(client, scope.orgId, scope.ownerUserId, async (c) => {
+    const found = await withConversationOwnerContext(client, scope, async (c) => {
       const row = await store.getConversation(c, conversationId);
       if (!row || !isAddressable(row.status)) return null;
       const branch = await store.getRootBranch(c, conversationId);
@@ -291,7 +354,7 @@ export async function patchConversation(
 
   const client = await deps.pool.connect();
   try {
-    const found = await withOwnerContext(client, scope.orgId, scope.ownerUserId, async (c) => {
+    const found = await withConversationOwnerContext(client, scope, async (c) => {
       // LAW 10 level (1): take the root authority and REVALIDATE under it. A rename racing the
       // §19.1 `deleted_pending` transition must serialize, not interleave.
       const locked = await lockConversationRoot(c, conversationId);
@@ -359,10 +422,9 @@ export async function createFork(
   const resolved: { intentHash: Buffer | null } = { intentHash: null };
   try {
     try {
-      const created = await withOwnerContext(
+      const created = await withConversationOwnerContext(
         client,
-        scope.orgId,
-        scope.ownerUserId,
+        scope,
         async (c) => {
           // ── LAW 16 (1): conversation root lifecycle authority ─────────────────────────────
           // Taken FIRST and held for the whole transaction. LAW 10: the check and the write
@@ -471,7 +533,8 @@ export async function createFork(
       return { branch: created, replay: false };
     } catch (err) {
       if (err instanceof ForkIdempotencyLoserSignal) {
-        // The candidate transaction has already been rolled back by withOwnerContext. Answer
+        // The candidate transaction has already been rolled back by the owner context it
+        // entered. Answer
         // from the COMMITTED binding in a fresh transaction — a duplicate is a READ, never a
         // second mint and never a verdict about work this request did not do.
         if (resolved.intentHash === null) {
@@ -568,7 +631,7 @@ async function resolveCommittedFork(
   clientForkId: string,
   intentHash: Buffer,
 ): Promise<ForkResult> {
-  return withOwnerContext(client, scope.orgId, scope.ownerUserId, async (c) => {
+  return withConversationOwnerContext(client, scope, async (c) => {
     const binding = await store.findForkBinding(c, conversationId, clientForkId);
     if (!binding) {
       // `ON CONFLICT DO NOTHING` waits for the conflicting transaction, so losing the

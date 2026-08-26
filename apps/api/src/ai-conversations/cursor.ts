@@ -31,12 +31,16 @@ export type ConversationListCursor = {
 const CURSOR_VERSION = 1;
 const MAX_CURSOR_LEN = 512;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** `2026-08-25 19:49:46.123456+00` — the ISO rendering of `timestamptz::text`, which the STORE
- *  guarantees by pinning `DateStyle` transaction-locally on the list statement
- *  (`store.listConversations`, P0B-P2-CURSOR-DATESTYLE-PIN-01). Without that pin the emission
- *  followed the session's own `DateStyle`, and a `German`/`SQL`/`Postgres` session made the server
- *  issue a cursor this expression rejects — a 400 on the server's own `next_cursor`. The two are
- *  ONE contract and must move together: this grammar is what the store's pinned cast produces.
+/** `2026-08-25 19:49:46.123456+00` — the ISO rendering of `timestamptz::text`, which the
+ *  CONVERSATION TRANSACTION BOUNDARY guarantees: `service.withConversationOwnerContext` pins
+ *  `DateStyle` transaction-locally before any domain statement runs, so `store.listConversations`
+ *  renders `updated_at::text` under ISO whatever the session was handed
+ *  (P0B-P2-CURSOR-DATESTYLE-PIN-01, re-owned by P0B-P2-UNPINNED-TIMESTAMP-PROJECTION-01 when the
+ *  same defect turned up on the create/get/patch/fork projections and proved the pin belongs to
+ *  the transaction rather than to one statement). Without that pin the emission followed the
+ *  session's own `DateStyle`, and a `German`/`SQL`/`Postgres` session made the server issue a
+ *  cursor this expression rejects — a 400 on the server's own `next_cursor`. The two are ONE
+ *  contract and must move together: this grammar is what the pinned cast produces.
  *  Rejecting anything else keeps a malformed cursor a 400 rather than a database parse error
  *  surfacing as a 500.
  *

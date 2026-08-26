@@ -13,9 +13,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { Pool, PoolClient } from 'pg';
+import { Pool } from 'pg';
+import type { PoolClient } from 'pg';
 import { DevKms } from '@govai/core-identity';
-import { withOwnerContext } from '@govai/core-tenant';
 import {
   startStack,
   stopStack,
@@ -27,12 +27,16 @@ import {
 } from './helpers/server-fixture.js';
 import { installPostgresPoolShutdownGuard } from './setup.js';
 import { buildServer } from '../../apps/api/src/server.js';
-import { createConversation } from '../../apps/api/src/ai-conversations/service.js';
+import { ConversationNotFoundError } from '../../apps/api/src/ai-conversations/errors.js';
+import {
+  createConversation,
+  createFork,
+  listConversations,
+} from '../../apps/api/src/ai-conversations/service.js';
 import {
   decodeConversationCursor,
   encodeConversationCursor,
 } from '../../apps/api/src/ai-conversations/cursor.js';
-import * as conversationStore from '../../apps/api/src/ai-conversations/store.js';
 
 let stack: Stack;
 /** Owner A — the principal under test. */
@@ -86,6 +90,16 @@ async function adminQuery<T extends Record<string, unknown>>(
 ): Promise<T[]> {
   const r = await stack.db.adminPool.query<T>(sql, params);
   return r.rows;
+}
+
+/**
+ * A `govai_app` connection string whose SESSION is already hostile before the first statement
+ * runs — the mechanism C9c proved and every DateStyle regression below reuses. `options` is
+ * delivered in the CONNECTION STARTUP PACKET, so no global setting is touched and nothing
+ * depends on which pooled connection happens to be handed out.
+ */
+function hostileDbUrl(options: string): string {
+  return `${stack.db.appUrl}?options=${encodeURIComponent(options)}`;
 }
 
 /** Run SQL through the APP pool with an explicit, possibly incomplete, owner context. */
@@ -701,20 +715,32 @@ describe('P0-B C — list, get and AUTH-READ-CACHE-01', () => {
     }
   }, 180_000);
 
-  it('C9d — the store pins the key under EVERY non-ISO style, and keeps OFFSET SECONDS', async () => {
-    // The same guarantee as C9c, exercised directly on the shipped `store.listConversations`
-    // across the whole hostile set rather than on one app, and on the connection state that
-    // actually reaches it: a SESSION-level `SET DateStyle` on a checked-out client — which is
-    // exactly what a pool hands out when the database, the role or the connection options carry a
-    // non-ISO default. The client is DESTROYED afterwards (`release(true)`), so a session this
-    // test dirtied is never handed to another test.
+  it('C9d — the conversation TRANSACTION pins the key under EVERY non-ISO style, and keeps OFFSET SECONDS', async () => {
+    // The same guarantee as C9c, exercised across the WHOLE hostile set and through the SHIPPED
+    // SERVICE ENTRY POINT rather than through a hand-assembled owner-context + store pair. That
+    // entry point is what the route actually calls, so this test is deliberately NEUTRAL about
+    // which layer holds the pin: `P0B-P2-CURSOR-DATESTYLE-PIN-01` is a guarantee about the
+    // cursor the SERVER issues, and it must survive the pin being owned by the conversation
+    // transaction boundary (P0B-P2-UNPINNED-TIMESTAMP-PROJECTION-01) exactly as it did when the
+    // list statement owned it alone.
+    //
+    // The hostility is ambient and REAL: `DateStyle` AND a `TimeZone` whose historical offset
+    // carries SECONDS, both delivered in the connection STARTUP PACKET, on a `max: 1` pool — so
+    // every statement below runs on ONE physical backend and the session observed afterwards is
+    // provably the same one the transaction borrowed.
     const owner = await seedOrg(stack);
     const scope = { orgId: owner.org_id, ownerUserId: owner.user_id };
-    // Two rows: an ordinary microsecond-bearing instant, and one from BEFORE São Paulo had a
-    // whole-minute UTC offset — `::text` renders that one `-03:06:28`, seconds included. `to_char`
-    // truncates that tail to `-03:06`, which is why the rendering stays PostgreSQL's own.
-    const rows: Array<{ id: string; at: string }> = [];
-    for (const at of ['2026-08-25 19:49:46.123456+00', '1900-06-01 12:00:00.000001-03:06:28']) {
+    // Three rows, NEWEST FIRST. The 2026 row exercises the ordinary microsecond tail; the two
+    // pre-1914 São Paulo rows print `-03:06:28` — the offset SECONDS `to_char` truncates to
+    // `-03:06`. Both keys are reachable through the server's own cursor: a `limit=1` page ends on
+    // the first row, a `limit=2` page ends on the second.
+    const stamps = [
+      '2026-08-25 19:49:46.123456+00',
+      '1900-06-01 12:00:00.000001-03:06:28',
+      '1899-06-01 12:00:00.654321-03:06:28',
+    ];
+    const seeded: string[] = [];
+    for (const at of stamps) {
       const conv = await adminQuery<{ id: string }>(
         `INSERT INTO govai.ai_conversations
            (org_id, owner_user_id, mode, provider, surface, model, created_at, updated_at)
@@ -723,74 +749,122 @@ describe('P0-B C — list, get and AUTH-READ-CACHE-01', () => {
          RETURNING id`,
         [owner.org_id, owner.user_id, at],
       );
-      rows.push({ id: conv[0]!.id, at });
+      await adminQuery(
+        `INSERT INTO govai.ai_conversation_branches
+           (org_id, owner_user_id, conversation_id, provider, surface, model)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'anthropic', 'anthropic_api', 'm')`,
+        [owner.org_id, owner.user_id, conv[0]!.id],
+      );
+      seeded.push(conv[0]!.id);
     }
 
-    for (const style of ['German, DMY', 'SQL, DMY', 'Postgres, MDY']) {
-      const c = await stack.db.appPool.connect();
+    for (const style of [
+      { option: 'German,DMY', shown: 'German, DMY' },
+      { option: 'SQL,DMY', shown: 'SQL, DMY' },
+      { option: 'Postgres,MDY', shown: 'Postgres, MDY' },
+    ]) {
+      const pool = new Pool({
+        connectionString: hostileDbUrl(
+          `-c DateStyle=${style.option} -c TimeZone=America/Sao_Paulo`,
+        ),
+        max: 1,
+        // Never recycle: the `pg_backend_pid()` identity below is the proof that the session
+        // restored after COMMIT is the one the transaction actually borrowed.
+        idleTimeoutMillis: 0,
+      });
+      installPostgresPoolShutdownGuard(pool, stack.db.shuttingDown, `app-datestyle-${style.option}`);
       try {
-        // Ambient hostility for THIS session, established before the owner transaction opens —
-        // and, for the second row, a zone whose historical offset carries SECONDS.
-        await c.query(`SET DateStyle = '${style}'`);
-        await c.query(`SET TimeZone = 'America/Sao_Paulo'`);
-        const unpinned = await c.query<{ key: string }>(
-          `SELECT ('2026-08-25 19:49:46.123456+00'::timestamptz)::text AS key`,
-        );
-        // The ambient really is hostile: this is what the store WOULD have emitted.
-        expect({ style, iso: /^\d{4}-\d{2}-\d{2} /.test(unpinned.rows[0]!.key) }).toEqual({
-          style,
-          iso: false,
-        });
-
-        const page = await withOwnerContext(c, scope.orgId, scope.ownerUserId, (cc) =>
-          conversationStore.listConversations(cc, scope, {
-            status: 'active',
-            limit: 50,
-            cursor: null,
-          }),
-        );
-        expect({ style, rows: page.rows.length }).toEqual({ style, rows: 2 });
-        for (const row of page.rows) {
-          // ISO-formed, and a cursor built from it is one the server's own decoder accepts,
-          // byte for byte.
-          const decoded = decodeConversationCursor(
-            encodeConversationCursor({ updatedAt: row.updated_at_key, id: row.id }),
+        // (1) THE PREMISE, re-proved on the very pool under test — never assumed. The ambient
+        // style really is hostile; the UNPINNED rendering is outside `cursor.ts`'s grammar; and
+        // node-postgres hands the application a bare `null` for that `timestamptz` rather than a
+        // Date, which is the exact throw `P0B-P2-UNPINNED-TIMESTAMP-PROJECTION-01` names. A
+        // regression here can therefore never pass because the environment quietly became ISO.
+        const probe = await pool.connect();
+        let observed: { style: string; key: string; parsed: string; pid: string };
+        try {
+          const r = await probe.query<{ style: string; key: string; ts: Date | null; pid: string }>(
+            `SELECT current_setting('DateStyle') AS style,
+                    ('2026-08-25 19:49:46.123456+00'::timestamptz)::text AS key,
+                    '2026-08-25 19:49:46.123456+00'::timestamptz AS ts,
+                    pg_backend_pid()::text AS pid`,
           );
-          expect({ style, id: row.id, accepted: decoded !== null }).toEqual({
-            style,
-            id: row.id,
-            accepted: true,
-          });
-          expect({ style, id: row.id, key: decoded!.updatedAt }).toEqual({
-            style,
-            id: row.id,
-            key: row.updated_at_key,
-          });
+          observed = {
+            style: r.rows[0]!.style,
+            key: r.rows[0]!.key,
+            parsed: r.rows[0]!.ts === null ? 'null' : 'date',
+            pid: r.rows[0]!.pid,
+          };
+        } finally {
+          probe.release();
         }
-        const byId = new Map(page.rows.map((r) => [r.id, r.updated_at_key]));
-        expect({ style, key: byId.get(rows[0]!.id) }).toEqual({
-          style,
-          key: '2026-08-25 16:49:46.123456-03',
-        });
-        // OFFSET SECONDS survive: `-03:06:28`, not `-03:06` and not a UTC-normalised value.
-        expect({ style, key: byId.get(rows[1]!.id) }).toEqual({
-          style,
-          key: '1900-06-01 12:00:00.000001-03:06:28',
+        expect({
+          style: style.shown,
+          ambient: observed.style,
+          rawParse: observed.parsed,
+          unpinnedAccepted:
+            decodeConversationCursor(
+              encodeConversationCursor({ updatedAt: observed.key, id: randomUUID() }),
+            ) !== null,
+        }).toEqual({
+          style: style.shown,
+          ambient: style.shown,
+          rawParse: 'null',
+          unpinnedAccepted: false,
         });
 
-        // The pin is TRANSACTION-LOCAL: the session it borrowed is exactly as hostile afterwards,
-        // so nothing it did can reach the next borrower of this connection.
-        const after = await c.query<{ style: string }>(
-          `SELECT current_setting('DateStyle') AS style`,
-        );
-        expect({ style, after: after.rows[0]!.style }).toEqual({ style, after: style });
+        // (2) THE GUARANTEE, through the shipped service. Both pages carry a cursor because a
+        // further matching row is PROVEN to exist beyond each of them.
+        const deps = { pool, kms: stack.app.govai.kms };
+        const page1 = await listConversations(deps, scope, { status: 'active', limit: 1 });
+        const page2 = await listConversations(deps, scope, { status: 'active', limit: 2 });
+        const key1 = page1.next_cursor === null ? null : decodeConversationCursor(page1.next_cursor);
+        const key2 = page2.next_cursor === null ? null : decodeConversationCursor(page2.next_cursor);
+
+        // (3) The projection itself survived — under the ambient style every one of these would
+        // have been built from a null Date — and the emitted keys are the server's own, decodable
+        // by the server's own decoder, with BOTH the microsecond tail and the offset SECONDS
+        // intact.
+        const after = await pool.connect();
+        let restored: { style: string; pid: string };
+        try {
+          const r = await after.query<{ style: string; pid: string }>(
+            `SELECT current_setting('DateStyle') AS style, pg_backend_pid()::text AS pid`,
+          );
+          restored = { style: r.rows[0]!.style, pid: r.rows[0]!.pid };
+        } finally {
+          after.release();
+        }
+
+        expect({
+          style: style.shown,
+          page1Ids: page1.conversations.map((c) => c.id),
+          page2Ids: page2.conversations.map((c) => c.id),
+          key1: key1 === null ? null : key1.updatedAt,
+          key1Id: key1?.id ?? null,
+          key2: key2 === null ? null : key2.updatedAt,
+          key2Id: key2?.id ?? null,
+          // The public projection is an ordinary ISO-8601 instant, not a null-Date crash.
+          createdAtIso: /^\d{4}-\d{2}-\d{2}T/.test(page1.conversations[0]?.created_at ?? ''),
+          // TRANSACTION-LOCAL: the same physical backend is exactly as hostile afterwards.
+          restoredStyle: restored.style,
+          samePid: restored.pid === observed.pid,
+        }).toEqual({
+          style: style.shown,
+          page1Ids: [seeded[0]],
+          page2Ids: [seeded[0], seeded[1]],
+          key1: '2026-08-25 16:49:46.123456-03',
+          key1Id: seeded[0],
+          key2: '1900-06-01 12:00:00.000001-03:06:28',
+          key2Id: seeded[1],
+          createdAtIso: true,
+          restoredStyle: style.shown,
+          samePid: true,
+        });
       } finally {
-        // DESTROY, never return to the pool: this connection carries a session-level
-        // DateStyle/TimeZone this test set, and no other test may inherit it.
-        c.release(true);
+        await pool.end();
       }
     }
-  }, 180_000);
+  }, 240_000);
 
   it('C10 — archived conversations leave the default list and are reachable only on request', async () => {
     const owner = await seedOrg(stack);
@@ -1227,6 +1301,386 @@ describe('P0-B C6b/C6c — AUTH-READ-CACHE-01 on a pre-handler termination', () 
       });
     } finally {
       await app.close();
+    }
+  }, 180_000);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// G — P0B-P2-UNPINNED-TIMESTAMP-PROJECTION-01
+//
+// EVERY conversation projection is built from a `timestamptz` node-postgres parsed, and under a
+// non-ISO ambient `DateStyle` node-postgres hands the application `null` for such a column — not
+// an Invalid Date, a bare `null` — so `row.created_at.toISOString()` throws. Measured, not
+// inferred: `German, DMY` renders `25.08.2026 19:49:46.123456 UTC`, and the driver's timestamptz
+// parser returns null for it.
+//
+// The severity is NOT uniform across the five routes, and this block keeps that distinction
+// permanently visible, because the projection sits on DIFFERENT SIDES of the transaction
+// boundary depending on the route:
+//   · create and patch project AFTER `withOwnerContext` has already COMMITTED, so the throw
+//     answered 500 on an operation that had DURABLY SUCCEEDED — and `POST /v1/ai/conversations`
+//     carries no idempotency key, so the natural client retry created a SECOND conversation;
+//   · get reads and then projects, so its 500 was clean;
+//   · fork projects INSIDE its transaction, so its 500 rolled the whole candidate back.
+// Each of the tests below therefore collects the HTTP answer and the durable deltas into ONE
+// assertion object: a failure prints the whole observation, so the commit/response divergence is
+// legible in the output rather than hidden behind whichever assertion happened to run first.
+//
+// The fix is a CONVERSATION-DOMAIN transaction boundary: `withConversationOwnerContext` enters
+// the generic owner context and pins `DateStyle` transaction-locally BEFORE any domain statement
+// runs. Nothing global, nothing at the pool, nothing at the role — see the service header.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('P0-B G — every conversation projection survives a hostile ambient DateStyle', () => {
+  /** ONE app for the whole block: its pool carries `DateStyle=German,DMY` in the startup packet,
+   *  so every connection the five routes borrow is already non-ISO. */
+  let hostile: FastifyInstance;
+  /** A dedicated owner, so the durable deltas measured below are this block's alone. */
+  let owner: SeededOrg;
+
+  beforeAll(async () => {
+    hostile = await buildServer({
+      env: { ...stack.env, DATABASE_URL: hostileDbUrl('-c DateStyle=German,DMY') },
+    });
+    installPostgresPoolShutdownGuard(
+      hostile.govai.pool,
+      stack.db.shuttingDown,
+      'app-datestyle-projection',
+    );
+    owner = await seedOrg(stack);
+  }, 300_000);
+
+  afterAll(async () => {
+    if (hostile) await hostile.close();
+  });
+
+  async function hostileInject(
+    method: 'GET' | 'POST' | 'PATCH',
+    url: string,
+    apiKey: string,
+    payload?: unknown,
+  ): Promise<{ statusCode: number; body: unknown; headers: Record<string, unknown> }> {
+    const headers: Record<string, string> = { 'x-govai-api-key': apiKey };
+    if (payload !== undefined) headers['content-type'] = 'application/json';
+    const res = await hostile.inject({ method, url, headers, payload: payload ?? undefined });
+    let body: unknown;
+    try {
+      body = res.body.length > 0 ? JSON.parse(res.body) : null;
+    } catch {
+      body = res.body;
+    }
+    return { statusCode: res.statusCode, body, headers: res.headers };
+  }
+
+  /**
+   * The premise of every regression in this block, re-measured on the pool actually under test:
+   * the session really is non-ISO, and the driver really does return `null` for a `timestamptz`
+   * on it. The ADMIN reference side is asserted ISO in the same breath, because the committed
+   * values these tests compare against are read through it.
+   */
+  async function premise(): Promise<{ ambient: string; rawParse: string; adminStyle: string }> {
+    const c = await hostile.govai.pool.connect();
+    try {
+      const r = await c.query<{ style: string; ts: Date | null }>(
+        `SELECT current_setting('DateStyle') AS style,
+                '2026-08-25 19:49:46.123456+00'::timestamptz AS ts`,
+      );
+      const adminStyle = await adminQuery<{ style: string }>(
+        `SELECT current_setting('DateStyle') AS style`,
+      );
+      return {
+        ambient: r.rows[0]!.style,
+        rawParse: r.rows[0]!.ts === null ? 'null' : 'date',
+        adminStyle: adminStyle[0]!.style,
+      };
+    } finally {
+      c.release();
+    }
+  }
+
+  const PREMISE = { ambient: 'German, DMY', rawParse: 'null', adminStyle: 'ISO, MDY' };
+
+  /** The conversation rows this owner durably holds, read through the ISO admin pool. */
+  async function committedConversations(): Promise<
+    Array<{ id: string; status: string; created_at: Date; updated_at: Date; title_ciphertext: Buffer | null }>
+  > {
+    return adminQuery(
+      `SELECT id, status, created_at, updated_at, title_ciphertext
+         FROM govai.ai_conversations WHERE owner_user_id = $1::uuid
+        ORDER BY created_at ASC, id ASC`,
+      [owner.user_id],
+    );
+  }
+
+  async function rootBranchCount(): Promise<number> {
+    const r = await adminQuery<{ n: string }>(
+      `SELECT count(*)::text AS n
+         FROM govai.ai_conversation_branches
+        WHERE owner_user_id = $1::uuid AND parent_branch_id IS NULL`,
+      [owner.user_id],
+    );
+    return Number(r[0]!.n);
+  }
+
+  it('G1 — CREATE answers 201, and the answer AGREES with what committed', async () => {
+    // Pre-fix this is the commit/response divergence: `code: 500` printed beside
+    // `conversationsDelta: 1` — the conversation and its root branch were durably there and the
+    // client was told the request had failed.
+    const p = await premise();
+    const before = (await committedConversations()).length;
+    const beforeRoots = await rootBranchCount();
+
+    const res = await hostileInject('POST', '/v1/ai/conversations', owner.api_key, CREATE);
+
+    const rows = await committedConversations();
+    const body = res.statusCode === 201 ? (res.body as ConversationBody) : null;
+    const row = rows.find((r) => r.id === body?.id) ?? null;
+
+    expect({
+      ...p,
+      code: res.statusCode,
+      conversationsDelta: rows.length - before,
+      rootBranchDelta: (await rootBranchCount()) - beforeRoots,
+      cache: res.headers['cache-control'],
+      // The response's instants are the COMMITTED instants, not merely well-formed strings.
+      createdAtEchoesCommit: body === null || row === null ? null : body.created_at === row.created_at.toISOString(),
+      updatedAtEchoesCommit: body === null || row === null ? null : body.updated_at === row.updated_at.toISOString(),
+      // `?? 'absent'` would be wrong here: `null` IS the contracted value for a conversation
+      // that has never been archived, and nullish coalescing cannot tell it from a missing body.
+      archivedAt: body === null ? 'no body' : body.archived_at,
+      rootBranchPresent: body === null ? null : typeof body.root_branch.id === 'string',
+    }).toEqual({
+      ...PREMISE,
+      code: 201,
+      conversationsDelta: 1,
+      rootBranchDelta: 1,
+      cache: 'no-store',
+      createdAtEchoesCommit: true,
+      updatedAtEchoesCommit: true,
+      archivedAt: null,
+      rootBranchPresent: true,
+    });
+  });
+
+  it('G2 — GET answers 200 and mutates nothing', async () => {
+    const p = await premise();
+    // Seeded through the ORDINARY (ISO) app, so the read is the only hostile operation.
+    const created = (await createVia(owner.api_key)).body as ConversationBody;
+    const before = await committedConversations();
+    const beforeRow = before.find((r) => r.id === created.id)!;
+
+    const res = await hostileInject('GET', `/v1/ai/conversations/${created.id}`, owner.api_key);
+
+    const after = await committedConversations();
+    const afterRow = after.find((r) => r.id === created.id)!;
+    const body = res.statusCode === 200 ? (res.body as ConversationBody) : null;
+
+    expect({
+      ...p,
+      code: res.statusCode,
+      cache: res.headers['cache-control'],
+      id: body?.id ?? null,
+      createdAtEchoesCommit: body === null ? null : body.created_at === afterRow.created_at.toISOString(),
+      // A read mutates nothing: the row count and the row itself are untouched.
+      countDelta: after.length - before.length,
+      updatedAtUnchanged: afterRow.updated_at.getTime() === beforeRow.updated_at.getTime(),
+      statusUnchanged: afterRow.status === beforeRow.status,
+    }).toEqual({
+      ...PREMISE,
+      code: 200,
+      cache: 'no-store',
+      id: created.id,
+      createdAtEchoesCommit: true,
+      countDelta: 0,
+      updatedAtUnchanged: true,
+      statusUnchanged: true,
+    });
+  });
+
+  it('G3 — PATCH answers 200, and the answer AGREES with the committed mutation', async () => {
+    // The second half of the commit/response divergence: pre-fix the rename COMMITTED — a new
+    // `title_ciphertext` was durably in place — and the client still received a 500.
+    const p = await premise();
+    const created = (await createVia(owner.api_key)).body as ConversationBody;
+    const beforeRow = (await committedConversations()).find((r) => r.id === created.id)!;
+    const title = `renamed ${randomUUID()}`;
+
+    const res = await hostileInject('PATCH', `/v1/ai/conversations/${created.id}`, owner.api_key, {
+      title,
+    });
+
+    const afterRow = (await committedConversations()).find((r) => r.id === created.id)!;
+    const body = res.statusCode === 200 ? (res.body as ConversationBody) : null;
+
+    expect({
+      ...p,
+      code: res.statusCode,
+      cache: res.headers['cache-control'],
+      // Durable evidence of the mutation, never the plaintext: the ciphertext group changed.
+      ciphertextWasNull: beforeRow.title_ciphertext === null,
+      ciphertextCommitted: afterRow.title_ciphertext !== null,
+      updatedAtBumped: afterRow.updated_at.getTime() > beforeRow.updated_at.getTime(),
+      // And the response reflects exactly that committed state.
+      titleEchoed: body?.title ?? null,
+      updatedAtEchoesCommit: body === null ? null : body.updated_at === afterRow.updated_at.toISOString(),
+    }).toEqual({
+      ...PREMISE,
+      code: 200,
+      cache: 'no-store',
+      ciphertextWasNull: true,
+      ciphertextCommitted: true,
+      updatedAtBumped: true,
+      titleEchoed: title,
+      updatedAtEchoesCommit: true,
+    });
+  });
+
+  it('G4 — LIST answers 200, and its rows and cursor are still the server’s own', async () => {
+    const p = await premise();
+    const res = await hostileInject('GET', '/v1/ai/conversations?limit=1', owner.api_key);
+    const body = res.statusCode === 200
+      ? (res.body as { conversations: ConversationBody[]; next_cursor: string | null })
+      : null;
+    const cursor = body?.next_cursor ?? null;
+
+    expect({
+      ...p,
+      code: res.statusCode,
+      cache: res.headers['cache-control'],
+      rows: body?.conversations.length ?? null,
+      // The list route was the ONE path pinned before this remediation; it must stay pinned now
+      // that the pin belongs to the transaction boundary.
+      cursorFollowable: cursor === null ? null : decodeConversationCursor(cursor) !== null,
+      createdAtIso: /^\d{4}-\d{2}-\d{2}T/.test(body?.conversations[0]?.created_at ?? ''),
+    }).toEqual({
+      ...PREMISE,
+      code: 200,
+      cache: 'no-store',
+      rows: 1,
+      cursorFollowable: true,
+      createdAtIso: true,
+    });
+  });
+
+  it('G5 — a repeated CREATE creates a SECOND conversation: this surface carries no idempotency key', async () => {
+    // MATERIALITY, not a feature request. §13 gives the fork a `client_fork_id` and gives create
+    // nothing, so two identical create requests are two creates — which is precisely why the
+    // pre-fix "commit, then answer 500" behaviour was worse than a clean failure: the natural
+    // client retry of a request that had ALREADY succeeded minted a duplicate. Nothing here adds
+    // an idempotency key; it records what the absence of one costs.
+    const p = await premise();
+    const before = (await committedConversations()).length;
+
+    const first = await hostileInject('POST', '/v1/ai/conversations', owner.api_key, CREATE);
+    const retry = await hostileInject('POST', '/v1/ai/conversations', owner.api_key, CREATE);
+
+    const after = (await committedConversations()).length;
+    const firstId = first.statusCode === 201 ? (first.body as ConversationBody).id : null;
+    const retryId = retry.statusCode === 201 ? (retry.body as ConversationBody).id : null;
+
+    expect({
+      ...p,
+      firstCode: first.statusCode,
+      retryCode: retry.statusCode,
+      conversationsDelta: after - before,
+      distinctIds: firstId !== null && retryId !== null && firstId !== retryId,
+    }).toEqual({
+      ...PREMISE,
+      firstCode: 201,
+      retryCode: 201,
+      // Two committed conversations from two identical requests, pre-fix and post-fix alike.
+      conversationsDelta: 2,
+      distinctIds: true,
+    });
+  });
+
+  it('G6 — the pin is TRANSACTION-LOCAL: the SAME backend is hostile again after COMMIT and after ROLLBACK', async () => {
+    // `max: 1` is the whole point. Every observation and both service transactions below run on
+    // ONE physical backend, so "the session was restored" cannot be a different connection that
+    // merely happened to be hostile — `pg_backend_pid()` is carried through the assertion as the
+    // proof of that identity.
+    const pool = new Pool({
+      connectionString: hostileDbUrl('-c DateStyle=German,DMY'),
+      max: 1,
+      idleTimeoutMillis: 0,
+    });
+    installPostgresPoolShutdownGuard(
+      pool,
+      stack.db.shuttingDown,
+      'ai-conversation-datestyle-locality',
+    );
+    try {
+      const localityOwner = await seedOrg(stack);
+      const scope = { orgId: localityOwner.org_id, ownerUserId: localityOwner.user_id };
+      const deps = { pool, kms: stack.app.govai.kms };
+
+      const observe = async (): Promise<{ pid: string; style: string; parsed: string }> => {
+        const c = await pool.connect();
+        try {
+          const r = await c.query<{ pid: string; style: string; ts: Date | null }>(
+            `SELECT pg_backend_pid()::text AS pid, current_setting('DateStyle') AS style,
+                    '2026-08-25 19:49:46.123456+00'::timestamptz AS ts`,
+          );
+          return {
+            pid: r.rows[0]!.pid,
+            style: r.rows[0]!.style,
+            parsed: r.rows[0]!.ts === null ? 'null' : 'date',
+          };
+        } finally {
+          c.release();
+        }
+      };
+
+      const before = await observe();
+
+      // COMMIT path — a real create through the shipped service. Its success IS the inside-proof:
+      // under the ambient style the projection would have been handed a null Date.
+      const created = await createConversation(deps, scope, CREATE);
+      const afterCommit = await observe();
+
+      // ROLLBACK path — a fork against a conversation this owner cannot address. The throw
+      // happens INSIDE the owner transaction (the root revalidation in `service.createFork`), so
+      // `withOwnerContext` rolls back a transaction that had ALREADY set the GUC.
+      let rollbackOutcome: string;
+      try {
+        await createFork(deps, scope, randomUUID(), {
+          client_fork_id: randomUUID(),
+          parent_branch_id: randomUUID(),
+          forked_from_turn_id: randomUUID(),
+          forked_from_attempt_id: randomUUID(),
+          boundary_mode: 'after_attempt',
+        });
+        rollbackOutcome = 'no throw';
+      } catch (err) {
+        rollbackOutcome =
+          err instanceof ConversationNotFoundError ? 'conversation_not_found' : String(err);
+      }
+      const afterRollback = await observe();
+
+      expect({
+        beforeStyle: before.style,
+        beforeParse: before.parsed,
+        createdAtIso: /^\d{4}-\d{2}-\d{2}T/.test(created.created_at),
+        rollbackOutcome,
+        afterCommitStyle: afterCommit.style,
+        afterCommitParse: afterCommit.parsed,
+        afterRollbackStyle: afterRollback.style,
+        afterRollbackParse: afterRollback.parsed,
+        physicalConnections: new Set([before.pid, afterCommit.pid, afterRollback.pid]).size,
+      }).toEqual({
+        beforeStyle: 'German, DMY',
+        beforeParse: 'null',
+        createdAtIso: true,
+        rollbackOutcome: 'conversation_not_found',
+        // Neither COMMIT nor ROLLBACK leaves the pin behind for the next borrower.
+        afterCommitStyle: 'German, DMY',
+        afterCommitParse: 'null',
+        afterRollbackStyle: 'German, DMY',
+        afterRollbackParse: 'null',
+        physicalConnections: 1,
+      });
+    } finally {
+      await pool.end();
     }
   }, 180_000);
 });
