@@ -27,6 +27,7 @@ import {
 import { installPostgresPoolShutdownGuard } from './setup.js';
 import { buildServer } from '../../apps/api/src/server.js';
 import { createConversation } from '../../apps/api/src/ai-conversations/service.js';
+import { encodeConversationCursor } from '../../apps/api/src/ai-conversations/cursor.js';
 
 let stack: Stack;
 /** Owner A — the principal under test. */
@@ -517,6 +518,69 @@ describe('P0-B C — list, get and AUTH-READ-CACHE-01', () => {
         body: { error: 'invalid_cursor' },
       });
     }
+  });
+
+  it('C9b — a semantically IMPOSSIBLE cursor timestamp is a 400, never a database 500', async () => {
+    // P0B-GPT-P2-CURSOR-VALIDATION-01. C9 above proves the cases the cursor's textual grammar
+    // already caught. These do not: every value below matches that grammar EXACTLY. The decoder
+    // therefore handed each one back as a position, the store bound it as `$n::timestamptz`, and
+    // PostgreSQL raised 22008/22009 — which is not an InvalidCursorError, so the list route fell
+    // through to its generic 500. A client-controlled string must never be able to reach a
+    // database parse error: §13's contract for a malformed cursor is 400 `invalid_cursor`.
+    const owner = await seedOrg(stack);
+    await createVia(owner.api_key);
+
+    // (1) These really are values THIS PostgreSQL refuses to cast — so the regression is not
+    // tautological. Each one is a live 500 on any build without the semantic bounds.
+    const pgRejected = [
+      '2026-13-01 00:00:00+00', // month 13
+      '2025-02-29 00:00:00+00', // february 29 of a common year
+      '2026-08-25 99:00:00+00', // hour 99
+      '2026-08-25 19:99:00+00', // minute 99
+      '2026-08-25 19:49:99+00', // second 99
+      '2026-08-25 19:49:46+16', // one hour past the +15:59:59 displacement limit
+    ];
+    for (const u of pgRejected) {
+      await expect(stack.db.adminPool.query('SELECT $1::timestamptz', [u])).rejects.toThrow();
+    }
+
+    // (2) A second class: PostgreSQL PARSES these (it rolls both forward), but `::text` can
+    // never RENDER them, so no cursor this server issued can carry one. The decoder accepts the
+    // subset the STORE can emit, not everything the parser tolerates — proven here by the
+    // round trip landing on a different string.
+    const notEmittable = ['2026-08-25 24:00:00+00', '2026-08-25 19:49:60+00'];
+    for (const u of notEmittable) {
+      const r = await stack.db.adminPool.query<{ t: string }>(
+        'SELECT ($1::timestamptz)::text AS t',
+        [u],
+      );
+      expect({ u, roundTrip: r.rows[0]!.t }).not.toEqual({ u, roundTrip: u });
+    }
+
+    // (3) Both classes are rejected BEFORE any SQL runs: 400 `invalid_cursor`, and still
+    // carrying AUTH-READ-CACHE-01's no-store.
+    for (const u of [...pgRejected, ...notEmittable]) {
+      const cursor = encodeConversationCursor({ updatedAt: u, id: randomUUID() });
+      const res = await stack.app.inject({
+        method: 'GET',
+        url: `/v1/ai/conversations?cursor=${encodeURIComponent(cursor)}`,
+        headers: { 'x-govai-api-key': owner.api_key },
+      });
+      expect({
+        u,
+        code: res.statusCode,
+        body: JSON.parse(res.body) as unknown,
+        cache: res.headers['cache-control'],
+      }).toEqual({ u, code: 400, body: { error: 'invalid_cursor' }, cache: 'no-store' });
+    }
+
+    // (4) And the bounds do not over-reject: a cursor the SERVER itself issued is still
+    // followed, so the real `updated_at::text` rendering stays inside the accepted subset.
+    const paged = await seedOrg(stack);
+    await seedTiedConversations(paged, 2);
+    const walk = await walkConversationPages(paged.api_key, 1);
+    expect(walk.pages.map((p) => p.ids.length)).toEqual([1, 1]);
+    expect(walk.ids).toHaveLength(2);
   });
 
   it('C10 — archived conversations leave the default list and are reachable only on request', async () => {
