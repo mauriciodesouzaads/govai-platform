@@ -134,6 +134,14 @@ export async function insertRootBranch(
 // Read
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
+/** One keyset page, plus the answer to the only question the page itself cannot answer. */
+export type ConversationPageRows = {
+  /** AT MOST `input.limit` rows. The sentinel is trimmed here and never leaves this module. */
+  rows: ConversationListRow[];
+  /** Proven, not guessed: a further matching row exists after `rows`. */
+  hasMore: boolean;
+};
+
 /**
  * §13 keyset page, ordered `(updated_at DESC, id DESC)` to match 0031's
  * `ai_conversations_owner_list_idx` with the tie-breaker appended. NO `OFFSET` — an offset page
@@ -141,6 +149,15 @@ export async function insertRootBranch(
  *
  * `deleted_pending` / `deleted` are unreachable: the caller only ever passes `active` or
  * `archived` (§19's archive semantics; the deleted states are not a P0-B projection).
+ *
+ * ★ ONE SENTINEL ROW. The query asks for `limit + 1` and returns at most `limit`. A FULL page
+ * says nothing about what follows it — when the total is an exact multiple of the page size the
+ * LAST page is full too — so "is there another page" can only be answered by looking one row
+ * further. That extra row is a boundary PROBE, never a result: it is dropped here, so it is
+ * never projected, never returned, and never has its title decrypted (§6's decryption budget
+ * stays bounded by the PUBLIC page cap of 50, not by 51). The cursor the service emits is built
+ * from the last RETURNED row, never from the sentinel — a cursor pointing past the page would
+ * skip the sentinel row on the next request.
  */
 export async function listConversations(
   client: PoolClient,
@@ -150,14 +167,14 @@ export async function listConversations(
     limit: number;
     cursor: { updatedAt: string; id: string } | null;
   },
-): Promise<ConversationListRow[]> {
+): Promise<ConversationPageRows> {
   const params: unknown[] = [scope.orgId, scope.ownerUserId, input.status];
   let keyset = '';
   if (input.cursor) {
     params.push(input.cursor.updatedAt, input.cursor.id);
     keyset = ` AND (updated_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
   }
-  params.push(input.limit);
+  params.push(input.limit + 1);
   const r = await client.query<ConversationListRow>(
     `SELECT ${CONVERSATION_COLUMNS}, updated_at::text AS updated_at_key
        FROM govai.ai_conversations
@@ -166,7 +183,8 @@ export async function listConversations(
       LIMIT $${params.length}`,
     params,
   );
-  return r.rows;
+  const hasMore = r.rows.length > input.limit;
+  return { rows: hasMore ? r.rows.slice(0, input.limit) : r.rows, hasMore };
 }
 
 /** One conversation by id. Null covers absent, other-owner and other-org identically: the

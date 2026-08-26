@@ -41,11 +41,11 @@
     },
     "root_integration_only": {
       "files": 89,
-      "tests": 1310
+      "tests": 1311
     },
     "root_full_integration_gate": {
       "files": 233,
-      "tests": 2956
+      "tests": 2957
     },
     "ui": {
       "files": 33,

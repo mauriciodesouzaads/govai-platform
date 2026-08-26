@@ -201,7 +201,7 @@ export async function listConversations(
 
   const client = await deps.pool.connect();
   try {
-    const rows = await withOwnerContext(client, scope.orgId, scope.ownerUserId, (c) =>
+    const page = await withOwnerContext(client, scope.orgId, scope.ownerUserId, (c) =>
       store.listConversations(c, scope, {
         status: input.status,
         limit: input.limit,
@@ -210,14 +210,18 @@ export async function listConversations(
     );
     // Title decryption happens OUTSIDE the transaction and is bounded by the page size (<= 50,
     // §13/§6): it decrypts exactly the rows the caller's own policies returned, never a scan.
+    // `page.rows` is already trimmed to the PUBLIC limit, so the store's boundary sentinel is
+    // not among them and is never decrypted.
     const conversations = await Promise.all(
-      rows.map((row) => projectConversation(deps.kms, scope.orgId, row)),
+      page.rows.map((row) => projectConversation(deps.kms, scope.orgId, row)),
     );
-    const last = rows[rows.length - 1];
-    // A cursor is emitted only for a FULL page. A short page is provably the last one, and
-    // handing back a cursor for it would invite an extra empty round-trip.
+    const last = page.rows[page.rows.length - 1];
+    // A cursor is emitted only when the store PROVED a further row exists. Emitting one for
+    // every FULL page instead would be wrong precisely when the total is an exact multiple of
+    // the page size: the last page is full too, and the client would follow the cursor into an
+    // always-empty page — the opposite of the null-on-last-page contract above.
     const next_cursor =
-      last !== undefined && rows.length === input.limit
+      page.hasMore && last !== undefined
         ? encodeConversationCursor({ updatedAt: last.updated_at_key, id: last.id })
         : null;
     return { conversations, next_cursor };

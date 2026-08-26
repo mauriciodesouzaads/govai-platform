@@ -104,6 +104,70 @@ async function asAppRole<T>(
   }
 }
 
+/**
+ * Seed `n` conversations (each with its root branch) in ONE transaction: `now()` is the
+ * transaction timestamp, so every `updated_at` is IDENTICAL and a page walk over them runs
+ * entirely through the `id` tie-breaker.
+ */
+async function seedTiedConversations(owner: SeededOrg, n: number): Promise<string[]> {
+  const c = await stack.db.adminPool.connect();
+  const seeded: string[] = [];
+  try {
+    await c.query('BEGIN');
+    for (let i = 0; i < n; i += 1) {
+      const conv = await c.query<{ id: string }>(
+        `INSERT INTO govai.ai_conversations (org_id, owner_user_id, mode, provider, surface, model)
+         VALUES ($1::uuid, $2::uuid, 'governed', 'anthropic', 'anthropic_api', 'm')
+         RETURNING id`,
+        [owner.org_id, owner.user_id],
+      );
+      await c.query(
+        `INSERT INTO govai.ai_conversation_branches
+           (org_id, owner_user_id, conversation_id, provider, surface, model)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'anthropic', 'anthropic_api', 'm')`,
+        [owner.org_id, owner.user_id, conv.rows[0]!.id],
+      );
+      seeded.push(conv.rows[0]!.id);
+    }
+    await c.query('COMMIT');
+  } finally {
+    c.release();
+  }
+  const stamps = await adminQuery<{ n: string }>(
+    `SELECT count(DISTINCT updated_at)::text AS n FROM govai.ai_conversations
+      WHERE owner_user_id = $1::uuid`,
+    [owner.user_id],
+  );
+  expect(stamps[0]!.n).toBe('1'); // the tie-breaker really is being exercised
+  return seeded;
+}
+
+/**
+ * Walk the whole list following ONLY the server's own `next_cursor`, recording the SHAPE of
+ * every page.
+ *
+ * The shapes are the evidence, not merely the concatenated ids: a cursor handed back on a final
+ * page is invisible in the ids — the page it leads to is empty — and shows up only as an extra
+ * round-trip. The 10-request ceiling keeps a cursor that never clears from hanging the suite.
+ */
+async function walkConversationPages(
+  apiKey: string,
+  limit: number,
+): Promise<{ pages: Array<{ ids: string[]; next_cursor: string | null }>; ids: string[] }> {
+  const pages: Array<{ ids: string[]; next_cursor: string | null }> = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 10; page += 1) {
+    const url: string = `/v1/ai/conversations?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const res = await inject(stack, 'GET', url, apiKey);
+    expect(res.statusCode).toBe(200);
+    const body = res.body as { conversations: Array<{ id: string }>; next_cursor: string | null };
+    pages.push({ ids: body.conversations.map((x) => x.id), next_cursor: body.next_cursor });
+    cursor = body.next_cursor;
+    if (!cursor) break;
+  }
+  return { pages, ids: pages.flatMap((p) => p.ids) };
+}
+
 describe('P0-B B — create: conversation + root branch, atomically', () => {
   it('B1/B2 — one conversation and EXACTLY one root branch carrying the durable creation intent', async () => {
     const res = await createVia(orgA.api_key);
@@ -387,54 +451,52 @@ describe('P0-B C — list, get and AUTH-READ-CACHE-01', () => {
 
   it('C7/C8 — keyset pagination is deterministic and duplicate-free, tie-breaker included', async () => {
     const owner = await seedOrg(stack);
-    // Seven conversations written in ONE transaction: `now()` is the transaction timestamp, so
-    // every `updated_at` is IDENTICAL and the whole page walk runs through the id tie-breaker.
-    const c = await stack.db.adminPool.connect();
-    const seeded: string[] = [];
-    try {
-      await c.query('BEGIN');
-      for (let i = 0; i < 7; i += 1) {
-        const conv = await c.query<{ id: string }>(
-          `INSERT INTO govai.ai_conversations (org_id, owner_user_id, mode, provider, surface, model)
-           VALUES ($1::uuid, $2::uuid, 'governed', 'anthropic', 'anthropic_api', 'm')
-           RETURNING id`,
-          [owner.org_id, owner.user_id],
-        );
-        await c.query(
-          `INSERT INTO govai.ai_conversation_branches
-             (org_id, owner_user_id, conversation_id, provider, surface, model)
-           VALUES ($1::uuid, $2::uuid, $3::uuid, 'anthropic', 'anthropic_api', 'm')`,
-          [owner.org_id, owner.user_id, conv.rows[0]!.id],
-        );
-        seeded.push(conv.rows[0]!.id);
-      }
-      await c.query('COMMIT');
-    } finally {
-      c.release();
-    }
-    const stamps = await adminQuery<{ n: string }>(
-      `SELECT count(DISTINCT updated_at)::text AS n FROM govai.ai_conversations
-        WHERE owner_user_id = $1::uuid`,
-      [owner.user_id],
-    );
-    expect(stamps[0]!.n).toBe('1'); // the tie-breaker really is being exercised
+    const seeded = await seedTiedConversations(owner, 7);
 
-    const seen: string[] = [];
-    let cursor: string | null = null;
-    for (let page = 0; page < 10; page += 1) {
-      const url: string = `/v1/ai/conversations?limit=3${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
-      const res = await inject(stack, 'GET', url, owner.api_key);
-      expect(res.statusCode).toBe(200);
-      const body = res.body as { conversations: Array<{ id: string }>; next_cursor: string | null };
-      seen.push(...body.conversations.map((x) => x.id));
-      cursor = body.next_cursor;
-      if (!cursor) break;
-    }
+    const { pages, ids: seen } = await walkConversationPages(owner.api_key, 3);
+    // A total that is NOT a multiple of the page size: the last page is SHORT, which is by
+    // itself proof that nothing follows it.
+    expect(pages.map((p) => p.ids.length)).toEqual([3, 3, 1]);
+    expect(pages[pages.length - 1]!.next_cursor).toBeNull();
     expect(seen).toHaveLength(7);
     expect(new Set(seen).size).toBe(7); // no duplicates
     expect([...seen].sort()).toEqual([...seeded].sort()); // and nothing skipped
     // The walk is strictly descending by id within the tied timestamp — a total order.
     expect(seen).toEqual([...seen].sort().reverse());
+  });
+
+  it('C7b — an EXACT-MULTIPLE walk stops on the last FULL page, emitting no phantom cursor', async () => {
+    // The regression this pins. A cursor used to be emitted for any page that came back FULL,
+    // and `rows.length === limit` proves nothing about what follows the page: when the total is
+    // an exact multiple of the page size, the LAST page is also full, so the client was handed a
+    // cursor into an always-empty page — contrary to §13's null-on-last-page contract. Only
+    // looking ONE ROW PAST the page can decide this, which is why the store now fetches
+    // `limit + 1` and trims. C7/C8 above cannot catch it: its 7/3 walk ends on a SHORT page.
+    const owner = await seedOrg(stack);
+    const seeded = await seedTiedConversations(owner, 6);
+
+    const { pages, ids } = await walkConversationPages(owner.api_key, 3);
+    expect(pages.map((p) => p.ids.length)).toEqual([3, 3]); // two requests, not three
+    expect(pages[0]!.next_cursor).not.toBeNull();
+    expect(pages[1]!.next_cursor).toBeNull();
+    expect(ids).toHaveLength(6);
+    expect(new Set(ids).size).toBe(6); // no duplicates
+    expect([...ids].sort()).toEqual([...seeded].sort()); // and nothing skipped
+    expect(ids).toEqual([...ids].sort().reverse()); // tie-break total order still holds
+
+    // The same defect at n === limit: a page that is both the first and the last must not
+    // advertise a successor.
+    const single = await seedOrg(stack);
+    const singleSeeded = await seedTiedConversations(single, 3);
+    const singleWalk = await walkConversationPages(single.api_key, 3);
+    expect(singleWalk.pages.map((p) => p.ids.length)).toEqual([3]);
+    expect(singleWalk.pages[0]!.next_cursor).toBeNull();
+    expect([...singleWalk.ids].sort()).toEqual([...singleSeeded].sort());
+
+    // ★ THE SENTINEL NEVER ESCAPES. The store looks one row past the page to decide `hasMore`
+    // and trims it before returning, so no response may ever exceed the requested limit — and
+    // a row that is never returned is never projected and never has its title decrypted.
+    for (const p of [...pages, ...singleWalk.pages]) expect(p.ids.length).toBeLessThanOrEqual(3);
   });
 
   it('C9 — the §13 page cap is enforced, and a malformed cursor is a 400 (never a 500)', async () => {
