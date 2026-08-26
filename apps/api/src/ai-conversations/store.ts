@@ -158,6 +158,36 @@ export type ConversationPageRows = {
  * stays bounded by the PUBLIC page cap of 50, not by 51). The cursor the service emits is built
  * from the last RETURNED row, never from the sentinel — a cursor pointing past the page would
  * skip the sentinel row on the next request.
+ *
+ * ★ THE ORDERING KEY IS RENDERED UNDER A PINNED `DateStyle` (P0B-P2-CURSOR-DATESTYLE-PIN-01).
+ * `updated_at::text` is rendered by POSTGRESQL, and `timestamptz`'s textual form follows the
+ * SESSION's `DateStyle` — which nothing in this system pinned: not the bootstrap, not the role,
+ * not the pool, not the connection string. Under `German, DMY` the same instant prints
+ * `25.08.2026 19:49:46.123456 UTC`, under `SQL, DMY` `25/08/2026 …`, under `Postgres, MDY`
+ * `Tue Aug 25 …` — none of which `cursor.ts`'s grammar accepts. The server would then hand a
+ * client a `next_cursor` it answered `400 invalid_cursor` on, and the cursor is the server's OWN,
+ * so no client could route around it. `SET LOCAL` makes the rendering the decoder's contract,
+ * independent of whatever the session was handed.
+ *
+ * Why THIS mechanism, and not the alternatives:
+ *   · TRANSACTION-LOCAL, so it dies with the owner transaction `withOwnerContext` opened around
+ *     this call — proven on a real pool: after COMMIT and after ROLLBACK the session is exactly as
+ *     it was, and the NEXT borrower of that pooled connection sees the ambient value untouched.
+ *     `DateStyle` is a `USERSET` GUC (`pg_settings.context = 'user'`), so no grant changes.
+ *   · POSTGRESQL still does the rendering. The microsecond tail, and historical offsets that carry
+ *     SECONDS (`-03:06:28` for pre-1914 America/Sao_Paulo), stay native.
+ *   · NOT `to_char`: measured against PostgreSQL 16, it is not byte-faithful to `::text` —
+ *     it pads a shorter fraction (`.1` -> `.100000`, none -> `.000000`) and TRUNCATES the offset
+ *     seconds (`-03:06:28` -> `-03:06`). A key rendered that way would not be the value the
+ *     `$n::timestamptz` comparison below is made against.
+ *   · NOT a JavaScript `Date`: millisecond precision, so the microsecond tail this key exists to
+ *     preserve would be destroyed (see the cursor.ts header).
+ *   · NOT a database, role or pool default: this fixes the ONE statement whose text rendering is a
+ *     durable contract, and widening it would change how every other query in the system renders
+ *     timestamps — a far larger claim than the defect supports.
+ * The `SET LOCAL` is valid because every function in this module runs inside the caller's
+ * transaction (see the module header); this one has a single call site, `service.listConversations`,
+ * whose whole transaction body is the query below.
  */
 export async function listConversations(
   client: PoolClient,
@@ -168,6 +198,7 @@ export async function listConversations(
     cursor: { updatedAt: string; id: string } | null;
   },
 ): Promise<ConversationPageRows> {
+  await client.query(`SET LOCAL DateStyle = 'ISO, MDY'`);
   const params: unknown[] = [scope.orgId, scope.ownerUserId, input.status];
   let keyset = '';
   if (input.cursor) {

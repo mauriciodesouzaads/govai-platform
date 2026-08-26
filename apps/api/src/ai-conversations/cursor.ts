@@ -31,10 +31,14 @@ export type ConversationListCursor = {
 const CURSOR_VERSION = 1;
 const MAX_CURSOR_LEN = 512;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** `2026-08-25 19:49:46.123456+00` — the shape `timestamptz::text` produces under any
- *  DateStyle the server may run with is not guaranteed, so the accepted grammar is pinned
- *  here and the store's cast is what produces it. Rejecting anything else keeps a malformed
- *  cursor a 400 rather than a database parse error surfacing as a 500.
+/** `2026-08-25 19:49:46.123456+00` — the ISO rendering of `timestamptz::text`, which the STORE
+ *  guarantees by pinning `DateStyle` transaction-locally on the list statement
+ *  (`store.listConversations`, P0B-P2-CURSOR-DATESTYLE-PIN-01). Without that pin the emission
+ *  followed the session's own `DateStyle`, and a `German`/`SQL`/`Postgres` session made the server
+ *  issue a cursor this expression rejects — a 400 on the server's own `next_cursor`. The two are
+ *  ONE contract and must move together: this grammar is what the store's pinned cast produces.
+ *  Rejecting anything else keeps a malformed cursor a 400 rather than a database parse error
+ *  surfacing as a 500.
  *
  *  ★ SHAPE IS NOT MEANING. This expression pins the LAYOUT only; `isStoreEmittableTimestamptz`
  *  below pins the CALENDAR. `2026-13-01 00:00:00+00` and `2026-08-25 99:00:00+00` match it

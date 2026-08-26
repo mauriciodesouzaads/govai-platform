@@ -15,6 +15,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { DevKms } from '@govai/core-identity';
+import { withOwnerContext } from '@govai/core-tenant';
 import {
   startStack,
   stopStack,
@@ -27,7 +28,11 @@ import {
 import { installPostgresPoolShutdownGuard } from './setup.js';
 import { buildServer } from '../../apps/api/src/server.js';
 import { createConversation } from '../../apps/api/src/ai-conversations/service.js';
-import { encodeConversationCursor } from '../../apps/api/src/ai-conversations/cursor.js';
+import {
+  decodeConversationCursor,
+  encodeConversationCursor,
+} from '../../apps/api/src/ai-conversations/cursor.js';
+import * as conversationStore from '../../apps/api/src/ai-conversations/store.js';
 
 let stack: Stack;
 /** Owner A — the principal under test. */
@@ -582,6 +587,210 @@ describe('P0-B C — list, get and AUTH-READ-CACHE-01', () => {
     expect(walk.pages.map((p) => p.ids.length)).toEqual([1, 1]);
     expect(walk.ids).toHaveLength(2);
   });
+
+  it('C9c — the server can always FOLLOW ITS OWN cursor, whatever DateStyle the session carries', async () => {
+    // P0B-P2-CURSOR-DATESTYLE-PIN-01. The keyset ordering key is rendered BY POSTGRESQL —
+    // `updated_at::text` — and `timestamptz`'s textual form follows the session's `DateStyle`.
+    // Nothing pinned it: not the bootstrap, not the role, not the pool. Under any non-ISO value
+    // the store emitted a key OUTSIDE `cursor.ts`'s grammar, so the server handed the client a
+    // `next_cursor` it then answered `400 invalid_cursor` on. A client cannot route around that:
+    // the cursor is the server's own, and §13 defines it as opaque.
+    //
+    // The hostility below is AMBIENT and REAL, never simulated. A second app's pool sets
+    // `DateStyle=German,DMY` in the CONNECTION STARTUP PACKET, so every connection it hands the
+    // route is already non-ISO before the first statement runs — no global setting is touched,
+    // and nothing depends on which pooled connection happens to be handed out.
+    const hostileUrl = `${stack.db.appUrl}?options=${encodeURIComponent('-c DateStyle=German,DMY')}`;
+    const app = await buildServer({ env: { ...stack.env, DATABASE_URL: hostileUrl } });
+    installPostgresPoolShutdownGuard(app.govai.pool, stack.db.shuttingDown, 'app-datestyle-probe');
+    try {
+      // (1) THE BREAK, on the very pool the route uses. The ambient DateStyle really is non-ISO,
+      // and the store's key EXPRESSION — absent its transaction-local pin — renders a value the
+      // SHIPPED decoder refuses. Both halves matter: a test that only asserted the fix would pass
+      // just as well on a server that never had the defect.
+      const probe = await app.govai.pool.connect();
+      try {
+        const ambient = await probe.query<{ style: string; key: string }>(
+          `SELECT current_setting('DateStyle') AS style,
+                  ('2026-08-25 19:49:46.123456+00'::timestamptz)::text AS key`,
+        );
+        expect(ambient.rows[0]!.style).toBe('German, DMY');
+        const unpinned = ambient.rows[0]!.key;
+        expect(unpinned).toBe('25.08.2026 19:49:46.123456 UTC');
+        expect(
+          decodeConversationCursor(
+            encodeConversationCursor({ updatedAt: unpinned, id: randomUUID() }),
+          ),
+        ).toBeNull();
+      } finally {
+        probe.release();
+      }
+
+      // (2) THE FIX, through the REAL route. Two conversations with DISTINCT microsecond-bearing
+      // `updated_at`s, so the walk moves through the TIMESTAMP key and not only the id
+      // tie-breaker, and the microsecond tail is load-bearing rather than incidental.
+      const owner = await seedOrg(stack);
+      const stamps = ['2026-08-25 19:49:46.123456+00', '2026-08-25 19:49:45.654321+00'];
+      const seeded: string[] = [];
+      for (const at of stamps) {
+        const conv = await adminQuery<{ id: string }>(
+          `INSERT INTO govai.ai_conversations
+             (org_id, owner_user_id, mode, provider, surface, model, created_at, updated_at)
+           VALUES ($1::uuid, $2::uuid, 'governed', 'anthropic', 'anthropic_api', 'm',
+                   $3::timestamptz, $3::timestamptz)
+           RETURNING id`,
+          [owner.org_id, owner.user_id, at],
+        );
+        await adminQuery(
+          `INSERT INTO govai.ai_conversation_branches
+             (org_id, owner_user_id, conversation_id, provider, surface, model)
+           VALUES ($1::uuid, $2::uuid, $3::uuid, 'anthropic', 'anthropic_api', 'm')`,
+          [owner.org_id, owner.user_id, conv[0]!.id],
+        );
+        seeded.push(conv[0]!.id);
+      }
+
+      const pages: Array<{ ids: string[]; next_cursor: string | null; cache: unknown }> = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 5; page += 1) {
+        const url: string = `/v1/ai/conversations?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        const res = await app.inject({
+          method: 'GET',
+          url,
+          headers: { 'x-govai-api-key': owner.api_key },
+        });
+        // Pre-fix this is where the walk died: the FIRST page could not even be rendered, and the
+        // page after it was a 400 on the server's own cursor. The body rides along so a failure
+        // shows WHICH answer came back instead of a bare status code.
+        expect({ page, code: res.statusCode, body: res.statusCode === 200 ? '' : res.body }).toEqual(
+          { page, code: 200, body: '' },
+        );
+        const body = JSON.parse(res.body) as {
+          conversations: Array<{ id: string; updated_at: string }>;
+          next_cursor: string | null;
+        };
+        pages.push({
+          ids: body.conversations.map((c) => c.id),
+          next_cursor: body.next_cursor,
+          cache: res.headers['cache-control'],
+        });
+        cursor = body.next_cursor;
+        if (!cursor) break;
+      }
+      expect(pages.map((p) => p.ids.length)).toEqual([1, 1]);
+      expect(pages[0]!.next_cursor).not.toBeNull();
+      expect(pages[1]!.next_cursor).toBeNull();
+      expect(pages.flatMap((p) => p.ids)).toEqual(seeded); // newest first, nothing skipped
+      // (7) AUTH-READ-CACHE-01 is untouched by the pin.
+      for (const p of pages) expect(p.cache).toBe('no-store');
+
+      // (3) MICROSECOND FIDELITY. The cursor the server issued decodes to a key byte-identical to
+      // PostgreSQL's OWN ISO rendering of that row's `updated_at` — the tail a `Date` round trip
+      // or a `to_char` fraction-pad would have destroyed.
+      const issued = decodeConversationCursor(pages[0]!.next_cursor!);
+      expect(issued).not.toBeNull();
+      expect(issued!.id).toBe(seeded[0]);
+      expect(issued!.updatedAt).toBe('2026-08-25 19:49:46.123456+00');
+      const canonical = await adminQuery<{ key: string }>(
+        `SELECT updated_at::text AS key FROM govai.ai_conversations WHERE id = $1::uuid`,
+        [seeded[0]],
+      );
+      expect(issued!.updatedAt).toBe(canonical[0]!.key);
+    } finally {
+      await app.close();
+    }
+  }, 180_000);
+
+  it('C9d — the store pins the key under EVERY non-ISO style, and keeps OFFSET SECONDS', async () => {
+    // The same guarantee as C9c, exercised directly on the shipped `store.listConversations`
+    // across the whole hostile set rather than on one app, and on the connection state that
+    // actually reaches it: a SESSION-level `SET DateStyle` on a checked-out client — which is
+    // exactly what a pool hands out when the database, the role or the connection options carry a
+    // non-ISO default. The client is DESTROYED afterwards (`release(true)`), so a session this
+    // test dirtied is never handed to another test.
+    const owner = await seedOrg(stack);
+    const scope = { orgId: owner.org_id, ownerUserId: owner.user_id };
+    // Two rows: an ordinary microsecond-bearing instant, and one from BEFORE São Paulo had a
+    // whole-minute UTC offset — `::text` renders that one `-03:06:28`, seconds included. `to_char`
+    // truncates that tail to `-03:06`, which is why the rendering stays PostgreSQL's own.
+    const rows: Array<{ id: string; at: string }> = [];
+    for (const at of ['2026-08-25 19:49:46.123456+00', '1900-06-01 12:00:00.000001-03:06:28']) {
+      const conv = await adminQuery<{ id: string }>(
+        `INSERT INTO govai.ai_conversations
+           (org_id, owner_user_id, mode, provider, surface, model, created_at, updated_at)
+         VALUES ($1::uuid, $2::uuid, 'governed', 'anthropic', 'anthropic_api', 'm',
+                 $3::timestamptz, $3::timestamptz)
+         RETURNING id`,
+        [owner.org_id, owner.user_id, at],
+      );
+      rows.push({ id: conv[0]!.id, at });
+    }
+
+    for (const style of ['German, DMY', 'SQL, DMY', 'Postgres, MDY']) {
+      const c = await stack.db.appPool.connect();
+      try {
+        // Ambient hostility for THIS session, established before the owner transaction opens —
+        // and, for the second row, a zone whose historical offset carries SECONDS.
+        await c.query(`SET DateStyle = '${style}'`);
+        await c.query(`SET TimeZone = 'America/Sao_Paulo'`);
+        const unpinned = await c.query<{ key: string }>(
+          `SELECT ('2026-08-25 19:49:46.123456+00'::timestamptz)::text AS key`,
+        );
+        // The ambient really is hostile: this is what the store WOULD have emitted.
+        expect({ style, iso: /^\d{4}-\d{2}-\d{2} /.test(unpinned.rows[0]!.key) }).toEqual({
+          style,
+          iso: false,
+        });
+
+        const page = await withOwnerContext(c, scope.orgId, scope.ownerUserId, (cc) =>
+          conversationStore.listConversations(cc, scope, {
+            status: 'active',
+            limit: 50,
+            cursor: null,
+          }),
+        );
+        expect({ style, rows: page.rows.length }).toEqual({ style, rows: 2 });
+        for (const row of page.rows) {
+          // ISO-formed, and a cursor built from it is one the server's own decoder accepts,
+          // byte for byte.
+          const decoded = decodeConversationCursor(
+            encodeConversationCursor({ updatedAt: row.updated_at_key, id: row.id }),
+          );
+          expect({ style, id: row.id, accepted: decoded !== null }).toEqual({
+            style,
+            id: row.id,
+            accepted: true,
+          });
+          expect({ style, id: row.id, key: decoded!.updatedAt }).toEqual({
+            style,
+            id: row.id,
+            key: row.updated_at_key,
+          });
+        }
+        const byId = new Map(page.rows.map((r) => [r.id, r.updated_at_key]));
+        expect({ style, key: byId.get(rows[0]!.id) }).toEqual({
+          style,
+          key: '2026-08-25 16:49:46.123456-03',
+        });
+        // OFFSET SECONDS survive: `-03:06:28`, not `-03:06` and not a UTC-normalised value.
+        expect({ style, key: byId.get(rows[1]!.id) }).toEqual({
+          style,
+          key: '1900-06-01 12:00:00.000001-03:06:28',
+        });
+
+        // The pin is TRANSACTION-LOCAL: the session it borrowed is exactly as hostile afterwards,
+        // so nothing it did can reach the next borrower of this connection.
+        const after = await c.query<{ style: string }>(
+          `SELECT current_setting('DateStyle') AS style`,
+        );
+        expect({ style, after: after.rows[0]!.style }).toEqual({ style, after: style });
+      } finally {
+        // DESTROY, never return to the pool: this connection carries a session-level
+        // DateStyle/TimeZone this test set, and no other test may inherit it.
+        c.release(true);
+      }
+    }
+  }, 180_000);
 
   it('C10 — archived conversations leave the default list and are reachable only on request', async () => {
     const owner = await seedOrg(stack);
