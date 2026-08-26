@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
+import type { FastifyInstance } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import { DevKms } from '@govai/core-identity';
 import {
@@ -23,6 +24,8 @@ import {
   type SeededOrg,
   type Stack,
 } from './helpers/server-fixture.js';
+import { installPostgresPoolShutdownGuard } from './setup.js';
+import { buildServer } from '../../apps/api/src/server.js';
 import { createConversation } from '../../apps/api/src/ai-conversations/service.js';
 
 let stack: Stack;
@@ -265,7 +268,12 @@ describe('P0-B B — create: conversation + root branch, atomically', () => {
 });
 
 describe('P0-B C — list, get and AUTH-READ-CACHE-01', () => {
-  it('C6 — Cache-Control: no-store on EVERY response class of the surface', async () => {
+  // The ten classes below are all produced BY the route handler or by a hook inside this
+  // plugin. The two classes produced EARLIER — the rate limiter's 429 and an unexpected 500 —
+  // are unreachable from this stack (NODE_ENV='test' raises the limit to 1,000,000), so they
+  // are proven separately by C6b/C6c at the end of this file. This title claims only what it
+  // asserts.
+  it('C6 — Cache-Control: no-store on every handler-produced response class', async () => {
     const created = await createVia(orgA.api_key);
     const { id } = created.body as ConversationBody;
     const raw = async (
@@ -791,4 +799,99 @@ describe('P0-B E — patch: only §13’s two guarded fields', () => {
     expect(absent.statusCode).toBe(404);
     expect(absent.body).toEqual({ error: 'conversation_not_found' });
   });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// P0-B C6b/C6c — AUTH-READ-CACHE-01 on a response TERMINATED BEFORE THE ROUTE HANDLER.
+//
+// Adjudicated finding P0B-P2-MATERIAL-01 (AUTH_READ_CACHE_01_RATE_LIMIT_RESPONSE_GAP). C6 above
+// proves the header on ten response classes, but every one of them is produced by the route
+// handler or by a hook INSIDE this plugin — none of them proves what happens when the request is
+// answered by something that runs earlier. The two classes that are answered earlier are the rate
+// limiter's 429 and an unexpected 500, and neither was reachable from the movement's tests: the
+// hermetic stack runs NODE_ENV='test', the branch of `server.ts:110-113` that raises the limit to
+// 1_000_000 precisely so the suite is not throttled, so no 429 could ever be produced.
+//
+// These two tests remove that blind spot. They build a SECOND app against the SAME database on
+// the NODE_ENV='development' branch — the one that keeps the real 100/minute limit — and drive it
+// until the limiter genuinely engages, then assert the header on both P0-B conversation GET
+// surfaces. The same throttled app also answers an unrelated authenticated read, which must stay
+// UNCHANGED: a hook that had leaked to the root context would pass the conversation assertions
+// and fail that one.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+describe('P0-B C6b/C6c — AUTH-READ-CACHE-01 on a pre-handler termination', () => {
+  const rawGet = (app: FastifyInstance, url: string, key?: string) =>
+    app.inject({ method: 'GET', url, headers: key ? { 'x-govai-api-key': key } : {} });
+
+  it('C6b — a rate-limit 429 on a conversation GET carries no-store, and leaks to no other route', async () => {
+    const created = await createVia(orgA.api_key);
+    const { id } = created.body as ConversationBody;
+
+    const app = await buildServer({ env: { ...stack.env, NODE_ENV: 'development' } });
+    installPostgresPoolShutdownGuard(app.govai.pool, stack.db.shuttingDown, 'app-rate-limit-probe');
+    try {
+      // Exhaust the limiter on the cheapest request this surface has: a malformed path id is
+      // rejected on syntax before any database work, yet the limiter still counts it.
+      let requests = 1;
+      let probe = await rawGet(app, '/v1/ai/conversations/not-a-uuid', orgA.api_key);
+      while (probe.statusCode !== 429 && requests < 500) {
+        probe = await rawGet(app, '/v1/ai/conversations/not-a-uuid', orgA.api_key);
+        requests += 1;
+      }
+      // The limiter really engaged, within the bound — this is not an assertion on a 400.
+      expect({ bounded: requests < 500, code: probe.statusCode }).toEqual({
+        bounded: true,
+        code: 429,
+      });
+
+      for (const [label, url] of [
+        ['list (429)', '/v1/ai/conversations'],
+        ['get one (429)', `/v1/ai/conversations/${id}`],
+      ] as const) {
+        const res = await rawGet(app, url, orgA.api_key);
+        const body = JSON.parse(res.body) as { error?: string };
+        // It is the LIMITER answering from before the route handler, not the route: its own
+        // headers are present and the body is its error shape, never this API's `{ error: ... }`.
+        expect({ label, code: res.statusCode, limit: res.headers['x-ratelimit-limit'] }).toEqual({
+          label,
+          code: 429,
+          limit: '100',
+        });
+        expect({ label, err: body.error }).toEqual({ label, err: 'Too Many Requests' });
+        expect({ label, cache: res.headers['cache-control'] }).toEqual({ label, cache: 'no-store' });
+      }
+
+      // ENCAPSULATION UNDER THE SAME TERMINATION. `/v1/capabilities` is throttled by the SAME
+      // app-level limiter on the SAME app, and must be byte-identical to what it was before this
+      // movement — AUTH-READ-CACHE-01 stays OPEN as a class and is not silently closed here.
+      const other = await rawGet(app, '/v1/capabilities', orgA.api_key);
+      expect({ code: other.statusCode, cache: other.headers['cache-control'] }).toEqual({
+        code: 429,
+        cache: undefined,
+      });
+    } finally {
+      await app.close();
+    }
+  }, 180_000);
+
+  it('C6c — an unexpected 500 on a conversation GET carries no-store', async () => {
+    const created = await createVia(orgA.api_key);
+    const { id } = created.body as ConversationBody;
+
+    // A disposable app whose database has gone away. `authenticate()` opens its client BEFORE any
+    // tenant state exists (`ai-conversations.ts:97`), so `pool.connect()` rejects deterministically
+    // and the failure escapes as a generic 500. Nothing production is test-only for this: losing
+    // the database is a real failure mode, reached here without touching shipped code.
+    const app = await buildServer({ env: stack.env });
+    try {
+      await app.govai.pool.end();
+      const res = await rawGet(app, `/v1/ai/conversations/${id}`, orgA.api_key);
+      expect({ code: res.statusCode, cache: res.headers['cache-control'] }).toEqual({
+        code: 500,
+        cache: 'no-store',
+      });
+    } finally {
+      await app.close();
+    }
+  }, 180_000);
 });

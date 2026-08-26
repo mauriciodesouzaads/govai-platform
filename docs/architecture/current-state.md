@@ -55,8 +55,8 @@ is one collected test module.
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
 | Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 144 | 1646 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 89 | 1308 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 233 | 2954 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 89 | 1310 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 233 | 2956 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
 
@@ -957,14 +957,23 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     nothing else), and `POST /v1/ai/conversations/:id/branches`. The forbidden P0-C/P0-E
     endpoints are NOT registered even as placeholders: an unimplemented future endpoint stays
     nonexistent rather than returning a misleading shape.
-  - **`AUTH-READ-CACHE-01` for the conversation surface**: `Cache-Control: no-store` on EVERY
-    response of the plugin, installed by an encapsulated `onRequest` hook so it is present on
-    success, on an authenticated 404, on a validation 400, on a 401 and on a 500 alike. The
-    CLASS is not closed by this movement — `/v1/evidence/summary`, `/v1/evidence/gaps`,
-    `/v1/audit-events` and `/v1/capabilities` are untouched — but conversations join it already
-    closed rather than enlarging it. Registered limitation: the app-level rate limiter's 429 is
-    produced by a root-level hook that runs before this plugin's context and does not carry the
-    header; that body carries no tenant data.
+  - **`AUTH-READ-CACHE-01` for the conversation surface**: `Cache-Control: no-store` on every
+    response of the plugin's five registered routes, installed by an encapsulated `onRequest`
+    hook, so it is present on success, on an authenticated 404, on a validation 400, on a 401,
+    on a rate-limit 429 and on a 500 alike. The 429 earns its own proof because it is produced
+    BEFORE the route handler: Fastify composes a route's `onRequest` chain as context hooks
+    first and route-level hooks after (`fastify/lib/route.js:393-394`), and
+    `@fastify/rate-limit@10` installs no app-level hook — its `onRoute` hook pushes the limiter
+    into each route's own `routeOptions.onRequest` (`index.js:142-157`, `201-211`) — so the
+    plugin's hook runs first. Proven by test rather than by reading: the hermetic stack raises
+    the limit to 1,000,000 under `NODE_ENV='test'`, so `C6b` builds a second app against the
+    same database on the `NODE_ENV !== 'test'` branch and throttles it for real. Scope recorded,
+    not hidden: the guarantee is over the five REGISTERED routes — a URL matching none of them
+    is answered from the root not-found context, and a CORS preflight from `@fastify/cors` at
+    the root; neither is a conversation response. The CLASS is not closed by this movement —
+    `/v1/evidence/summary`, `/v1/evidence/gaps`, `/v1/audit-events` and `/v1/capabilities` are
+    untouched, and `C6b` asserts a throttled `/v1/capabilities` is still UNCHANGED — but
+    conversations join it already closed rather than enlarging it.
   - **Titles are encrypted at rest, with a KEYED digest** (§6/§18): envelope under the
     `conversation_content` KMS purpose, digest under `conversation_content_integrity`, key
     id/version persisted per row (`ai-conversation-content-v1`, v1). There is no plaintext
@@ -1028,8 +1037,11 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   (byte-identical row preservation, re-runnability, the exact grant/policy inventory, an
   unchanged worker privilege fingerprint, FORCE RLS everywhere, 0031/0032 unmodified);
   create/list/get/patch including the same-org cross-owner and cross-org negative proofs, the
-  `no-store` header on ten response classes, keyset pagination through an identical-`updated_at`
-  dataset that forces the tie-breaker, the page cap, and title encryption end to end; the FULL
+  `no-store` header on ten handler-produced response classes PLUS a real rate-limit 429 on both
+  conversation GET surfaces and a 500 raised before the route handler (with a throttled
+  `/v1/capabilities` proving the hook did not leak to the root), keyset pagination through an
+  identical-`updated_at` dataset that forces the tie-breaker, the page cap, and title encryption
+  end to end; the FULL
   C4 matrix (8 states × 2 modes) at BOTH the service and database layers; the C5 matrix
   including uuid-order independence; fork lineage falsification; fork idempotency including a
   concurrent burst and every conflict axis; LAW 10 in both orderings with the fork forced to

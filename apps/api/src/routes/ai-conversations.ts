@@ -12,17 +12,33 @@
 // perform. An unimplemented future endpoint stays nonexistent, so a client discovers the truth
 // from a 404 rather than from a misleading 501 shape.
 //
-// ★ AUTH-READ-CACHE-01. Every response leaving this plugin carries `Cache-Control: no-store`,
-// installed by the encapsulated `onRequest` hook below — the FIRST hook in the lifecycle — so
-// it is present on success, on an authenticated 404, on a validation 400, on a 401 and on an
-// unexpected 500 alike. The `/v1/me` precedent (`me.ts:48-62`) and the reason it exists:
-// `x-govai-api-key` is an ordinary header no cache treats as special, so to a caching proxy a
-// conversation GET is a plain GET whose body happens to be one owner's private history; keyed
-// on the URL alone it could be replayed to the next caller. This route class must not grow the
-// authenticated-read cache exposure — it must arrive already closed.
-//   Registered limitation, recorded not hidden: the app-level rate limiter's own 429 is
-// produced by a root-level hook that runs BEFORE this plugin's context, so a throttled request
-// does not receive the header. That body carries no tenant data.
+// ★ AUTH-READ-CACHE-01. Every response Fastify produces for a route of this plugin carries
+// `Cache-Control: no-store`, installed by the encapsulated `onRequest` hook below. The `/v1/me`
+// precedent (`me.ts:48-62`) and the reason it exists: `x-govai-api-key` is an ordinary header no
+// cache treats as special, so to a caching proxy a conversation GET is a plain GET whose body
+// happens to be one owner's private history; keyed on the URL alone it could be replayed to the
+// next caller. This route class must not grow the authenticated-read cache exposure — it must
+// arrive already closed.
+//   That includes the classes terminated BEFORE the route handler, the app-level rate limiter's
+// 429 among them. Fastify composes a route's `onRequest` chain as CONTEXT hooks first and
+// ROUTE-level hooks after (`fastify/lib/route.js:393-394` —
+// `this[kHooks][hook].concat(opts[hook] || [])`), and `@fastify/rate-limit@10` installs no
+// app-level hook at all: its `onRoute` hook pushes the limiter into each route's OWN
+// `routeOptions.onRequest` (`@fastify/rate-limit/index.js:142-157` and `201-211`). So this
+// plugin's context hook runs first and a throttled 429 leaves with the header. Nothing
+// registered ahead of it can answer a conversation request either — helmet only sets headers,
+// and the AuditBridge identity hook is prefix-scoped to the four direct-provider routes
+// (`pipeline/request-identity-hook.ts:21-31`).
+//   Proven, never assumed — `ai-conversation-control-plane.test.ts` C6 (the ten handler-produced
+// classes), C6b (a REAL 429 on both GET surfaces, driven on a second app built on the
+// `NODE_ENV !== 'test'` limit branch, since the hermetic stack raises the limit to 1,000,000 so
+// the suite is not throttled) and C6c (a 500 raised before the route handler). Those tests are
+// what keeps this true if the limiter ever changes where it installs itself.
+//   Recorded scope, not hidden: the guarantee is over the five routes REGISTERED here. A URL
+// matching none of them (a P0-C path) is answered from the ROOT not-found context, and a CORS
+// preflight is answered by `@fastify/cors` at the root; neither is a conversation response and
+// neither carries tenant data. AUTH-READ-CACHE-01 stays OPEN as a CLASS for the other
+// authenticated reads — C6b asserts a throttled `/v1/capabilities` is still UNCHANGED.
 //
 // ★ OWNER AUTHORIZATION. `(org_id, owner_user_id)` comes from the `AuthIdentity` that
 // `authenticateApiKey` resolved for THIS request, and from nowhere else. No body, query
