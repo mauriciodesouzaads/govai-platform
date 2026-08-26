@@ -49,14 +49,14 @@ is one collected test module.
 | Workspace apps | `apps/*` | 3 — `apps/api`, `apps/audit-sealer`, `apps/ui` |
 | Workspace packages | `packages/*` | 13 |
 | Other workspace members | literal entries in `pnpm-workspace.yaml` | `scripts`, `tests` |
-| API route files | `apps/api/src/routes/*.ts` | 19 |
-| DB migrations | `apps/api/src/db/migrations/*.sql` | 31 |
+| API route files | `apps/api/src/routes/*.ts` | 20 |
+| DB migrations | `apps/api/src/db/migrations/*.sql` | 32 |
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 141 | 1621 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 84 | 1235 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 225 | 2856 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 144 | 1648 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 89 | 1324 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 233 | 2972 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
 
@@ -696,6 +696,11 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   `completed`; `before_attempt_output` pin must be an immutable terminal; `outcome_unknown`
   rejected in both modes; no non-terminal pin); and P0A1-C5 (`current_attempt_id` backward
   repoint — monotonic handoff is a P0-B acceptance proof if not taken structurally).
+  **★ UPDATED BY P0-B (candidate, this tree):** all three of those forward obligations are
+  DISCHARGED by the P0-B candidate below — AUTH-READ-CACHE-01 for the conversation surface,
+  P0A1-C4 and P0A1-C5 both taken STRUCTURALLY in migration 0033 rather than as service checks
+  alone. The three entries above are retained as the historical P0-A1 record; the P0-B canonical
+  section is the current state, and it is a CANDIDATE state pending independent confirmation.
 
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-A2 canonical state (this tree)
 
@@ -869,13 +874,191 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 - Deliberately NOT in P0-A2, and unchanged by it: `RECOVERY_CLAIM_MUTATION=NOT_IMPLEMENTED`,
   `RECOVERY_STATE_MACHINE_EXECUTOR=NOT_IMPLEMENTED`, `WORKER_RUNNER_LOOP=NOT_IMPLEMENTED`,
   `PROVIDER_DISPATCH_FROM_WORKER=NOT_IMPLEMENTED`, `QUEUE_WAKE_PROCESS=NOT_IMPLEMENTED`,
-  `PROVIDER_CLEANUP_WORKER=NOT_IMPLEMENTED`, `CONVERSATION_HTTP_API=NOT_IMPLEMENTED`,
+  `PROVIDER_CLEANUP_WORKER=NOT_IMPLEMENTED`,
   **`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`** (no durable user-facing Send/hydrate/reload
-  path; the AI Console transcript is still memory-only), `P0_B=NOT_STARTED`. A worker PROCESS is
+  path; the AI Console transcript is still memory-only). ★ TWO of the tokens that stood here
+  were forward statements about the NEXT movement and are superseded by the P0-B canonical
+  section below: `CONVERSATION_HTTP_API=NOT_IMPLEMENTED` and `P0_B=NOT_STARTED` are no longer
+  true of this tree (a control-plane candidate exists; durable send still does not). Everything
+  else in this P0-A2 list is unchanged and remains true. A worker PROCESS is
   not implemented either: `WORKER_RUNTIME_PROCESS=NOT_IMPLEMENTED` and
   `WORKER_RUNTIME_POOL_ACTIVATION=DEFERRED_TO_FIRST_WORKER_PROCESS` — the credential lifecycle
   and the pool factory exist, but nothing constructs a worker pool at runtime. No
   parity-manifest row changed classification: a trust boundary is not user/provider capability.
-- Carry-forwards untouched by P0-A2 (still open): P0A1-C4, P0A1-C5, the provider-sourced
+- Carry-forwards untouched by P0-A2 (open AT P0-A2): P0A1-C4, P0A1-C5, the provider-sourced
   rejection discriminator, AUTH-READ-CACHE-01, P0-A1 P3a–P3d, the T1 acceptance-stack residual
   and its five P3 observations, and `LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14`.
+  ★ UPDATED BY P0-B (candidate): P0A1-C4 and P0A1-C5 are CLOSED STRUCTURALLY by migration 0033,
+  and the AUTH-READ-CACHE-01 obligation is met FOR THE CONVERSATION SURFACE (the class itself
+  stays open — the four pre-existing authenticated read surfaces are untouched). The
+  provider-sourced rejection discriminator, the P3 sets and the R14 risk are carried forward
+  UNCHANGED; the five P0-A2 P3 items are restated in the P0-B section, including P0A2-P3-A1's
+  status as a MANDATORY GATE before the first worker runtime activation.
+
+### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-B canonical state (this tree)
+
+- `P0_B_CONVERSATION_CONTROL_PLANE=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION` — implemented by
+  movement `P0-B-CONVERSATION-CONTROL-PLANE-01` on base
+  `e6eb886dab68d953fab7114687fae8d34c639e0a` (tree `6be1b724739d209fa754ff380446275967f54ab4`).
+  **This status is deliberately NOT `COMPLETE`.** COMPLETE is written only after an independent
+  exact-head audit passes and the candidate merges — the discipline P0-A1 and P0-A2 both
+  followed. Nothing below is asserted on the executor's own authority beyond "this is what the
+  tree contains and what its tests prove".
+- **What P0-B is, stated precisely.** The owner-authorized CONVERSATION CONTROL PLANE: the
+  request-side surfaces that can exist safely WITHOUT activating durable provider execution.
+  It is not the conversation experience. After this movement:
+  ```
+  CONVERSATION_CONTROL_PLANE  = CANDIDATE_IMPLEMENTED
+  CONVERSATION_PERSISTENCE    = NOT_IMPLEMENTED
+  ```
+  and the second line is the load-bearing one: there is still no complete user-facing
+  `Send → durable accepted turn → server-owned execution → hydrate/reload` path, and the AI
+  Console transcript remains memory-only by construction (its acceptance test is unchanged).
+- **What P0-B actually shipped:**
+  - **Migration `0033_ai_conversation_control_plane.sql`** — three things and no more.
+    (a) The MINIMUM request-plane authority: COLUMN-scoped `UPDATE` for `govai_app` on exactly
+    eight columns of `ai_conversations` (`status`, `archived_at`, the five encrypted-title
+    columns, `updated_at`) plus one dual-predicate UPDATE policy. TABLE-level UPDATE stays
+    FALSE, so a column added by a later migration is not silently writable, and
+    `retention_class` — which 0031's guard trigger would tolerate — is deliberately excluded
+    because no P0-B contract mutates it. No DELETE anywhere. No TRUNCATE. Not one grant, policy
+    or EXECUTE for `govai_conversation_worker`: P0-C's needs are not pre-granted.
+    (b) `govai.ai_conversation_fork_idempotency` — the fork arbiter, the 0030 `run_idempotency`
+    composite-PK pattern (`PRIMARY KEY (org_id, conversation_id, client_fork_id)`,
+    `INSERT … ON CONFLICT DO NOTHING RETURNING`), immutable by privilege (SELECT+INSERT only)
+    AND by trigger, RLS ENABLE+FORCE with the same dual owner predicate, and LAW 1 composite
+    binding to its branch. Adjudicated AGAINST columns on the branch row: 0031's branches guard
+    is a positive whitelist, so added columns would fall OUTSIDE the frozen set and become
+    silently mutable under any future UPDATE grant.
+    (c) The two P0-A1 carry-forward closures, both STRUCTURAL.
+  - **`P0A1-C4=CLOSED_STRUCTURALLY`** — fork-pin MODE-SPECIFIC state validity (spec §3), as a
+    `BEFORE INSERT` trigger on `ai_conversation_branches`: `after_attempt` requires a
+    **`completed`** pin; `before_attempt_output` accepts any IMMUTABLE TERMINAL pin
+    (`completed|stopped|failed|rejected`); `outcome_unknown` is refused in BOTH modes because
+    §7.6 lets a probe still resolve it, so it is not immutable. The trigger enforces the STATE
+    predicate only and defers LINEAGE to 0031's composite fork FK over the identical tuple —
+    it does not duplicate, pre-empt or restate an invariant 0031 already owns. The service
+    enforces the same matrix so the client gets a `409 fork_source_not_forkable` naming its own
+    attempt's state instead of a bare 500.
+  - **`P0A1-C5=CLOSED_STRUCTURALLY`** — `current_attempt_id` MONOTONIC HANDOFF, as a
+    `BEFORE UPDATE` trigger on `ai_conversation_turns`, ordered by `attempt_seq` and never by
+    uuid value. Value-identical assignment is a no-op; the INITIAL `NULL → attempt` assignment
+    stays lawful and unrestricted (0031's composite FK is the authority there, and pre-empting
+    it would break the sanctioned `SET CONSTRAINTS … DEFERRED` mint); clearing to NULL, every
+    backward repoint and every handoff whose target cannot be resolved in THIS turn's lineage
+    are rejected. Retry does not exist yet — the invariant is closed now so it cannot later
+    acquire unsafe freedom.
+  - **Five routes, and no stubs** (`apps/api/src/routes/ai-conversations.ts`):
+    `POST /v1/ai/conversations` (conversation + its ONE root branch, atomically — the branch is
+    the durable owner of the executing triple, §3), `GET /v1/ai/conversations` (owner-scoped,
+    keyset-paged `(updated_at DESC, id DESC)`, page ≤ 50, no OFFSET, bounded per-page title
+    decryption, archived hidden by default), `GET /v1/ai/conversations/:id`,
+    `PATCH /v1/ai/conversations/:id` (§13's two guarded fields — `title`, `archived` — and
+    nothing else), and `POST /v1/ai/conversations/:id/branches`. The forbidden P0-C/P0-E
+    endpoints are NOT registered even as placeholders: an unimplemented future endpoint stays
+    nonexistent rather than returning a misleading shape.
+  - **`AUTH-READ-CACHE-01` for the conversation surface**: `Cache-Control: no-store` on every
+    response of the plugin's five registered routes, installed by an encapsulated `onRequest`
+    hook, so it is present on success, on an authenticated 404, on a validation 400, on a 401,
+    on a rate-limit 429 and on a 500 alike. The 429 earns its own proof because it is produced
+    BEFORE the route handler: Fastify composes a route's `onRequest` chain as context hooks
+    first and route-level hooks after (`fastify/lib/route.js:393-394`), and
+    `@fastify/rate-limit@10` installs no app-level hook — its `onRoute` hook pushes the limiter
+    into each route's own `routeOptions.onRequest` (`index.js:142-157`, `201-211`) — so the
+    plugin's hook runs first. Proven by test rather than by reading: the hermetic stack raises
+    the limit to 1,000,000 under `NODE_ENV='test'`, so `C6b` builds a second app against the
+    same database on the `NODE_ENV !== 'test'` branch and throttles it for real. Scope recorded,
+    not hidden: the guarantee is over the five REGISTERED routes — a URL matching none of them
+    is answered from the root not-found context, and a CORS preflight from `@fastify/cors` at
+    the root; neither is a conversation response. The CLASS is not closed by this movement —
+    `/v1/evidence/summary`, `/v1/evidence/gaps`, `/v1/audit-events` and `/v1/capabilities` are
+    untouched, and `C6b` asserts a throttled `/v1/capabilities` is still UNCHANGED — but
+    conversations join it already closed rather than enlarging it.
+  - **Titles are encrypted at rest, with a KEYED digest** (§6/§18): envelope under the
+    `conversation_content` KMS purpose, digest under `conversation_content_integrity`, key
+    id/version persisted per row (`ai-conversation-content-v1`, v1). There is no plaintext
+    title column to misuse; the digest is provably NOT `sha256(plaintext)`; cross-purpose
+    decryption fails closed. Manual rename is the only writer — no provider-generated title,
+    and no provider call to make one.
+  - **The fork control plane** pins a SPECIFIC IMMUTABLE ATTEMPT through its full composite
+    lineage (never a turn alone), records the child branch's own durable `provider/surface/model`
+    (omitted fields inherit the parent branch, per field), and is IDEMPOTENT under a
+    client-supplied `client_fork_id` carried in the BODY — no existing idempotency header is
+    overloaded and `X-GovAI-Client-Turn-Id` is not minted. Same key + same intent replays the
+    one branch (HTTP 200 + `x-govai-ai-fork-idempotent-replay`); same key + any divergent intent
+    axis is a static `409 fork_idempotency_key_conflict`. The intent hash is a LOCAL, frozen
+    canonicalization (`govai.ai_conversation_fork_intent.v1`) — never the evidence
+    canonicalization, and deliberately a separate function from run idempotency's so the two
+    contracts can move independently. It hashes the RESOLVED triple, so "omit it" and "state the
+    value the parent already has" are correctly the SAME fork.
+  - **`before_attempt_output`** mints the regeneration child in the SAME transaction: the child
+    turn, a CIPHERTEXT-ONLY copy of the source turn's immutable native request config and of its
+    TURN-OWNED user items (never the attempt-owned output the mode excludes by definition), and
+    a fresh initial attempt with `current_attempt_id` already set via the sanctioned
+    `SET CONSTRAINTS … DEFERRED` mint — which is why the control plane needs NO UPDATE authority
+    on `ai_conversation_turns` at all. The attempt is born `accepted` and UNCLAIMED: not claimed,
+    not dispatched, not queued, not woken.
+  - **LAW 10 and LAW 16 are realized, not asserted.** Every fork takes (1) the conversation-root
+    row lock, REVALIDATES lifecycle under it, then (2) the parent branch's advisory execution
+    authority (`ai_conversation_branch:<id>`, exported so P0-C reuses the identical key rather
+    than minting a second locking domain), then (3) the turn/attempt writes the mode requires.
+    The check-then-write race is impossible, and both lock orderings are proven by forced
+    interleaving. `archived` IS execution-eligible — §19.1 admits both `active` and `archived`
+    as deletion origins, and only `deleted_pending` closes a conversation to new work.
+- **Adjudicated bound, stated rather than hidden — `P0B-FORK-BAO-TRIPLE-SWITCH=DEFERRED`.** A
+  `before_attempt_output` fork that CHANGES `provider`/`surface`/`model` is REJECTED with
+  `409 fork_replacement_config_required`. §3 says such a fork must supply a replacement native
+  request config valid for the target or be REJECTED as incompatible, and must NEVER be silently
+  translated. P0-B accepts no replacement config: the native request body is the durable-send
+  surface (P0-C, explicitly out of scope), and no provider-native request validator exists in
+  the tree to prove a supplied config "valid for the target provider" — storing an unvalidated
+  blob and calling it a valid immutable config would be an overclaim. This movement therefore
+  takes the architecture's OWN rejected branch. Same-provider regeneration — the case §7.6
+  actually needs — is fully implemented. `after_attempt` cross-provider and model-switch forks
+  are unaffected: they mint no child turn, so no config question arises.
+- **Deliberately NOT in P0-B, and unchanged by it:** `POST /v1/ai/conversations/:id/turns`,
+  turn hydration, the stream re-attach endpoint, retry, Stop, `DELETE` and the whole §19 delete
+  protocol, durable Send / `client_turn_id` reservation, queue execution and wake, claim
+  creation/mutation, lease/heartbeat/fencing, dispatch-boundary execution, worker runner loop
+  and sweeps, recovery mutation, provider credential resolution for dispatch, every provider
+  POST/stream/continuation, provider cleanup, the disposal ledger, `ai_cleanup_candidates`,
+  turn↔evidence correlation, AuditBridge or audit-schema change, run-chain events, persistent
+  AI workspace UI, deep links, browser conversation storage, Projects, Workroom-as-chat,
+  attachments, full-content search, provider-generated titles, retention automation, production
+  human auth (R14). `WORKER_RUNTIME_PROCESS=NOT_IMPLEMENTED`,
+  `WORKER_RUNTIME_POOL_ACTIVATION=DEFERRED`, `RECOVERY_CLAIM_MUTATION=NOT_IMPLEMENTED`,
+  `RECOVERY_STATE_MACHINE_EXECUTOR=NOT_IMPLEMENTED`, `PROVIDER_DISPATCH_FROM_WORKER=NOT_IMPLEMENTED`,
+  `QUEUE_WAKE_PROCESS=NOT_IMPLEMENTED`, `PROVIDER_CONTINUATION=NOT_IMPLEMENTED`,
+  `PERSISTENT_AI_WORKSPACE_UI=NOT_IMPLEMENTED`, `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED`,
+  `P0_C=NOT_STARTED`. No parity-manifest row changed classification: a control plane is not
+  provider capability.
+- **Test matrix** (`tests/integration/ai-conversation-*.test.ts` + the pure unit suites under
+  `apps/api/src/ai-conversations/`): migration 0033 against a POPULATED 0031+0032 database
+  (byte-identical row preservation, re-runnability, the exact grant/policy inventory, an
+  unchanged worker privilege fingerprint, FORCE RLS everywhere, 0031/0032 unmodified);
+  create/list/get/patch including the same-org cross-owner and cross-org negative proofs, the
+  `no-store` header on ten handler-produced response classes PLUS a real rate-limit 429 on both
+  conversation GET surfaces and a 500 raised before the route handler (with a throttled
+  `/v1/capabilities` proving the hook did not leak to the root), keyset pagination through an
+  identical-`updated_at` dataset that forces the tie-breaker, the page cap, and title encryption
+  end to end; the FULL
+  C4 matrix (8 states × 2 modes) at BOTH the service and database layers; the C5 matrix
+  including uuid-order independence; fork lineage falsification; fork idempotency including a
+  concurrent burst and every conflict axis; LAW 10 in both orderings with the fork forced to
+  BLOCK on the root; LAW 16 proven by observing which lock is held while the fork waits; and a
+  P0-C NEGATIVE BOUNDARY suite proving zero forbidden routes, zero provider requests during a
+  full control-plane exercise, zero claimed or post-boundary attempts, and — over
+  comment-stripped source — zero dispatch/worker/claim/queue/timer/notification constructs.
+- **Carry-forwards, all preserved and none silently closed:** `P0A2-P3-A1` (checked-out pg
+  clients carry no per-client `error` listener) remains a **MANDATORY GATE BEFORE THE FIRST REAL
+  CONVERSATION-WORKER RUNTIME ACTIVATION** — P0-B activates no worker, so it is not fixed here
+  and must reach P0-C's preflight intact; `P0A2-P3-A4` (`createConversationWorkerPool` returns a
+  bare `pg.Pool`; reconsider an opaque module-private handle before worker runtime callers
+  expand) — P0-B adds no such caller; `P0A2-P3-A2`, `P0A2-P3-A3` and `P0A2-P3-A5` keep their
+  existing classifications. The **provider-sourced rejection discriminator** stays OPEN and is
+  deliberately NOT closed cosmetically: P0-B exposes no durable turn hydration or execution, so
+  the distinction is not yet material, and inventing a column or HTTP enum now would freeze a
+  guess. `AUTH-READ-CACHE-01` stays open as a CLASS (see above). `R14` and
+  `LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14` are unchanged — persistence is keyed to the
+  stable `(org_id, user_id)` the API-key lookup returns, and nothing here pretends that is a
+  human login.
