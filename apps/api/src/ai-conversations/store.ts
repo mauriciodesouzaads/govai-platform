@@ -469,19 +469,46 @@ export async function getForkBranch(
   return r.rows[0] ?? null;
 }
 
-/** The regeneration child turn of a `before_attempt_output` branch, for a replay projection.
- *  `after_attempt` branches mint no child rows, so this is legitimately empty for them. */
-export async function getBranchChildTurn(
+/**
+ * The turn + attempt a `before_attempt_output` fork ITSELF minted, for a replay projection
+ * (P0B-P2-FORK-REPLAY-RECONSTRUCTION-01).
+ *
+ * ★ FORK-TIME STATE, NOT CURRENT STATE. A replay reproduces the response the fork ALREADY
+ * committed; it is a read of history, never a report on what the branch has become since. The two
+ * are told apart by anchoring on the IMMUTABLE sequence identities:
+ *   · `turn_seq = 1` — the child branch's first turn is the one `insertChildTurnWithInitialAttempt`
+ *     wrote inside the fork transaction. 0031's turn guard makes `turn_seq` immutable and its
+ *     `(org, owner, conversation, branch, turn_seq)` UNIQUE constraint makes a second `1`
+ *     impossible, so this identifies exactly one row forever — however many turns P0-C's durable
+ *     Send later appends as `2, 3, …`.
+ *   · `attempt_seq = 1` — that turn's FRESH INITIAL attempt, minted in the same statement pair.
+ *     0031's attempt guard makes `attempt_seq` immutable and its per-turn UNIQUE constraint makes
+ *     a second `1` impossible, so a P0-C retry landing `attempt_seq = 2` cannot displace it.
+ * Neither needs an `ORDER BY`: both are single rows by constraint.
+ *
+ * ★ `current_attempt_id` IS DELIBERATELY NOT READ. It is the ONE column 0031's turn guard permits
+ * to change — the §7.6 atomic eligibility handoff — so it names the turn's CURRENT attempt. A
+ * replay built on it would start answering with the retry's attempt the moment retry exists, and
+ * the same `client_fork_id` would return two different answers over its lifetime.
+ *
+ * Full composite lineage on both joins (LAW 1): never a branch id alone.
+ */
+export async function getForkMintedChildTurn(
   client: PoolClient,
-  branchId: string,
-): Promise<{ id: string; current_attempt_id: string | null } | null> {
-  const r = await client.query<{ id: string; current_attempt_id: string | null }>(
-    `SELECT id, current_attempt_id
-       FROM govai.ai_conversation_turns
-      WHERE branch_id = $1::uuid
-      ORDER BY turn_seq ASC
-      LIMIT 1`,
-    [branchId],
+  scope: OwnerScope,
+  lineage: { conversationId: string; branchId: string },
+): Promise<{ id: string; attempt_id: string } | null> {
+  const r = await client.query<{ id: string; attempt_id: string }>(
+    `SELECT t.id, a.id AS attempt_id
+       FROM govai.ai_conversation_turns t
+       JOIN govai.ai_conversation_attempts a
+         ON a.org_id = t.org_id AND a.owner_user_id = t.owner_user_id
+        AND a.conversation_id = t.conversation_id AND a.branch_id = t.branch_id
+        AND a.turn_id = t.id AND a.attempt_seq = 1
+      WHERE t.org_id = $1::uuid AND t.owner_user_id = $2::uuid
+        AND t.conversation_id = $3::uuid AND t.branch_id = $4::uuid
+        AND t.turn_seq = 1`,
+    [scope.orgId, scope.ownerUserId, lineage.conversationId, lineage.branchId],
   );
   return r.rows[0] ?? null;
 }

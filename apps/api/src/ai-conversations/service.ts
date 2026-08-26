@@ -580,11 +580,27 @@ async function resolveCommittedFork(
     }
     const branch = await store.getForkBranch(c, conversationId, binding.branch_id);
     if (!branch) throw new Error('fork binding references an unreadable branch');
-    const childTurn = await store.getBranchChildTurn(c, branch.id);
+    // ★ THE REPLAY REPRODUCES THE FORK-TIME RESULT (P0B-P2-FORK-REPLAY-RECONSTRUCTION-01).
+    // `boundary_mode` is the first authority, because it decides what the fork MINTED — not what
+    // the branch happens to hold now. An `after_attempt` fork mints no child rows at all (§3), so
+    // its `child_turn` is `null` FOREVER: the first ordinary Send P0-C adds to that branch is a
+    // turn the fork did not create, and returning it would silently change a committed answer.
+    // A `before_attempt_output` fork minted exactly one child turn and its fresh initial attempt,
+    // and those are recovered by their IMMUTABLE sequence identities rather than by the turn's
+    // `current_attempt_id`, which a retry is entitled to advance.
     const child =
-      childTurn && childTurn.current_attempt_id
-        ? { id: childTurn.id, attempt_id: childTurn.current_attempt_id }
+      branch.boundary_mode === 'before_attempt_output'
+        ? await store.getForkMintedChildTurn(c, scope, {
+            conversationId,
+            branchId: branch.id,
+          })
         : null;
+    if (branch.boundary_mode === 'before_attempt_output' && child === null) {
+      // The child is minted ATOMICALLY with the branch and the binding inside one transaction, so
+      // a committed `before_attempt_output` binding without it is an invariant break, never a
+      // client-visible condition.
+      throw new Error('fork binding references a before_attempt_output branch with no child turn');
+    }
     return { branch: projectFork(branch, child), replay: true };
   });
 }

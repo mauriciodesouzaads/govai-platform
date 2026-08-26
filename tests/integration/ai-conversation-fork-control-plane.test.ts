@@ -775,6 +775,146 @@ describe('P0-B I — fork idempotency under client_fork_id', () => {
     const stolen = await fork(neighbourKey, mine.conversationId, forkBody(mine, { client_fork_id: key }));
     expect(stolen.statusCode).toBe(404);
   });
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────
+  // I10 / I11 — P0B-P2-FORK-REPLAY-RECONSTRUCTION-01.
+  //
+  // A fork replay must reproduce the FORK-TIME RESULT, not the branch's CURRENT state. On this
+  // head the two are indistinguishable, because no P0-B surface can add a turn to a child branch
+  // or repoint a turn's `current_attempt_id` — `POST .../turns` and retry are P0-C. So the defect
+  // is real but LATENT, and a test that only drove the public API could not see it.
+  //
+  // These two tests remove that blind spot by constructing, through ADMIN test setup only, the
+  // FUTURE LEGAL DATABASE STATES P0-C will produce, and then replaying the fork against them.
+  // Nothing here implements a P0-C surface: no route is added, no send is performed, no attempt
+  // is claimed or dispatched. The rows are seeded exactly as 0031 permits them to exist —
+  // `turn_seq` and `attempt_seq` are IMMUTABLE under 0031's guard triggers, and
+  // `current_attempt_id` is the ONE column those triggers allow to change, which is precisely
+  // why reconstructing fork-time state from it was wrong.
+  // ───────────────────────────────────────────────────────────────────────────────────────────
+
+  it('I10 — an after_attempt replay stays fork-time NULL after the branch receives ordinary turns', async () => {
+    const src = await seedForkSource(owner);
+    const body = forkBody(src, { boundary_mode: 'after_attempt' });
+
+    const first = await fork(org.api_key, src.conversationId, body);
+    expect(first.statusCode).toBe(201);
+    // §3: an `after_attempt` fork mints NO child rows, so the fork-time result has no child turn.
+    expect((first.body as ForkBody).child_turn).toBeNull();
+    const childBranchId = (first.body as ForkBody).id;
+
+    // FUTURE-STATE SIMULATION — the first ordinary Send on the CHILD branch. It is `turn_seq = 1`
+    // (the fork minted none, so the branch starts empty), which is exactly what made the old
+    // `ORDER BY turn_seq ASC LIMIT 1` lookup return it as though the FORK had created it.
+    const { turnId } = await seedTurn(admin(), owner, src.conversationId, childBranchId, 1);
+    const ordinaryAttempt = await seedAttempt(
+      admin(),
+      owner,
+      src.conversationId,
+      childBranchId,
+      turnId,
+    );
+    await admin().query(
+      `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
+      [ordinaryAttempt, turnId],
+    );
+    // The hostile state really exists — this is not a test that passes because nothing happened.
+    const seededState = await admin().query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_turns WHERE branch_id = $1::uuid`,
+      [childBranchId],
+    );
+    expect(seededState.rows[0]!.n).toBe('1');
+
+    const replay = await fork(org.api_key, src.conversationId, body);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.headers['x-govai-ai-fork-idempotent-replay']).toBe('true');
+    // The contract: `child_turn` names the child the FORK minted. For `after_attempt` that is
+    // forever `null`, however many turns the branch later accumulates.
+    expect((replay.body as ForkBody).child_turn).toBeNull();
+    // And the replay is the first response, byte for byte.
+    expect(replay.body).toEqual(first.body);
+    // Nothing was minted by the replay: the ordinary turn seeded above is still the only one.
+    const after = await admin().query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_turns WHERE branch_id = $1::uuid`,
+      [childBranchId],
+    );
+    expect(after.rows[0]!.n).toBe('1');
+    expect(await branchCount(src.conversationId)).toBe(1);
+  });
+
+  it('I11 — a before_attempt_output replay returns the FORK-MINTED attempt after a retry moves current_attempt_id', async () => {
+    const src = await seedForkSource(owner);
+    const body = forkBody(src, { boundary_mode: 'before_attempt_output' });
+
+    const first = await fork(org.api_key, src.conversationId, body);
+    expect(first.statusCode).toBe(201);
+    const minted = (first.body as ForkBody).child_turn;
+    expect(minted).not.toBeNull();
+    const childBranchId = (first.body as ForkBody).id;
+    // The fork minted `turn_seq = 1` with `attempt_seq = 1` — both immutable identities.
+    const mintedShape = await admin().query<{ turn_seq: string; attempt_seq: number }>(
+      `SELECT t.turn_seq::text AS turn_seq, a.attempt_seq
+         FROM govai.ai_conversation_turns t
+         JOIN govai.ai_conversation_attempts a ON a.id = $2::uuid
+        WHERE t.id = $1::uuid`,
+      [minted!.id, minted!.attempt_id],
+    );
+    expect(mintedShape.rows[0]).toEqual({ turn_seq: '1', attempt_seq: 1 });
+
+    // FUTURE-STATE SIMULATION (1) — a RETRY of the child's first turn: a fresh `attempt_seq = 2`
+    // on the SAME turn, with `current_attempt_id` advanced to it. That UPDATE is the one 0031's
+    // turn guard permits, so this is a state P0-C will genuinely reach.
+    const retryAttempt = await seedAttempt(
+      admin(),
+      owner,
+      src.conversationId,
+      childBranchId,
+      minted!.id,
+      { attemptSeq: 2 },
+    );
+    await admin().query(
+      `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
+      [retryAttempt, minted!.id],
+    );
+    // FUTURE-STATE SIMULATION (2) — the branch then moves on: an ordinary `turn_seq = 2`.
+    const { turnId: secondTurn } = await seedTurn(
+      admin(),
+      owner,
+      src.conversationId,
+      childBranchId,
+      2,
+    );
+    const secondAttempt = await seedAttempt(
+      admin(),
+      owner,
+      src.conversationId,
+      childBranchId,
+      secondTurn,
+    );
+    await admin().query(
+      `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
+      [secondAttempt, secondTurn],
+    );
+    // The hostile state really exists: the child turn now POINTS AT the retry attempt, and the
+    // branch carries a second turn.
+    const state = await admin().query<{ current_attempt_id: string; turns: string }>(
+      `SELECT t.current_attempt_id,
+              (SELECT count(*)::text FROM govai.ai_conversation_turns WHERE branch_id = $2::uuid) AS turns
+         FROM govai.ai_conversation_turns t WHERE t.id = $1::uuid`,
+      [minted!.id, childBranchId],
+    );
+    expect(state.rows[0]).toEqual({ current_attempt_id: retryAttempt, turns: '2' });
+    expect(retryAttempt).not.toBe(minted!.attempt_id);
+
+    const replay = await fork(org.api_key, src.conversationId, body);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.headers['x-govai-ai-fork-idempotent-replay']).toBe('true');
+    // The contract: the IMMUTABLE pair the fork itself minted — never the turn's CURRENT attempt.
+    expect((replay.body as ForkBody).child_turn).toEqual(minted);
+    expect(replay.body).toEqual(first.body);
+    // And still no duplicate mint under the same key.
+    expect(await branchCount(src.conversationId)).toBe(1);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
