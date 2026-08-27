@@ -2355,22 +2355,34 @@ describe('R3 — round-three review findings', () => {
       tools: [{ type: 'computer_20250124', name: 'computer', display_width_px: 1, display_height_px: 1 }],
     });
 
-    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
-      captureAuditEvent: async () => {
-        throw new Error('audit database unavailable');
-      },
-    }) as typeof db;
-
-    await processCandidate({ ...deps, db: spyDb }, {
-      orgId: org.org_id,
-      ownerUserId: org.user_id,
-      conversationId: conv.id,
-      attemptId,
-      state: 'accepted',
-      reason: 'queued_head',
-      claimToken: null,
-      isBranchHead: true,
-    });
+    // ★ DRIVEN THROUGH THE REAL BRIDGE, not a spy — and this path only became REACHABLE because
+    // of the strict posture added for R8-1. Before it, a blocked-path capture failure was
+    // swallowed and the attempt was recorded `rejected` with its evidence silently absent. Under
+    // strict it surfaces, which is a behaviour change worth PROVING rather than assuming: a
+    // governance decision whose evidence never landed should not be recorded as a clean refusal.
+    const SIG = `govai.audit_capture_insert_locked(
+      uuid, uuid, text, text, bigint, text, text, text, uuid, timestamptz,
+      bytea, bytea, bytea, text, integer, jsonb, text, bytea, text, text
+    )`;
+    await stack.db.adminPool.query(
+      `REVOKE EXECUTE ON FUNCTION ${SIG} FROM govai_conversation_worker`,
+    );
+    try {
+      await processCandidate(deps, {
+        orgId: org.org_id,
+        ownerUserId: org.user_id,
+        conversationId: conv.id,
+        attemptId,
+        state: 'accepted',
+        reason: 'queued_head',
+        claimToken: null,
+        isBranchHead: true,
+      });
+    } finally {
+      await stack.db.adminPool.query(
+        `GRANT EXECUTE ON FUNCTION ${SIG} TO govai_conversation_worker`,
+      );
+    }
 
     const row = await stack.db.adminPool.query<{
       state: string;
