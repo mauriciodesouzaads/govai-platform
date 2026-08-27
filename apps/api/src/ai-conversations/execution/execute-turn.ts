@@ -916,7 +916,13 @@ async function recordStream(
   // handler: the attempt terminalized, but the governed/passthrough finalizer never emitted its
   // audit event — an evidence gap precisely for FAILED provider calls, which is when evidence
   // matters most. The outcome is REPORTED (`upstream_error`), never assumed to be `complete`.
-  let drained = false;
+  // ★ EOF IS NOT THE SAME AS "THE LOOP ENDED", and conflating them made the evidence lie. The
+  // loop has exactly ONE `break` — the fenced exit — so reaching the line after it with `fenced`
+  // set means WE stopped reading early, not that the provider finished. An earlier revision set
+  // a single `drained` flag right after the loop, so a fenced exit reported
+  // `stream_outcome: complete` while the terminal frame had never been observed: an affirmative
+  // false claim in an audit record, which is worse than recording nothing.
+  let reachedUpstreamEof = false;
   try {
     for await (const chunk of result.chunks) {
       const bytes = Buffer.from(chunk);
@@ -927,18 +933,29 @@ async function recordStream(
       // output can never be persisted. The upstream connection closes with the reader.
       if (fenced) break;
     }
-    drained = true;
+    // The only `break` above is the fenced one, so arriving here UNFENCED means the iterator ran
+    // to completion — the provider's terminal frame was observed.
+    reachedUpstreamEof = !fenced;
     await flush();
   } finally {
     // ★ FLUSH WHAT ACTUALLY ARRIVED, EVEN ON A THROW. Bytes already received are durable truth;
     // discarding them because the stream later died would make the prefix describe less than the
     // server really got. The append is fenced, so this is safe on a rotated claim too.
-    if (!drained) await flush().catch(() => undefined);
+    if (!reachedUpstreamEof) await flush().catch(() => undefined);
     // The evidence describes the PROVIDER CALL, not our durable-write authority, so it is emitted
     // whether or not the fence held and whether or not the drain completed. A finalizer that
     // itself fails must not mask the original drain error.
+    //
+    // ★ A RESIDUAL IMPRECISION, RECORDED RATHER THAN HIDDEN. `stream_outcome` is the v4 evidence
+    // enum {complete | upstream_error | client_disconnect} and widening it is an evidence-plane
+    // change far outside this movement. On the FENCED path the upstream may have been perfectly
+    // healthy — we stopped consuming — so `upstream_error` is imprecise about the CAUSE. It is
+    // chosen because the only alternatives are worse: `complete` asserts a terminal frame that
+    // was never seen, and `client_disconnect` names a client this worker does not have. What the
+    // value does say truthfully is "this stream did not finish normally", which is the fact an
+    // evidence reader must not be misled about.
     await result
-      .finalize(drained ? 'complete' : 'upstream_error')
+      .finalize(reachedUpstreamEof ? 'complete' : 'upstream_error')
       .catch((err: unknown) =>
         deps.log.warn(
           { attempt_id: args.attemptId, err_class: errClass(err) },

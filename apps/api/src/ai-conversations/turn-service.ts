@@ -502,6 +502,42 @@ async function readTurnBundle(
 }
 
 /**
+ * Concurrency ceiling for per-item KMS decryption in Phase B.
+ *
+ * Chosen to keep a full page fast without turning one hydrate into a burst of remote calls. It is
+ * deliberately a SMALL constant rather than a tuned knob: the failure it prevents (throttling that
+ * fails the whole request) is far worse than the latency it costs, and a knob would invite raising
+ * it until the failure returns.
+ */
+const KMS_DECRYPT_CONCURRENCY = 8;
+
+/**
+ * Map with a bounded number of in-flight operations, preserving input ORDER in the output.
+ *
+ * Order matters here: item projections are matched back to turns and attempts positionally, and
+ * `item_seq` ordering is part of the hydrate contract — a stream's chunks must concatenate back
+ * to the provider's bytes.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      out[index] = await fn(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/**
  * PHASE B — decrypt and project. NO database client, NO transaction, by signature.
  *
  * Decryption is the bounded cost the §13 page cap exists to bound; none of it holds a connection.
@@ -514,13 +550,16 @@ async function projectTurnBundle(
   const { turns: turnRows, attempts: attemptRows, items: itemRows } = bundle;
   if (turnRows.length === 0) return [];
 
-  const items = await Promise.all(
-    itemRows.map(async (row) => ({
-      turnId: row.turn_id,
-      attemptId: row.attempt_id,
-      item: await projectItem(kms, orgId, row),
-    })),
-  );
+  // ★ THE PAGE CAP BOUNDS TURNS, NOT ITEMS — and it is items that cost a KMS call. A streaming
+  // attempt writes ONE encrypted item per flush, so a single long answer can hold hundreds, and
+  // a 50-turn page multiplies that. `Promise.all` over the whole collection would fire every
+  // decrypt at once: on a remote KMS that is a self-inflicted thundering herd, and throttling
+  // would fail the WHOLE hydrate while the rest of the calls stayed in flight.
+  const items = await mapWithConcurrency(itemRows, KMS_DECRYPT_CONCURRENCY, async (row) => ({
+    turnId: row.turn_id,
+    attemptId: row.attempt_id,
+    item: await projectItem(kms, orgId, row),
+  }));
 
   return turnRows.map((turn) => {
     const attempts: ConversationAttemptProjection[] = attemptRows

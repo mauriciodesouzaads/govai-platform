@@ -1656,6 +1656,155 @@ describe('R3 — round-three review findings', () => {
     expect(Buffer.from(item.bytes_base64!, 'base64').equals(rawBody)).toBe(true);
   });
 
+  it('R4-1 — a FENCED stream exit never records stream_outcome: complete', async () => {
+    // ★ AN AUDIT RECORD THAT AFFIRMATIVELY CLAIMS SOMETHING FALSE IS WORSE THAN ONE THAT RECORDS
+    // NOTHING. When an append loses its fence the drain `break`s early — we stop reading, so the
+    // provider's terminal frame is never observed — yet a single "the loop ended" flag reported
+    // `complete`. The evidence then hashed only the received prefix while asserting the stream
+    // had finished.
+    //
+    // Driven through the REAL `processCandidate`, with the emitted v4 event captured at the
+    // worker's own `captureAuditEvent` seam — no test-only production export.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R4-1', true));
+
+    const emitted: Array<{ is_stream?: boolean; stream_outcome?: string }> = [];
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      captureAuditEvent: async (event: unknown, identity?: unknown) => {
+        emitted.push(event as { is_stream?: boolean; stream_outcome?: string });
+        return (db.captureAuditEvent as (e: unknown, i?: unknown) => Promise<void>)(event, identity);
+      },
+    }) as typeof db;
+
+    // The upstream pauses after its first chunks so the fence can be rotated DETERMINISTICALLY
+    // mid-drain, rather than racing a timer.
+    let releaseUpstream!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+
+    const outcome = await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          // Well past the 64-byte flush threshold, so the FIRST flush happens while still fenced-in.
+          res.write(`data: {"phase":"first","pad":"${'z'.repeat(120)}"}\n\n`);
+          void paused.then(() => {
+            // More data AFTER the rotation: the next flush loses its fence and breaks the drain.
+            res.write(`data: {"phase":"second","pad":"${'z'.repeat(120)}"}\n\n`);
+            res.write(`data: {"phase":"third","pad":"${'z'.repeat(120)}"}\n\n`);
+            setTimeout(() => res.end(), 50);
+          });
+        });
+      },
+      async () => {
+        const driving = processCandidate({ ...deps, db: spyDb }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        });
+        // Wait until the FIRST chunk is durably persisted — proof the drain is running and the
+        // fence was still valid — then rotate the claim out from under the writer.
+        for (let i = 0; i < 200; i += 1) {
+          const n = await stack.db.adminPool.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+            [attemptId],
+          );
+          if (Number(n.rows[0]!.n) >= 1) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        await stack.db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET claim_token = gen_random_uuid() WHERE id = $1::uuid`,
+          [attemptId],
+        );
+        releaseUpstream();
+        return driving;
+      },
+    );
+
+    // The writer lost its authority, so nothing further became durable...
+    expect(outcome).toBe('finalize_fenced_out');
+    // ...and the evidence does NOT claim the stream completed.
+    const streamEvents = emitted.filter((e) => e.is_stream === true);
+    expect(streamEvents.length).toBeGreaterThan(0);
+    for (const e of streamEvents) {
+      expect({ outcome: e.stream_outcome }).toEqual({ outcome: 'upstream_error' });
+    }
+  });
+
+  it('R4-2 — a page hydrate BOUNDS its concurrent KMS decryptions', async () => {
+    // ★ THE PAGE CAP BOUNDS TURNS, NOT ITEMS. One streaming attempt writes an item per flush, so
+    // a single turn can carry hundreds; `Promise.all` over the whole set fired every decrypt at
+    // once, which on a remote KMS is a self-inflicted thundering herd whose throttling fails the
+    // entire hydrate.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R4-2', true));
+    // 40 chunks at a 64-byte flush threshold ⇒ many durable items on ONE turn.
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          let n = 0;
+          const tick = (): void => {
+            if (n >= 40) {
+              res.end();
+              return;
+            }
+            res.write(`data: {"i":${n},"pad":"${'q'.repeat(90)}"}\n\n`);
+            n += 1;
+            setTimeout(tick, 2);
+          };
+          tick();
+        });
+      },
+      () => driveOne(attemptId),
+    );
+    const itemCount = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+      [attemptId],
+    );
+    expect(Number(itemCount.rows[0]!.n)).toBeGreaterThan(8); // more items than the concurrency cap
+
+    // Hydrate through a KMS that RECORDS peak in-flight decryptions.
+    const { getTurn } = await import('../../apps/api/src/ai-conversations/turn-service.js');
+    const realKms = deps.kms;
+    let inFlight = 0;
+    let peak = 0;
+    const countingKms = Object.assign(Object.create(Object.getPrototypeOf(realKms)), realKms, {
+      envelopeDecrypt: async (a: Parameters<typeof realKms.envelopeDecrypt>[0]) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        try {
+          // A tick of latency, so genuine overlap is observable rather than serialized by luck.
+          await new Promise((r) => setTimeout(r, 2));
+          return await realKms.envelopeDecrypt(a);
+        } finally {
+          inFlight -= 1;
+        }
+      },
+    }) as typeof realKms;
+
+    const { turn_id, conversation_id } = await lineage(attemptId);
+    const turn = await getTurn(
+      { pool: stack.db.appPool, kms: countingKms },
+      { orgId: org.org_id, ownerUserId: org.user_id },
+      conversation_id,
+      turn_id,
+    );
+    // Everything still hydrated, in order...
+    expect(turn.attempts[0]!.output_items.length).toBeGreaterThan(8);
+    // ...and the burst was CAPPED.
+    expect(peak).toBeGreaterThan(1); // it really is concurrent, not accidentally serial
+    expect(peak).toBeLessThanOrEqual(8);
+  });
+
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
     // The byte-safe path must not swallow the ordinary case: a legitimate UTF-8 error page is
     // still the more useful `text`.
