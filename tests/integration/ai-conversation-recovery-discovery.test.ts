@@ -27,8 +27,8 @@ import {
   type OwnerIds,
 } from './helpers/ai-conversation-seed.js';
 import {
-  createConversationWorkerPool,
-  withConversationWorkerOwnerContext,
+  createConversationWorkerDb,
+  type ConversationWorkerDb,
 } from '../../apps/api/src/pipeline/ai-conversation-worker.js';
 import {
   discoverRecoveryCandidates,
@@ -44,6 +44,13 @@ const LIVE = '5 minutes';
 
 let db: TestDb;
 let workerPool: Pool;
+let workerDb: ConversationWorkerDb;
+
+const silentLog = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+} as unknown as Parameters<typeof createConversationWorkerDb>[0]['log'];
 
 /** orgA/ownerA, orgA/ownerA2 (same org, other owner), orgB/ownerB. */
 let ownerA: OwnerIds;
@@ -80,16 +87,20 @@ async function seedCase(
 }
 
 async function discoverAll(): Promise<RecoveryCandidate[]> {
-  return discoverRecoveryCandidates(workerPool, { recoveryGraceMs: GRACE_MS, limit: 200 });
+  return discoverRecoveryCandidates(workerDb, { recoveryGraceMs: GRACE_MS, limit: 200 });
 }
 
 beforeAll(async () => {
   db = await startPostgres();
   await migrate(db.adminUrl, db.appPassword, undefined, undefined, db.conversationWorkerPassword);
-  workerPool = createConversationWorkerPool(
-    { connectionString: db.conversationWorkerUrl },
-    () => undefined,
-  );
+  workerDb = createConversationWorkerDb({
+    config: { connectionString: db.conversationWorkerUrl },
+    log: silentLog,
+  });
+  // P0-C (P0A2-P3-A4): the module no longer exports a raw pool, so this suite opens its own for
+  // the direct SQL probes below. The capability is what the production paths use.
+  workerPool = new Pool({ connectionString: db.conversationWorkerUrl });
+  workerPool.on('error', () => undefined);
 
   ownerA = freshOwner();
   ownerA2 = { orgId: ownerA.orgId, ownerUserId: freshOwner().ownerUserId };
@@ -199,6 +210,7 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
+  await workerDb?.close().catch(() => undefined);
   await workerPool?.end().catch(() => undefined);
   if (db) await stopPostgres(db);
 });
@@ -337,8 +349,8 @@ describe('P0-A2 — detached recovery discovery', () => {
     // provider_credential_id, updated_at — nothing may move.
     const before = await snapshot();
     const p1 = await discoverAll();
-    await discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 0, limit: 1 });
-    await discoverRecoveryCandidates(workerPool, {
+    await discoverRecoveryCandidates(workerDb, { recoveryGraceMs: 0, limit: 1 });
+    await discoverRecoveryCandidates(workerDb, {
       recoveryGraceMs: GRACE_MS,
       limit: DISCOVERY_MAX_LIMIT,
     });
@@ -358,7 +370,7 @@ describe('P0-A2 — detached recovery discovery', () => {
       limit: number,
       after: { createdAtText: string; attemptId: string } | null,
     ): Promise<RecoveryCandidate[]> =>
-      discoverRecoveryCandidates(workerPool, { recoveryGraceMs: GRACE_MS, limit, after });
+      discoverRecoveryCandidates(workerDb, { recoveryGraceMs: GRACE_MS, limit, after });
 
     const walk = async (limit: number): Promise<RecoveryCandidate[]> => {
       const seen: RecoveryCandidate[] = [];
@@ -422,7 +434,7 @@ describe('P0-A2 — detached recovery discovery', () => {
 
   it('D6 — bounds validation fails CLOSED', async () => {
     const call = (recoveryGraceMs: number, limit: number): Promise<unknown> =>
-      discoverRecoveryCandidates(workerPool, { recoveryGraceMs, limit });
+      discoverRecoveryCandidates(workerDb, { recoveryGraceMs, limit });
     await expect(call(GRACE_MS, 0)).rejects.toMatchObject({ code: '22023' });
     await expect(call(GRACE_MS, -1)).rejects.toMatchObject({ code: '22023' });
     await expect(call(GRACE_MS, DISCOVERY_MAX_LIMIT + 1)).rejects.toMatchObject({ code: '22023' });
@@ -472,7 +484,7 @@ describe('P0-A2 — detached recovery discovery', () => {
   it('D9 — each candidate resolves under ITS OWN owner context, and under no other', async () => {
     const rows = await discoverAll();
     for (const candidate of rows) {
-      const owned = await loadOwnedRecoveryCandidate(workerPool, candidate);
+      const owned = await loadOwnedRecoveryCandidate(workerDb, candidate);
       expect(owned, `candidate ${candidate.attemptId} must resolve under its owner`).not.toBeNull();
       expect(owned!.attemptId).toBe(candidate.attemptId);
       expect(owned!.turnId).toBe(candidate.turnId);
@@ -488,7 +500,7 @@ describe('P0-A2 — detached recovery discovery', () => {
     // Cross-owner: the SAME candidate under a DIFFERENT owner's context resolves to nothing.
     const victim = rows.find((r) => r.ownerUserId === ownerB.ownerUserId);
     expect(victim).toBeDefined();
-    const stolen = await loadOwnedRecoveryCandidate(workerPool, {
+    const stolen = await loadOwnedRecoveryCandidate(workerDb, {
       ...victim!,
       orgId: ownerA.orgId,
       ownerUserId: ownerA.ownerUserId,
@@ -497,14 +509,14 @@ describe('P0-A2 — detached recovery discovery', () => {
     // Same org, wrong owner: also nothing.
     const sameOrgVictim = rows.find((r) => r.ownerUserId === ownerA2.ownerUserId);
     expect(sameOrgVictim).toBeDefined();
-    const sameOrgStolen = await loadOwnedRecoveryCandidate(workerPool, {
+    const sameOrgStolen = await loadOwnedRecoveryCandidate(workerDb, {
       ...sameOrgVictim!,
       ownerUserId: ownerA.ownerUserId,
     });
     expect(sameOrgStolen).toBeNull();
     // A candidate id that does not exist resolves to null, not an error.
     expect(
-      await loadOwnedRecoveryCandidate(workerPool, {
+      await loadOwnedRecoveryCandidate(workerDb, {
         orgId: ownerA.orgId,
         ownerUserId: ownerA.ownerUserId,
         conversationId: randomUUID(),
@@ -514,8 +526,7 @@ describe('P0-A2 — detached recovery discovery', () => {
     // The owner-bound read leaves the domain untouched (it is SELECT-only by grant).
     const c = await workerPool.connect();
     try {
-      await withConversationWorkerOwnerContext(
-        workerPool,
+      await workerDb.withOwnerContext(
         { orgId: ownerA.orgId, ownerUserId: ownerA.ownerUserId },
         async (tx) => {
           await expect(

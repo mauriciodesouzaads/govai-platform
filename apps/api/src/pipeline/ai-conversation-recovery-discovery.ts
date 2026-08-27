@@ -1,21 +1,23 @@
 // Detached conversation worker — RECOVERY DISCOVERY (EP-AI-CONVERSATION-CONTINUITY-V1-01,
-// movement P0-A2). Spec: docs/architecture/ai-conversation-continuity-v1.md §7.7 (stranded-turn
-// recovery), §8 (durable send / branch queue), §9 (detached discovery under FORCE RLS).
+// movements P0-A2 + P0-C). Spec: §7.7 (stranded-turn recovery), §8 (durable send / branch
+// queue), §9 (detached discovery under FORCE RLS).
 //
 // Discovery is ADVISORY, exactly as the 0029 run-dispatch precedent is advisory
 // (`run-dispatch-recovery.ts`): it LOCATES candidates across owners without impersonating any of
 // them. Every authoritative decision — the claim CAS, the lease rotation, the state transition —
 // belongs to owner-bound processing under FORCE RLS, and every one of those re-validates on
-// DATABASE time under its own durable predicates. P0-A2 implements the locating half only.
+// DATABASE time under its own durable predicates. P0-A2 implemented the locating half; P0-C
+// adds the lawful mutation arms in `ai-conversations/execution/`.
 //
-// WHAT THIS MODULE DOES NOT DO: no claim, no token rotation, no deadline or heartbeat write, no
-// state transition, no causal_version bump, no content read, no credential resolution, no
-// evidence write, no provider call, no timer, no loop.
+// ★ P0-C (P0A2-P3-A4): these functions take the OPAQUE `ConversationWorkerDb` capability, never
+// a `pg.Pool`. The definer call's SQL lives inside that capability so it cannot be reached on an
+// un-attested connection; what remains here is the DOMAIN projection and the owner-scoped
+// re-validation read, which runs on the client the capability hands to `withOwnerContext`.
 
-import type { Pool, PoolClient } from 'pg';
-import {
-  withAttestedConversationWorkerClient,
-  withConversationWorkerOwnerContext,
+import type { PoolClient } from 'pg';
+import type {
+  ConversationWorkerDb,
+  DiscoverRecoveryCandidatesInput,
 } from './ai-conversation-worker.js';
 
 /**
@@ -66,75 +68,35 @@ export type RecoveryCandidate = {
 /** Keyset resume point, TEXT-precision (see `attemptCreatedAtText`). */
 export type RecoveryDiscoveryCursor = { createdAtText: string; attemptId: string };
 
-export type DiscoverRecoveryCandidatesInput = {
-  /** §7.7 rule (2) grace δ over the lease check, applied to the POST-BOUNDARY arms only. The DB
-   *  function rejects anything outside [0, 3_600_000]. */
-  recoveryGraceMs: number;
-  /** Page size. The DB function rejects anything outside [1, DISCOVERY_MAX_LIMIT]. */
-  limit: number;
-  /** Resume point from a previous page; omit/null to start at the oldest. */
-  after?: RecoveryDiscoveryCursor | null;
-};
+export type { DiscoverRecoveryCandidatesInput };
 
 /** The function's hard page ceiling, mirrored from migration 0032 for caller-side validation. */
 export const DISCOVERY_MAX_LIMIT = 500;
 
-type CandidateRow = {
-  org_id: string;
-  owner_user_id: string;
-  conversation_id: string;
-  turn_id: string;
-  attempt_id: string;
-  state: 'accepted' | 'dispatching' | 'streaming';
-  reason: RecoveryCandidateReason;
-  claim_token: string | null;
-  claim_deadline_at_text: string | null;
-  is_branch_head: boolean;
-  attempt_created_at_text: string;
-};
-
 /**
- * Call the ONE sanctioned cross-owner read in the `ai_*` domain.
+ * Call the ONE sanctioned cross-owner read in the `ai_*` domain, through the worker capability.
  *
- * MUST be executed on the worker pool (`createConversationWorkerPool`): `govai_app` holds no
- * EXECUTE on `govai.ai_turn_recovery_candidates` and a call on the request pool fails with
- * `permission denied for function` — by design, not by accident.
+ * The capability ATTESTS the connection's database identity before the definer call runs. A pool
+ * wired to an admin or superuser credential would otherwise execute discovery happily and hand
+ * back cross-owner rows while bypassing FORCE RLS; the attestation makes that fail closed BEFORE
+ * the function is invoked.
  *
- * ★ The connection's database identity is ATTESTED before the definer call runs
- * (`withAttestedConversationWorkerClient`). A pool wired to an admin or superuser credential
- * would otherwise execute discovery happily and hand back cross-owner rows while bypassing FORCE
- * RLS; the attestation makes that fail closed BEFORE the function is invoked.
- *
- * Bounds are validated by the database and are NOT clamped here: an out-of-range page is a caller
- * bug and fails closed (SQLSTATE 22023, the 0029 contract).
+ * Bounds are validated by the database and are NOT clamped here: an out-of-range page is a
+ * caller bug and fails closed (SQLSTATE 22023, the 0029 contract).
  */
 export async function discoverRecoveryCandidates(
-  workerPool: Pool,
+  db: ConversationWorkerDb,
   input: DiscoverRecoveryCandidatesInput,
 ): Promise<RecoveryCandidate[]> {
-  const params: [number, number, string | null, string | null] = [
-    input.recoveryGraceMs,
-    input.limit,
-    input.after?.createdAtText ?? null,
-    input.after?.attemptId ?? null,
-  ];
-  const res = await withAttestedConversationWorkerClient(workerPool, (client) =>
-    client.query<CandidateRow>(
-      `SELECT org_id, owner_user_id, conversation_id, turn_id, attempt_id, state, reason,
-              claim_token, claim_deadline_at::text AS claim_deadline_at_text, is_branch_head,
-              attempt_created_at::text AS attempt_created_at_text
-         FROM govai.ai_turn_recovery_candidates($1::integer, $2::integer, $3::timestamptz, $4::uuid)`,
-      params,
-    ),
-  );
-  return res.rows.map((r) => ({
+  const rows = await db.discoverRecoveryCandidates(input);
+  return rows.map((r) => ({
     orgId: r.org_id,
     ownerUserId: r.owner_user_id,
     conversationId: r.conversation_id,
     turnId: r.turn_id,
     attemptId: r.attempt_id,
     state: r.state,
-    reason: r.reason,
+    reason: r.reason as RecoveryCandidateReason,
     claimToken: r.claim_token,
     claimDeadlineAt: r.claim_deadline_at_text,
     isBranchHead: r.is_branch_head,
@@ -155,8 +117,7 @@ export function nextDiscoveryCursor(
 /**
  * The owner-bound re-validation of a discovered candidate: exactly the state a recovery processor
  * must confirm under the OWNER's own RLS before it may act. Every column here is inside the
- * worker's column-scoped grant (0032) — the worker cannot read a title, a content pointer, a
- * continuation anchor or a credential id even if it tried.
+ * worker's column-scoped grant (0032 + 0034) — the worker cannot read a title even if it tried.
  */
 export type OwnedRecoveryCandidate = {
   attemptId: string;
@@ -178,50 +139,7 @@ export type OwnedRecoveryCandidate = {
   conversationStatus: string;
 };
 
-/**
- * Resolve a discovered candidate INSIDE its owner's transaction-local context.
- *
- * This is the second half of the §9 detached workflow:
- *   worker identity → SECURITY DEFINER discovery → transaction-local owner context
- *   → ordinary least-privilege SQL → FORCE RLS row-scoping → candidate processing.
- *
- * The read is ORDINARY SQL under ORDINARY dual-predicate FORCE RLS: it resolves the candidate
- * only because the owner context was established, and it sees no other owner's rows. Returns
- * null when the candidate is no longer visible/valid under its owner context — which is the
- * correct, non-exceptional outcome for a row that changed between discovery and processing.
- *
- * Read-only by construction: the worker holds no INSERT/UPDATE/DELETE on any table.
- */
-export async function loadOwnedRecoveryCandidate(
-  workerPool: Pool,
-  candidate: Pick<RecoveryCandidate, 'orgId' | 'ownerUserId' | 'conversationId' | 'attemptId'>,
-): Promise<OwnedRecoveryCandidate | null> {
-  return withConversationWorkerOwnerContext(
-    workerPool,
-    { orgId: candidate.orgId, ownerUserId: candidate.ownerUserId },
-    async (tx: PoolClient) => {
-      // Explicit column lists throughout: the worker's grants are COLUMN-scoped, so `SELECT *`
-      // is denied. That is deliberate — a column added by a later migration is not silently
-      // readable here.
-      const r = await tx.query<{
-        attempt_id: string;
-        turn_id: string;
-        conversation_id: string;
-        branch_id: string;
-        attempt_seq: number;
-        state: string;
-        claim_token: string | null;
-        claimant: string | null;
-        claim_deadline_at_text: string | null;
-        heartbeat_at_text: string | null;
-        stop_requested: boolean;
-        boundary_committed: boolean;
-        turn_seq: string;
-        client_turn_id: string;
-        is_current_attempt: boolean;
-        conversation_status: string;
-      }>(
-        `SELECT a.id            AS attempt_id,
+const OWNED_CANDIDATE_SQL = `SELECT a.id            AS attempt_id,
                 a.turn_id       AS turn_id,
                 a.conversation_id,
                 a.branch_id,
@@ -248,29 +166,88 @@ export async function loadOwnedRecoveryCandidate(
              ON  c.org_id        = a.org_id
              AND c.owner_user_id = a.owner_user_id
              AND c.id            = a.conversation_id
-          WHERE a.id = $1::uuid AND a.conversation_id = $2::uuid`,
-        [candidate.attemptId, candidate.conversationId],
-      );
-      const row = r.rows[0];
-      if (!row) return null;
-      return {
-        attemptId: row.attempt_id,
-        turnId: row.turn_id,
-        conversationId: row.conversation_id,
-        branchId: row.branch_id,
-        attemptSeq: row.attempt_seq,
-        state: row.state,
-        claimToken: row.claim_token,
-        claimant: row.claimant,
-        claimDeadlineAt: row.claim_deadline_at_text,
-        heartbeatAt: row.heartbeat_at_text,
-        stopRequested: row.stop_requested,
-        dispatchBoundaryCommitted: row.boundary_committed,
-        turnSeq: row.turn_seq,
-        clientTurnId: row.client_turn_id,
-        isCurrentAttempt: row.is_current_attempt,
-        conversationStatus: row.conversation_status,
-      };
-    },
+          WHERE a.id = $1::uuid AND a.conversation_id = $2::uuid`;
+
+type OwnedCandidateRow = {
+  attempt_id: string;
+  turn_id: string;
+  conversation_id: string;
+  branch_id: string;
+  attempt_seq: number;
+  state: string;
+  claim_token: string | null;
+  claimant: string | null;
+  claim_deadline_at_text: string | null;
+  heartbeat_at_text: string | null;
+  stop_requested: boolean;
+  boundary_committed: boolean;
+  turn_seq: string;
+  client_turn_id: string;
+  is_current_attempt: boolean;
+  conversation_status: string;
+};
+
+function projectOwnedCandidate(row: OwnedCandidateRow): OwnedRecoveryCandidate {
+  return {
+    attemptId: row.attempt_id,
+    turnId: row.turn_id,
+    conversationId: row.conversation_id,
+    branchId: row.branch_id,
+    attemptSeq: row.attempt_seq,
+    state: row.state,
+    claimToken: row.claim_token,
+    claimant: row.claimant,
+    claimDeadlineAt: row.claim_deadline_at_text,
+    heartbeatAt: row.heartbeat_at_text,
+    stopRequested: row.stop_requested,
+    dispatchBoundaryCommitted: row.boundary_committed,
+    turnSeq: row.turn_seq,
+    clientTurnId: row.client_turn_id,
+    isCurrentAttempt: row.is_current_attempt,
+    conversationStatus: row.conversation_status,
+  };
+}
+
+/**
+ * Read the owner-scoped candidate on a client ALREADY inside the owner context. Exposed
+ * separately so a caller that is already in a worker transaction (the P0-C execution kernel)
+ * re-uses that transaction instead of opening a second one.
+ *
+ * Explicit column lists throughout: the worker's grants are COLUMN-scoped, so `SELECT *` is
+ * denied. That is deliberate — a column added by a later migration is not silently readable.
+ */
+export async function readOwnedRecoveryCandidate(
+  tx: PoolClient,
+  candidate: { conversationId: string; attemptId: string },
+): Promise<OwnedRecoveryCandidate | null> {
+  const r = await tx.query<OwnedCandidateRow>(OWNED_CANDIDATE_SQL, [
+    candidate.attemptId,
+    candidate.conversationId,
+  ]);
+  const row = r.rows[0];
+  return row ? projectOwnedCandidate(row) : null;
+}
+
+/**
+ * Resolve a discovered candidate INSIDE its owner's transaction-local context.
+ *
+ * This is the second half of the §9 detached workflow:
+ *   worker identity → SECURITY DEFINER discovery → transaction-local owner context
+ *   → ordinary least-privilege SQL → FORCE RLS row-scoping → candidate processing.
+ *
+ * Returns null when the candidate is no longer visible/valid under its owner context — the
+ * correct, non-exceptional outcome for a row that changed between discovery and processing.
+ */
+export async function loadOwnedRecoveryCandidate(
+  db: ConversationWorkerDb,
+  candidate: Pick<RecoveryCandidate, 'orgId' | 'ownerUserId' | 'conversationId' | 'attemptId'>,
+): Promise<OwnedRecoveryCandidate | null> {
+  return db.withOwnerContext(
+    { orgId: candidate.orgId, ownerUserId: candidate.ownerUserId },
+    async (tx: PoolClient) =>
+      readOwnedRecoveryCandidate(tx, {
+        conversationId: candidate.conversationId,
+        attemptId: candidate.attemptId,
+      }),
   );
 }

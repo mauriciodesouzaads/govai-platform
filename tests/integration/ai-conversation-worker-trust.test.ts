@@ -36,7 +36,7 @@
 //  W21 falsification of the owner-context ROLLBACK-failure disposition
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { Client, Pool } from 'pg';
+import { Client, Pool, type PoolClient } from 'pg';
 import { startPostgres, stopPostgres, migrate, type TestDb } from './setup.js';
 import {
   freshOwner,
@@ -45,16 +45,15 @@ import {
   type OwnerIds,
 } from './helpers/ai-conversation-seed.js';
 import {
-  createConversationWorkerPool,
+  createConversationWorkerDb,
   loadConversationWorkerDbConfig,
   resetOwnerContext,
-  withConversationWorkerOwnerContext,
-  withAttestedConversationWorkerClient,
   assertConversationWorkerIdentity,
   ConversationWorkerConfigError,
   ConversationWorkerIdentityError,
   CONVERSATION_WORKER_DATABASE_URL_ENV,
   CONVERSATION_WORKER_ROLE,
+  type ConversationWorkerDb,
 } from '../../apps/api/src/pipeline/ai-conversation-worker.js';
 import {
   discoverRecoveryCandidates,
@@ -63,6 +62,47 @@ import {
 import { sweepRoleSessions } from '../../apps/api/src/db/migrate.js';
 
 const WORKER_ROLE = 'govai_conversation_worker';
+
+/**
+ * P0-C (P0A2-P3-A4): the production module no longer exports a `pg.Pool`, so this suite builds
+ * its own probe pool ALONGSIDE the capability.
+ *
+ * ★ THAT IS NOT A HOLE IN THE CLOSURE — IT IS THE POINT OF IT. A4 is about what the RUNTIME API
+ * hands to a caller: no production code path can now obtain a worker connection without passing
+ * through attestation and owner-context entry. A test may of course open its own connection with
+ * `pg` directly (any process holding the credential can), and it MUST be able to, because the
+ * privilege-matrix assertions below (W5/W8/W10/W14) work by issuing raw SQL as the worker role
+ * and proving what it CANNOT do. The probe pool is the microscope, never a supported entry point.
+ */
+type WorkerPair = { pool: Pool; db: ConversationWorkerDb; close(): Promise<void> };
+
+const silentLog = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+  fatal: () => undefined,
+  debug: () => undefined,
+  trace: () => undefined,
+} as unknown as Parameters<typeof createConversationWorkerDb>[0]['log'];
+
+function mkWorker(connectionString: string, max = 2): WorkerPair {
+  const capability = createConversationWorkerDb({
+    config: { connectionString, max },
+    log: silentLog,
+  });
+  const pool = new Pool({ connectionString, max });
+  // The probe pool is a bare pg.Pool, so it needs its own idle-error absorber like any
+  // long-lived pool (the very class of bug P0A2-P3-A1 is about).
+  pool.on('error', () => undefined);
+  return {
+    pool,
+    db: capability,
+    async close() {
+      await capability.close().catch(() => undefined);
+      await pool.end().catch(() => undefined);
+    },
+  };
+}
 const DISCOVERY_FN = 'govai.ai_turn_recovery_candidates(integer,integer,timestamptz,uuid)';
 
 /**
@@ -71,25 +111,63 @@ const DISCOVERY_FN = 'govai.ai_turn_recovery_candidates(integer,integer,timestam
  * COLUMN-scoped SELECT (the 0028 precedent), so TABLE-level SELECT is false EVERYWHERE — which
  * the matrix asserts separately, and which is a strictly stronger statement of least privilege.
  */
-const TABLE_MATRIX: ReadonlyArray<{ table: string; select: boolean }> = [
-  { table: 'ai_conversations', select: true },
-  { table: 'ai_conversation_turns', select: true },
-  { table: 'ai_conversation_attempts', select: true },
-  { table: 'ai_conversation_branches', select: false },
-  { table: 'ai_conversation_items', select: false },
-  { table: 'ai_conversation_content', select: false },
-  { table: 'ai_conversation_provider_state', select: false },
-  { table: 'ai_conversation_evidence_links', select: false },
-  // Outside the conversation domain: the worker holds NOTHING in P0-A2.
-  { table: 'provider_credentials', select: false },
-  { table: 'audit_events', select: false },
-  { table: 'audit_capture_outbox', select: false },
-  { table: 'runs', select: false },
-  { table: 'orgs', select: false },
+/**
+ * The worker's privilege matrix, AT P0-C.
+ *
+ * ★ THIS TABLE WIDENED IN P0-C, AND THAT IS THE POINT OF RESTATING IT EXHAUSTIVELY. P0-A2
+ * granted column-scoped SELECT on three tables and nothing else, because it shipped discovery
+ * with no execution. P0-C ACTIVATES execution, so migration 0034 adds exactly the authority the
+ * §8 five-commit protocol needs — and this matrix is where "exactly" is checked, verb by verb,
+ * table by table. Every `true` below traces to a named commit or read in that protocol; every
+ * `false` is a capability a later movement will need and must NOT hold yet.
+ *
+ * `tableSel`/`tableUpd` are TABLE-level: they stay false wherever the grant is COLUMN-scoped, so
+ * a column added by a future migration is never silently reachable.
+ */
+type WorkerTablePrivs = {
+  table: string;
+  tableSel: boolean;
+  colSel: boolean;
+  ins: boolean;
+  tableUpd: boolean;
+  colUpd: boolean;
+};
+
+const NOTHING = { tableSel: false, colSel: false, ins: false, tableUpd: false, colUpd: false };
+
+const TABLE_MATRIX: ReadonlyArray<WorkerTablePrivs> = [
+  // Root: reads the lifecycle predicate + the immutable `mode` lane; the `updated_at` UPDATE
+  // exists ONLY so the §9 boundary may take `FOR KEY SHARE` (ACL_SELECT_FOR_UPDATE = ACL_UPDATE).
+  { table: 'ai_conversations', tableSel: false, colSel: true, ins: false, tableUpd: false, colUpd: true },
+  // Turns stay READ-ONLY to the executor: a turn is minted by the reservation, never by it.
+  { table: 'ai_conversation_turns', tableSel: false, colSel: true, ins: false, tableUpd: false, colUpd: false },
+  // Attempts: the claim/lease/boundary/provenance/finalize plane. NO INSERT (§9 is explicit).
+  { table: 'ai_conversation_attempts', tableSel: false, colSel: true, ins: false, tableUpd: false, colUpd: true },
+  // Branches: read the execution triple, write ONLY the monotonic §7.8 causal version.
+  { table: 'ai_conversation_branches', tableSel: false, colSel: true, ins: false, tableUpd: false, colUpd: true },
+  // Items + content: read the durable input, write the durable output. Table-level SELECT/INSERT
+  // (there is no subset of an envelope group the worker can do without), and NO UPDATE — both
+  // are append-only in place.
+  { table: 'ai_conversation_items', tableSel: true, colSel: true, ins: true, tableUpd: false, colUpd: false },
+  { table: 'ai_conversation_content', tableSel: true, colSel: true, ins: true, tableUpd: false, colUpd: false },
+  // §11 continuation state is P0-D's, and §14 link materialization is P0-F's: still NOTHING.
+  { table: 'ai_conversation_provider_state', ...NOTHING },
+  { table: 'ai_conversation_evidence_links', ...NOTHING },
+  // Outside the conversation domain: SELECT-only, column-scoped, and only what evidence and
+  // §8 commit 4 actually require.
+  { table: 'provider_credentials', tableSel: false, colSel: true, ins: false, tableUpd: false, colUpd: false },
+  { table: 'orgs', tableSel: false, colSel: true, ins: false, tableUpd: false, colUpd: false },
+  // The evidence PLANE stays closed: the worker's only evidence authority is EXECUTE on ONE
+  // capture function (see W9), never a table.
+  { table: 'audit_events', ...NOTHING },
+  { table: 'audit_capture_outbox', ...NOTHING },
+  { table: 'runs', ...NOTHING },
 ];
 
 let db: TestDb;
+let worker: WorkerPair;
 let workerPool: Pool;
+let workerDb: ConversationWorkerDb;
 let ownerA: OwnerIds;
 let ownerB: OwnerIds; // same org as A, different owner
 let ownerC: OwnerIds; // different org
@@ -116,7 +194,9 @@ beforeAll(async () => {
     undefined,
     db.conversationWorkerPassword,
   );
-  workerPool = createConversationWorkerPool({ connectionString: db.conversationWorkerUrl }, () => undefined);
+  worker = mkWorker(db.conversationWorkerUrl);
+  workerPool = worker.pool;
+  workerDb = worker.db;
 
   ownerA = freshOwner();
   ownerB = { orgId: ownerA.orgId, ownerUserId: freshOwner().ownerUserId };
@@ -127,7 +207,7 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
-  await workerPool?.end().catch(() => undefined);
+  await worker?.close().catch(() => undefined);
   if (db) await stopPostgres(db);
 });
 
@@ -297,7 +377,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
 
   it('W6 — the owner dual-context matrix: only the exact (org, owner) pair resolves rows', async () => {
     const count = async (orgId: string, userId: string): Promise<number> =>
-      withConversationWorkerOwnerContext(workerPool, { orgId, ownerUserId: userId }, async (tx) => {
+      workerDb.withOwnerContext({ orgId, ownerUserId: userId }, async (tx: PoolClient) => {
         const r = await tx.query(`SELECT id FROM govai.ai_conversations WHERE id = $1::uuid`, [
           chainA.conversationId,
         ]);
@@ -335,10 +415,8 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
   it('W7 — no cross-candidate context leakage on ONE pooled physical connection', async () => {
     const chainC = await seedFullChain(db.adminPool, ownerC);
     // max: 1 forces every checkout onto the SAME physical connection.
-    const single = createConversationWorkerPool(
-      { connectionString: db.conversationWorkerUrl, max: 1 },
-      () => undefined,
-    );
+    const singleW = mkWorker(db.conversationWorkerUrl, 1);
+    const single = singleW.pool;
     try {
       const pidOf = async (): Promise<number> => {
         const c = await single.connect();
@@ -352,7 +430,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       const pid1 = await pidOf();
 
       // Candidate A: sees only A.
-      const seenA = await withConversationWorkerOwnerContext(single, {
+      const seenA = await singleW.db.withOwnerContext({
         orgId: ownerA.orgId,
         ownerUserId: ownerA.ownerUserId,
       }, async (tx) => {
@@ -382,7 +460,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       }
 
       // Candidate C on the SAME physical connection: sees only C.
-      const seenC = await withConversationWorkerOwnerContext(single, {
+      const seenC = await singleW.db.withOwnerContext({
         orgId: ownerC.orgId,
         ownerUserId: ownerC.ownerUserId,
       }, async (tx) => {
@@ -398,7 +476,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
 
       // A ROLLBACK path clears the context just as a COMMIT does.
       await expect(
-        withConversationWorkerOwnerContext(single, {
+        singleW.db.withOwnerContext({
           orgId: ownerA.orgId,
           ownerUserId: ownerA.ownerUserId,
         }, async () => {
@@ -414,12 +492,12 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       }
       expect(await pidOf()).toBe(pid1); // it really was one physical connection throughout
     } finally {
-      await single.end().catch(() => undefined);
+      await singleW.close();
     }
   });
 
-  it('W8 — worker privilege matrix: column-scoped SELECT on exactly three tables, no write verb', async () => {
-    for (const { table, select } of TABLE_MATRIX) {
+  it('W8 — worker privilege matrix: EXACTLY the P0-C execution authority, and no more', async () => {
+    for (const { table, tableSel, colSel, ins, tableUpd, colUpd } of TABLE_MATRIX) {
       const r = await db.adminPool.query<{
         table_sel: boolean;
         col_sel: boolean;
@@ -442,14 +520,16 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       );
       expect({ table, ...r.rows[0]! }).toEqual({
         table,
-        // ★ TABLE-level SELECT is false even on the three granted tables: the grant is
-        // COLUMN-scoped, so a column added later is not silently readable.
-        table_sel: false,
-        col_sel: select,
-        ins: false,
-        col_ins: false,
-        upd: false,
-        col_upd: false,
+        // ★ TABLE-level SELECT stays false wherever the grant is COLUMN-scoped, so a column
+        // added by a later migration is never silently readable.
+        table_sel: tableSel,
+        col_sel: colSel,
+        ins,
+        col_ins: ins,
+        upd: tableUpd,
+        col_upd: colUpd,
+        // ★ NO DELETE AND NO TRUNCATE ANYWHERE — unchanged from P0-A2. LAW 13's purge is a
+        // later movement's authority and P0-C does not touch it.
         del: false,
         trunc: false,
       });
@@ -468,14 +548,21 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
         ORDER BY c.relname`,
       [WORKER_ROLE],
     );
+    // The relations the worker can touch AT ALL, in full. Anything appearing here that is not
+    // in TABLE_MATRIX would be an un-inventoried grant.
     expect(stray.rows.map((r) => r.relname)).toEqual([
       'ai_conversation_attempts',
+      'ai_conversation_branches',
+      'ai_conversation_content',
+      'ai_conversation_items',
       'ai_conversation_turns',
       'ai_conversations',
+      'orgs',
+      'provider_credentials',
     ]);
   });
 
-  it('W9 — the worker holds EXECUTE on exactly ONE SECURITY DEFINER function', async () => {
+  it('W9 — the worker holds EXECUTE on exactly TWO SECURITY DEFINER functions', async () => {
     const r = await db.adminPool.query<{ proname: string }>(
       `SELECT p.proname
          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -484,11 +571,20 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
         ORDER BY p.proname`,
       [WORKER_ROLE],
     );
-    expect(r.rows.map((x) => x.proname)).toEqual(['ai_turn_recovery_candidates']);
-    // Named negatives for the capabilities a later movement will need but must NOT hold yet.
-    for (const fn of [
+    // ★ P0-C ADDS EXACTLY ONE. `audit_capture_insert_locked` is the SINGLE statement
+    // `captureAuditEvent` issues, and granting it is what keeps worker-driven dispatch on the
+    // SAME evidence contract as request-driven dispatch instead of being a silent capture gap.
+    expect(r.rows.map((x) => x.proname)).toEqual([
+      'ai_turn_recovery_candidates',
       'audit_capture_insert_locked',
+    ]);
+    // Named negatives for the capabilities a later movement will need but must NOT hold yet.
+    // ★ `org_tier_lookup` stays DENIED even though the worker now needs tier/operational_mode:
+    // that definer accepts ANY org id, so the worker reads its ENTERED org through a
+    // column-scoped, org-scoped SELECT on `govai.orgs` instead (0034 §F2).
+    for (const fn of [
       'audit_capture_claim_for_seal',
+      'audit_capture_mark_sealed',
       'audit_append_locked',
       'org_tier_lookup',
       'run_dispatch_recovery_candidates',
@@ -507,41 +603,112 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
   it('W10 — column-scoped grants: content, anchors and provenance are unreachable', async () => {
     const c = await workerPool.connect();
     try {
-      // `SELECT *` is denied on every granted table — the grant is column-scoped, so a column
-      // added by a later migration is not silently readable.
-      for (const t of [
-        'govai.ai_conversations',
-        'govai.ai_conversation_turns',
-        'govai.ai_conversation_attempts',
-      ]) {
-        await expect(c.query(`SELECT * FROM ${t} LIMIT 1`)).rejects.toMatchObject({ code: '42501' });
-      }
+      // ★ THE MECHANISM, NOT THE SIDE EFFECT. P0-A2 asserted "`SELECT *` is denied on all three
+      // granted tables", which was true while at least one column was withheld on each. P0-C
+      // needs the 10th and LAST column of `ai_conversation_turns`
+      // (`native_request_config_content_id`), so `SELECT *` now succeeds there — and an
+      // assertion phrased as the side effect would read that as a privilege leak.
+      //
+      // It is not one. What actually protects a FUTURE column is that the grant is ENUMERATED
+      // per column, so a column added by migration 0035 is not granted to anyone. That is what
+      // is asserted here — exhaustively, per table — and it is strictly stronger than the
+      // `SELECT *` probe it replaces.
+      const granted = async (table: string): Promise<string[]> => {
+        const r = await db.adminPool.query<{ column_name: string }>(
+          `SELECT a.attname AS column_name
+             FROM pg_attribute a
+             JOIN pg_class cl ON cl.oid = a.attrelid
+             JOIN pg_namespace n ON n.oid = cl.relnamespace
+            WHERE n.nspname = 'govai' AND cl.relname = $1
+              AND a.attnum > 0 AND NOT a.attisdropped
+              AND has_column_privilege($2, cl.oid, a.attname, 'SELECT')
+            ORDER BY a.attname`,
+          [table, WORKER_ROLE],
+        );
+        return r.rows.map((x) => x.column_name);
+      };
+      expect(await granted('ai_conversations')).toEqual([
+        'id',
+        'mode',
+        'org_id',
+        'owner_user_id',
+        'status',
+      ]);
+      expect(await granted('ai_conversation_turns')).toEqual([
+        'branch_id',
+        'client_turn_id',
+        'conversation_id',
+        'created_at',
+        'current_attempt_id',
+        'id',
+        'native_request_config_content_id',
+        'org_id',
+        'owner_user_id',
+        'turn_seq',
+      ]);
+      // Attempts keeps 4 columns withheld, so `SELECT *` there is still denied — retained as a
+      // live demonstration that the column scoping is real and not merely declared.
+      await expect(
+        c.query(`SELECT * FROM govai.ai_conversation_attempts LIMIT 1`),
+      ).rejects.toMatchObject({ code: '42501' });
       // Named forbidden columns, one denial each.
+      // ★ WHAT MOVED IN P0-C, AND WHY — the six columns that left this list are exactly the
+      // ones the §8 protocol reads, each for a named reason:
+      //   mode                              selects the governed/passthrough lane for a
+      //                                     DETACHED dispatch (§9: read at EVERY dispatch)
+      //   native_request_config_content_id  the immutable request the claimant reconstructs
+      //   provider_credential_id            the durable `¬P` no-POST proof (§7.7)
+      //   govai_request_id / capture_id     §14 evidence identity
+      //   causal_version_at_build           §7.8 staleness binding
+      // What did NOT move is what matters: every TITLE column and every CONTINUATION ANCHOR
+      // column is still unreachable — the worker cannot read a conversation title in any form,
+      // and P0-D's provider continuation state is not pre-granted.
       const denied: ReadonlyArray<[string, string]> = [
         ['govai.ai_conversations', 'title_ciphertext'],
         ['govai.ai_conversations', 'title_dek_wrapped'],
+        ['govai.ai_conversations', 'title_kms_key_id'],
+        ['govai.ai_conversations', 'title_kms_key_version'],
         ['govai.ai_conversations', 'title_hmac'],
-        ['govai.ai_conversations', 'mode'],
-        ['govai.ai_conversation_turns', 'native_request_config_content_id'],
+        ['govai.ai_conversations', 'retention_class'],
         ['govai.ai_conversation_attempts', 'continuation_parent_ciphertext'],
         ['govai.ai_conversation_attempts', 'continuation_parent_dek_wrapped'],
-        ['govai.ai_conversation_attempts', 'provider_credential_id'],
-        ['govai.ai_conversation_attempts', 'govai_request_id'],
-        ['govai.ai_conversation_attempts', 'capture_id'],
-        ['govai.ai_conversation_attempts', 'causal_version_at_build'],
+        ['govai.ai_conversation_attempts', 'continuation_parent_kms_key_id'],
+        ['govai.ai_conversation_attempts', 'continuation_parent_kms_key_version'],
       ];
       for (const [table, col] of denied) {
         await expect(c.query(`SELECT ${col} FROM ${table} LIMIT 1`)).rejects.toMatchObject({
           code: '42501',
         });
       }
-      // The claim plane the movement DOES need still reads (zero rows without context).
+      // The plane the movement DOES need still reads (zero rows without an owner context).
       const ok = await c.query(
         `SELECT a.id, a.state, a.claim_token, a.claim_deadline_at, a.stop_requested,
-                a.dispatch_boundary_committed_at
+                a.dispatch_boundary_committed_at, a.provider_credential_id, a.govai_request_id,
+                a.capture_id, a.causal_version_at_build
            FROM govai.ai_conversation_attempts a`,
       );
       expect(ok.rowCount).toBe(0);
+      for (const sql of [
+        `SELECT id, mode, status FROM govai.ai_conversations`,
+        `SELECT id, native_request_config_content_id FROM govai.ai_conversation_turns`,
+        `SELECT id, provider, surface, model, causal_version FROM govai.ai_conversation_branches`,
+        `SELECT id, provider, status FROM govai.provider_credentials`,
+        `SELECT id, tier, operational_mode FROM govai.orgs`,
+      ]) {
+        const r = await c.query(sql);
+        expect({ sql, rows: r.rowCount }).toEqual({ sql, rows: 0 });
+      }
+      // ★ `SELECT *` is STILL denied wherever any column remains withheld — attempts (the four
+      // continuation-anchor columns), branches (the fork pins), credentials (the key
+      // fingerprint and revocation metadata) and orgs (everything but the tenant-facts pair).
+      for (const t of [
+        'govai.ai_conversation_attempts',
+        'govai.ai_conversation_branches',
+        'govai.provider_credentials',
+        'govai.orgs',
+      ]) {
+        await expect(c.query(`SELECT * FROM ${t} LIMIT 1`)).rejects.toMatchObject({ code: '42501' });
+      }
     } finally {
       c.release();
     }
@@ -607,8 +774,10 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       c.release();
     }
 
-    // Every P0-A2 policy added to the ai_* domain is a SELECT policy for one of exactly two
-    // roles, and none of them is govai_app.
+    // ★ THE CLAIM THIS TEST DEFENDS IS UNCHANGED BY P0-C: no worker/definer policy is a
+    // govai_app policy, and none is granted to PUBLIC. What CHANGED is the count — P0-C's 0034
+    // adds the worker's execution surface — so the inventory is restated exhaustively rather
+    // than loosened to "at least".
     const pol = await db.adminPool.query<{ policyname: string; cmd: string; roles: string }>(
       `SELECT policyname, cmd, roles::text AS roles
          FROM pg_policies
@@ -616,12 +785,35 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
           AND (policyname LIKE '%_recovery_select_writer' OR policyname LIKE '%_conversation_worker')
         ORDER BY policyname`,
     );
-    expect(pol.rowCount).toBe(6);
+    expect(pol.rows.map((p) => `${p.policyname}:${p.cmd}`)).toEqual([
+      // P0-A2's three definer-visibility SELECT policies (the narrow claim-plane bypass).
+      'ai_conversation_attempts_recovery_select_writer:SELECT',
+      // P0-C's worker execution surface.
+      'ai_conversation_attempts_select_conversation_worker:SELECT',
+      'ai_conversation_attempts_update_conversation_worker:UPDATE',
+      'ai_conversation_branches_select_conversation_worker:SELECT',
+      'ai_conversation_branches_update_conversation_worker:UPDATE',
+      'ai_conversation_content_insert_conversation_worker:INSERT',
+      'ai_conversation_content_select_conversation_worker:SELECT',
+      'ai_conversation_items_insert_conversation_worker:INSERT',
+      'ai_conversation_items_select_conversation_worker:SELECT',
+      'ai_conversation_turns_recovery_select_writer:SELECT',
+      'ai_conversation_turns_select_conversation_worker:SELECT',
+      'ai_conversations_recovery_select_writer:SELECT',
+      'ai_conversations_select_conversation_worker:SELECT',
+      'ai_conversations_update_conversation_worker:UPDATE',
+    ]);
     for (const p of pol.rows) {
-      expect(p.cmd).toBe('SELECT');
+      // ★ UNCHANGED AND LOAD-BEARING: not one of them admits govai_app or PUBLIC.
+      expect({ p: p.policyname, roles: p.roles }).toEqual({ p: p.policyname, roles: p.roles });
       expect(p.roles).not.toContain('govai_app');
       expect(p.roles).not.toContain('public');
+      // Every worker policy is dual-predicate (org AND owner); the definer ones are the
+      // content-free claim-plane bypass and are role-scoped to the NOLOGIN writer.
+      expect(p.roles).toMatch(/govai_conversation_worker|govai_audit_writer/);
     }
+    // No DELETE policy exists for either role, anywhere in the domain.
+    expect(pol.rows.filter((p) => p.cmd === 'DELETE' || p.cmd === 'ALL')).toEqual([]);
   });
 
   it('W13 — the pool factory fails closed with no worker URL (never the app credential)', () => {
@@ -652,10 +844,8 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
   });
 
   it('W14 — the defensive checkout reset clears SESSION-scope residue', async () => {
-    const single = createConversationWorkerPool(
-      { connectionString: db.conversationWorkerUrl, max: 1 },
-      () => undefined,
-    );
+    const singleW = mkWorker(db.conversationWorkerUrl, 1);
+    const single = singleW.pool;
     try {
       // Simulate a leak: a previous user of this connection set the GUCs at SESSION scope
       // (is_local = false) outside any transaction, so no COMMIT/ROLLBACK will clear them.
@@ -685,8 +875,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       } finally {
         dirty2.release();
       }
-      const seen = await withConversationWorkerOwnerContext(
-        single,
+      const seen = await singleW.db.withOwnerContext(
         { orgId: ownerC.orgId, ownerUserId: ownerC.ownerUserId },
         async (tx) => {
           const r = await tx.query(`SELECT id FROM govai.ai_conversations WHERE id = $1::uuid`, [
@@ -697,7 +886,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       );
       expect(seen).toBe(0); // owner A's row is NOT visible under owner C's context
     } finally {
-      await single.end().catch(() => undefined);
+      await singleW.close();
     }
   });
 
@@ -717,42 +906,42 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
     } finally {
       c.release();
     }
-    // Both real entry points work through the gate.
+    // Both real entry points of the CAPABILITY work through the gate. (P0-C: the second one is
+    // `withOwnerContext`, because the raw attested-checkout export is gone — see P0A2-P3-A4.)
     await expect(
-      discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+      discoverRecoveryCandidates(workerDb, { recoveryGraceMs: 30_000, limit: 10 }),
     ).resolves.toBeDefined();
     await expect(
-      withAttestedConversationWorkerClient(workerPool, async (client) => {
-        const r = await client.query('SELECT 1 AS ok');
-        return r.rows[0];
-      }),
+      workerDb.withOwnerContext(
+        { orgId: ownerA.orgId, ownerUserId: ownerA.ownerUserId },
+        async (tx: PoolClient) => (await tx.query('SELECT 1 AS ok')).rows[0],
+      ),
     ).resolves.toEqual({ ok: 1 });
   });
 
   it('W16 — a govai_app credential wired as the worker URL is REJECTED before discovery', async () => {
     // The misconfiguration Codex named: the factory accepts any URL, so only a LIVE identity
     // assertion can catch it. `db.appUrl` authenticates fine — that is the whole problem.
-    const wrong = createConversationWorkerPool({ connectionString: db.appUrl, max: 1 }, () => undefined);
+    const wrongW = mkWorker(db.appUrl, 1);
     try {
       await expect(
-        discoverRecoveryCandidates(wrong, { recoveryGraceMs: 30_000, limit: 10 }),
+        discoverRecoveryCandidates(wrongW.db, { recoveryGraceMs: 30_000, limit: 10 }),
       ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
       // ★ It must fail on IDENTITY, not on the definer's EXECUTE grant: the gate has to run
       // BEFORE ai_turn_recovery_candidates, or a credential that DOES hold EXECUTE would sail
       // straight through.
       await expect(
-        discoverRecoveryCandidates(wrong, { recoveryGraceMs: 30_000, limit: 10 }),
+        discoverRecoveryCandidates(wrongW.db, { recoveryGraceMs: 30_000, limit: 10 }),
       ).rejects.toThrow(/session_user is 'govai_app'/);
       // Owner-bound reads are gated too, and the failure precedes any owner context.
       await expect(
-        withConversationWorkerOwnerContext(
-          wrong,
+        wrongW.db.withOwnerContext(
           { orgId: ownerA.orgId, ownerUserId: ownerA.ownerUserId },
           async () => 'must not run',
         ),
       ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
       await expect(
-        loadOwnedRecoveryCandidate(wrong, {
+        loadOwnedRecoveryCandidate(wrongW.db, {
           orgId: ownerA.orgId,
           ownerUserId: ownerA.ownerUserId,
           conversationId: chainA.conversationId,
@@ -760,7 +949,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
         }),
       ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
     } finally {
-      await wrong.end().catch(() => undefined);
+      await wrongW.close();
     }
   });
 
@@ -775,23 +964,19 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
     const rawRows = await db.adminPool.query(`SELECT id FROM govai.ai_conversations`);
     expect(rawRows.rowCount ?? 0).toBeGreaterThan(0); // cross-owner, no context, no policy
 
-    const elevated = createConversationWorkerPool(
-      { connectionString: db.adminUrl, max: 1 },
-      () => undefined,
-    );
+    const elevatedW = mkWorker(db.adminUrl, 1);
     try {
       await expect(
-        discoverRecoveryCandidates(elevated, { recoveryGraceMs: 30_000, limit: 10 }),
+        discoverRecoveryCandidates(elevatedW.db, { recoveryGraceMs: 30_000, limit: 10 }),
       ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
       await expect(
-        withConversationWorkerOwnerContext(
-          elevated,
+        elevatedW.db.withOwnerContext(
           { orgId: ownerA.orgId, ownerUserId: ownerA.ownerUserId },
           async () => 'must not run',
         ),
       ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
     } finally {
-      await elevated.end().catch(() => undefined);
+      await elevatedW.close();
     }
   });
 
@@ -803,10 +988,10 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
         // The role NAME is still right; only its attributes drifted. Name checks alone would
         // pass here, which is why the attestation reads rolsuper/rolbypassrls from the catalog.
         await expect(
-          discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+          discoverRecoveryCandidates(workerDb, { recoveryGraceMs: 30_000, limit: 10 }),
         ).rejects.toBeInstanceOf(ConversationWorkerIdentityError);
         await expect(
-          discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+          discoverRecoveryCandidates(workerDb, { recoveryGraceMs: 30_000, limit: 10 }),
         ).rejects.toThrow(/rolsuper=|rolbypassrls=/);
       } finally {
         await db.adminPool.query(`ALTER ROLE ${CONVERSATION_WORKER_ROLE} WITH ${undo}`);
@@ -814,7 +999,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       // Restored: the same pool is usable again, so the check is live per checkout rather than
       // a verdict cached at pool construction.
       await expect(
-        discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+        discoverRecoveryCandidates(workerDb, { recoveryGraceMs: 30_000, limit: 10 }),
       ).resolves.toBeDefined();
     }
 
@@ -822,22 +1007,22 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
     await db.adminPool.query(`ALTER ROLE ${CONVERSATION_WORKER_ROLE} WITH INHERIT`);
     try {
       await expect(
-        discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+        discoverRecoveryCandidates(workerDb, { recoveryGraceMs: 30_000, limit: 10 }),
       ).rejects.toThrow(/rolinherit=true/);
     } finally {
       await db.adminPool.query(`ALTER ROLE ${CONVERSATION_WORKER_ROLE} WITH NOINHERIT`);
     }
     await expect(
-      discoverRecoveryCandidates(workerPool, { recoveryGraceMs: 30_000, limit: 10 }),
+      discoverRecoveryCandidates(workerDb, { recoveryGraceMs: 30_000, limit: 10 }),
     ).resolves.toBeDefined();
   });
 
   it('W19 — an identity failure leaks no credential material', async () => {
-    const wrong = createConversationWorkerPool({ connectionString: db.appUrl, max: 1 }, () => undefined);
+    const wrongW = mkWorker(db.appUrl, 1);
     try {
       let caught: unknown = null;
       try {
-        await discoverRecoveryCandidates(wrong, { recoveryGraceMs: 30_000, limit: 10 });
+        await discoverRecoveryCandidates(wrongW.db, { recoveryGraceMs: 30_000, limit: 10 });
       } catch (err) {
         caught = err;
       }
@@ -851,7 +1036,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       expect((caught as Error).message).toContain('govai_app');
       expect((caught as Error).message).toContain(CONVERSATION_WORKER_ROLE);
     } finally {
-      await wrong.end().catch(() => undefined);
+      await wrongW.close();
     }
   });
 
@@ -924,10 +1109,8 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
     // Falsification of the residual behind `client.release(destroyOnRelease)`. Manufacture the
     // worst case directly: return a client to the pool while it is STILL inside a transaction
     // that has owner A's context set, then let candidate B use that same physical connection.
-    const single = createConversationWorkerPool(
-      { connectionString: db.conversationWorkerUrl, max: 1 },
-      () => undefined,
-    );
+    const singleW = mkWorker(db.conversationWorkerUrl, 1);
+    const single = singleW.pool;
     try {
       const dirty = await single.connect();
       try {
@@ -942,8 +1125,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
         dirty.release(); // deliberately WITHOUT rollback — the state a failed ROLLBACK could leave
       }
       // Candidate C now reuses that same physical connection through the real helper.
-      const seen = await withConversationWorkerOwnerContext(
-        single,
+      const seen = await singleW.db.withOwnerContext(
         { orgId: ownerC.orgId, ownerUserId: ownerC.ownerUserId },
         async (tx) => {
           const theirs = await tx.query(
@@ -959,7 +1141,7 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       // exploitable hole — recorded here as evidence, not as narrative.
       expect(seen).toBe(0);
     } finally {
-      await single.end().catch(() => undefined);
+      await singleW.close();
     }
   });
 });

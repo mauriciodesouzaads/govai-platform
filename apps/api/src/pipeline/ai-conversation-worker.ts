@@ -1,26 +1,49 @@
-// Detached conversation worker — DATABASE TRUST BOUNDARY (EP-AI-CONVERSATION-CONTINUITY-V1-01,
-// movement P0-A2). Spec: docs/architecture/ai-conversation-continuity-v1.md §9
-// ("Detached recovery discovery under FORCE RLS"), §24 LAW 11.
+// Detached conversation worker — DATABASE TRUST BOUNDARY + WORKER DB CAPABILITY
+// (EP-AI-CONVERSATION-CONTINUITY-V1-01; movements P0-A2 + P0-C).
+// Spec: docs/architecture/ai-conversation-continuity-v1.md §9 ("Detached recovery discovery
+// under FORCE RLS"), §24 LAW 11.
 //
-// This module is the worker's CONNECTION IDENTITY layer and nothing else. It starts no loop,
-// registers no timer, opens no provider connection and is wired into no route: P0-A2 ships the
-// trust foundation, not the runner. `createConversationWorkerPool` is INERT until a future
-// worker process calls it.
+// P0-A2 shipped this module as the worker's CONNECTION IDENTITY layer, exporting a bare
+// `pg.Pool`. P0-C is the movement that ACTIVATES a real worker process, so it closes the two
+// pre-activation gates that P0-A2 recorded and deliberately left open:
+//
+//   P0A2-P3-A1 — CHECKED-OUT CLIENTS CARRIED NO `error` LISTENER.
+//     Measured, not assumed: `pg-pool` REMOVES its idle `error` listener the moment a client is
+//     acquired (`pg-pool/index.js:344`) and only re-attaches it in `_release` (:385). For the
+//     WHOLE checkout window the client therefore has ZERO listeners — and `pg`'s
+//     `_handleErrorEvent` (`pg/lib/client.js:386-394`) marks the client unqueryable, fails every
+//     in-flight query, and then emits `'error'` ON THE CLIENT. A Node EventEmitter with no
+//     `error` listener THROWS, so an asynchronous connection loss while a worker client is
+//     checked out is an `ERR_UNHANDLED_ERROR` process kill, not a rejected query. It was
+//     harmless only because no real worker process ever constructed the pool. P0-C crosses that
+//     boundary, so `withCheckedOutWorkerClient` below installs a listener for exactly the
+//     checkout's duration, removes it before release (no cross-checkout leak), and DESTROYS a
+//     client that experienced a connection-level failure instead of returning it to the pool.
+//
+//   P0A2-P3-A4 — THE MODULE EXPORTED A RAW `pg.Pool`.
+//     A raw pool is a general-purpose `query()` surface: any future caller could bypass the
+//     attestation and the owner-context entry that ARE the trust boundary. P0-C is precisely
+//     that "future caller" boundary, so the raw pool is no longer exported. What is exported is
+//     an OPAQUE CAPABILITY — `ConversationWorkerDb` — whose only members are the three named
+//     operations the worker pipeline actually performs, plus lifecycle. The `pg.Pool` is a
+//     module-private closure variable. A `PoolClient` is handed out ONLY inside
+//     `withOwnerContext`, i.e. only after identity attestation and only inside an entered
+//     owner security context — exactly where the spec permits ordinary SQL.
 //
 // TRUST MODEL (LAW 11 — REQUEST IDENTITY != WORKER IDENTITY). The worker connects as
 // `govai_conversation_worker`, a database identity distinct from the request pool's `govai_app`:
 // NOINHERIT, no LOGIN until explicitly provisioned, never superuser, never BYPASSRLS, owner of
-// nothing, and never granted to `govai_app` (which also cannot SET ROLE to it). Its whole
-// capability is EXECUTE on `govai.ai_turn_recovery_candidates` plus column-scoped owner-scoped
-// SELECT on three `ai_*` tables (migration 0032).
+// nothing, and never granted to `govai_app` (which also cannot SET ROLE to it).
 //
 // ★ NO FALLBACK, EVER. If the worker connection string is absent the factory FAILS CLOSED. It
-// must never silently degrade to the API's `DATABASE_URL`: running recovery on `govai_app`
-// would erase the entire trust boundary this movement exists to create — and it would fail
-// anyway (govai_app holds no EXECUTE on discovery), but loudly is better than subtly.
+// must never silently degrade to the API's `DATABASE_URL`: running the worker on `govai_app`
+// would erase the entire trust boundary this module exists to create.
 
 import { Pool, type PoolClient, type PoolConfig } from 'pg';
+import type { FastifyBaseLogger } from 'fastify';
 import { setLocalAppOrgId, setLocalAppUserId } from '@govai/core-tenant';
+import { makeAuditBridge } from './audit-bridge.js';
+import type { AuditBridgeRequestIdentity } from './request-identity.js';
 
 /** Env var carrying the worker's OWN database URL. Never `DATABASE_URL`. */
 export const CONVERSATION_WORKER_DATABASE_URL_ENV = 'GOVAI_CONVERSATION_WORKER_DATABASE_URL';
@@ -60,6 +83,31 @@ export class ConversationWorkerIdentityError extends Error {
 }
 
 /**
+ * The SAFE projection of a worker database error (P0A2-P3-A1's sanitization obligation).
+ *
+ * ★ `message` is DELIBERATELY ABSENT. A `pg` connection failure can carry the connection target
+ * — and, on some failure shapes, material derived from the connection string — inside its
+ * message. The class name and the SQLSTATE/libpq code are enough to operate on and cannot
+ * contain a secret, so nothing else is surfaced. This is stricter than
+ * `sanitizeSealerError`, which normalizes a message rather than dropping it.
+ */
+export type SanitizedWorkerDbError = { errorClass: string; code: string | null };
+
+export function sanitizeWorkerDbError(err: unknown): SanitizedWorkerDbError {
+  const errorClass =
+    (err instanceof Error && typeof err.name === 'string' && err.name.length > 0
+      ? err.name
+      : 'unknown'
+    )
+      .replace(/[^A-Za-z0-9_.-]/g, '')
+      .slice(0, 64) || 'unknown';
+  const raw = (err as { code?: unknown } | null)?.code;
+  const code =
+    typeof raw === 'string' && raw.length > 0 ? raw.replace(/[^A-Za-z0-9_]/g, '').slice(0, 32) : null;
+  return { errorClass, code };
+}
+
+/**
  * Read the worker's database config from the environment. FAILS CLOSED when the dedicated URL is
  * missing — there is deliberately no fallback to the request pool's credential.
  */
@@ -90,39 +138,6 @@ export function loadConversationWorkerDbConfig(
 }
 
 /**
- * The worker's DEDICATED pg.Pool. Never the apps/api request pool, and never built from the
- * request pool's credential.
- *
- * An `error` listener is installed at construction: an idle-client error on a long-lived pool is
- * emitted on the POOL, and an unhandled 'error' event terminates the process. Every long-lived
- * pool needs one.
- *
- * ★ The defensive context reset that spec §9 requires lives at CHECKOUT
- * (`withConversationWorkerOwnerContext` → `resetOwnerContext`), NOT on pg's `connect` event. pg
- * does not await a `connect` handler, so a reset issued there would race the caller's first
- * query and would guarantee nothing; and `connect` fires once per PHYSICAL connection while the
- * leak this defends against is per CHECKOUT of a reused one. The awaited checkout reset is the
- * real control.
- */
-export function createConversationWorkerPool(
-  config: ConversationWorkerDbConfig,
-  onPoolError?: (err: Error) => void,
-): Pool {
-  const poolConfig: PoolConfig = {
-    connectionString: config.connectionString,
-    max: config.max ?? 2,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
-    application_name: `govai-conversation-worker:${config.workerId ?? 'default'}`,
-  };
-  const pool = new Pool(poolConfig);
-  pool.on('error', (err) => {
-    if (onPoolError) onPoolError(err);
-  });
-  return pool;
-}
-
-/**
  * LIVE DATABASE IDENTITY ATTESTATION (LAW 11) — the gate that makes the trust boundary real.
  *
  * Configuration alone proves NOTHING about what a connection authenticated as. A
@@ -135,14 +150,11 @@ export function createConversationWorkerPool(
  *
  * Ground truth, all four from the server:
  *   - `session_user`  — the AUTHENTICATED login. Catches an admin credential that then did
- *                       `SET ROLE govai_conversation_worker`: the effective role would look
- *                       right while the session could reset back to superuser at will.
- *   - `current_user`  — the EFFECTIVE role. Catches a worker login that has assumed some other
- *                       role.
+ *                       `SET ROLE govai_conversation_worker`.
+ *   - `current_user`  — the EFFECTIVE role.
  *   - `rolsuper`      — a superuser is exempt from RLS entirely.
  *   - `rolbypassrls`  — the explicit RLS-bypass attribute.
- * `rolinherit` is asserted too: NOINHERIT is a declared property of this identity, and drift away
- * from it is drift in the trust contract, so it fails closed like the rest.
+ * `rolinherit` is asserted too: NOINHERIT is a declared property of this identity.
  *
  * Throws `ConversationWorkerIdentityError` on ANY mismatch. Every message names roles and boolean
  * attributes only — no connection string, no password.
@@ -197,32 +209,6 @@ export async function assertConversationWorkerIdentity(client: PoolClient): Prom
 }
 
 /**
- * Check out a worker connection, ATTEST its database identity, then run `fn` on it.
- *
- * This is the single gate every worker use path goes through — both the SECURITY DEFINER
- * discovery call and owner-bound `ai_*` reads. The attestation is AWAITED and precedes `fn`, so a
- * misconfigured credential fails closed BEFORE `ai_turn_recovery_candidates` runs and BEFORE any
- * owner context is entered. It deliberately does NOT live on pg's `connect` event: pg does not
- * await connect handlers, so an assertion there could not gate anything.
- *
- * Attesting per CHECKOUT rather than once per pool is intentional — it costs one round trip on a
- * low-throughput background path, and it catches privilege DRIFT (a role later granted SUPERUSER
- * or BYPASSRLS) instead of trusting a verdict cached at construction time.
- */
-export async function withAttestedConversationWorkerClient<T>(
-  pool: Pool,
-  fn: (client: PoolClient) => Promise<T>,
-): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await assertConversationWorkerIdentity(client);
-    return await fn(client);
-  } finally {
-    client.release();
-  }
-}
-
-/**
  * Clear BOTH owner GUCs at SESSION scope on an already-checked-out client. Session scope (not
  * transaction-local) is the point: it erases any residue a previous user of this physical
  * connection could have left OUTSIDE a transaction. Transaction-local settings are already
@@ -234,60 +220,255 @@ export async function resetOwnerContext(client: PoolClient): Promise<void> {
   );
 }
 
+/** Owner security context. In the worker plane these values may originate ONLY from
+ *  `govai.ai_turn_recovery_candidates` — never from HTTP input (spec §9). */
+export type ConversationWorkerOwner = { orgId: string; ownerUserId: string };
+
 /**
- * Enter a discovered candidate's owner context and run `fn` inside it.
+ * P0A2-P3-A1 — checkout with a per-checkout `error` listener.
  *
- *   checkout → IDENTITY ATTESTATION → defensive session-scope reset → BEGIN
- *   → set BOTH GUCs TRANSACTION-LOCALLY
- *   → fn (ordinary least-privilege SQL under FORCE RLS) → COMMIT / ROLLBACK → release
+ * Lifecycle, in this exact order:
+ *   connect → attach listener → (caller work) → DETACH listener → release/destroy
  *
- * The attestation comes FIRST, before the reset and before any owner GUC is set: a connection
- * that did not authenticate as the least-privilege worker role must not be touched at all, let
- * alone handed an owner's security context (LAW 11).
+ * Detaching BEFORE `release()` matters twice over: `pg-pool._release` re-attaches its OWN idle
+ * listener, so leaving ours on would accumulate one listener per checkout on a long-lived
+ * physical connection (a slow leak and an eventual MaxListenersExceededWarning); and a listener
+ * that outlived its checkout would fire for a LATER borrower's error, attributing it to the
+ * wrong operation.
  *
- * COMMIT and ROLLBACK both clear a transaction-local `set_config`, so a pooled connection cannot
- * carry candidate A's identity into candidate B's work even when the same physical connection is
- * reused. The session-level GUC is NEVER used as the authorization mechanism.
- *
- * ★ OWNER IDENTITY PROVENANCE (spec §9 doctrine). `orgId`/`ownerUserId` are APPLICATION-
- * established database security context, and passing them here is equivalent to asserting
- * authority over that owner's entire conversation domain. In the worker plane they may come ONLY
- * from a `govai.ai_turn_recovery_candidates` row — a function `govai_app` cannot execute. They
- * must NEVER be taken from an HTTP request, a header, a query parameter or any other end-user
- * input. P0-A2 exposes no route, so there is no such path today; this comment is the invariant a
- * later movement must not break.
+ * A client that emitted `error` is RELEASED WITH DESTRUCTION (`release(true)` → `pool._remove`),
+ * so a connection-level failure never returns a poisoned client to the healthy pool. `pg` also
+ * clears `_queryable` on that path, which would make `_release` remove it anyway — the explicit
+ * destroy makes the guarantee structural rather than dependent on a `pg` internal.
  */
-export async function withConversationWorkerOwnerContext<T>(
+async function withCheckedOutWorkerClient<T>(
   pool: Pool,
-  owner: { orgId: string; ownerUserId: string },
-  fn: (tx: PoolClient) => Promise<T>,
+  onClientError: ((e: SanitizedWorkerDbError) => void) | undefined,
+  fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect();
-  // ★ A client whose ROLLBACK failed is DESTROYED rather than returned to the pool. Falsification
-  // showed no exploitable cross-candidate read even in that state — the next entry's explicit
-  // `set_config` overwrites the context before any query, so candidate B never sees candidate A's
-  // rows — and in practice a failed ROLLBACK means a dead connection, which the pool discards
-  // anyway. This is defense in depth, not a vulnerability fix: it makes "a pooled connection
-  // cannot carry candidate A's transaction into candidate B's work" structural instead of argued,
-  // and it costs one boolean on an already-failing path.
-  let destroyOnRelease = false;
+  let connectionFailed = false;
+  const listener = (err: Error): void => {
+    connectionFailed = true;
+    // Absorbing the event is the WHOLE point: without a listener this emit is an unhandled
+    // 'error' and the process dies. The in-flight query has already been rejected by pg's
+    // `_errorAllQueries`, so the caller still observes the failure as a rejection.
+    if (onClientError) onClientError(sanitizeWorkerDbError(err));
+  };
+  client.on('error', listener);
   try {
-    await assertConversationWorkerIdentity(client);
-    await resetOwnerContext(client);
-    await client.query('BEGIN');
-    try {
-      await setLocalAppOrgId(client, owner.orgId);
-      await setLocalAppUserId(client, owner.ownerUserId);
-      const result = await fn(client);
-      await client.query('COMMIT');
-      return result;
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => {
-        destroyOnRelease = true;
-      });
-      throw err;
-    }
+    return await fn(client);
   } finally {
-    client.release(destroyOnRelease);
+    client.removeListener('error', listener);
+    // `release(true)` destroys; `release()` returns to the pool.
+    if (connectionFailed) client.release(true);
+    else client.release();
   }
+}
+
+/**
+ * The worker's DATABASE CAPABILITY (P0A2-P3-A4's closure).
+ *
+ * ★ THERE IS NO `pool` MEMBER, AND THAT IS THE POINT. Every member below is a NAMED worker
+ * operation whose SQL, attestation and context entry are owned by this module. There is no
+ * exported path on which arbitrary `query()` runs on an unattested, context-free worker
+ * connection. A `PoolClient` reaches a caller only through `withOwnerContext`, i.e. only after
+ * attestation and only inside an entered owner context — the one place the spec allows ordinary
+ * SQL.
+ */
+export type ConversationWorkerDb = {
+  /**
+   * The ONE sanctioned cross-owner read (`govai.ai_turn_recovery_candidates`), executed on an
+   * ATTESTED connection. `govai_app` holds no EXECUTE on the function, by design.
+   */
+  discoverRecoveryCandidates(
+    input: DiscoverRecoveryCandidatesInput,
+  ): Promise<RecoveryCandidateRow[]>;
+
+  /**
+   * Enter a discovered candidate's owner context and run `fn` inside it:
+   *   checkout → IDENTITY ATTESTATION → defensive session-scope reset → BEGIN
+   *   → set BOTH GUCs TRANSACTION-LOCALLY → fn → COMMIT / ROLLBACK → release.
+   *
+   * The attestation comes FIRST, before the reset and before any owner GUC is set: a connection
+   * that did not authenticate as the least-privilege worker role must not be touched at all, let
+   * alone handed an owner's security context (LAW 11).
+   *
+   * COMMIT and ROLLBACK both clear a transaction-local `set_config`, so a pooled connection
+   * cannot carry candidate A's identity into candidate B's work.
+   *
+   * ★ OWNER IDENTITY PROVENANCE. `orgId`/`ownerUserId` ARE the credentials every `ai_*` policy
+   * consumes. In the worker plane they may come ONLY from a recovery-candidate row. They must
+   * NEVER be taken from an HTTP request, header or query parameter.
+   */
+  withOwnerContext<T>(
+    owner: ConversationWorkerOwner,
+    fn: (tx: PoolClient) => Promise<T>,
+  ): Promise<T>;
+
+  /**
+   * The AuditBridge dispatcher bound to the WORKER's own connection identity, so a worker-driven
+   * provider call produces evidence through the SAME capture contract as a request-driven one
+   * (§14.1). Migration 0034 grants the worker EXECUTE on `govai.audit_capture_insert_locked` and
+   * nothing else on the evidence plane.
+   *
+   * ★ The pool it dispatches on is the module-private one; no raw handle escapes.
+   */
+  captureAuditEvent(event: unknown, identity?: AuditBridgeRequestIdentity): Promise<void>;
+
+  /** Bounded shutdown. Idempotent. */
+  close(): Promise<void>;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Recovery discovery — the query lives HERE so no un-attested client is ever handed out for it.
+// The row/parameter shapes are re-exported from the discovery module (which stays the home of
+// the domain types and of the owner-scoped re-validation read).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export type DiscoverRecoveryCandidatesInput = {
+  /** §7.7 rule (2) grace δ over the lease check, applied to the POST-BOUNDARY arms only. */
+  recoveryGraceMs: number;
+  /** Page size. The DB function rejects anything outside [1, 500]. */
+  limit: number;
+  /** Resume point from a previous page; omit/null to start at the oldest. */
+  after?: { createdAtText: string; attemptId: string } | null;
+};
+
+export type RecoveryCandidateRow = {
+  org_id: string;
+  owner_user_id: string;
+  conversation_id: string;
+  turn_id: string;
+  attempt_id: string;
+  state: 'accepted' | 'dispatching' | 'streaming';
+  reason: string;
+  claim_token: string | null;
+  claim_deadline_at_text: string | null;
+  is_branch_head: boolean;
+  attempt_created_at_text: string;
+};
+
+const DISCOVERY_SQL = `SELECT org_id, owner_user_id, conversation_id, turn_id, attempt_id, state, reason,
+              claim_token, claim_deadline_at::text AS claim_deadline_at_text, is_branch_head,
+              attempt_created_at::text AS attempt_created_at_text
+         FROM govai.ai_turn_recovery_candidates($1::integer, $2::integer, $3::timestamptz, $4::uuid)`;
+
+export type ConversationWorkerDbDeps = {
+  config: ConversationWorkerDbConfig;
+  log: FastifyBaseLogger;
+  /** Observability hook for pool-level and checked-out-client errors. Receives a SANITIZED
+   *  projection only. Defaults to a log line. */
+  onDbError?: (e: SanitizedWorkerDbError, scope: 'pool' | 'checkout') => void;
+  /**
+   * TEST-ONLY pool construction seam.
+   *
+   * ★ IT DOES NOT WEAKEN P0A2-P3-A4. A4 is about what the capability HANDS BACK: whatever this
+   * factory returns is still captured in the closure below and is still unreachable from the
+   * returned object. What the seam buys is a DETERMINISTIC proof of P0A2-P3-A1 — a fake client
+   * can be made to emit `'error'` at a precisely chosen instant during a checkout, which is the
+   * only way to assert "this listener is load-bearing" without racing a real backend teardown.
+   * Production callers omit it and get a real `pg.Pool`.
+   */
+  poolFactory?: (config: PoolConfig) => Pool;
+};
+
+/**
+ * Build the worker's database capability. The `pg.Pool` it creates is captured in this closure
+ * and is never returned, exported or reachable from the returned object (P0A2-P3-A4).
+ *
+ * A POOL-level `error` listener is installed at construction for IDLE-client errors; the
+ * CHECKOUT-level listener that closes P0A2-P3-A1 is installed per checkout in
+ * `withCheckedOutWorkerClient`. The two windows are disjoint and both are now covered.
+ *
+ * ★ The defensive owner-context reset that spec §9 requires lives at CHECKOUT, NOT on pg's
+ * `connect` event: pg does not await a `connect` handler, so a reset issued there would race the
+ * caller's first query; and `connect` fires once per PHYSICAL connection while the leak it
+ * defends against is per CHECKOUT of a reused one.
+ */
+export function createConversationWorkerDb(deps: ConversationWorkerDbDeps): ConversationWorkerDb {
+  const { config, log } = deps;
+  const report =
+    deps.onDbError ??
+    ((e: SanitizedWorkerDbError, scope: 'pool' | 'checkout'): void => {
+      log.error(
+        { pool: 'conversation_worker', scope, err_class: e.errorClass, err_code: e.code },
+        'conversation worker database error',
+      );
+    });
+
+  const poolConfig: PoolConfig = {
+    connectionString: config.connectionString,
+    max: config.max ?? 2,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+    application_name: `govai-conversation-worker:${config.workerId ?? 'default'}`,
+  };
+  const pool = (deps.poolFactory ?? ((c: PoolConfig) => new Pool(c)))(poolConfig);
+  // IDLE-client errors surface on the pool. Absorbing them keeps a transient backend loss from
+  // killing the worker; the pool reconnects on the next checkout.
+  pool.on('error', (err) => report(sanitizeWorkerDbError(err), 'pool'));
+
+  const auditBridge = makeAuditBridge({ pool, log });
+  let closed = false;
+
+  return {
+    async discoverRecoveryCandidates(
+      input: DiscoverRecoveryCandidatesInput,
+    ): Promise<RecoveryCandidateRow[]> {
+      const params: [number, number, string | null, string | null] = [
+        input.recoveryGraceMs,
+        input.limit,
+        input.after?.createdAtText ?? null,
+        input.after?.attemptId ?? null,
+      ];
+      return withCheckedOutWorkerClient(pool, (e) => report(e, 'checkout'), async (client) => {
+        await assertConversationWorkerIdentity(client);
+        const res = await client.query<RecoveryCandidateRow>(DISCOVERY_SQL, params);
+        return res.rows;
+      });
+    },
+
+    async withOwnerContext<T>(
+      owner: ConversationWorkerOwner,
+      fn: (tx: PoolClient) => Promise<T>,
+    ): Promise<T> {
+      return withCheckedOutWorkerClient(pool, (e) => report(e, 'checkout'), async (client) => {
+        await assertConversationWorkerIdentity(client);
+        await resetOwnerContext(client);
+        await client.query('BEGIN');
+        try {
+          await setLocalAppOrgId(client, owner.orgId);
+          await setLocalAppUserId(client, owner.ownerUserId);
+          // ★ ISO DateStyle pin, the `service.ts:withConversationOwnerContext` contract: a
+          // `timestamptz` reaches this process as TEXT rendered under the SESSION's DateStyle,
+          // and node-postgres returns `null` for `German`/`SQL`/`Postgres` renderings. Every
+          // worker read of a deadline or a terminal timestamp is such a column.
+          await client.query(`SET LOCAL DateStyle = 'ISO, MDY'`);
+          const result = await fn(client);
+          await client.query('COMMIT');
+          return result;
+        } catch (err) {
+          // A client whose ROLLBACK failed is a dead connection; the checkout wrapper's
+          // `connectionFailed` path or pg's own `_queryable=false` discards it. Swallowing the
+          // ROLLBACK error here preserves the ORIGINAL failure as the thrown one.
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw err;
+        }
+      });
+    },
+
+    async captureAuditEvent(
+      event: unknown,
+      identity?: AuditBridgeRequestIdentity,
+    ): Promise<void> {
+      await auditBridge(event, identity);
+    },
+
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      await pool.end();
+    },
+  };
 }
