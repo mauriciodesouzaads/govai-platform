@@ -1982,6 +1982,174 @@ describe('R3 — round-three review findings', () => {
     expect(calls).toBeLessThan(itemCount);
   });
 
+  it('R6-1 — a fence lost BEFORE the drain still cancels the body and emits terminal evidence', async () => {
+    // ★ THE ADJACENT CASE MY OWN ROUND-5 FIX LEFT OPEN. That fix cancels from the iterator's
+    // `finally` — which only runs once iteration has BEGUN. `chunks` is an async generator, and a
+    // generator body does not execute until its first `next()`, so an exit that never reaches the
+    // drain never acquires the reader and never cancels. Meanwhile `forwardStream`'s pump starts
+    // EAGERLY at construction and reads ahead regardless, so the provider keeps generating and we
+    // keep buffering for a response nobody will ever persist.
+    //
+    // Two such exits exist (`markStreaming` throwing, and the fence rejecting it). This drives
+    // the SECOND deterministically: the claim is rotated while the provider is still holding its
+    // headers back, so the fence is already lost by the time the response arrives.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R6-1', true));
+
+    const emitted: Array<{ is_stream?: boolean; stream_outcome?: string }> = [];
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      captureAuditEvent: async (event: unknown, identity?: unknown) => {
+        emitted.push(event as { is_stream?: boolean; stream_outcome?: string });
+        return (db.captureAuditEvent as (e: unknown, i?: unknown) => Promise<void>)(event, identity);
+      },
+    }) as typeof db;
+
+    let requestReceived = false;
+    let closedAt = 0;
+    let writesAfterClose = 0;
+    let releaseHeaders!: () => void;
+    const headersHeld = new Promise<void>((resolve) => {
+      releaseHeaders = resolve;
+    });
+
+    const outcome = await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          requestReceived = true;
+          // Headers are WITHHELD until the test has rotated the claim, which puts the fence loss
+          // strictly before `markStreaming` — the pre-drain window this test exists to cover.
+          void headersHeld.then(() => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            // UNBOUNDED: if the body is never cancelled, it keeps producing indefinitely.
+            const timer = setInterval(() => {
+              if (closedAt !== 0) {
+                writesAfterClose += 1;
+                if (writesAfterClose > 6) clearInterval(timer);
+                return;
+              }
+              res.write(`data: {"pad":"${'q'.repeat(120)}"}\n\n`);
+            }, 15);
+            res.on('close', () => {
+              if (closedAt === 0) closedAt = Date.now();
+              clearInterval(timer);
+            });
+          });
+        });
+      },
+      async () => {
+        const driving = processCandidate({ ...deps, db: spyDb }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        });
+        // The POST is provably in flight (the provider has the whole request) but no response has
+        // been produced, so nothing can have entered the drain yet.
+        for (let i = 0; i < 400; i += 1) {
+          if (requestReceived) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        expect(requestReceived).toBe(true);
+        await stack.db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET claim_token = gen_random_uuid() WHERE id = $1::uuid`,
+          [attemptId],
+        );
+        releaseHeaders();
+        const settled = await driving;
+        // Give the server a moment to observe the close.
+        await new Promise((r) => setTimeout(r, 300));
+        return settled;
+      },
+    );
+
+    // The fence was already lost when the response landed, so nothing became durable...
+    expect(outcome).toBe('finalize_fenced_out');
+    // ...the provider connection was CLOSED rather than left running (without the guard the
+    // eager pump keeps reading and `close` never fires in this window)...
+    expect(closedAt).toBeGreaterThan(0);
+    // ...and terminal stream evidence was still emitted, truthfully. Without the guard
+    // `finalize()` is never called at all, so this array is EMPTY — an attempt that reached the
+    // provider yet left no terminal record of what happened to its stream.
+    const streamEvents = emitted.filter((e) => e.is_stream === true);
+    expect(streamEvents.length).toBeGreaterThan(0);
+    for (const e of streamEvents) {
+      expect({ outcome: e.stream_outcome }).toEqual({ outcome: 'upstream_error' });
+    }
+  });
+
+  it('R6-2 — heartbeat ticks never overlap, and none outlives the dispatch', async () => {
+    // ★ THE POOL IS THE SCARCE RESOURCE, AND RENEWAL IS THE LEAST IMPORTANT WORK IN THE PROCESS.
+    // Each tick checks out a client from a worker pool whose default is `max: 2`. Under
+    // `setInterval` a tick slower than the interval does not delay its successor — ticks overlap,
+    // and a database slowdown lets heartbeats occupy every checkout, starving the persistence and
+    // finalization that actually carry the result. `stop()` clearing the timer did not help: a
+    // tick already running kept its checkout past the candidate it was renewing.
+    //
+    // Both properties are observed at the checkout seam itself, with the interval driven far
+    // below the operation latency so overlap is forced rather than hoped for.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R6-2', true));
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const realWithOwnerContext = db.withOwnerContext.bind(db) as typeof db.withOwnerContext;
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      withOwnerContext: async (owner: unknown, fn: unknown) => {
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        try {
+          // Every checkout is slowed well past the heartbeat interval, so under `setInterval`
+          // ticks would pile up on each other.
+          await new Promise((r) => setTimeout(r, 40));
+          return await (realWithOwnerContext as (o: unknown, f: unknown) => Promise<unknown>)(owner, fn);
+        } finally {
+          inFlight -= 1;
+        }
+      },
+    }) as typeof db;
+
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.write(`data: {"phase":"one","pad":"${'h'.repeat(120)}"}\n\n`);
+          // Long enough for many heartbeat ticks at a 10 ms interval.
+          setTimeout(() => {
+            res.write(`data: {"phase":"two","pad":"${'h'.repeat(120)}"}\n\n`);
+            res.end();
+          }, 400);
+        });
+      },
+      async () =>
+        processCandidate({ ...deps, db: spyDb, heartbeatIntervalMs: 10 }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        }),
+    );
+
+    // ★ PROPERTY 1 — no pile-up. At most one heartbeat tick can be in flight, alongside at most
+    // one dispatch-path operation. Under `setInterval` with a 10 ms interval and ~40 ms checkouts
+    // this climbs with the length of the stream instead of holding at a constant.
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+
+    // ★ PROPERTY 2 — nothing outlives the dispatch. `processCandidate` has returned, so every
+    // checkout it caused has been returned to the pool. Under a non-awaiting `stop()` a tick
+    // started just before shutdown is still holding one here.
+    expect(inFlight).toBe(0);
+  });
+
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
     // The byte-safe path must not swallow the ordinary case: a legitimate UTF-8 error page is
     // still the more useful `text`.

@@ -489,7 +489,47 @@ async function dispatchAndFinalize(
         ? await dispatchGoverned(deps, args, { beforeDispatch, onDispatchStart, emitAuditEvent })
         : await dispatchPassthrough(deps, args, { beforeDispatch, onDispatchStart, emitAuditEvent });
 
-    return await recordResult(deps, owner, args, result);
+    if (result.kind !== 'stream') return await recordResult(deps, owner, args, result);
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // ★ THE PRE-DRAIN GUARD — STRUCTURAL, NOT A PAIR OF POINT FIXES.
+    //
+    // A stream result owns a LIVE provider connection from the moment `forwardStream` returns:
+    // its pump starts eagerly and reads ahead whether or not anyone consumes it. Every exit
+    // between here and the drain therefore has two obligations — stop the provider, and emit the
+    // terminal stream evidence — and `recordStream`'s own `finally` discharges them ONLY once
+    // iteration has begun.
+    //
+    // Two such exits exist today (`markStreaming` throwing, and the fence rejecting it), and
+    // patching those two sites would leave the NEXT one to be found in review, which is exactly
+    // how this class of defect has recurred. So the obligation is enforced here, at the single
+    // place every path must pass through, keyed on the only fact that matters: whether terminal
+    // evidence was emitted at all.
+    //
+    // `finalize` is wrapped rather than tracked with a "did we drain" flag because the wrapper
+    // makes double-emission impossible: `recordStream` always finalizes (its own `finally`
+    // guarantees it), so a discharged obligation is self-evident and the guard stays silent.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    let terminalEmitted = false;
+    const guarded: DispatchResult = {
+      ...result,
+      finalize: async (outcome: StreamTerminalOutcome) => {
+        terminalEmitted = true;
+        await result.finalize(outcome);
+      },
+    };
+    try {
+      return await recordResult(deps, owner, args, guarded);
+    } finally {
+      if (!terminalEmitted) {
+        // Never drained. Cancel FIRST — that settles the pump, which is what lets `finalize()`
+        // resolve instead of waiting for an EOF that will never come.
+        await result.cancel().catch(() => undefined);
+        // `upstream_error` is the honest outcome: no terminal frame was ever observed. Recording
+        // `complete` here would hash a prefix and assert completion over it.
+        await result.finalize('upstream_error').catch(() => undefined);
+      }
+    }
   } catch (err) {
     if (provenanceRejected) {
       // Commit 4 lost its fence, or a Stop/rotation landed. NO POST HAPPENED — the gate is what
@@ -548,7 +588,8 @@ async function dispatchAndFinalize(
     );
     return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'outcome_unknown', null, 'outcome_unknown');
   } finally {
-    heartbeat.stop();
+    // Awaited: a tick still holding a client must not outlive the dispatch that started it.
+    await heartbeat.stop();
   }
 }
 
@@ -601,6 +642,17 @@ type DispatchResult =
       kind: 'stream';
       status: number;
       chunks: AsyncIterable<Uint8Array>;
+      /**
+       * Stop the provider body WITHOUT iterating `chunks`.
+       *
+       * ★ WHY THIS CANNOT BE FOLDED INTO THE ITERATOR. `chunks` is an async GENERATOR, and a
+       * generator body does not run until its first `next()`. An exit that never begins the
+       * drain therefore never acquires the reader and never reaches the iterator's cancelling
+       * `finally` — while `forwardStream`'s pump, which starts EAGERLY at construction, goes on
+       * reading and buffering the provider's body. Calling `return()` on the generator does not
+       * help either: a suspended-start generator completes without executing its body.
+       */
+      cancel: () => Promise<void>;
       /** MUST be invoked exactly once, on EVERY path — including a throwing drain. */
       finalize: (outcome: StreamTerminalOutcome) => Promise<void>;
     };
@@ -674,6 +726,11 @@ async function dispatchGoverned(
     kind: 'stream',
     status: streamResult.status_code,
     chunks: readableToAsyncIterable(streamResult.body),
+    cancel: async () => {
+      // Unlocked on every pre-drain path (the generator never took the reader), so this reaches
+      // the wrapper's `cancel` handler and closes the upstream connection.
+      await streamResult.body.cancel().catch(() => undefined);
+    },
     // The handler owns the terminal evidence emit. The outcome is REPORTED, not assumed:
     // `complete` only when the server actually drained to the end.
     finalize: async (outcome: StreamTerminalOutcome) => {
@@ -763,6 +820,9 @@ async function dispatchPassthrough(
       kind: 'stream',
       status: fwd.status,
       chunks: readableToAsyncIterable(fwd.body),
+      cancel: async () => {
+        await fwd.body.cancel().catch(() => undefined);
+      },
       finalize: async (outcome: StreamTerminalOutcome) => {
         const final = await fwd.finalize();
         await hooks.emitAuditEvent(
@@ -1136,7 +1196,10 @@ async function wakeBranchAfterTerminal(
 // Heartbeat
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-export type HeartbeatHandle = { stop(): void };
+export type HeartbeatHandle = {
+  /** Disarms the timer AND settles the in-flight tick, so no checkout outlives the candidate. */
+  stop(): Promise<void>;
+};
 
 /**
  * §7.7 — the TIMER-DRIVEN lease renewal, running for the whole post-boundary window.
@@ -1146,9 +1209,20 @@ export type HeartbeatHandle = { stop(): void };
  * be ratcheted out from under itself. The timer keeps the lease alive precisely when there is
  * nothing to observe.
  *
- * ★ IT CANNOT LEAK. `stop()` is called from the dispatch `finally`, on every path — success,
- * failure, fence loss and throw alike. `unref()` additionally prevents a stray timer from holding
- * the process open during shutdown.
+ * ★ CHAINED, NOT PERIODIC — AND THAT IS A POOL-SAFETY PROPERTY, NOT A STYLE CHOICE. Each tick
+ * checks out a client from a pool whose worker default is `max: 2`. Under `setInterval`, a tick
+ * slower than the interval does not delay the next one: ticks overlap, and a database slowdown
+ * lets renewals — the least important work in the process — occupy every checkout, starving the
+ * stream persistence and finalization that actually carry the result. The next tick is therefore
+ * scheduled only after the previous one SETTLES, which makes overlap structurally impossible
+ * instead of merely unlikely.
+ *
+ * ★ `stop()` SETTLES THE IN-FLIGHT TICK, it does not merely disarm the timer. Clearing the timer
+ * ends future ticks but leaves a running one holding its checkout, which then outlives the
+ * candidate it was renewing — a leak that only appears under the slow-database conditions where
+ * checkouts are already scarce. Because ticks are chained, at most ONE can be in flight, so
+ * awaiting it is bounded by that single operation. `unref()` additionally prevents a pending
+ * timer from holding the process open during shutdown.
  *
  * ★ IT CANNOT THROW INTO ANYTHING. Each tick is fully guarded: a database blip must not become an
  * unhandled rejection on a timer callback, which has no caller to catch it. A tick that loses the
@@ -1161,8 +1235,26 @@ function startHeartbeat(
   claimToken: string,
 ): HeartbeatHandle {
   let stopped = false;
-  const timer = setInterval(() => {
-    void (async () => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  /** The single tick currently in flight, or null. Chaining keeps this at most one. */
+  let inFlight: Promise<void> | null = null;
+
+  const schedule = (): void => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      timer = null;
+      const tick = run();
+      inFlight = tick;
+      void tick.finally(() => {
+        if (inFlight === tick) inFlight = null;
+        // Re-arm only now, so a tick can never overlap its own successor.
+        schedule();
+      });
+    }, deps.heartbeatIntervalMs);
+    timer.unref?.();
+  };
+
+  const run = async (): Promise<void> => {
       if (stopped) return;
       try {
         const beat = await deps.db.withOwnerContext(owner, (tx) =>
@@ -1172,7 +1264,11 @@ function startHeartbeat(
         if (!beat.extended) {
           // The token was rotated, the lease already lapsed, or the attempt is terminal. There
           // is nothing left to renew.
-          stop();
+          //
+          // ★ `disarm()`, NOT `stop()`. Inside a tick the in-flight promise IS this tick, so a
+          // settling stop would be waiting on itself. Keeping the two operations as separate
+          // functions makes that deadlock unexpressible rather than merely commented against.
+          disarm();
           return;
         }
         if (beat.stopRequested) {
@@ -1191,15 +1287,26 @@ function startHeartbeat(
           'conversation executor: heartbeat tick failed',
         );
       }
-    })();
-  }, deps.heartbeatIntervalMs);
-  timer.unref?.();
+  };
 
-  function stop(): void {
+  /** End future ticks. Safe from anywhere, including from inside a tick. */
+  function disarm(): void {
     if (stopped) return;
     stopped = true;
-    clearInterval(timer);
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
   }
+
+  /** Disarm AND settle the at-most-one running tick, so no checkout outlives the caller. */
+  function stop(): Promise<void> {
+    disarm();
+    // `run()` swallows its own failures, so this settles rather than rejecting into a `finally`.
+    return inFlight ?? Promise.resolve();
+  }
+
+  schedule();
   return { stop };
 }
 
