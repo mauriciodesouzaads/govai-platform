@@ -8,6 +8,7 @@
     "build": "tsc -p .",
     "typecheck": "tsc -p . --noEmit",
     "dev": "tsx src/server.ts",
+    "conversation-worker": "tsx src/conversation-worker/main.ts",
     "migrate": "tsx src/db/migrate.ts",
     "seed:provider-credential": "tsx src/scripts/seed-provider-credential.ts",
     "grant:api-key-role": "tsx src/scripts/grant-api-key-role.ts"

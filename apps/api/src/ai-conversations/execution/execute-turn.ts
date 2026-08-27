@@ -1,0 +1,1070 @@
+// THE DURABLE EXECUTION KERNEL (EP-AI-CONVERSATION-CONTINUITY-V1 P0-C; spec §7.7/§8/§9/§14).
+//
+// One claimed attempt, driven through the §8 FIVE-COMMIT protocol:
+//
+//   commit 1  RESERVE            — not here; the request plane committed it (`turn-service.ts`)
+//   commit 2  CLAIM              — `claimQueuedHead` / a rotation arm
+//   (build)   CONTEXT + CREDENTIAL, OUTSIDE every lock and every transaction
+//   commit 3  DISPATCH BOUNDARY  — `accepted → dispatching`, BEFORE any POST, fenced on the claim
+//   commit 4  CREDENTIAL PROVENANCE — a SEPARATE fenced commit, still before the POST
+//   → PROVIDER POST
+//   commit 5  FINALIZE           — terminal state, fenced on the same claim
+//
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// THE THREE INVARIANTS THIS FILE IS RESPONSIBLE FOR
+//
+// 1. NO PROVIDER I/O INSIDE A DATABASE TRANSACTION. Every `db.withOwnerContext(...)` call below
+//    contains database statements only, and each one COMMITS before the next step. The provider
+//    call happens between commits with ZERO clients checked out. This is why the protocol has
+//    five commits instead of one transaction: a single transaction spanning the POST would hold
+//    the conversation root and the attempt row across an unbounded network wait.
+//
+// 2. THE PROVIDER CALL IS STRUCTURALLY UNREACHABLE UNTIL PROVENANCE IS DURABLE. Commit 4 runs
+//    inside `beforeDispatch`, the gate the provider packages await IMMEDIATELY before `fetch`.
+//    A gate rejection means the `fetch` is never invoked — not "was skipped by an if", but
+//    unreachable on that path. That is what makes "commit 4 precedes EVERY POST" a proof rather
+//    than a convention, and the whole §7.7 provenance-absent recovery arm rests on it.
+//
+// 3. AMBIGUITY IS REPRESENTED, NEVER GUESSED. `forwardStarted` flips inside `onDispatchStart`,
+//    synchronously, immediately before `fetch`. If it is FALSE, no transmission was attempted
+//    and the outcome is a KNOWN LOCAL failure. If it is TRUE and no provider RESPONSE arrived,
+//    the fate is genuinely unprovable and the attempt ratchets to `outcome_unknown` — never to
+//    `failed` (which would assert the provider did not process the request) and never to a
+//    silent re-drive. NO PROVIDER EXACTLY-ONCE IS CLAIMED ANYWHERE.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+import { randomUUID } from 'node:crypto';
+import type { PoolClient } from 'pg';
+import type { Kms } from '@govai/core-identity';
+import { detectAllBaseline, mergeFindingSpans } from '@govai/dlp-br';
+import { resolveGovernance } from '@govai/core-governance';
+import {
+  ANTHROPIC_BETA_POLICY_VERSION,
+  ANTHROPIC_MESSAGES_CREATE,
+  ANTHROPIC_MESSAGES_STREAM,
+  buildPassthroughInvoked as buildAnthropicPassthroughInvoked,
+  forwardRaw as anthropicForwardRaw,
+  forwardStream as anthropicForwardStream,
+  handleAnthropicGovernedMessages,
+} from '@govai/provider-anthropic';
+import {
+  OPENAI_BETA_POLICY_VERSION,
+  OPENAI_RESPONSES_CREATE,
+  OPENAI_RESPONSES_STREAM,
+  buildPassthroughInvoked as buildOpenAIPassthroughInvoked,
+  forwardRaw as openaiForwardRaw,
+  forwardStream as openaiForwardStream,
+  handleOpenAIGovernedResponses,
+} from '@govai/provider-openai';
+import type { ConversationWorkerDb, ConversationWorkerOwner } from '../../pipeline/ai-conversation-worker.js';
+import { requestIdentityAls, type AuditBridgeRequestIdentity } from '../../pipeline/request-identity.js';
+import { decryptConversationContent, encryptConversationContent } from '../crypto.js';
+import { isStreamingNativeRequest, resolveDispatchPlan, type DispatchPlan } from '../dispatch-registry.js';
+import { nativeRequestBytes } from '../send-intent.js';
+import * as ex from './execution-store.js';
+
+/** Minimal logging surface — the worker runner injects pino; tests inject a recorder. */
+export type ExecutorLog = {
+  info(obj: Record<string, unknown>, msg?: string): void;
+  warn(obj: Record<string, unknown>, msg?: string): void;
+  error(obj: Record<string, unknown>, msg?: string): void;
+};
+
+export type ConversationExecutorDeps = {
+  db: ConversationWorkerDb;
+  kms: Kms;
+  /**
+   * Provider base URL, resolved PER PROVIDER.
+   *
+   * ★ NOT A SINGLE STRING. A worker sweeps candidates of BOTH providers from one discovery
+   * function, so a fixed base URL would send an OpenAI conversation to `api.anthropic.com` the
+   * moment the two hosts differ — i.e. in production, where `GOVAI_PROVIDER_BASE_URL` is unset.
+   * The provider comes from DURABLE branch state, so the host must be chosen at the same place
+   * the plan is: at dispatch.
+   */
+  upstreamBaseUrlFor: (provider: 'anthropic' | 'openai') => string;
+  log: ExecutorLog;
+  /** Identifies THIS worker in `claimant`. Never a secret. */
+  claimant: string;
+  /** Claim lease duration. The heartbeat renews it well inside this window. */
+  leaseMs: number;
+  /** §7.7 rule (2) recovery grace δ over the lease, for post-boundary sweep arms. */
+  recoveryGraceMs: number;
+  /** Heartbeat tick. MUST be comfortably below `leaseMs`. */
+  heartbeatIntervalMs: number;
+  /** Hard bound on the provider call. */
+  dispatchTimeoutMs: number;
+  /** Bytes buffered before a streaming prefix is flushed durably. */
+  streamFlushBytes: number;
+};
+
+/**
+ * What happened to one candidate. Returned for the runner's logs and for the tests to assert on a
+ * real outcome rather than on incidental durable state.
+ *
+ * ★ EVERY MEMBER IS REACHABLE. Two earlier drafts — `not_branch_head` and
+ * `restored_to_accepted` — were removed because nothing could ever return them: losing the
+ * branch-order predicate is indistinguishable from losing any other claim predicate (the CAS is
+ * one statement), so it reports `claim_lost`; and a successful provenance-absent restore
+ * continues straight into the drive, so it reports that drive's own outcome. An enum member an
+ * operator can never see in a log is a vocabulary that lies about what the executor can do.
+ */
+export type ExecutionOutcome =
+  /** A claim/rotation CAS matched zero rows: another worker owns it, or a predicate (branch
+   *  order, stop flag, state) no longer holds. The ORDINARY outcome of a race. */
+  | 'claim_lost'
+  /** The branch's durable (provider, surface) is not dispatchable by P0-C → `rejected`. */
+  | 'surface_unsupported'
+  /** No ACTIVE tenant credential for the provider → `failed` + `credential_unavailable`. */
+  | 'credential_unavailable'
+  /** The stored native request config could not be read or parsed → `rejected`. */
+  | 'config_unreadable'
+  /** The §8 commit-3 CAS lost: fenced out, lease-expired, stop-requested, not at head, or
+   *  causally stale. The attempt is untouched and ordinarily reclaimable. NO POST HAPPENED. */
+  | 'boundary_lost'
+  /** Commit 4 lost its fence (rotation/stop) and the fenced restore returned it to `accepted`. */
+  | 'provenance_lost_restored'
+  /** Commit 4 lost its fence and the restore ALSO failed (expired lease) — the sweep's
+   *  provenance-absent arm will reach it. NO POST HAPPENED. */
+  | 'stopped_before_dispatch'
+  | 'completed'
+  | 'failed'
+  | 'rejected'
+  /** The forward was invoked and no provider RESPONSE arrived: the fate is unprovable. */
+  | 'outcome_unknown'
+  /** A durable write lost its claim-token fence — the §7.7 zombie rule. The result is discarded. */
+  | 'finalize_fenced_out'
+  /** A stranded POST-BOUNDARY attempt WITH provenance was ratcheted terminal by recovery. */
+  | 'ratcheted_outcome_unknown'
+  /** Nothing lawful to do for this candidate (e.g. a discovery row that has since moved on). */
+  | 'no_action';
+
+type TenantFacts = {
+  org_id: string;
+  user_id: string;
+  tier: 'starter' | 'business' | 'enterprise' | 'regulated';
+  operational_mode: 'production' | 'pilot' | 'dev' | 'test';
+};
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Entry point: one discovered candidate
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export type ExecutableCandidate = {
+  orgId: string;
+  ownerUserId: string;
+  conversationId: string;
+  attemptId: string;
+  state: 'accepted' | 'dispatching' | 'streaming';
+  reason: string;
+  claimToken: string | null;
+  isBranchHead: boolean;
+};
+
+/**
+ * Process ONE recovery candidate: select its lawful arm, take/rotate the claim, and — when the
+ * arm ends with a claimed `accepted` attempt — drive it to a terminal state.
+ *
+ * Every arm's authority change is a single CAS; losing one is the ORDINARY outcome of a race and
+ * is reported, never thrown.
+ */
+export async function processCandidate(
+  deps: ConversationExecutorDeps,
+  candidate: ExecutableCandidate,
+): Promise<ExecutionOutcome> {
+  const owner: ConversationWorkerOwner = {
+    orgId: candidate.orgId,
+    ownerUserId: candidate.ownerUserId,
+  };
+
+  // ── ARM SELECTION + the claim/rotation CAS, in ONE short transaction ────────────────────
+  const armed = await deps.db.withOwnerContext(owner, async (tx) => {
+    switch (candidate.reason) {
+      case 'queued_head':
+        return {
+          kind: 'drive' as const,
+          claim: await ex.claimQueuedHead(tx, {
+            attemptId: candidate.attemptId,
+            claimant: deps.claimant,
+            leaseMs: deps.leaseMs,
+          }),
+        };
+      case 'accepted_lease_expired':
+        if (candidate.claimToken === null) return { kind: 'none' as const };
+        return {
+          kind: 'drive' as const,
+          claim: await ex.rotateExpiredAcceptedClaim(tx, {
+            attemptId: candidate.attemptId,
+            expectedToken: candidate.claimToken,
+            claimant: deps.claimant,
+            leaseMs: deps.leaseMs,
+          }),
+        };
+      case 'dispatching_lease_expired': {
+        if (candidate.claimToken === null) return { kind: 'none' as const };
+        // §7.7: try the PROVENANCE-ABSENT reclaim FIRST. Its CAS carries the durable no-POST
+        // proof as a predicate, so if commit 4 landed concurrently this matches zero rows and
+        // the ambiguity arm below governs — the two orderings serialize on the attempt row.
+        const restored = await ex.restoreProvenanceAbsentDispatching(tx, {
+          attemptId: candidate.attemptId,
+          expectedToken: candidate.claimToken,
+          claimant: deps.claimant,
+          leaseMs: deps.leaseMs,
+          graceMs: deps.recoveryGraceMs,
+        });
+        if (restored) return { kind: 'drive' as const, claim: restored };
+        return {
+          kind: 'ambiguous' as const,
+          ratcheted: await ex.ratchetStrandedToOutcomeUnknown(tx, {
+            attemptId: candidate.attemptId,
+            expectedToken: candidate.claimToken,
+            graceMs: deps.recoveryGraceMs,
+          }),
+        };
+      }
+      case 'streaming_lease_expired': {
+        if (candidate.claimToken === null) return { kind: 'none' as const };
+        // `streaming` NEVER returns to `accepted` (0031's graph has no such edge, and §7 is
+        // explicit): a stream proves a POST happened. The only honest arm is the ratchet.
+        return {
+          kind: 'ambiguous' as const,
+          ratcheted: await ex.ratchetStrandedToOutcomeUnknown(tx, {
+            attemptId: candidate.attemptId,
+            expectedToken: candidate.claimToken,
+            graceMs: deps.recoveryGraceMs,
+          }),
+        };
+      }
+      default:
+        return { kind: 'none' as const };
+    }
+  });
+
+  if (armed.kind === 'none') return 'no_action';
+  if (armed.kind === 'ambiguous') {
+    if (armed.ratcheted) {
+      // Terminalization RELEASES the branch queue (§8: outcome_unknown is QUEUE-TERMINAL).
+      await wakeBranchAfterTerminal(deps, owner, candidate.attemptId);
+      return 'ratcheted_outcome_unknown';
+    }
+    return 'no_action';
+  }
+  if (!armed.claim) return 'claim_lost';
+
+  return driveClaimedAttempt(deps, owner, candidate.attemptId, armed.claim);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Driving a claimed `accepted` attempt
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+async function driveClaimedAttempt(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  attemptId: string,
+  claim: ex.ClaimGrant,
+): Promise<ExecutionOutcome> {
+  // ── STEP 3 (part 1): read everything the dispatch needs, from DURABLE state ─────────────
+  // One short transaction; it commits BEFORE any decrypt so no client is held across a KMS
+  // round trip (the AWS adapter is real in this repository).
+  const loaded = await deps.db.withOwnerContext(owner, async (tx) => {
+    const context = await ex.readExecutionContext(tx, attemptId);
+    if (!context) return null;
+    const tenant = await readTenantFacts(tx, owner);
+    const config = await ex.readNativeRequestConfig(tx, context.nativeRequestConfigContentId);
+    const resolution = resolveDispatchPlan({
+      provider: context.provider as never,
+      surface: context.surface,
+      mode: context.mode,
+    });
+    const credential = resolution.supported
+      ? await ex.readActiveProviderCredential(tx, resolution.plan.provider)
+      : null;
+    return { context, tenant, config, resolution, credential };
+  });
+
+  if (!loaded || !loaded.tenant) {
+    deps.log.error({ attempt_id: attemptId }, 'conversation executor: attempt vanished under its owner context');
+    return 'no_action';
+  }
+  const { context, tenant, config, resolution, credential } = loaded;
+
+  // ── Fail-closed classification, BEFORE the boundary ─────────────────────────────────────
+  // Each of these finalizes from `accepted`, so no boundary was crossed, no provenance exists,
+  // and no provider was contacted. `rejected` carries NO error_class (0031 enforces
+  // `error_class ⟹ failed` in both directions), which is exactly right: these are GovAI-side
+  // validation refusals, not provider failures, and asserting a provider taxonomy for them
+  // would be a lie.
+  if (!resolution.supported) {
+    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'rejected', null, 'surface_unsupported');
+  }
+  if (!config || config.status !== 'active' || config.dek_wrapped === null) {
+    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'rejected', null, 'config_unreadable');
+  }
+  if (!credential) {
+    // ★ THE ENV-KEY AND HERMETIC FALLBACKS OF THE DIRECT ROUTES ARE NOT AVAILABLE HERE, and
+    // that is FORCED BY THE SCHEMA, not chosen: 0031 requires `streaming|completed ⟹
+    // provider_credential_id IS NOT NULL` and binds the column through an ORG-COMPOSITE FK to
+    // a real `provider_credentials` row. A `platform_env` or `hermetic_test_placeholder`
+    // credential has NO durable identity, so an attempt dispatched under one could never
+    // record which account owns the resulting provider object — and could never reach
+    // `completed`. A conversation therefore requires a real tenant credential, and says so
+    // through the taxonomy's existing `credential_unavailable`.
+    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'failed', 'credential_unavailable', 'credential_unavailable');
+  }
+  const plan = resolution.plan;
+
+  // ── STEP 3 (part 2): decrypt OUTSIDE the transaction ────────────────────────────────────
+  let nativeRequest: unknown;
+  let apiKey: string;
+  try {
+    const configBytes = await decryptConversationContent(deps.kms, owner.orgId, config);
+    nativeRequest = JSON.parse(configBytes.toString('utf8'));
+    const keyBytes = await deps.kms.envelopeDecrypt({
+      orgId: owner.orgId,
+      keyId: credential.kms_key_id,
+      version: credential.kms_key_version,
+      ciphertext: new Uint8Array(credential.ciphertext),
+      dekWrapped: new Uint8Array(credential.dek_wrapped),
+    });
+    apiKey = Buffer.from(keyBytes).toString('utf8');
+  } catch {
+    // Deliberately NOT chained and NOT logged with the cause: a KMS error can carry key
+    // identifiers, and a JSON error can carry a fragment of the plaintext body.
+    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'failed', 'credential_unavailable', 'config_unreadable');
+  }
+
+  const isStream = isStreamingNativeRequest(nativeRequest);
+  const requestBody = nativeRequestBytes(nativeRequest);
+
+  // ── COMMIT 3: THE DISPATCH BOUNDARY ─────────────────────────────────────────────────────
+  const candidateRequestId = randomUUID();
+  const boundary = await deps.db.withOwnerContext(owner, async (tx) => {
+    // LAW 16 (1) FIRST — the root share lock, before any level-(3) attempt write.
+    const root = await ex.lockRootForDispatch(tx, context.conversationId);
+    if (!root || !ex.isRootExecutionEligible(root.status)) return { ok: false as const };
+    return ex.commitDispatchBoundary(tx, {
+      attemptId,
+      claimToken: claim.claimToken,
+      leaseMs: deps.leaseMs,
+      causalVersionAtBuild: context.causalVersion,
+      candidateRequestId,
+    });
+  });
+  if (!boundary.ok) {
+    // Fenced out, lease-expired, stop-requested, not at head, or causally stale. The attempt is
+    // untouched and still `accepted`; ordinary recovery re-drives it. NO POST HAPPENED.
+    return 'boundary_lost';
+  }
+
+  // ── §14.1: ENTER THE REQUEST IDENTITY SCOPE with the PERSISTED id ───────────────────────
+  // Neither `/v1/ai/*` requests nor detached workers pass the ingress identity hook, so the
+  // executor constructs the identity itself and wraps the pipeline call in `requestIdentityAls
+  // .run()`. Without this the AuditBridge would find no identity and DROP the capture —
+  // worker-driven dispatch would be a silent evidence gap.
+  const identity: AuditBridgeRequestIdentity = {
+    govaiRequestId: boundary.govaiRequestId,
+    identityScope: 'govai_request_id',
+  };
+
+  return requestIdentityAls.run(identity, async () =>
+    dispatchAndFinalize(deps, owner, {
+      attemptId,
+      claim,
+      context,
+      tenant,
+      plan,
+      isStream,
+      requestBody,
+      apiKey,
+      credentialId: credential.id,
+      identity,
+    }),
+  );
+}
+
+type DispatchArgs = {
+  attemptId: string;
+  claim: ex.ClaimGrant;
+  context: ex.ExecutionContext;
+  tenant: TenantFacts;
+  plan: DispatchPlan;
+  isStream: boolean;
+  requestBody: Buffer;
+  apiKey: string;
+  credentialId: string;
+  identity: AuditBridgeRequestIdentity;
+};
+
+async function dispatchAndFinalize(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  args: DispatchArgs,
+): Promise<ExecutionOutcome> {
+  // ── §7.7: TIMER-DRIVEN heartbeat, started at the boundary and stopped in `finally` ──────
+  const heartbeat = startHeartbeat(deps, owner, args.attemptId, args.claim.claimToken);
+  let forwardStarted = false;
+  let provenanceRejected = false;
+
+  /**
+   * COMMIT 4 + the §7.7 rule-(1) PRE-POST RE-VALIDATION, awaited by the provider package
+   * IMMEDIATELY before `fetch`.
+   *
+   * ★ NEVER REASON "the boundary committed, so I am still authoritative." Context construction,
+   * decryption and credential resolution all happen between commit 3 and here; the lease can
+   * lapse in that window and recovery can rotate the token. The read below asks the DATABASE,
+   * and commit 4's own predicates re-assert the same facts as a WRITE — which is what actually
+   * fences a concurrent claimant.
+   */
+  const beforeDispatch = async (): Promise<void> => {
+    const ok = await deps.db.withOwnerContext(owner, async (tx) => {
+      const authority = await ex.readPrePostAuthority(tx, {
+        attemptId: args.attemptId,
+        claimToken: args.claim.claimToken,
+      });
+      if (!authority || authority.state !== 'dispatching' || !authority.leaseValid) return false;
+      // A Stop that linearized after the boundary is honored here — with NO POST sent.
+      if (authority.stopRequested) return false;
+      return ex.commitCredentialProvenance(tx, {
+        attemptId: args.attemptId,
+        claimToken: args.claim.claimToken,
+        providerCredentialId: args.credentialId,
+        provider: args.plan.provider,
+      });
+    });
+    if (!ok) {
+      provenanceRejected = true;
+      // Fail CLOSED: throwing here makes the `fetch` structurally unreachable.
+      throw new ProvenanceGateRejected();
+    }
+  };
+  const onDispatchStart = (): void => {
+    forwardStarted = true;
+  };
+
+  try {
+    const emitAuditEvent = async (event: unknown): Promise<void> => {
+      await deps.db.captureAuditEvent(event, args.identity);
+    };
+    const result =
+      args.plan.mode === 'governed'
+        ? await dispatchGoverned(deps, args, { beforeDispatch, onDispatchStart, emitAuditEvent })
+        : await dispatchPassthrough(deps, args, { beforeDispatch, onDispatchStart, emitAuditEvent });
+
+    return await recordResult(deps, owner, args, result);
+  } catch (err) {
+    if (provenanceRejected) {
+      // Commit 4 lost its fence, or a Stop/rotation landed. NO POST HAPPENED — the gate is what
+      // the `fetch` is gated on. Try the §9 step-4 FENCED RESTORE so the attempt becomes
+      // ordinarily reclaimable instead of stranding in `dispatching` until the sweep.
+      const restored = await deps.db.withOwnerContext(owner, (tx) =>
+        ex.restoreDispatchingToAccepted(tx, {
+          attemptId: args.attemptId,
+          claimToken: args.claim.claimToken,
+          leaseMs: deps.leaseMs,
+        }),
+      );
+      deps.log.warn(
+        { attempt_id: args.attemptId, restored },
+        'conversation executor: provenance gate rejected before any provider call',
+      );
+      return restored ? 'provenance_lost_restored' : 'stopped_before_dispatch';
+    }
+    if (!forwardStarted) {
+      // A KNOWN LOCAL failure: request construction or the gate raised before any transmission
+      // was attempted. Provably no POST — `failed`, not `outcome_unknown`.
+      deps.log.warn(
+        { attempt_id: args.attemptId, err_class: errClass(err) },
+        'conversation executor: local failure before the provider forward started',
+      );
+      return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'failed', 'provider_error', 'failed');
+    }
+    // ★ THE FORWARD WAS INVOKED AND NO PROVIDER RESPONSE ARRIVED. Whether bytes reached the
+    // provider is genuinely unknowable from here — a connection reset looks the same before and
+    // after the request was processed. `outcome_unknown` is the honest state; `failed` would
+    // assert non-processing, and an automatic re-drive would risk a SECOND execution.
+    deps.log.warn(
+      { attempt_id: args.attemptId, err_class: errClass(err) },
+      'conversation executor: provider fate unprovable after forward started',
+    );
+    return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'outcome_unknown', null, 'outcome_unknown');
+  } finally {
+    heartbeat.stop();
+  }
+}
+
+/** Raised by the durable gate so the provider packages abort BEFORE `fetch`. Carries no detail:
+ *  it is control flow, and the executor already knows why. */
+class ProvenanceGateRejected extends Error {
+  constructor() {
+    super('credential provenance gate rejected the dispatch');
+    this.name = 'ProvenanceGateRejected';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Provider dispatch — the SAME pipeline the direct routes use, entered from a second door
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+type DispatchHooks = {
+  beforeDispatch: () => Promise<void>;
+  onDispatchStart: () => void;
+  emitAuditEvent: (event: unknown) => Promise<void>;
+};
+
+type DispatchResult =
+  | { kind: 'blocked' }
+  | { kind: 'response'; status: number; bodyBytes: Buffer }
+  | { kind: 'stream'; status: number; chunks: AsyncIterable<Uint8Array>; finalize: () => Promise<void> };
+
+/**
+ * GOVERNED mode — `handleAnthropicGovernedMessages` / `handleOpenAIGovernedResponses`, the very
+ * functions `/governed/*` and `/v1/runs` call.
+ *
+ * ★ ONE EXECUTION SEMANTICS, THREE ENTRY PATHS. Nothing about DLP, tool classification, the
+ * enforcement matrix, outbound header policy, transport encoding or the v4 evidence envelope is
+ * re-implemented here. The handler is HTTP-independent by construction (the run orchestrator was
+ * already its second caller), so the conversation executor is simply its third. A worker-driven
+ * dispatch is therefore not a second-class path and cannot drift from the direct one.
+ *
+ * `resolveProviderKey` returns the ALREADY-RESOLVED in-memory credential: no PostgreSQL, no pool
+ * client, no KMS, no network inside the handler — the resolution happened before the boundary,
+ * as §9 step 3 requires.
+ */
+async function dispatchGoverned(
+  deps: ConversationExecutorDeps,
+  args: DispatchArgs,
+  hooks: DispatchHooks,
+): Promise<DispatchResult> {
+  const dispatchSignal = AbortSignal.timeout(deps.dispatchTimeoutMs);
+  const input = {
+    tenant: args.tenant,
+    rawBody: args.requestBody,
+    // The worker has no inbound HTTP request, so there are no client headers to relay. Passing
+    // only `content-type` is not a simplification — it is the STRONGEST form of "GovAI metadata
+    // never reaches the provider": there is nothing to leak, by construction.
+    inboundHeaders: { 'content-type': 'application/json' },
+    isStream: args.isStream,
+    // ★ BOTH CHANNELS, DELIBERATELY. The handler threads `dispatchSignal` into the NON-stream
+    // forward and `signal` into the STREAM one, and it is the only abort channel each path has.
+    // For the direct routes `signal` means "the client disconnected"; the worker has no client,
+    // so here it carries OUR dispatch bound — without it a governed stream would be unbounded.
+    dispatchSignal,
+    signal: dispatchSignal,
+    beforeDispatch: hooks.beforeDispatch,
+    onDispatchStart: hooks.onDispatchStart,
+  };
+  const providerDeps = {
+    upstreamBaseUrl: deps.upstreamBaseUrlFor(args.plan.provider),
+    resolveProviderKey: async () => ({
+      apiKey: args.apiKey,
+      source: 'tenant_provider_credential' as const,
+    }),
+    dlpScan: async (text: string) => ({
+      // Byte-identical to the direct governed routes' scan (`governed-anthropic.ts:63-77`):
+      // merged spans, not raw matches, so a bare CPF counts as ONE finding.
+      findings: mergeFindingSpans(detectAllBaseline(text)).map((f) => ({
+        detector: f.detector,
+        signal_class: f.signal_class,
+      })),
+    }),
+    emitAuditEvent: hooks.emitAuditEvent as (e: never) => Promise<void>,
+    preResolvedCredentialSource: 'tenant_provider_credential' as const,
+  };
+
+  const result =
+    args.plan.provider === 'anthropic'
+      ? await handleAnthropicGovernedMessages(input as never, providerDeps as never)
+      : await handleOpenAIGovernedResponses(input as never, providerDeps as never);
+
+  if (result.kind === 'blocked') return { kind: 'blocked' };
+  if (result.kind === 'non_stream') {
+    return { kind: 'response', status: result.status_code, bodyBytes: result.response_body_raw };
+  }
+  const streamResult = result;
+  return {
+    kind: 'stream',
+    status: streamResult.status_code,
+    chunks: readableToAsyncIterable(streamResult.body),
+    finalize: async () => {
+      // The handler owns the terminal evidence emit; `complete` is the truthful outcome because
+      // the SERVER drained to the end. There is no client connection to disconnect.
+      await streamResult.finalize('complete');
+    },
+  };
+}
+
+/**
+ * PASSTHROUGH mode — `forwardRaw` / `forwardStream` plus the shared v4 evidence builder.
+ *
+ * ★ NATIVE FIDELITY IS PRESERVED AND GOVERNANCE IS NOT APPLIED, which is what `passthrough`
+ * MEANS as a durable conversation lane (§3). The request body is forwarded exactly as stored;
+ * `enforcement_decision` is `observe`, matching `/passthrough/*` (`register-passthrough.ts:625`)
+ * — this surface audits, it does not enforce.
+ *
+ * ★ THE OUTBOUND HEADERS ARE SYNTHESIZED, NOT REWRITTEN. `rewritePassthroughHeaders` exists to
+ * STRIP a browser's inbound headers; the worker has none, so there is nothing to strip. Emitting
+ * exactly the provider's auth + version headers is both minimal and the strongest possible form
+ * of the "provider never sees GovAI metadata" rule.
+ */
+async function dispatchPassthrough(
+  deps: ConversationExecutorDeps,
+  args: DispatchArgs,
+  hooks: DispatchHooks,
+): Promise<DispatchResult> {
+  const isAnthropic = args.plan.provider === 'anthropic';
+  const headers: Record<string, string> = isAnthropic
+    ? {
+        'content-type': 'application/json',
+        'x-api-key': args.apiKey,
+        'anthropic-version': '2023-06-01',
+      }
+    : { 'content-type': 'application/json', authorization: `Bearer ${args.apiKey}` };
+
+  const capability = isAnthropic
+    ? args.isStream
+      ? ANTHROPIC_MESSAGES_STREAM
+      : ANTHROPIC_MESSAGES_CREATE
+    : args.isStream
+      ? OPENAI_RESPONSES_STREAM
+      : OPENAI_RESPONSES_CREATE;
+  const governance = resolveGovernance({
+    capability,
+    tenant_tier: args.tenant.tier,
+    operational_mode: args.tenant.operational_mode,
+    tool_classifications: [],
+    dlp_findings: [],
+    is_multipart: false,
+  });
+  const buildInvoked = isAnthropic
+    ? buildAnthropicPassthroughInvoked
+    : buildOpenAIPassthroughInvoked;
+  const allowlistVersion = isAnthropic ? ANTHROPIC_BETA_POLICY_VERSION : OPENAI_BETA_POLICY_VERSION;
+  const occurredAt = new Date();
+  const commonEvidence = {
+    tenant: args.tenant,
+    capability_id: capability.id,
+    capability_level: 'passthrough_audited' as const,
+    capability_canonical_level: args.plan.canonicalLevel,
+    native_endpoint: args.plan.nativePath,
+    native_method: 'POST' as const,
+    is_multipart: false,
+    base_risk_class: governance.base_risk_class,
+    effective_risk_class: governance.effective_risk_class,
+    risk_escalation_reasons: governance.risk_escalation_reasons,
+    enforcement_decision: 'observe' as const,
+    occurred_at: occurredAt,
+    credential_source: 'tenant_provider_credential',
+    allowlist_version: allowlistVersion,
+    body_forward_mode: 'raw' as const,
+  };
+
+  if (args.isStream) {
+    const forwardStream = isAnthropic ? anthropicForwardStream : openaiForwardStream;
+    const fwd = await forwardStream({
+      baseUrl: deps.upstreamBaseUrlFor(args.plan.provider),
+      concretePath: args.plan.nativePath,
+      method: 'POST',
+      headers,
+      body: args.requestBody,
+      signal: AbortSignal.timeout(deps.dispatchTimeoutMs),
+      beforeDispatch: hooks.beforeDispatch,
+      onDispatchStart: hooks.onDispatchStart,
+    });
+    return {
+      kind: 'stream',
+      status: fwd.status,
+      chunks: readableToAsyncIterable(fwd.body),
+      finalize: async () => {
+        const final = await fwd.finalize();
+        await hooks.emitAuditEvent(
+          buildInvoked({
+            ...commonEvidence,
+            is_stream: true,
+            native_request_hash: fwd.native_request_hash,
+            stream_final_hash: final.stream_final_hash,
+            stream_outcome: 'complete',
+            latency_ms: final.latency_ms,
+            status_code: fwd.status,
+            ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
+          } as never),
+        );
+      },
+    };
+  }
+
+  const forwardRaw = isAnthropic ? anthropicForwardRaw : openaiForwardRaw;
+  const fwd = await forwardRaw({
+    baseUrl: deps.upstreamBaseUrlFor(args.plan.provider),
+    pathTemplate: args.plan.nativePath,
+    concretePath: args.plan.nativePath,
+    method: 'POST',
+    headers,
+    body: args.requestBody,
+    signal: AbortSignal.timeout(deps.dispatchTimeoutMs),
+    beforeDispatch: hooks.beforeDispatch,
+    onDispatchStart: hooks.onDispatchStart,
+  });
+  await hooks.emitAuditEvent(
+    buildInvoked({
+      ...commonEvidence,
+      is_stream: false,
+      native_request_hash: fwd.native_request_hash,
+      native_response_hash: fwd.native_response_hash,
+      latency_ms: fwd.latency_ms,
+      status_code: fwd.status,
+      ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
+    } as never),
+  );
+  return { kind: 'response', status: fwd.status, bodyBytes: fwd.responseBody };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Durable output + COMMIT 5
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+async function recordResult(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  args: DispatchArgs,
+  result: DispatchResult,
+): Promise<ExecutionOutcome> {
+  if (result.kind === 'blocked') {
+    // GovAI governance refused BEFORE the provider was contacted: the gate is inside the
+    // forward, and a blocked result never reaches it. No POST, no provenance — `dispatching →
+    // rejected`, which 0031's graph admits and which carries no error_class by design.
+    return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'rejected', null, 'rejected');
+  }
+
+  // ★ EVERY SUCCESSFUL DISPATCH PASSES THROUGH `streaming`, non-stream included: 0031's forward
+  // graph (and §7's own diagram) admit `completed` ONLY from `streaming`. `streaming` is the
+  // schema's POST-POST RECEIVING state, not an SSE-only one.
+  const entered = await deps.db.withOwnerContext(owner, (tx) =>
+    ex.markStreaming(tx, { attemptId: args.attemptId, claimToken: args.claim.claimToken }),
+  );
+  if (!entered) {
+    // Fenced out between the POST and here — recovery already owns this attempt. The response is
+    // discarded with a diagnostic; it never becomes durable and never becomes context (§7.7's
+    // zombie rule). No provider exactly-once is claimed: the provider DID process this request.
+    deps.log.warn(
+      { attempt_id: args.attemptId },
+      'conversation executor: fenced out after the provider call; result discarded',
+    );
+    return 'finalize_fenced_out';
+  }
+
+  if (result.kind === 'stream') {
+    return recordStream(deps, owner, args, result);
+  }
+
+  const persisted = await persistOutputItem(
+    deps,
+    owner,
+    args,
+    'native_response',
+    result.bodyBytes,
+  );
+  if (!persisted) return 'finalize_fenced_out';
+  const { state, errorClass, outcome } = classifyStatus(result.status);
+  return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, state, errorClass, outcome);
+}
+
+/**
+ * SERVER-OWNED STREAM DRAIN (§9 step 5 / §27).
+ *
+ * ★ THE SERVER OWNS THE DRAIN, AND NO BROWSER IS INVOLVED AT ALL. In P0-C the executor is a
+ * detached process with no client connection, so "the browser disconnects" is not a case that
+ * can arise here — the stronger property holds trivially: execution never depended on a client.
+ * (The live relay endpoint that lets a client TAIL this stream is P0-E's; §10's minimum bar —
+ * "the server persists/drains the terminal result and a subsequent GET hydrates it" — is what
+ * P0-C implements, and it is met.)
+ *
+ * ★ THE DURABLE PREFIX ALWAYS REFLECTS WHAT WAS RECEIVED. Chunks are flushed at a byte
+ * threshold, in order, each through the FENCED append. Concatenating an attempt's chunks in
+ * `item_seq` order reproduces the provider's byte stream exactly — no reframing, no parsing, no
+ * normalization of provider SSE.
+ *
+ * ★ NO RESUMABILITY IS CLAIMED. Anthropic Messages streams are not re-cursorable (§10), so a
+ * lost stream is drained-and-persisted, never replayed.
+ */
+async function recordStream(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  args: DispatchArgs,
+  result: Extract<DispatchResult, { kind: 'stream' }>,
+): Promise<ExecutionOutcome> {
+  let buffer: Buffer[] = [];
+  let buffered = 0;
+  let fenced = false;
+
+  const flush = async (): Promise<void> => {
+    if (buffered === 0 || fenced) return;
+    const bytes = Buffer.concat(buffer);
+    buffer = [];
+    buffered = 0;
+    const ok = await persistOutputItem(deps, owner, args, 'native_stream_chunk', bytes);
+    if (!ok) fenced = true;
+  };
+
+  for await (const chunk of result.chunks) {
+    const bytes = Buffer.from(chunk);
+    buffer.push(bytes);
+    buffered += bytes.byteLength;
+    if (buffered >= deps.streamFlushBytes) await flush();
+    // A fenced-out writer STOPS reading: continuing would spend memory draining a stream whose
+    // output can never be persisted. The upstream connection closes with the reader.
+    if (fenced) break;
+  }
+  await flush();
+  // The terminal evidence emit happens whether or not the fence held: the provider WAS called,
+  // and the evidence describes that call, not our durable-write authority.
+  await result.finalize();
+
+  if (fenced) {
+    deps.log.warn(
+      { attempt_id: args.attemptId },
+      'conversation executor: fenced out mid-stream; durable prefix stopped',
+    );
+    return 'finalize_fenced_out';
+  }
+  const { state, errorClass, outcome } = classifyStatus(result.status);
+  return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, state, errorClass, outcome);
+}
+
+/** Encrypt (outside the transaction) then append, FENCED (inside one short transaction). */
+async function persistOutputItem(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  args: DispatchArgs,
+  itemType: 'native_response' | 'native_stream_chunk',
+  bytes: Buffer,
+): Promise<boolean> {
+  const enc = await encryptConversationContent(deps.kms, owner.orgId, bytes);
+  return deps.db.withOwnerContext(owner, async (tx) => {
+    const itemSeq = await ex.nextAttemptItemSeq(tx, args.attemptId);
+    const contentId = await insertWorkerContent(tx, owner, args.context.conversationId, enc);
+    return ex.appendFencedOutputItem(tx, {
+      attemptId: args.attemptId,
+      claimToken: args.claim.claimToken,
+      itemSeq,
+      itemType,
+      contentId,
+    });
+  });
+}
+
+async function insertWorkerContent(
+  tx: PoolClient,
+  owner: ConversationWorkerOwner,
+  conversationId: string,
+  enc: Awaited<ReturnType<typeof encryptConversationContent>>,
+): Promise<string> {
+  const r = await tx.query<{ id: string }>(
+    `INSERT INTO govai.ai_conversation_content
+       (org_id, owner_user_id, conversation_id, ciphertext, dek_wrapped,
+        kms_key_id, kms_key_version, content_hmac)
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::bytea, $5::bytea, $6::text, $7::integer, $8::bytea)
+     RETURNING id`,
+    [
+      owner.orgId,
+      owner.ownerUserId,
+      conversationId,
+      enc.ciphertext,
+      enc.dekWrapped,
+      enc.kmsKeyId,
+      enc.kmsKeyVersion,
+      enc.contentHmac,
+    ],
+  );
+  return r.rows[0]!.id;
+}
+
+/**
+ * The §7.4 taxonomy, applied to a DEFINITE provider response.
+ *
+ * A response — of ANY status — proves the provider processed the request, so nothing here is
+ * ever `outcome_unknown`. That state is reserved for the case where no response arrived at all.
+ */
+function classifyStatus(status: number): {
+  state: 'completed' | 'failed';
+  errorClass: ex.AttemptErrorClass | null;
+  outcome: ExecutionOutcome;
+} {
+  if (status >= 200 && status < 300) {
+    return { state: 'completed', errorClass: null, outcome: 'completed' };
+  }
+  if (status === 401 || status === 403) {
+    return { state: 'failed', errorClass: 'auth_rejected', outcome: 'failed' };
+  }
+  if (status === 413) {
+    return { state: 'failed', errorClass: 'request_too_large', outcome: 'failed' };
+  }
+  if (status === 429) {
+    return { state: 'failed', errorClass: 'rate_limited', outcome: 'failed' };
+  }
+  return { state: 'failed', errorClass: 'provider_error', outcome: 'failed' };
+}
+
+/**
+ * COMMIT 5 + the §8 QUEUE WAKE.
+ *
+ * Terminalization must ACTIVELY release the branch: "a queued turn never waits for luck". The
+ * causal-version bump is what makes a concurrently-building sibling detect that its context is
+ * stale (§7.8), and the branch's next `accepted` head becomes claimable in the same instant.
+ */
+async function finalizeAndWake(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  context: ex.ExecutionContext,
+  attemptId: string,
+  claimToken: string,
+  state: 'completed' | 'failed' | 'stopped' | 'rejected' | 'outcome_unknown',
+  errorClass: ex.AttemptErrorClass | null,
+  outcome: ExecutionOutcome,
+): Promise<ExecutionOutcome> {
+  const finalized = await deps.db.withOwnerContext(owner, async (tx) => {
+    const ok = await ex.finalizeAttempt(tx, { attemptId, claimToken, state, errorClass });
+    if (ok) {
+      await ex.bumpBranchCausalVersion(tx, {
+        conversationId: context.conversationId,
+        branchId: context.branchId,
+      });
+    }
+    return ok;
+  });
+  if (!finalized) {
+    deps.log.warn({ attempt_id: attemptId, state }, 'conversation executor: finalize fenced out');
+    return 'finalize_fenced_out';
+  }
+  return outcome;
+}
+
+/** Bump the branch's causal version after a recovery ratchet, so the queue advances. */
+async function wakeBranchAfterTerminal(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  attemptId: string,
+): Promise<void> {
+  await deps.db.withOwnerContext(owner, async (tx) => {
+    const context = await ex.readExecutionContext(tx, attemptId);
+    if (!context) return;
+    await ex.bumpBranchCausalVersion(tx, {
+      conversationId: context.conversationId,
+      branchId: context.branchId,
+    });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Heartbeat
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export type HeartbeatHandle = { stop(): void };
+
+/**
+ * §7.7 — the TIMER-DRIVEN lease renewal, running for the whole post-boundary window.
+ *
+ * ★ TIMER, NOT EVENT. A slow non-stream response, or a slow time-to-first-byte, produces NO pump
+ * iterations — so an event-driven renewal would let a perfectly healthy runner lose its lease and
+ * be ratcheted out from under itself. The timer keeps the lease alive precisely when there is
+ * nothing to observe.
+ *
+ * ★ IT CANNOT LEAK. `stop()` is called from the dispatch `finally`, on every path — success,
+ * failure, fence loss and throw alike. `unref()` additionally prevents a stray timer from holding
+ * the process open during shutdown.
+ *
+ * ★ IT CANNOT THROW INTO ANYTHING. Each tick is fully guarded: a database blip must not become an
+ * unhandled rejection on a timer callback, which has no caller to catch it. A tick that loses the
+ * fence stops the timer — the runner has no authority left to extend.
+ */
+function startHeartbeat(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  attemptId: string,
+  claimToken: string,
+): HeartbeatHandle {
+  let stopped = false;
+  const timer = setInterval(() => {
+    void (async () => {
+      if (stopped) return;
+      try {
+        const beat = await deps.db.withOwnerContext(owner, (tx) =>
+          ex.heartbeatClaim(tx, { attemptId, claimToken, leaseMs: deps.leaseMs }),
+        );
+        if (stopped) return;
+        if (!beat.extended) {
+          // The token was rotated, the lease already lapsed, or the attempt is terminal. There
+          // is nothing left to renew.
+          stop();
+          return;
+        }
+        if (beat.stopRequested) {
+          // P0-C exposes no public Stop endpoint, so this is reachable today only via a durable
+          // flag written directly to the row. It is READ here because the authority model must
+          // be complete before the command exists — and because the §13 contract requires Stop
+          // observation to be bounded by the heartbeat even when the provider emits nothing.
+          deps.log.info(
+            { attempt_id: attemptId },
+            'conversation executor: durable stop observed on the heartbeat tick',
+          );
+        }
+      } catch (err) {
+        deps.log.warn(
+          { attempt_id: attemptId, err_class: errClass(err) },
+          'conversation executor: heartbeat tick failed',
+        );
+      }
+    })();
+  }, deps.heartbeatIntervalMs);
+  timer.unref?.();
+
+  function stop(): void {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  }
+  return { stop };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Small helpers
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+async function readTenantFacts(
+  tx: PoolClient,
+  owner: ConversationWorkerOwner,
+): Promise<TenantFacts | null> {
+  const r = await tx.query<{ tier: TenantFacts['tier']; operational_mode: TenantFacts['operational_mode'] }>(
+    `SELECT tier, operational_mode FROM govai.orgs WHERE id = $1::uuid`,
+    [owner.orgId],
+  );
+  const row = r.rows[0];
+  if (!row) return null;
+  return {
+    org_id: owner.orgId,
+    user_id: owner.ownerUserId,
+    tier: row.tier,
+    operational_mode: row.operational_mode,
+  };
+}
+
+/** Error CLASS only — never the message. A provider/KMS/pg error message can carry a URL, a key
+ *  identifier or a fragment of a decrypted body, and these lines reach worker logs. */
+function errClass(err: unknown): string {
+  return err instanceof Error && typeof err.name === 'string' ? err.name : 'unknown';
+}
+
+async function* readableToAsyncIterable(
+  stream: ReadableStream<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
+  const reader = stream.getReader();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

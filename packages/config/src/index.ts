@@ -99,6 +99,48 @@ const EnvSchema = z.object({
     z.coerce.number().int().min(0).max(3_600_000).default(30_000),
   ),
   RUN_DISPATCH_RECOVERY_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+
+  // EP-AI-CONVERSATION-CONTINUITY-V1 P0-C — the detached conversation worker's execution knobs.
+  // Read ONLY by the dedicated worker entrypoint (`apps/api/src/conversation-worker/main.ts`);
+  // the request-serving API never consults them, because it never executes conversation turns.
+  // Every key is validated loud — none is an off-switch, so '' fails instead of silently
+  // becoming a default (the RUN_DISPATCH_* rule above, applied unchanged).
+  //
+  // ★ The LEASE/HEARTBEAT relationship is a CROSS-FIELD invariant and is therefore enforced
+  // where cross-field checks belong — `loadConversationWorkerRuntimeConfig` — not here: a
+  // per-key schema cannot express "heartbeat must be comfortably inside the lease", and a lease
+  // that expires between two ticks would let a healthy runner be recovered out from under
+  // itself.
+  CONVERSATION_WORKER_LEASE_MS: z.coerce.number().int().min(5_000).max(3_600_000).default(60_000),
+  CONVERSATION_WORKER_HEARTBEAT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(600_000)
+    .default(15_000),
+  // §7.7 rule (2) grace δ. min(0) is lawful (a zero grace is a valid operational choice), so the
+  // '' -> NaN preprocess is required for the same reason RUN_DISPATCH_RECOVERY_GRACE_MS needs it.
+  CONVERSATION_WORKER_RECOVERY_GRACE_MS: z.preprocess(
+    (v) => (v === '' ? Number.NaN : v),
+    z.coerce.number().int().min(0).max(3_600_000).default(30_000),
+  ),
+  CONVERSATION_WORKER_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(3_600_000)
+    .default(5_000),
+  CONVERSATION_WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(25),
+  CONVERSATION_WORKER_MAX_PAGES_PER_SWEEP: z.coerce.number().int().min(1).max(200).default(20),
+  // Bytes buffered before a streaming prefix is flushed durably. Small enough that a reload
+  // during a long stream shows real progress; large enough that a chatty SSE stream does not
+  // become one row per token.
+  CONVERSATION_WORKER_STREAM_FLUSH_BYTES: z.coerce
+    .number()
+    .int()
+    .min(512)
+    .max(1_048_576)
+    .default(16_384),
 });
 
 export type GovAIEnv = z.infer<typeof EnvSchema>;

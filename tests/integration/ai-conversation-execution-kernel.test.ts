@@ -1,0 +1,1582 @@
+// EP-AI-CONVERSATION-CONTINUITY-V1 P0-C — THE DURABLE EXECUTION KERNEL
+// (spec §7.7 claim/lease/fencing, §8 five-commit protocol, §9 dispatch boundary, §14 identity).
+//
+// This suite drives the REAL detached executor — the same `processCandidate` /
+// `runConversationSweepOnce` the worker process runs — against the REAL worker database identity
+// (`govai_conversation_worker`) and the hermetic provider-protocol server.
+//
+// ★ DETERMINISTIC BY CONSTRUCTION. The sweep is invoked explicitly; no timer is started, exactly
+// as the P0.3-A run-dispatch recovery suite does (`RUN_DISPATCH_RECOVERY_ENABLED: false`). A test
+// that waited on an interval would be a flaky test.
+//
+// ★ WHAT IS NOT CLAIMED, ANYWHERE IN THIS FILE: provider exactly-once. The protocol guarantees
+// at-most-one INTENTIONAL dispatch, durable-state integrity under a fence, and honest ambiguity.
+// It does not — and cannot — guarantee that a provider which received bytes did not process them.
+
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { Pool } from 'pg';
+import { DevKms } from '@govai/core-identity';
+import {
+  startStack,
+  stopStack,
+  seedOrg,
+  seedProviderCredential,
+  inject,
+  type SeededOrg,
+  type Stack,
+} from './helpers/server-fixture.js';
+import { migrate } from './setup.js';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import {
+  createConversationWorkerDb,
+  type ConversationWorkerDb,
+} from '../../apps/api/src/pipeline/ai-conversation-worker.js';
+import {
+  processCandidate,
+  type ConversationExecutorDeps,
+  type ExecutionOutcome,
+} from '../../apps/api/src/ai-conversations/execution/execute-turn.js';
+import { runConversationSweepOnce } from '../../apps/api/src/ai-conversations/execution/runner.js';
+import { discoverRecoveryCandidates } from '../../apps/api/src/pipeline/ai-conversation-recovery-discovery.js';
+import {
+  seedConversation,
+  seedTurn,
+  seedAttempt,
+} from './helpers/ai-conversation-seed.js';
+
+let stack: Stack;
+let org: SeededOrg;
+let db: ConversationWorkerDb;
+let probe: Pool;
+let deps: ConversationExecutorDeps;
+let credentialId: string;
+
+const LEASE_MS = 60_000;
+const GRACE_MS = 1_000;
+
+const silentLog = {
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+} as unknown as ConversationExecutorDeps['log'];
+
+const nativeRequest = (text: string, stream = false) => ({
+  model: 'claude-test',
+  max_tokens: 64,
+  messages: [{ role: 'user', content: text }],
+  ...(stream ? { stream: true } : {}),
+});
+
+const openaiRequest = (text: string, stream = false) => ({
+  model: 'gpt-test',
+  input: text,
+  ...(stream ? { stream: true } : {}),
+});
+
+async function createConversation(opts: {
+  mode?: 'governed' | 'passthrough';
+  provider?: 'anthropic' | 'openai';
+  surface?: string;
+}): Promise<{ id: string; branchId: string }> {
+  const provider = opts.provider ?? 'anthropic';
+  const res = await inject(stack, 'POST', '/v1/ai/conversations', org.api_key, {
+    mode: opts.mode ?? 'governed',
+    provider,
+    surface: opts.surface ?? (provider === 'anthropic' ? 'anthropic_messages' : 'openai_responses'),
+    model: provider === 'anthropic' ? 'claude-test' : 'gpt-test',
+  });
+  expect(res.statusCode).toBe(201);
+  const body = res.body as { id: string; root_branch: { id: string } };
+  return { id: body.id, branchId: body.root_branch.id };
+}
+
+async function send(
+  conversationId: string,
+  branchId: string,
+  request: unknown,
+): Promise<{ turnId: string; attemptId: string }> {
+  const res = await inject(stack, 'POST', `/v1/ai/conversations/${conversationId}/turns`, org.api_key, {
+    client_turn_id: randomUUID(),
+    branch_id: branchId,
+    native_request: request,
+  });
+  expect(res.statusCode).toBe(201);
+  const body = res.body as { id: string; current_attempt_id: string };
+  return { turnId: body.id, attemptId: body.current_attempt_id };
+}
+
+type AttemptRow = {
+  state: string;
+  claim_token: string | null;
+  claimant: string | null;
+  stop_requested: boolean;
+  dispatch_boundary_committed_at: Date | null;
+  provider_credential_id: string | null;
+  govai_request_id: string | null;
+  causal_version_at_build: string | null;
+  error_class: string | null;
+  terminal_at: Date | null;
+};
+
+async function attempt(attemptId: string): Promise<AttemptRow> {
+  const r = await stack.db.adminPool.query<AttemptRow>(
+    `SELECT state, claim_token::text, claimant, stop_requested, dispatch_boundary_committed_at,
+            provider_credential_id::text, govai_request_id::text, causal_version_at_build::text,
+            error_class, terminal_at
+       FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+    [attemptId],
+  );
+  return r.rows[0]!;
+}
+
+/** Drive ONE sweep and return the outcome recorded for `attemptId`, if it was processed. */
+async function sweep(): Promise<Record<string, number>> {
+  const report = await runConversationSweepOnce(deps, {
+    batchSize: 50,
+    intervalMs: 1_000,
+    maxPagesPerSweep: 5,
+  });
+  return report.outcomes;
+}
+
+/** Process exactly the candidate for `attemptId` (skipping any other pending work). */
+async function driveOne(attemptId: string): Promise<ExecutionOutcome | 'not_discovered'> {
+  const candidates = await discoverRecoveryCandidates(db, {
+    recoveryGraceMs: GRACE_MS,
+    limit: 200,
+  });
+  const c = candidates.find((x) => x.attemptId === attemptId);
+  if (!c) return 'not_discovered';
+  return processCandidate(deps, {
+    orgId: c.orgId,
+    ownerUserId: c.ownerUserId,
+    conversationId: c.conversationId,
+    attemptId: c.attemptId,
+    state: c.state,
+    reason: c.reason,
+    claimToken: c.claimToken,
+    isBranchHead: c.isBranchHead,
+  });
+}
+
+/**
+ * Run `fn` inside an owner-scoped transaction on the RAW worker probe pool, and ALWAYS roll back.
+ *
+ * ★ THE `finally` IS LOAD-BEARING. These tests deliberately provoke `42501`, which ABORTS the
+ * transaction. A client released while aborted poisons the pooled connection, and the NEXT test
+ * to borrow it fails with "current transaction is aborted" — a failure that has nothing to do
+ * with what that test is asserting. (Observed exactly once during development; this wrapper is
+ * the fix.)
+ */
+async function withProbeTx(fn: (c: import('pg').PoolClient) => Promise<void>): Promise<void> {
+  const c = await probe.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query("SELECT set_config('app.org_id', $1, true)", [org.org_id]);
+    await c.query("SELECT set_config('app.user_id', $1, true)", [org.user_id]);
+    await fn(c);
+  } finally {
+    await c.query('ROLLBACK').catch(() => undefined);
+    c.release();
+  }
+}
+
+/**
+ * A durable conversation whose branch surface is NOT dispatchable by P0-C, seeded DIRECTLY.
+ *
+ * ★ WHY NOT "UPDATE the branch's surface". 0031's branches guard FREEZES provider/surface/model
+ * for a branch's whole lifetime and rejects any other change — correctly, and it proved it by
+ * rejecting an earlier version of this helper. So the only faithful way to produce this state is
+ * to CREATE it that way, which is also the realistic shape: a conversation created before the
+ * dispatch registry recognised its surface.
+ */
+async function seedUndrivableTurn(): Promise<{ attemptId: string }> {
+  const ids = { orgId: org.org_id, ownerUserId: org.user_id };
+  // `seedConversation` writes surface 'anthropic_api' — a real token in this repo, and NOT a
+  // P0-C dispatch surface.
+  const { conversationId, branchId } = await seedConversation(stack.db.adminPool, ids);
+  const { turnId } = await seedTurn(stack.db.adminPool, ids, conversationId, branchId, 1);
+  const attemptId = await seedAttempt(stack.db.adminPool, ids, conversationId, branchId, turnId);
+  await stack.db.adminPool.query(
+    `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
+    [attemptId, turnId],
+  );
+  return { attemptId };
+}
+
+/** Everything this attempt durably persisted as output, concatenated in item_seq order. */
+async function outputText(attemptId: string): Promise<string> {
+  const res = await inject(
+    stack,
+    'GET',
+    `/v1/ai/conversations/${(await lineage(attemptId)).conversation_id}/turns/${(await lineage(attemptId)).turn_id}`,
+    org.api_key,
+  );
+  const body = res.body as {
+    attempts: Array<{ id: string; output_items: Array<{ item_type: string; native: unknown; text: string | null }> }>;
+  };
+  const a = body.attempts.find((x) => x.id === attemptId);
+  if (!a) return '';
+  return a.output_items
+    .map((i) => (i.item_type === 'native_stream_chunk' ? (i.text ?? '') : JSON.stringify(i.native)))
+    .join('');
+}
+
+async function lineage(attemptId: string): Promise<{ conversation_id: string; turn_id: string; branch_id: string }> {
+  const r = await stack.db.adminPool.query<{ conversation_id: string; turn_id: string; branch_id: string }>(
+    `SELECT conversation_id::text, turn_id::text, branch_id::text
+       FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+    [attemptId],
+  );
+  return r.rows[0]!;
+}
+
+beforeAll(async () => {
+  stack = await startStack();
+  // Provision the worker role LOGIN through the SAME shared lifecycle production uses.
+  await migrate(
+    stack.db.adminUrl,
+    stack.db.appPassword,
+    undefined,
+    undefined,
+    stack.db.conversationWorkerPassword,
+  );
+  org = await seedOrg(stack);
+  const cred = await seedProviderCredential(stack, {
+    orgId: org.org_id,
+    provider: 'anthropic',
+    plaintextKey: 'sk-ant-p0c-exec',
+    setByUserId: org.user_id,
+  });
+  credentialId = cred.id;
+  await seedProviderCredential(stack, {
+    orgId: org.org_id,
+    provider: 'openai',
+    plaintextKey: 'sk-openai-p0c-exec',
+    setByUserId: org.user_id,
+  });
+
+  db = createConversationWorkerDb({
+    config: { connectionString: stack.db.conversationWorkerUrl, workerId: 'p0c-test' },
+    // The capability's `log` is Fastify's full logger shape; the executor needs only three
+    // methods. One cast at the seam, rather than a fake logger in every test.
+    log: silentLog as unknown as Parameters<typeof createConversationWorkerDb>[0]['log'],
+  });
+  probe = new Pool({ connectionString: stack.db.conversationWorkerUrl, max: 2 });
+  probe.on('error', () => undefined);
+
+  deps = {
+    db,
+    kms: new DevKms(stack.seed),
+    upstreamBaseUrlFor: () => stack.provider.baseUrl,
+    log: silentLog,
+    claimant: 'p0c-test-worker',
+    leaseMs: LEASE_MS,
+    recoveryGraceMs: GRACE_MS,
+    heartbeatIntervalMs: 15_000,
+    dispatchTimeoutMs: 10_000,
+    streamFlushBytes: 64,
+  };
+}, 300_000);
+
+afterAll(async () => {
+  await db?.close().catch(() => undefined);
+  await probe?.end().catch(() => undefined);
+  if (stack) await stopStack(stack);
+});
+
+beforeEach(() => {
+  stack.provider.clearRecordedRequests();
+  stack.provider.clearRecordedRequestHeaders();
+});
+
+/**
+ * Run `fn` with the executor pointed at a TEST-CONTROLLED provider endpoint.
+ *
+ * ★ WHY NOT THE HERMETIC FIXTURE'S OVERRIDES. Every override there
+ * (`setErrorOverride` / `setDestroyOverride` / `setParkOverride`, and the `x-test-error`
+ * channel) is keyed on `x-test-workspace-id` — a GovAI test header the DIRECT routes forward
+ * only in `NODE_ENV=test` on a loopback URL. The detached worker deliberately sends NO GovAI
+ * metadata upstream (E1.2 asserts exactly that), so it can never trigger them. Injecting the
+ * base URL is therefore not a shortcut around the fixture; it is the only way to fault-inject
+ * against a client whose whole contract is to send nothing identifying.
+ */
+async function withProviderBehaviour<T>(
+  handler: (req: IncomingMessage, res: ServerResponse) => void,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  const original = deps.upstreamBaseUrlFor;
+  deps.upstreamBaseUrlFor = () => `http://127.0.0.1:${port}`;
+  try {
+    return await fn();
+  } finally {
+    deps.upstreamBaseUrlFor = original;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// HAPPY PATH — the full five-commit protocol
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('E1 — the five-commit protocol, end to end', () => {
+  it('E1.1 — governed non-stream: accepted → dispatching → streaming → completed, output durable', async () => {
+    const conv = await createConversation({ mode: 'governed' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('E1.1'));
+
+    expect(await driveOne(attemptId)).toBe('completed');
+
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('completed');
+    expect(a.terminal_at).not.toBeNull();
+    expect(a.error_class).toBeNull();
+    // §8: the boundary was crossed and provenance was recorded — BOTH, and both before the POST.
+    expect(a.dispatch_boundary_committed_at).not.toBeNull();
+    expect(a.provider_credential_id).toBe(credentialId);
+    // §14.1: the request identity was minted at the boundary, exactly once.
+    expect(a.govai_request_id).toMatch(/^[0-9a-f-]{36}$/);
+    // §7.8: the as-built causal version was stamped by the crossing.
+    expect(a.causal_version_at_build).toBe('0');
+
+    // Exactly ONE provider request, to the right endpoint.
+    expect(stack.provider.recordedRequests).toHaveLength(1);
+    expect(stack.provider.recordedRequests[0]!.url).toBe('/v1/messages');
+    expect(stack.provider.recordedRequests[0]!.method).toBe('POST');
+
+    // The answer is durable and provider-native.
+    const text = await outputText(attemptId);
+    expect(text).toContain('echo: E1.1');
+
+    // §7.8: terminalization bumped the branch's causal version, releasing the queue.
+    const branch = await stack.db.adminPool.query<{ v: string }>(
+      `SELECT causal_version::text AS v FROM govai.ai_conversation_branches WHERE id = $1::uuid`,
+      [conv.branchId],
+    );
+    expect(branch.rows[0]!.v).toBe('1');
+  });
+
+  it('E1.2 — the worker POSTs the EXACT durable native request, with no GovAI metadata', async () => {
+    const conv = await createConversation({ mode: 'passthrough' });
+    const request = nativeRequest('E1.2-fidelity');
+    await send(conv.id, conv.branchId, request);
+    await sweep();
+
+    const headers = stack.provider.recordedRequestHeaders;
+    expect(headers).toHaveLength(1);
+    const h = headers[0]! as Record<string, string>;
+    // Provider auth is present; GovAI's own identity NEVER is.
+    expect(h['x-api-key']).toBe('sk-ant-p0c-exec');
+    for (const banned of [
+      'x-govai-api-key',
+      'x-govai-idempotency-key',
+      'x-govai-run-idempotency-key',
+      'x-govai-conversation-id',
+      'x-govai-turn-id',
+      'x-govai-request-id',
+      'authorization',
+    ]) {
+      expect({ banned, present: banned in h }).toEqual({ banned, present: false });
+    }
+  });
+
+  it('E1.3 — governed STREAM: the server drains it and the durable prefix reproduces the bytes', async () => {
+    const conv = await createConversation({ mode: 'governed' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('E1.3-stream', true));
+
+    expect(await driveOne(attemptId)).toBe('completed');
+    expect((await attempt(attemptId)).state).toBe('completed');
+
+    // ★ THE CHUNKS CONCATENATE BACK INTO THE PROVIDER'S OWN BYTES — no reparse, no reframing, no
+    // reduction to role+text. Asserting the literal `data: {...}\n\n` SSE framing (rather than a
+    // decoded projection) is what makes this a fidelity test: any normalization would break it.
+    const text = await outputText(attemptId);
+    expect(text).toContain('data: {"type":"message_start"');
+    expect(text).toContain('"type":"content_block_delta"');
+    expect(text).toContain('echo: E1.3-stream');
+    expect(text.trimEnd().endsWith('data: {"type":"message_stop"}')).toBe(true);
+    // Every event is separated by the SSE blank line, exactly as the provider emitted it.
+    expect(text.split('\n\n').filter((p) => p.startsWith('data: ')).length).toBe(6);
+
+    // Persisted as ordered stream chunks, never as a reshaped document.
+    const items = await stack.db.adminPool.query<{ n: string; types: string }>(
+      `SELECT count(*)::text AS n, string_agg(DISTINCT item_type, ',') AS types
+         FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+      [attemptId],
+    );
+    expect(Number(items.rows[0]!.n)).toBeGreaterThanOrEqual(1);
+    expect(items.rows[0]!.types).toBe('native_stream_chunk');
+    // NOTE ON COUNT: the hermetic fixture returns its whole SSE body in ONE transport chunk, so
+    // the durable prefix is one row here. Incremental flushing across MULTIPLE chunks is proven
+    // in E1.8, which drives an endpoint that really does emit over time.
+  });
+
+  it('E1.8 — a MULTI-CHUNK stream is persisted INCREMENTALLY, in order, losing nothing', async () => {
+    // ★ THE POINT OF AN INCREMENTAL PREFIX. "The durable prefix always reflects what was
+    // relayed" is only meaningful if a stream that arrives over time is written over time — a
+    // reload during a long answer must show real progress, not nothing-then-everything.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const parts = Array.from({ length: 8 }, (_, i) => `data: {"i":${i},"pad":"${'y'.repeat(40)}"}\n\n`);
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('E1.8', true));
+
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+          let i = 0;
+          const tick = (): void => {
+            if (i >= parts.length) {
+              res.end();
+              return;
+            }
+            res.write(parts[i]!);
+            i += 1;
+            setTimeout(tick, 5); // separate transport chunks, genuinely spread over time
+          };
+          tick();
+        });
+      },
+      () => driveOne(attemptId),
+    );
+
+    expect((await attempt(attemptId)).state).toBe('completed');
+    // MORE THAN ONE durable row (streamFlushBytes = 64 in this suite, each part ~60 bytes)...
+    const rows = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+      [attemptId],
+    );
+    expect(Number(rows.rows[0]!.n)).toBeGreaterThan(1);
+    // ...and concatenating them in item_seq order reproduces the provider's bytes EXACTLY —
+    // nothing dropped at a flush boundary, nothing reordered, nothing duplicated.
+    expect(await outputText(attemptId)).toBe(parts.join(''));
+  });
+
+  it('E1.4 — passthrough OpenAI /v1/responses executes on its own endpoint', async () => {
+    const conv = await createConversation({ mode: 'passthrough', provider: 'openai' });
+    const { attemptId } = await send(conv.id, conv.branchId, openaiRequest('E1.4'));
+    expect(await driveOne(attemptId)).toBe('completed');
+    expect(stack.provider.recordedRequests.map((r) => r.url)).toEqual(['/v1/responses']);
+    const h = stack.provider.recordedRequestHeaders[0]! as Record<string, string>;
+    expect(h['authorization']).toBe('Bearer sk-openai-p0c-exec');
+    expect('x-api-key' in h).toBe(false); // never the other provider's auth scheme
+  });
+
+  it('E1.5 — a provider 4xx/5xx maps to the §7.4 taxonomy, and is NEVER outcome_unknown', async () => {
+    // ★ A RESPONSE — OF ANY STATUS — PROVES THE PROVIDER PROCESSED THE REQUEST. `outcome_unknown`
+    // is reserved for the case where NO response arrived at all. Conflating the two would either
+    // fabricate ambiguity out of an ordinary rejection, or hide a genuinely unknown fate.
+    for (const [status, expected] of [
+      [401, 'auth_rejected'],
+      [403, 'auth_rejected'],
+      [413, 'request_too_large'],
+      [429, 'rate_limited'],
+      [500, 'provider_error'],
+      [503, 'provider_error'],
+    ] as const) {
+      const conv = await createConversation({ mode: 'passthrough' });
+      const { attemptId } = await send(conv.id, conv.branchId, nativeRequest(`E1.5-${status}`));
+      const outcome = await withProviderBehaviour(
+        (_req, res) => {
+          res.writeHead(status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'simulated', status } }));
+        },
+        () => driveOne(attemptId),
+      );
+      const a = await attempt(attemptId);
+      expect({ status, outcome, state: a.state, error_class: a.error_class }).toEqual({
+        status,
+        outcome: 'failed',
+        state: 'failed',
+        error_class: expected,
+      });
+      // The provider DID answer, so provenance is present and the fate is not ambiguous.
+      expect(a.provider_credential_id).toBe(credentialId);
+      expect(a.state).not.toBe('outcome_unknown');
+    }
+  });
+
+  it('E1.6 — a 2xx completes, and the response body is stored VERBATIM', async () => {
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('E1.6'));
+    const body = { id: 'msg_verbatim', content: [{ type: 'text', text: 'exact bytes' }], odd: [1, null, true] };
+    await withProviderBehaviour(
+      (_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      },
+      () => driveOne(attemptId),
+    );
+    expect((await attempt(attemptId)).state).toBe('completed');
+    // No reshaping, no role+text reduction — the provider's own document, round-tripped.
+    expect(JSON.parse(await outputText(attemptId))).toEqual(body);
+  });
+
+  it('E1.7 — the worker forwards the EXACT durable request bytes it stored', async () => {
+    const conv = await createConversation({ mode: 'passthrough' });
+    const request = { model: 'claude-test', max_tokens: 7, messages: [{ role: 'user', content: 'E1.7' }] };
+    const { attemptId } = await send(conv.id, conv.branchId, request);
+    let received = '';
+    await withProviderBehaviour(
+      (req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          received = Buffer.concat(chunks).toString('utf8');
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"ok":true}');
+        });
+      },
+      () => driveOne(attemptId),
+    );
+    // Byte-for-byte the stored rendering: every key, every value, the client's own key ORDER.
+    expect(received).toBe(JSON.stringify(request));
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// CRASH-WINDOW MATRIX (§30)
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('C — the crash-window matrix', () => {
+  it('C0 — a crash before the reservation commits leaves NO durable turn', async () => {
+    const conv = await createConversation({});
+    // A reservation that fails mid-transaction (here: a rolled-back candidate) leaves nothing.
+    const before = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_turns WHERE conversation_id = $1::uuid`,
+      [conv.id],
+    );
+    const bad = await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, {
+      client_turn_id: randomUUID(),
+      branch_id: randomUUID(), // a branch that does not exist: the transaction aborts
+      native_request: nativeRequest('C0'),
+    });
+    expect(bad.statusCode).toBe(404);
+    const after = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_turns WHERE conversation_id = $1::uuid`,
+      [conv.id],
+    );
+    expect(after.rows[0]!.n).toBe(before.rows[0]!.n);
+    // And no orphan content row survived the rollback either.
+    const content = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_content WHERE conversation_id = $1::uuid`,
+      [conv.id],
+    );
+    expect(content.rows[0]!.n).toBe('0');
+  });
+
+  it('C1 — a crash after the reservation, before any claim: the turn is DISCOVERABLE and claimable', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C1'));
+    const candidates = await discoverRecoveryCandidates(db, { recoveryGraceMs: GRACE_MS, limit: 200 });
+    const mine = candidates.find((c) => c.attemptId === attemptId);
+    expect(mine).toBeDefined();
+    // The unclaimed head arm — NOT deadline-gated (§8), which is what makes a fresh reservation
+    // claimable at once rather than after a lease that never existed.
+    expect(mine!.reason).toBe('queued_head');
+    expect(mine!.claimToken).toBeNull();
+    expect(mine!.isBranchHead).toBe(true);
+  });
+
+  it('C2 — a crash after the CLAIM, before the boundary: lease expiry rotates, old claimant fenced, NO POST', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C2'));
+    // A claimant took the turn and died. Age its lease past expiry.
+    const stale = randomUUID();
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET claim_token = $2::uuid, claimant = 'dead-worker',
+              claim_deadline_at = now() - interval '5 minutes', heartbeat_at = now() - interval '5 minutes'
+        WHERE id = $1::uuid`,
+      [attemptId, stale],
+    );
+
+    const outcome = await driveOne(attemptId);
+    expect(outcome).toBe('completed'); // rotated, then driven to completion by THIS worker
+
+    const a = await attempt(attemptId);
+    // ★ THE ROTATION IS THE FENCE: the dead claimant's token is gone, so none of its writes can
+    // ever match a row again.
+    expect(a.claim_token).not.toBe(stale);
+    // Exactly one POST — the dead claimant never made one.
+    expect(stack.provider.recordedRequests).toHaveLength(1);
+  });
+
+  it('C3 — a crash after the boundary, before provenance: ¬P PROVES no POST, so it is restorable', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C3'));
+    const stale = randomUUID();
+    // Post-boundary, provenance ABSENT, lease elapsed past the grace.
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET claim_token = $2::uuid, claimant = 'dead-worker',
+              claim_deadline_at = now() - interval '5 minutes', heartbeat_at = now() - interval '5 minutes'
+        WHERE id = $1::uuid`,
+      [attemptId, stale],
+    );
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'dispatching', dispatch_boundary_committed_at = now(),
+              govai_request_id = gen_random_uuid(), causal_version_at_build = 0
+        WHERE id = $1::uuid`,
+      [attemptId],
+    );
+
+    const outcome = await driveOne(attemptId);
+    // Restored to `accepted` under a ROTATED token, then driven — never reported ambiguous.
+    expect(outcome).toBe('completed');
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('completed');
+    expect(a.claim_token).not.toBe(stale);
+    // §14.1: the restore RETAINED the boundary stamp and the request identity (write-once).
+    expect(a.dispatch_boundary_committed_at).not.toBeNull();
+    expect(stack.provider.recordedRequests).toHaveLength(1);
+  });
+
+  it('C4 — a crash after PROVENANCE: a POST may exist, so it is outcome_unknown and NEVER re-driven', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C4'));
+    const stale = randomUUID();
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET claim_token = $2::uuid, claimant = 'dead-worker',
+              claim_deadline_at = now() - interval '5 minutes', heartbeat_at = now() - interval '5 minutes'
+        WHERE id = $1::uuid`,
+      [attemptId, stale],
+    );
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'dispatching', dispatch_boundary_committed_at = now(),
+              govai_request_id = gen_random_uuid(), causal_version_at_build = 0
+        WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts SET provider_credential_id = $2::uuid WHERE id = $1::uuid`,
+      [attemptId, credentialId],
+    );
+
+    const outcome = await driveOne(attemptId);
+    expect(outcome).toBe('ratcheted_outcome_unknown');
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('outcome_unknown');
+    expect(a.error_class).toBeNull(); // NOT `failed`: nobody can assert non-processing here
+    expect(a.terminal_at).not.toBeNull();
+    // ★ NO RE-DRIVE. Re-dispatching a possibly-executed request is exactly the duplicate this
+    // protocol exists to prevent.
+    expect(stack.provider.recordedRequests).toEqual([]);
+    // And it STAYS terminal: re-offering this exact attempt to the executor does nothing, and
+    // in particular issues no provider request. (Scoped to THIS attempt on purpose — a global
+    // sweep also drives every other pending turn in the suite, so a global request count would
+    // prove nothing here.)
+    const before = stack.provider.recordedRequests.length;
+    const again = await driveOne(attemptId);
+    expect(again).toBe('not_discovered'); // terminal attempts are not recovery candidates at all
+    expect(stack.provider.recordedRequests.length).toBe(before);
+    expect((await attempt(attemptId)).state).toBe('outcome_unknown');
+  });
+
+  it('C5 — the provider connection dies mid-flight: outcome_unknown, not failed', async () => {
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C5'));
+    // The endpoint accepts the request and then DESTROYS the socket without writing any HTTP
+    // response: the forward was provably invoked, and whether the provider processed the bytes
+    // is genuinely unknowable from here.
+    const outcome = await withProviderBehaviour(
+      (req) => {
+        req.on('data', () => undefined);
+        req.on('end', () => req.socket.destroy());
+      },
+      () => driveOne(attemptId),
+    );
+    expect(outcome).toBe('outcome_unknown');
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('outcome_unknown');
+    expect(a.error_class).toBeNull();
+    // Provenance IS present — commit 4 ran before the POST, which is what the CHECK requires.
+    expect(a.provider_credential_id).toBe(credentialId);
+  });
+
+  it('C6 — a terminal provider response the fence rejects is DISCARDED, never written', async () => {
+    // The §7.7 zombie: a runner completes its POST but recovery rotated its token meanwhile.
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C6'));
+    const myToken = randomUUID();
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET claim_token = $2::uuid, claimant = 'zombie', claim_deadline_at = now() + interval '5 minutes'
+        WHERE id = $1::uuid`,
+      [attemptId, myToken],
+    );
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    // The zombie holds `myToken`; recovery now rotates it out from under him.
+    const rotated = randomUUID();
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts SET claim_token = $2::uuid, claimant = 'recovery' WHERE id = $1::uuid`,
+      [attemptId, rotated],
+    );
+    // EVERY durable write the zombie could still attempt loses its fence.
+    await db.withOwnerContext({ orgId: org.org_id, ownerUserId: org.user_id }, async (tx) => {
+      expect(await ex.markStreaming(tx, { attemptId, claimToken: myToken })).toBe(false);
+      expect(
+        await ex.appendFencedOutputItem(tx, {
+          attemptId,
+          claimToken: myToken,
+          itemSeq: 1,
+          itemType: 'native_response',
+          contentId: randomUUID(),
+        }),
+      ).toBe(false);
+      expect(
+        await ex.finalizeAttempt(tx, { attemptId, claimToken: myToken, state: 'completed', errorClass: null }),
+      ).toBe(false);
+      expect(
+        await ex.heartbeatClaim(tx, { attemptId, claimToken: myToken, leaseMs: LEASE_MS }),
+      ).toMatchObject({ extended: false });
+      expect(
+        await ex.commitCredentialProvenance(tx, {
+          attemptId,
+          claimToken: myToken,
+          providerCredentialId: credentialId,
+          provider: 'anthropic',
+        }),
+      ).toBe(false);
+    });
+    // Its output never became durable and never became context.
+    const items = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+      [attemptId],
+    );
+    expect(items.rows[0]!.n).toBe('0');
+    expect((await attempt(attemptId)).state).toBe('accepted');
+  });
+
+  it('C7 — a browser disconnect changes nothing: execution never belonged to a connection', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C7'));
+    // The sending HTTP request is long over. The worker — a different process boundary entirely —
+    // drives the turn to completion.
+    expect(await driveOne(attemptId)).toBe('completed');
+    expect((await attempt(attemptId)).state).toBe('completed');
+    expect(await outputText(attemptId)).toContain('echo: C7');
+  });
+
+  it('C8 — a STALE worker that resumes after rotation loses EVERY durable mutation', async () => {
+    // Covered write-by-write in C6; here as the end-to-end statement: after a rotation, a stale
+    // claimant driving the full protocol accomplishes nothing durable.
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('C8'));
+    const stale = randomUUID();
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET claim_token = $2::uuid, claimant = 'stale',
+              claim_deadline_at = now() - interval '5 minutes'
+        WHERE id = $1::uuid`,
+      [attemptId, stale],
+    );
+    await driveOne(attemptId); // rotates + drives under a NEW token
+    const after = await attempt(attemptId);
+    expect(after.claim_token).not.toBe(stale);
+
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    await db.withOwnerContext({ orgId: org.org_id, ownerUserId: org.user_id }, async (tx) => {
+      expect(
+        await ex.finalizeAttempt(tx, { attemptId, claimToken: stale, state: 'failed', errorClass: 'provider_error' }),
+      ).toBe(false);
+      expect(
+        await ex.restoreDispatchingToAccepted(tx, { attemptId, claimToken: stale, leaseMs: LEASE_MS }),
+      ).toBe(false);
+    });
+    expect((await attempt(attemptId)).state).toBe('completed'); // untouched by the stale worker
+  });
+
+  it('C9 — a duplicate SEND while the turn is running replays it, and never dispatches twice', async () => {
+    const conv = await createConversation({});
+    const clientTurnId = randomUUID();
+    const body = {
+      client_turn_id: clientTurnId,
+      branch_id: conv.branchId,
+      native_request: nativeRequest('C9'),
+    };
+    const first = await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, body);
+    const turn = first.body as { id: string; current_attempt_id: string };
+    expect(await driveOne(turn.current_attempt_id)).toBe('completed');
+    expect(stack.provider.recordedRequests).toHaveLength(1);
+
+    // A duplicate arriving AFTER completion replays the CURRENT durable state — not a cached
+    // copy of the original 201, and certainly not a second execution.
+    const dup = await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, body);
+    expect(dup.statusCode).toBe(200);
+    const dupBody = dup.body as { id: string; attempts: Array<{ state: string }> };
+    expect(dupBody.id).toBe(turn.id);
+    expect(dupBody.attempts[0]!.state).toBe('completed');
+    expect(stack.provider.recordedRequests).toHaveLength(1); // still ONE
+  });
+
+  it('C10 — two distinct turns on ONE branch: both reserve, only the HEAD dispatches', async () => {
+    const conv = await createConversation({});
+    const t1 = await send(conv.id, conv.branchId, nativeRequest('C10-first'));
+    const t2 = await send(conv.id, conv.branchId, nativeRequest('C10-second'));
+
+    // Discovery offers only the head as a claimable queued turn (§8 branch-order predicate).
+    const candidates = await discoverRecoveryCandidates(db, { recoveryGraceMs: GRACE_MS, limit: 200 });
+    const ids = candidates.filter((c) => [t1.attemptId, t2.attemptId].includes(c.attemptId)).map((c) => c.attemptId);
+    expect(ids).toEqual([t1.attemptId]);
+
+    // Even if a worker is handed the second turn directly, the CAS refuses it.
+    expect(
+      await processCandidate(deps, {
+        orgId: org.org_id,
+        ownerUserId: org.user_id,
+        conversationId: conv.id,
+        attemptId: t2.attemptId,
+        state: 'accepted',
+        reason: 'queued_head',
+        claimToken: null,
+        isBranchHead: true, // ← a LIE from a stale discovery row; the CAS re-validates
+      }),
+    ).toBe('claim_lost');
+    expect(stack.provider.recordedRequests).toEqual([]);
+
+    // Drive the head; terminalization RELEASES the queue and the second becomes claimable at once
+    // — no waiting for a recovery deadline.
+    expect(await driveOne(t1.attemptId)).toBe('completed');
+    expect(await driveOne(t2.attemptId)).toBe('completed');
+    expect(stack.provider.recordedRequests).toHaveLength(2);
+    expect((await attempt(t2.attemptId)).state).toBe('completed');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// CLAIM / LEASE / FENCING (§14 of the dispatch)
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('F — claim, lease and fencing', () => {
+  it('F1 — two workers racing the SAME queued head: exactly one wins', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('F1'));
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+    const [a, b] = await Promise.all([
+      db.withOwnerContext(owner, (tx) =>
+        ex.claimQueuedHead(tx, { attemptId, claimant: 'w-a', leaseMs: LEASE_MS }),
+      ),
+      db.withOwnerContext(owner, (tx) =>
+        ex.claimQueuedHead(tx, { attemptId, claimant: 'w-b', leaseMs: LEASE_MS }),
+      ),
+    ]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+  });
+
+  it('F2 — a heartbeat extends ONLY the current claim, and reads the durable stop flag', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('F2'));
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+
+    const claim = await db.withOwnerContext(owner, (tx) =>
+      ex.claimQueuedHead(tx, { attemptId, claimant: 'w', leaseMs: LEASE_MS }),
+    );
+    expect(claim).not.toBeNull();
+    // Move to a post-boundary state, where the heartbeat applies.
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET state = 'dispatching', dispatch_boundary_committed_at = now(), causal_version_at_build = 0
+        WHERE id = $1::uuid`,
+      [attemptId],
+    );
+
+    const ok = await db.withOwnerContext(owner, (tx) =>
+      ex.heartbeatClaim(tx, { attemptId, claimToken: claim!.claimToken, leaseMs: LEASE_MS }),
+    );
+    expect(ok).toEqual({ extended: true, stopRequested: false, state: 'dispatching' });
+
+    // A STALE token cannot extend.
+    const stale = await db.withOwnerContext(owner, (tx) =>
+      ex.heartbeatClaim(tx, { attemptId, claimToken: randomUUID(), leaseMs: LEASE_MS }),
+    );
+    expect(stale.extended).toBe(false);
+
+    // The tick SEES a durable stop even though P0-C exposes no Stop endpoint — the authority
+    // model is complete before the command exists.
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts SET stop_requested = true WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    const stopped = await db.withOwnerContext(owner, (tx) =>
+      ex.heartbeatClaim(tx, { attemptId, claimToken: claim!.claimToken, leaseMs: LEASE_MS }),
+    );
+    expect(stopped).toMatchObject({ extended: true, stopRequested: true });
+
+    // An EXPIRED claimant cannot resurrect its own lease and postpone recovery forever.
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts SET claim_deadline_at = now() - interval '1 minute' WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    const expired = await db.withOwnerContext(owner, (tx) =>
+      ex.heartbeatClaim(tx, { attemptId, claimToken: claim!.claimToken, leaseMs: LEASE_MS }),
+    );
+    expect(expired.extended).toBe(false);
+  });
+
+  it('F3 — a durable STOP set before the boundary prevents the POST outright', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('F3'));
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts SET stop_requested = true WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    // The turn is no longer claimable at all: a discarded queued turn is not work.
+    const outcome = await driveOne(attemptId);
+    expect(['claim_lost', 'not_discovered']).toContain(outcome);
+    expect(stack.provider.recordedRequests).toEqual([]);
+    expect((await attempt(attemptId)).state).toBe('accepted');
+  });
+
+  it('F4 — the boundary CAS refuses a CAUSALLY STALE request (§7.8)', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('F4'));
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+    const claim = await db.withOwnerContext(owner, (tx) =>
+      ex.claimQueuedHead(tx, { attemptId, claimant: 'w', leaseMs: LEASE_MS }),
+    );
+    // A sibling terminalized meanwhile and bumped the branch version.
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_branches SET causal_version = causal_version + 1 WHERE id = $1::uuid`,
+      [conv.branchId],
+    );
+    const boundary = await db.withOwnerContext(owner, async (tx) => {
+      const root = await ex.lockRootForDispatch(tx, conv.id);
+      expect(root && ex.isRootExecutionEligible(root.status)).toBe(true);
+      return ex.commitDispatchBoundary(tx, {
+        attemptId,
+        claimToken: claim!.claimToken,
+        leaseMs: LEASE_MS,
+        causalVersionAtBuild: '0', // ← built against the OLD version
+        candidateRequestId: randomUUID(),
+      });
+    });
+    expect(boundary.ok).toBe(false);
+    expect((await attempt(attemptId)).state).toBe('accepted'); // untouched, still reclaimable
+  });
+
+  it('F5 — provenance commit REVALIDATES the credential and refuses a rotated one', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('F5'));
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+    const claim = await db.withOwnerContext(owner, (tx) =>
+      ex.claimQueuedHead(tx, { attemptId, claimant: 'w', leaseMs: LEASE_MS }),
+    );
+    await db.withOwnerContext(owner, async (tx) => {
+      await ex.lockRootForDispatch(tx, conv.id);
+      return ex.commitDispatchBoundary(tx, {
+        attemptId,
+        claimToken: claim!.claimToken,
+        leaseMs: LEASE_MS,
+        causalVersionAtBuild: (await branchVersion(conv.branchId)),
+        candidateRequestId: randomUUID(),
+      });
+    });
+    // A credential id that is NOT the org's active one for this provider must be refused —
+    // otherwise a rotation slipping into the boundary window would be recorded as provenance.
+    const bogus = randomUUID();
+    const refused = await db.withOwnerContext(owner, (tx) =>
+      ex.commitCredentialProvenance(tx, {
+        attemptId,
+        claimToken: claim!.claimToken,
+        providerCredentialId: bogus,
+        provider: 'anthropic',
+      }),
+    );
+    expect(refused).toBe(false);
+    expect((await attempt(attemptId)).provider_credential_id).toBeNull();
+
+    // The fenced RESTORE is then lawful precisely because ¬P proves no POST happened.
+    const restored = await db.withOwnerContext(owner, (tx) =>
+      ex.restoreDispatchingToAccepted(tx, { attemptId, claimToken: claim!.claimToken, leaseMs: LEASE_MS }),
+    );
+    expect(restored).toBe(true);
+    expect((await attempt(attemptId)).state).toBe('accepted');
+  });
+
+  it('F6 — an OpenAI attempt cannot record an ANTHROPIC credential as its provenance', async () => {
+    const conv = await createConversation({ provider: 'openai' });
+    const { attemptId } = await send(conv.id, conv.branchId, openaiRequest('F6'));
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+    const claim = await db.withOwnerContext(owner, (tx) =>
+      ex.claimQueuedHead(tx, { attemptId, claimant: 'w', leaseMs: LEASE_MS }),
+    );
+    await db.withOwnerContext(owner, async (tx) => {
+      await ex.lockRootForDispatch(tx, conv.id);
+      return ex.commitDispatchBoundary(tx, {
+        attemptId,
+        claimToken: claim!.claimToken,
+        leaseMs: LEASE_MS,
+        causalVersionAtBuild: await branchVersion(conv.branchId),
+        candidateRequestId: randomUUID(),
+      });
+    });
+    // `credentialId` is the ANTHROPIC row; the predicate names the provider, so it matches zero.
+    const wrongProvider = await db.withOwnerContext(owner, (tx) =>
+      ex.commitCredentialProvenance(tx, {
+        attemptId,
+        claimToken: claim!.claimToken,
+        providerCredentialId: credentialId,
+        provider: 'openai',
+      }),
+    );
+    expect(wrongProvider).toBe(false);
+  });
+});
+
+async function branchVersion(branchId: string): Promise<string> {
+  const r = await stack.db.adminPool.query<{ v: string }>(
+    `SELECT causal_version::text AS v FROM govai.ai_conversation_branches WHERE id = $1::uuid`,
+    [branchId],
+  );
+  return r.rows[0]!.v;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// FAIL-CLOSED CLASSIFICATION
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('X — fail-closed classification before any dispatch', () => {
+  it('X1 — NO active tenant credential ⇒ failed/credential_unavailable, never ambiguous', async () => {
+    // ★ The env-key / hermetic fallbacks of the DIRECT routes are structurally unavailable to a
+    // conversation: 0031 requires `streaming|completed ⟹ provider_credential_id IS NOT NULL`
+    // through an ORG-COMPOSITE FK, and an env key has no durable row to point at.
+    const lonely = await seedOrg(stack);
+    const conv = await inject(stack, 'POST', '/v1/ai/conversations', lonely.api_key, {
+      mode: 'governed',
+      provider: 'anthropic',
+      surface: 'anthropic_messages',
+      model: 'claude-test',
+    });
+    const c = conv.body as { id: string; root_branch: { id: string } };
+    const sent = await inject(stack, 'POST', `/v1/ai/conversations/${c.id}/turns`, lonely.api_key, {
+      client_turn_id: randomUUID(),
+      branch_id: c.root_branch.id,
+      native_request: nativeRequest('X1'),
+    });
+    const attemptId = (sent.body as { current_attempt_id: string }).current_attempt_id;
+
+    expect(await driveOne(attemptId)).toBe('credential_unavailable');
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('failed');
+    expect(a.error_class).toBe('credential_unavailable');
+    // Pre-boundary: no POST was even possible, and nothing ambiguous is claimed.
+    expect(a.dispatch_boundary_committed_at).toBeNull();
+    expect(a.provider_credential_id).toBeNull();
+    expect(stack.provider.recordedRequests).toEqual([]);
+  });
+
+  it('X2 — an UNDRIVABLE surface is REJECTED by the executor too, not only by the route', async () => {
+    // The reservation gate and the executor gate are INDEPENDENT. A durable turn that never
+    // passed the route gate — seeded directly, exactly as a pre-registry conversation would look
+    // — must still be refused before any claim is driven, not dispatched somewhere plausible.
+    const { attemptId } = await seedUndrivableTurn();
+    expect(await driveOne(attemptId)).toBe('surface_unsupported');
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('rejected');
+    expect(a.error_class).toBeNull(); // a GovAI refusal is not a provider taxonomy value
+    expect(stack.provider.recordedRequests).toEqual([]);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// EVIDENCE — §14/§32 equivalence with the request-driven pipeline
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('EV — worker-driven dispatch is NOT a second-class evidence path', () => {
+  it('EV1 — a worker-driven governed call produces a v4 capture under the attempt’s request identity', async () => {
+    const conv = await createConversation({ mode: 'governed' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('EV1'));
+    expect(await driveOne(attemptId)).toBe('completed');
+
+    const a = await attempt(attemptId);
+    expect(a.govai_request_id).not.toBeNull();
+
+    // ★ THE CAPTURE EXISTS. Without `requestIdentityAls.run()` around the pipeline call, the
+    // AuditBridge would find no identity and DROP the capture — worker dispatch would be a
+    // silent evidence gap. The capture id is uuidv5-derived from the attempt's OWN request id,
+    // so the correlation is checkable from durable state alone.
+    const { auditBridgeCaptureId } = await import('../../apps/api/src/pipeline/audit-bridge.js');
+    const expectedCaptureId = auditBridgeCaptureId(
+      { govaiRequestId: a.govai_request_id!, identityScope: 'govai_request_id' },
+      {
+        orgId: org.org_id,
+        provider: 'anthropic',
+        capabilityId: 'anthropic.messages.create',
+        nativeMethod: 'POST',
+        nativeEndpoint: '/v1/messages',
+      },
+    );
+    const capture = await stack.db.adminPool.query<{ n: string; event_type: string }>(
+      `SELECT count(*)::text AS n, max(event_type) AS event_type
+         FROM govai.audit_capture_outbox WHERE capture_id = $1::uuid`,
+      [expectedCaptureId],
+    );
+    expect(capture.rows[0]!.n).toBe('1');
+    expect(capture.rows[0]!.event_type).toBe('passthrough.invoked');
+  });
+
+  it('EV2 — a worker-driven PASSTHROUGH call is captured too, at the passthrough level', async () => {
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('EV2'));
+    expect(await driveOne(attemptId)).toBe('completed');
+    const a = await attempt(attemptId);
+    const { auditBridgeCaptureId } = await import('../../apps/api/src/pipeline/audit-bridge.js');
+    const captureId = auditBridgeCaptureId(
+      { govaiRequestId: a.govai_request_id!, identityScope: 'govai_request_id' },
+      {
+        orgId: org.org_id,
+        provider: 'anthropic',
+        capabilityId: 'anthropic.messages.create',
+        nativeMethod: 'POST',
+        nativeEndpoint: '/v1/messages',
+      },
+    );
+    const n = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.audit_capture_outbox WHERE capture_id = $1::uuid`,
+      [captureId],
+    );
+    expect(n.rows[0]!.n).toBe('1');
+  });
+
+  it('EV3 — governance is REAL on the worker path: a governed block never reaches the provider', async () => {
+    // The computer-use tool floor is the governed handler's explicit block. Reaching it from the
+    // worker proves the SAME enforcement code runs — not a re-implementation, and not a bypass.
+    const conv = await createConversation({ mode: 'governed' });
+    const { attemptId } = await send(conv.id, conv.branchId, {
+      model: 'claude-test',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'EV3' }],
+      tools: [{ type: 'computer_20250124', name: 'computer', display_width_px: 1, display_height_px: 1 }],
+    });
+    const outcome = await driveOne(attemptId);
+    expect(outcome).toBe('rejected');
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('rejected');
+    // ★ NO POST, and NO PROVENANCE: the durable gate lives INSIDE the forward, and a blocked
+    // result never reaches it. That is the same `¬P ⇒ provably no POST` proof recovery relies on.
+    expect(stack.provider.recordedRequests).toEqual([]);
+    expect(a.provider_credential_id).toBeNull();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// PROVIDER PIPELINE EQUIVALENCE — the §32 side-by-side
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('EQ — a worker-driven dispatch and a request-driven one are the SAME execution', () => {
+  /**
+   * Run the IDENTICAL native request through both doors and compare what the provider saw and
+   * what the evidence plane recorded.
+   *
+   * ★ WHY A SIDE-BY-SIDE AND NOT TWO SEPARATE ASSERTIONS. "Both paths emit a capture" can be
+   * true while the two describe different capabilities, different tenant facts, or different
+   * bytes. The two-speed doctrine (§9) says the conversation runner is "an ADDITIONAL caller of
+   * the same provider pipeline, NOT a fork of it" — the only way to check that is to make both
+   * calls and diff them.
+   *
+   * ★ WHAT IS DELIBERATELY NOT COMPARED: values that are request-UNIQUE by design — the
+   * `govai_request_id` (one per invocation), the derived `capture_id`, the provider's own
+   * response id, and latency. Comparing those would be comparing identity, not semantics.
+   */
+  async function evidenceFor(captureId: string): Promise<Record<string, unknown> | null> {
+    const r = await stack.db.adminPool.query<{
+      event_type: string;
+      event_version: string;
+      chain_category: string;
+      subject_type: string;
+      redaction_metadata: Record<string, unknown>;
+    }>(
+      `SELECT event_type, event_version, chain_category, subject_type, redaction_metadata
+         FROM govai.audit_capture_outbox WHERE capture_id = $1::uuid`,
+      [captureId],
+    );
+    return r.rows[0] ?? null;
+  }
+
+  it('EQ1 — Anthropic governed: same body forwarded, same capture contract, same governance', async () => {
+    const request = {
+      model: 'claude-test',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'EQ1 equivalence' }] }],
+    };
+
+    // ── DOOR 1: the request-driven direct route ────────────────────────────────────────────
+    stack.provider.clearRecordedRequests();
+    stack.provider.clearRecordedRequestHeaders();
+    const direct = await stack.app.inject({
+      method: 'POST',
+      url: '/governed/anthropic/v1/messages',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify(request),
+    });
+    expect(direct.statusCode).toBe(200);
+    const directRequestId = direct.headers['x-govai-request-id'] as string;
+    const directHeaders = { ...(stack.provider.recordedRequestHeaders[0] as Record<string, string>) };
+    const directUrl = stack.provider.recordedRequests[0]!.url;
+
+    // ── DOOR 2: the worker-driven conversation ─────────────────────────────────────────────
+    stack.provider.clearRecordedRequests();
+    stack.provider.clearRecordedRequestHeaders();
+    const conv = await createConversation({ mode: 'governed' });
+    const { attemptId } = await send(conv.id, conv.branchId, request);
+    expect(await driveOne(attemptId)).toBe('completed');
+    const workerHeaders = { ...(stack.provider.recordedRequestHeaders[0] as Record<string, string>) };
+    const workerUrl = stack.provider.recordedRequests[0]!.url;
+    const a = await attempt(attemptId);
+
+    // ── SAME ENDPOINT, SAME PROVIDER AUTH ─────────────────────────────────────────────────
+    expect(workerUrl).toBe(directUrl);
+    expect(workerHeaders['x-api-key']).toBe(directHeaders['x-api-key']);
+    expect(workerHeaders['anthropic-version']).toBe(directHeaders['anthropic-version']);
+    expect(workerHeaders['content-type']).toBe(directHeaders['content-type']);
+    // Neither door leaks GovAI identity upstream.
+    for (const h of ['x-govai-api-key', 'x-govai-request-id', 'x-govai-idempotency-key']) {
+      expect({ h, direct: h in directHeaders, worker: h in workerHeaders }).toEqual({
+        h,
+        direct: false,
+        worker: false,
+      });
+    }
+
+    // ── SAME CAPTURE CONTRACT ─────────────────────────────────────────────────────────────
+    const { auditBridgeCaptureId } = await import('../../apps/api/src/pipeline/audit-bridge.js');
+    const scope = {
+      orgId: org.org_id,
+      provider: 'anthropic',
+      capabilityId: 'anthropic.messages.create',
+      nativeMethod: 'POST' as const,
+      nativeEndpoint: '/v1/messages',
+    };
+    const directCapture = await evidenceFor(
+      auditBridgeCaptureId({ govaiRequestId: directRequestId, identityScope: 'govai_request_id' }, scope),
+    );
+    const workerCapture = await evidenceFor(
+      auditBridgeCaptureId({ govaiRequestId: a.govai_request_id!, identityScope: 'govai_request_id' }, scope),
+    );
+    expect(directCapture).not.toBeNull();
+    expect(workerCapture).not.toBeNull();
+    // ★ EVERY REPLAY-STABLE FIELD IS IDENTICAL. The request ids differ (they must); the
+    // CONTRACT does not.
+    expect(workerCapture).toEqual(directCapture);
+    expect(workerCapture!.event_type).toBe('passthrough.invoked');
+    expect(workerCapture!.event_version).toBe('4');
+    expect((workerCapture!.redaction_metadata as { audit_bridge: { capability_id: string } }).audit_bridge.capability_id)
+      .toBe('anthropic.messages.create');
+
+    // ── AND THE DIFFERENT REQUEST IDENTITIES ARE REAL, NOT AN ARTEFACT ────────────────────
+    expect(a.govai_request_id).not.toBe(directRequestId);
+  });
+
+  it('EQ2 — OpenAI: both doors reach /v1/responses with the same auth scheme and capture', async () => {
+    const request = { model: 'gpt-test', input: 'EQ2 equivalence' };
+
+    stack.provider.clearRecordedRequests();
+    stack.provider.clearRecordedRequestHeaders();
+    const direct = await stack.app.inject({
+      method: 'POST',
+      url: '/governed/openai/v1/responses',
+      headers: { 'content-type': 'application/json', 'x-govai-api-key': org.api_key },
+      payload: JSON.stringify(request),
+    });
+    expect(direct.statusCode).toBe(200);
+    const directRequestId = direct.headers['x-govai-request-id'] as string;
+    const directHeaders = { ...(stack.provider.recordedRequestHeaders[0] as Record<string, string>) };
+    expect(stack.provider.recordedRequests[0]!.url).toBe('/v1/responses');
+
+    stack.provider.clearRecordedRequests();
+    stack.provider.clearRecordedRequestHeaders();
+    const conv = await createConversation({ mode: 'governed', provider: 'openai' });
+    const { attemptId } = await send(conv.id, conv.branchId, request);
+    expect(await driveOne(attemptId)).toBe('completed');
+    const workerHeaders = { ...(stack.provider.recordedRequestHeaders[0] as Record<string, string>) };
+    expect(stack.provider.recordedRequests[0]!.url).toBe('/v1/responses');
+    expect(workerHeaders['authorization']).toBe(directHeaders['authorization']);
+
+    const a = await attempt(attemptId);
+    const { auditBridgeCaptureId } = await import('../../apps/api/src/pipeline/audit-bridge.js');
+    const scope = {
+      orgId: org.org_id,
+      provider: 'openai',
+      capabilityId: 'openai.responses.create',
+      nativeMethod: 'POST' as const,
+      nativeEndpoint: '/v1/responses',
+    };
+    const directCapture = await evidenceFor(
+      auditBridgeCaptureId({ govaiRequestId: directRequestId, identityScope: 'govai_request_id' }, scope),
+    );
+    const workerCapture = await evidenceFor(
+      auditBridgeCaptureId({ govaiRequestId: a.govai_request_id!, identityScope: 'govai_request_id' }, scope),
+    );
+    expect(directCapture).not.toBeNull();
+    expect(workerCapture).toEqual(directCapture);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// SECURITY MATRIX (§31)
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('S — the worker security matrix', () => {
+  it('S1 — with NO owner context the worker reads and writes ZERO rows', async () => {
+    const c = await probe.connect();
+    try {
+      await c.query("SELECT set_config('app.org_id', '', false), set_config('app.user_id', '', false)");
+      for (const q of [
+        'SELECT id FROM govai.ai_conversation_attempts',
+        'SELECT id FROM govai.ai_conversation_content',
+        'SELECT id FROM govai.ai_conversation_items',
+        'SELECT id FROM govai.ai_conversation_branches',
+        'SELECT id FROM govai.provider_credentials',
+        'SELECT id FROM govai.orgs',
+      ]) {
+        const r = await c.query(q);
+        expect({ q, rows: r.rowCount }).toEqual({ q, rows: 0 });
+      }
+      // Writes too: a policy without a context matches nothing.
+      const w = await c.query(`UPDATE govai.ai_conversation_attempts SET updated_at = now()`);
+      expect(w.rowCount).toBe(0);
+    } finally {
+      c.release();
+    }
+  });
+
+  it('S2 — the worker cannot write the columns P0-C withheld', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('S2'));
+    await withProbeTx(async (c) => {
+      // ★ EACH DENIAL ABORTS THE TRANSACTION, so each assertion needs its own savepoint —
+      // otherwise only the FIRST one is a real test and every later one merely observes 25P02
+      // (which is what an earlier revision of this test did).
+      const denied = async (label: string, sql: string, params: unknown[] = []): Promise<void> => {
+        await c.query('SAVEPOINT probe');
+        await expect(
+          c.query(sql, params).then(
+            () => ({ label, code: 'NO ERROR — the worker was ALLOWED to do this' }),
+            (e: { code?: string }) => ({ label, code: e.code }),
+          ),
+        ).resolves.toEqual({ label, code: '42501' });
+        await c.query('ROLLBACK TO SAVEPOINT probe');
+      };
+
+      // `stop_requested` is a REQUEST-plane command the worker only ever READS as a fence.
+      await denied(
+        'write stop_requested',
+        `UPDATE govai.ai_conversation_attempts SET stop_requested = true WHERE id = $1::uuid`,
+        [attemptId],
+      );
+      // The §11 continuation anchor is P0-D's, and is unreachable even for READING.
+      await denied(
+        'read the continuation anchor',
+        `SELECT continuation_parent_ciphertext FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+        [attemptId],
+      );
+      // No INSERT on attempts: an attempt is minted by the reservation, never by the executor.
+      await denied(
+        'insert an attempt',
+        `INSERT INTO govai.ai_conversation_attempts (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_seq)
+           VALUES ($1::uuid,$2::uuid,$3::uuid,$3::uuid,$3::uuid,2)`,
+        [org.org_id, org.user_id, conv.id],
+      );
+      // No DELETE anywhere in the domain.
+      // No DELETE anywhere in the domain (LAW 13's purge is a later movement's authority).
+      for (const t of [
+        'ai_conversation_attempts',
+        'ai_conversation_items',
+        'ai_conversation_content',
+        'ai_conversation_branches',
+        'ai_conversations',
+      ]) {
+        await denied(`delete from ${t}`, `DELETE FROM govai.${t}`);
+      }
+      // And no provider-state write: P0-C ships no continuation (§23's P0-D wall).
+      await denied(
+        'insert provider state',
+        `INSERT INTO govai.ai_conversation_provider_state
+           (org_id, owner_user_id, conversation_id, branch_id, state_ciphertext, state_dek_wrapped,
+            kms_key_id, kms_key_version, seeded_at_causal_version, provider_credential_id)
+         VALUES ($1::uuid,$2::uuid,$3::uuid,$3::uuid,'\\x00'::bytea,'\\x00'::bytea,'k',1,0,$4::uuid)`,
+        [org.org_id, org.user_id, conv.id, credentialId],
+      );
+    });
+  });
+
+  it('S3 — the worker cannot change a conversation’s lifecycle or read its title', async () => {
+    const conv = await createConversation({});
+    await withProbeTx(async (c) => {
+      // ★ The UPDATE privilege exists ONLY so `FOR KEY SHARE` is LEGAL: PostgreSQL raises
+      // ACL_SELECT_FOR_UPDATE (defined as ACL_UPDATE) for any row-locking clause. This assertion
+      // is what proves the grant is necessary — without it the boundary could not take the lock.
+      const lock = await c.query(`SELECT status FROM govai.ai_conversations WHERE id = $1::uuid FOR KEY SHARE`, [conv.id]);
+      expect(lock.rowCount).toBe(1);
+      // ...and it is scoped to `updated_at`, so the lifecycle and the title stay unreachable.
+      await c.query('SAVEPOINT probe');
+      await expect(
+        c.query(`UPDATE govai.ai_conversations SET status = 'deleted_pending' WHERE id = $1::uuid`, [conv.id]),
+      ).rejects.toMatchObject({ code: '42501' });
+      await c.query('ROLLBACK TO SAVEPOINT probe');
+      await expect(
+        c.query(`SELECT title_ciphertext FROM govai.ai_conversations WHERE id = $1::uuid`, [conv.id]),
+      ).rejects.toMatchObject({ code: '42501' });
+    });
+  });
+
+  it('S4 — a CROSS-ORG owner context yields nothing, including credentials', async () => {
+    const otherOrg = await seedOrg(stack);
+    const c = await probe.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query("SELECT set_config('app.org_id', $1, true)", [otherOrg.org_id]);
+      await c.query("SELECT set_config('app.user_id', $1, true)", [otherOrg.user_id]);
+      const cred = await c.query(`SELECT id FROM govai.provider_credentials`);
+      expect(cred.rowCount).toBe(0); // this org's credentials are invisible from another org
+      const orgs = await c.query(`SELECT id FROM govai.orgs WHERE id = $1::uuid`, [org.org_id]);
+      expect(orgs.rowCount).toBe(0);
+    } finally {
+      await c.query('ROLLBACK').catch(() => undefined);
+      c.release();
+    }
+  });
+
+  it('S5 — govai_app still cannot reach worker discovery, and holds no worker role', async () => {
+    const c = await stack.db.appPool.connect();
+    try {
+      await expect(
+        c.query(`SELECT * FROM govai.ai_turn_recovery_candidates(0, 1, NULL, NULL)`),
+      ).rejects.toMatchObject({ code: '42501' });
+      await expect(c.query(`SET ROLE govai_conversation_worker`)).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      c.release();
+    }
+  });
+
+  it('S6 — conversation content is CIPHERTEXT at rest, and no provider key is ever stored in it', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('S6-plaintext-canary'));
+    await driveOne(attemptId);
+    const rows = await stack.db.adminPool.query<{ blob: string }>(
+      `SELECT encode(ciphertext, 'escape') AS blob FROM govai.ai_conversation_content
+        WHERE conversation_id = $1::uuid`,
+      [conv.id],
+    );
+    expect(rows.rowCount).toBeGreaterThan(0);
+    for (const r of rows.rows) {
+      expect(r.blob).not.toContain('S6-plaintext-canary');
+      expect(r.blob).not.toContain('sk-ant-p0c-exec');
+    }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// LOCK ORDER (§34) — LAW 16 is not merely argued
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('L — LAW 16 lock order', () => {
+  it('L1 — concurrent SENDs on one branch serialize without deadlocking', async () => {
+    const conv = await createConversation({});
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, {
+          client_turn_id: randomUUID(),
+          branch_id: conv.branchId,
+          native_request: nativeRequest(`L1-${i}`),
+        }),
+      ),
+    );
+    expect(results.map((r) => r.statusCode)).toEqual([201, 201, 201, 201, 201, 201]);
+    // Every turn got a DISTINCT, dense sequence — the advisory lock really serialized them.
+    const seqs = results.map((r) => Number((r.body as { turn_seq: string }).turn_seq)).sort((a, b) => a - b);
+    expect(seqs).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('L2 — the boundary’s root KEY SHARE conflicts with a lifecycle FOR UPDATE (not merely probabilistic)', async () => {
+    const conv = await createConversation({});
+    const holder = await stack.db.adminPool.connect();
+    try {
+      await holder.query('BEGIN');
+      // §19 step 1's shape: the deletion transition takes the root EXCLUSIVELY.
+      await holder.query(`SELECT id FROM govai.ai_conversations WHERE id = $1::uuid FOR UPDATE`, [conv.id]);
+
+      // A boundary transaction must BLOCK on that, not sail past it. A short lock_timeout turns
+      // "blocked" into an observable, deterministic error instead of a hang.
+      await withProbeTx(async (c) => {
+        await c.query(`SET LOCAL lock_timeout = '750ms'`);
+        await expect(
+          c.query(`SELECT status FROM govai.ai_conversations WHERE id = $1::uuid FOR KEY SHARE`, [conv.id]),
+        ).rejects.toMatchObject({ code: '55P03' }); // lock_not_available — it really conflicted
+      });
+      await holder.query('ROLLBACK');
+    } finally {
+      holder.release();
+    }
+  });
+
+  it('L3 — a full sweep under concurrent sends completes without a deadlock (40P01)', async () => {
+    const conv = await createConversation({});
+    for (let i = 0; i < 3; i += 1) {
+      await send(conv.id, conv.branchId, nativeRequest(`L3-${i}`));
+    }
+    // Sends and sweeps racing on the SAME branch: reservation takes root FOR UPDATE then the
+    // branch advisory lock; the boundary takes root FOR KEY SHARE then the attempt row. If the
+    // two flows disagreed about order, this is where 40P01 would surface.
+    const [outcomes] = await Promise.all([
+      sweep(),
+      inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, {
+        client_turn_id: randomUUID(),
+        branch_id: conv.branchId,
+        native_request: nativeRequest('L3-concurrent'),
+      }),
+      sweep(),
+    ]);
+    expect(outcomes['error'] ?? 0).toBe(0);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// RUNNER
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('R — the sweep runner', () => {
+  it('R1 — one candidate’s failure does not stop the sweep', async () => {
+    const good = await createConversation({});
+    const g = await send(good.id, good.branchId, nativeRequest('R1-good'));
+    // A conversation whose branch surface is undrivable: it must be CLASSIFIED, not thrown.
+    const bad = await seedUndrivableTurn();
+
+    const outcomes = await sweep();
+    expect(outcomes['error'] ?? 0).toBe(0);
+    expect((await attempt(g.attemptId)).state).toBe('completed');
+    expect((await attempt(bad.attemptId)).state).toBe('rejected');
+  });
+
+  it('R2 — the batch size is validated, never silently clamped', async () => {
+    await expect(
+      runConversationSweepOnce(deps, { batchSize: 0, intervalMs: 1, maxPagesPerSweep: 1 }),
+    ).rejects.toBeInstanceOf(RangeError);
+    await expect(
+      runConversationSweepOnce(deps, { batchSize: 501, intervalMs: 1, maxPagesPerSweep: 1 }),
+    ).rejects.toBeInstanceOf(RangeError);
+  });
+
+  it('R3 — a sweep with nothing to do is a clean no-op', async () => {
+    await sweep(); // drain anything left by earlier tests
+    const report = await runConversationSweepOnce(deps, {
+      batchSize: 50,
+      intervalMs: 1_000,
+      maxPagesPerSweep: 5,
+    });
+    expect(report.outcomes['error'] ?? 0).toBe(0);
+  });
+});

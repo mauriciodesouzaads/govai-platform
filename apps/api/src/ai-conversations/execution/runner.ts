@@ -1,0 +1,181 @@
+// The detached conversation-worker RUNNER (EP-AI-CONVERSATION-CONTINUITY-V1 P0-C; spec §7.7/§9).
+//
+// The loop that turns discovery into execution: discover a bounded page of candidates, process
+// each through the §8 protocol, page until the cursor is exhausted, sleep, repeat.
+//
+// ★ THIS IS THE FIRST REAL CONVERSATION-WORKER ACTIVATION IN THE REPOSITORY, and it is why the
+// two P0-A2 pre-activation gates had to close first:
+//   * P0A2-P3-A1 — a checked-out client with no `error` listener is a process kill the moment a
+//     backend drops. A background loop holds checkouts continuously, so this stops being
+//     theoretical exactly here.
+//   * P0A2-P3-A4 — this runner is the "future caller" the finding named. It receives the OPAQUE
+//     `ConversationWorkerDb`; there is no raw pool for it to bypass the trust boundary with.
+//
+// ★ IT IS NOT REGISTERED IN `server.ts`, BY DESIGN. The request-serving API process must not
+// become the detached execution authority (§9): if it were, execution would again live and die
+// with the process that happens to be serving HTTP, and a browser-facing deploy unit would own
+// provider calls. `startConversationWorker` is invoked ONLY by the dedicated entrypoint
+// (`apps/api/src/conversation-worker/main.ts`) and by tests that drive it deterministically.
+//
+// ★ SWEEP-ONLY, NOT NOTIFICATION-DEPENDENT. §26 permits PostgreSQL LISTEN/NOTIFY as a WAKE
+// ACCELERATION but forbids it as a source of truth, and a missed notification must never lose
+// state. P0-C therefore ships the durable half ONLY: the sweep is the sole driver, so there is
+// no notification whose loss could strand a turn. Adding the accelerator later changes latency,
+// never correctness.
+
+import {
+  discoverRecoveryCandidates,
+  DISCOVERY_MAX_LIMIT,
+  type RecoveryCandidate,
+  type RecoveryDiscoveryCursor,
+} from '../../pipeline/ai-conversation-recovery-discovery.js';
+import {
+  processCandidate,
+  type ConversationExecutorDeps,
+  type ExecutionOutcome,
+} from './execute-turn.js';
+
+export type ConversationWorkerRunnerConfig = {
+  /** Candidates fetched per discovery page. Bounded by the database function at 500. */
+  batchSize: number;
+  /** Idle wait between sweeps. */
+  intervalMs: number;
+  /** Hard ceiling on pages per sweep, so one sweep cannot run unboundedly. */
+  maxPagesPerSweep: number;
+};
+
+export type SweepReport = {
+  discovered: number;
+  processed: number;
+  outcomes: Record<string, number>;
+};
+
+/**
+ * ONE sweep: discover and process until the page is short or the page ceiling is hit.
+ *
+ * Exported separately from the loop so tests drive execution DETERMINISTICALLY — the hermetic
+ * stack runs no timer, exactly as the P0.3-A run-dispatch recovery suite does
+ * (`RUN_DISPATCH_RECOVERY_ENABLED: false` in `server-fixture.ts`). A test that had to wait for an
+ * interval would be a flaky test.
+ */
+export async function runConversationSweepOnce(
+  deps: ConversationExecutorDeps,
+  config: ConversationWorkerRunnerConfig,
+): Promise<SweepReport> {
+  if (config.batchSize < 1 || config.batchSize > DISCOVERY_MAX_LIMIT) {
+    throw new RangeError(
+      `conversation worker batchSize must be within [1, ${DISCOVERY_MAX_LIMIT}] (got ${config.batchSize})`,
+    );
+  }
+  const report: SweepReport = { discovered: 0, processed: 0, outcomes: {} };
+  let cursor: RecoveryDiscoveryCursor | null = null;
+
+  for (let page = 0; page < config.maxPagesPerSweep; page += 1) {
+    const candidates: RecoveryCandidate[] = await discoverRecoveryCandidates(deps.db, {
+      recoveryGraceMs: deps.recoveryGraceMs,
+      limit: config.batchSize,
+      after: cursor,
+    });
+    report.discovered += candidates.length;
+
+    for (const candidate of candidates) {
+      // ★ ONE CANDIDATE'S FAILURE NEVER STOPS THE SWEEP. A single conversation that cannot be
+      // driven — a KMS fault, a provider outage, a lost race — must not strand every other
+      // owner's queued work behind it. The outcome is recorded and the loop continues.
+      let outcome: ExecutionOutcome | 'error';
+      try {
+        outcome = await processCandidate(deps, {
+          orgId: candidate.orgId,
+          ownerUserId: candidate.ownerUserId,
+          conversationId: candidate.conversationId,
+          attemptId: candidate.attemptId,
+          state: candidate.state,
+          reason: candidate.reason,
+          claimToken: candidate.claimToken,
+          isBranchHead: candidate.isBranchHead,
+        });
+      } catch (err) {
+        outcome = 'error';
+        deps.log.error(
+          {
+            attempt_id: candidate.attemptId,
+            reason: candidate.reason,
+            err_class: err instanceof Error ? err.name : 'unknown',
+          },
+          'conversation worker: candidate processing failed',
+        );
+      }
+      report.processed += 1;
+      report.outcomes[outcome] = (report.outcomes[outcome] ?? 0) + 1;
+    }
+
+    // A short page means the candidate set is exhausted (the 0029 keyset rule).
+    if (candidates.length < config.batchSize) break;
+    const last = candidates[candidates.length - 1]!;
+    cursor = { createdAtText: last.attemptCreatedAtText, attemptId: last.attemptId };
+  }
+
+  // No silent cap: if the sweep stopped because it hit the page ceiling rather than because the
+  // set drained, say so — an operator reading "processed 500" must not mistake it for "covered
+  // everything".
+  if (report.processed >= config.batchSize * config.maxPagesPerSweep) {
+    deps.log.warn(
+      { processed: report.processed, max_pages: config.maxPagesPerSweep },
+      'conversation worker: sweep hit its page ceiling; more candidates may remain',
+    );
+  }
+  return report;
+}
+
+export type ConversationWorkerHandle = {
+  /** Stop the loop and await the in-flight sweep. Idempotent. */
+  stop(): Promise<void>;
+};
+
+/**
+ * Start the periodic sweep loop.
+ *
+ * ★ NO OVERLAPPING SWEEPS. The next tick is scheduled only after the previous sweep settles
+ * (`setTimeout` chaining, not `setInterval`), so a slow provider cannot stack sweeps on top of
+ * each other and exhaust the small worker pool. This is the audit-sealer claim-loop shape.
+ *
+ * ★ THE TIMER IS `unref`'d and cleared on stop, so it can never hold the process open.
+ */
+export function startConversationWorker(
+  deps: ConversationExecutorDeps,
+  config: ConversationWorkerRunnerConfig,
+): ConversationWorkerHandle {
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+  let inFlight: Promise<unknown> = Promise.resolve();
+
+  const schedule = (): void => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      inFlight = (async () => {
+        try {
+          await runConversationSweepOnce(deps, config);
+        } catch (err) {
+          deps.log.error(
+            { err_class: err instanceof Error ? err.name : 'unknown' },
+            'conversation worker: sweep failed',
+          );
+        } finally {
+          schedule();
+        }
+      })();
+    }, config.intervalMs);
+    timer.unref?.();
+  };
+  schedule();
+
+  return {
+    async stop(): Promise<void> {
+      if (stopped) return;
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      await inFlight.catch(() => undefined);
+    },
+  };
+}
