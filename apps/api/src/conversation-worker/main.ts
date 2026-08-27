@@ -30,7 +30,15 @@
 //     imports nor starts any of this, which `ai-conversation-p0c-boundary.test.ts` asserts.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-import { createKmsFromEnv, type Kms } from '@govai/core-identity';
+// ★ THE `/kms` SUBPATH, NEVER THE PACKAGE INDEX — a deployability constraint this repository has
+// already paid for once. `core-identity`'s index re-exports `api-keys.js`, which pulls in argon2 (a
+// native module); the audit-sealer, the repo's only bundled deployable, imports from
+// `@govai/core-identity/kms` for exactly this reason. This worker is the SECOND deployable-shaped
+// entrypoint, and today it runs under `tsx`, where the difference is invisible — which is precisely
+// why the wrong import would survive until someone bundled it and then fail at deploy time rather
+// than here. The type-only `Kms` imports elsewhere in this movement are erased at compile time and
+// carry no such risk.
+import { createKmsFromEnv, type Kms } from '@govai/core-identity/kms';
 import { loadEnv, type GovAIEnv } from '@govai/config';
 import pino from 'pino';
 import { isMainModule } from '../main-module.js';

@@ -38,7 +38,10 @@ import {
   type ConversationExecutorDeps,
   type ExecutionOutcome,
 } from '../../apps/api/src/ai-conversations/execution/execute-turn.js';
-import { runConversationSweepOnce } from '../../apps/api/src/ai-conversations/execution/runner.js';
+import {
+  runConversationSweepOnce,
+  startConversationWorker,
+} from '../../apps/api/src/ai-conversations/execution/runner.js';
 import { discoverRecoveryCandidates } from '../../apps/api/src/pipeline/ai-conversation-recovery-discovery.js';
 import {
   seedConversation,
@@ -2526,6 +2529,11 @@ describe('R3 — round-three review findings', () => {
     const { spawn } = await import('node:child_process');
     const INTERVAL_MS = 1_000;
 
+    // Real, durable work for the spawned process to find. Liveness alone is too weak an
+    // assertion: it cannot distinguish a process that sweeps from one that merely idles.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R9-1', false));
+
     const child = spawn(
       process.execPath,
       ['--import', 'tsx', 'apps/api/src/conversation-worker/main.ts'],
@@ -2541,6 +2549,14 @@ describe('R3 — round-three review findings', () => {
           JWT_ISSUER: 'https://govai.test',
           JWT_AUDIENCE: 'govai-api',
           CONVERSATION_WORKER_INTERVAL_MS: String(INTERVAL_MS),
+          // ★ PIN THE CHILD TO THE HERMETIC UPSTREAM. This test inherits `process.env`, not
+          // `stack.env`, and the executor's resolver defaults to the PUBLIC provider hosts. Earlier
+          // tests in this file leave real `queued_head` attempts in the shared database, so the
+          // spawned worker's first sweep would dispatch one — issuing a genuine external request
+          // from the suite, or hanging until SIGKILL, while a liveness-only assertion passed
+          // anyway. A test that can reach the open internet is not hermetic no matter what it
+          // asserts.
+          GOVAI_PROVIDER_BASE_URL: stack.provider.baseUrl,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
@@ -2578,7 +2594,7 @@ describe('R3 — round-three review findings', () => {
         await new Promise((r) => setTimeout(r, 250));
       }
 
-      // ★ THE ASSERTION: it booted, and it was STILL RUNNING when its first sweeps were due.
+      // ★ ASSERTION 1: it booted, and it was STILL RUNNING when its first sweeps were due.
       // Without the fix the process is gone here, having done nothing at all.
       expect({
         booted: sawStarted,
@@ -2586,6 +2602,21 @@ describe('R3 — round-three review findings', () => {
         exitCode,
       }).toEqual({ booted: true, stillRunning: true, exitCode: null });
       expect(Date.now() - startedAt).toBeGreaterThan(INTERVAL_MS);
+
+      // ★ ASSERTION 2 — THE ONE THAT PROVES A SWEEP ACTUALLY RAN. A process can stay alive and
+      // still do nothing; only durable state changing underneath us proves the deployable
+      // discovered, claimed, dispatched and persisted a turn it was never handed directly.
+      let finalState: string | null = null;
+      for (let i = 0; i < 60; i += 1) {
+        const r = await stack.db.adminPool.query<{ state: string }>(
+          `SELECT state FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+          [attemptId],
+        );
+        finalState = r.rows[0]?.state ?? null;
+        if (finalState === 'completed') break;
+        await new Promise((rr) => setTimeout(rr, 500));
+      }
+      expect({ attemptState: finalState }).toEqual({ attemptState: 'completed' });
     } finally {
       child.kill('SIGKILL');
     }
@@ -2650,6 +2681,73 @@ describe('R3 — round-three review findings', () => {
     } finally {
       await victim.close().catch(() => undefined);
     }
+  }, 60_000);
+
+  it('R10-1 — shutdown is bounded by ONE in-flight candidate, not the whole backlog', async () => {
+    // ★ THIS DEFECT ONLY BECAME MATERIAL WHEN ROUND NINE MADE THE PROCESS ACTUALLY RUN. While the
+    // sweep timer was `unref`'d the process exited immediately, so shutdown semantics never
+    // mattered; fixing that exposed this.
+    //
+    // `stop()` cleared the next timer and awaited the running sweep — but the sweep did not
+    // OBSERVE the stop, so it continued through every remaining page and candidate, each dispatch
+    // bounded only by `dispatchTimeoutMs`. Under a backlog that outlasts any orchestrator's grace
+    // period, so the process is SIGKILLed mid-dispatch, turning a clean shutdown into exactly the
+    // `outcome_unknown` it exists to avoid.
+    //
+    // Cancellation is COOPERATIVE by design: it declines to START candidates and never aborts one
+    // in flight, because aborting a POSTed dispatch would manufacture that same ambiguity.
+    const DELAY_MS = 400;
+    const BACKLOG = 5;
+    const ids: string[] = [];
+    for (let i = 0; i < BACKLOG; i += 1) {
+      const conv = await createConversation({ mode: 'passthrough' });
+      const { attemptId } = await send(conv.id, conv.branchId, nativeRequest(`R10-1-${i}`, false));
+      ids.push(attemptId);
+    }
+
+    let stopElapsed = 0;
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          // Each dispatch is slow, so a sweep that ignores the stop takes BACKLOG × DELAY_MS.
+          setTimeout(() => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          }, DELAY_MS);
+        });
+      },
+      async () => {
+        const handle = startConversationWorker(deps, {
+          batchSize: 50,
+          intervalMs: 50,
+          maxPagesPerSweep: 5,
+        });
+        // Let the sweep begin and get INTO its first dispatch.
+        await new Promise((r) => setTimeout(r, 250));
+        const t0 = Date.now();
+        await handle.stop();
+        stopElapsed = Date.now() - t0;
+        return null;
+      },
+    );
+
+    const done = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_attempts
+        WHERE id = ANY($1::uuid[]) AND state = 'completed'`,
+      [ids],
+    );
+    const completed = Number(done.rows[0]!.n);
+
+    // ★ THE BOUND, STATED AS ARITHMETIC. A shutdown that waits out the backlog takes at least
+    // (BACKLOG - 1) × DELAY_MS after the stop; one bounded by a single in-flight candidate takes
+    // at most about DELAY_MS. The midpoint separates them with margin at either end.
+    expect({ boundedByOneCandidate: stopElapsed < DELAY_MS * 2 }).toEqual({
+      boundedByOneCandidate: true,
+    });
+    // And it genuinely DECLINED work rather than finishing early by luck: the untouched attempts
+    // stay durably queued for the next runner, which is why declining costs nothing.
+    expect(completed).toBeLessThan(BACKLOG);
   }, 60_000);
 
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {

@@ -42,6 +42,16 @@ export type ConversationWorkerRunnerConfig = {
   intervalMs: number;
   /** Hard ceiling on pages per sweep, so one sweep cannot run unboundedly. */
   maxPagesPerSweep: number;
+  /**
+   * Cooperative shutdown signal, checked between pages and between candidates.
+   *
+   * ★ IT STOPS THE SWEEP FROM STARTING NEW WORK; IT NEVER ABORTS WORK IN FLIGHT. Cancelling a
+   * dispatch that has already POSTed would manufacture exactly the `outcome_unknown` that
+   * shutdown is supposed to avoid — the provider's fate becomes unprovable precisely because we
+   * stopped listening. So the bound on a clean shutdown is ONE in-flight candidate, not the whole
+   * backlog.
+   */
+  shouldStop?: () => boolean;
 };
 
 export type SweepReport = {
@@ -70,7 +80,12 @@ export async function runConversationSweepOnce(
   const report: SweepReport = { discovered: 0, processed: 0, outcomes: {} };
   let cursor: RecoveryDiscoveryCursor | null = null;
 
+  const stopping = (): boolean => config.shouldStop?.() === true;
+
   for (let page = 0; page < config.maxPagesPerSweep; page += 1) {
+    // Shutdown asked for: do not open ANOTHER page of work. Discovery is cheap, but each page it
+    // returns commits the sweep to a further batch of dispatches.
+    if (stopping()) break;
     const candidates: RecoveryCandidate[] = await discoverRecoveryCandidates(deps.db, {
       recoveryGraceMs: deps.recoveryGraceMs,
       limit: config.batchSize,
@@ -79,6 +94,9 @@ export async function runConversationSweepOnce(
     report.discovered += candidates.length;
 
     for (const candidate of candidates) {
+      // The candidate is simply not started; it stays durably queued and the next runner — or
+      // this one after restart — discovers it unchanged. Nothing is lost by declining to begin.
+      if (stopping()) break;
       // ★ ONE CANDIDATE'S FAILURE NEVER STOPS THE SWEEP. A single conversation that cannot be
       // driven — a KMS fault, a provider outage, a lost race — must not strand every other
       // owner's queued work behind it. The outcome is recorded and the loop continues.
@@ -109,6 +127,7 @@ export async function runConversationSweepOnce(
       report.outcomes[outcome] = (report.outcomes[outcome] ?? 0) + 1;
     }
 
+    if (stopping()) break;
     // A short page means the candidate set is exhausted (the 0029 keyset rule).
     if (candidates.length < config.batchSize) break;
     const last = candidates[candidates.length - 1]!;
@@ -128,7 +147,20 @@ export async function runConversationSweepOnce(
 }
 
 export type ConversationWorkerHandle = {
-  /** Stop the loop and await the in-flight sweep. Idempotent. */
+  /**
+   * Stop the loop and await the in-flight sweep. Idempotent.
+   *
+   * ★ THE BOUND IS ONE CANDIDATE, NOT ONE SWEEP, AND THE DIFFERENCE IS HOURS. Clearing the next
+   * timer and awaiting the running sweep sounds equivalent, but that sweep does not observe the
+   * stop: it would continue through every configured page and candidate, each dispatch bounded
+   * only by `dispatchTimeoutMs`. Under a backlog that exceeds any orchestrator's grace period, so
+   * the process is SIGKILLed mid-dispatch — turning a clean shutdown into the `outcome_unknown`
+   * it was meant to avoid.
+   *
+   * The sweep now checks the stop signal between pages and between candidates, so a shutdown waits
+   * for at most the ONE dispatch already in flight. Declining to start a candidate costs nothing:
+   * it stays durably queued and is rediscovered unchanged.
+   */
   stop(): Promise<void>;
 };
 
@@ -163,7 +195,7 @@ export function startConversationWorker(
     timer = setTimeout(() => {
       inFlight = (async () => {
         try {
-          await runConversationSweepOnce(deps, config);
+              await runConversationSweepOnce(deps, { ...config, shouldStop: () => stopped });
         } catch (err) {
           deps.log.error(
             { err_class: err instanceof Error ? err.name : 'unknown' },
