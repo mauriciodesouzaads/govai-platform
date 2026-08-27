@@ -1252,14 +1252,21 @@ describe('RM — findings from the exact-head review', () => {
       },
       async () => {
         const driving = driveOne(attemptId);
+        // ★ SAME GUARD, SAME REASON. This test's subject is a stream that dies MID-DRAIN; if the
+        // poll exhausts, the socket is destroyed before any chunk is durable and the death is
+        // pre-drain instead — a different path that produces the same `outcome_unknown` and would
+        // pass silently.
+        let observedItems = 0;
         for (let i = 0; i < 400; i += 1) {
           const n = await stack.db.adminPool.query<{ n: string }>(
             `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
             [attemptId],
           );
-          if (Number(n.rows[0]!.n) >= 1) break;
+          observedItems = Number(n.rows[0]!.n);
+          if (observedItems >= 1) break;
           await new Promise((r) => setTimeout(r, 25));
         }
+        expect({ reachedMidDrain: observedItems >= 1 }).toEqual({ reachedMidDrain: true });
         releaseDestroy();
         return driving;
       },
@@ -1743,14 +1750,22 @@ describe('R3 — round-three review findings', () => {
         });
         // Wait until the FIRST chunk is durably persisted — proof the drain is running and the
         // fence was still valid — then rotate the claim out from under the writer.
+        //
+        // ★ THE POLL MUST BE PROVEN, NOT ASSUMED (same class as R5-1/R14-3). If it exhausts and we
+        // rotate anyway, the fence is lost BEFORE the drain — the round-6 pre-drain guard then
+        // cancels and finalizes with `upstream_error`, and the assertion below still passes while
+        // having exercised the guard instead of the mid-drain EOF logic this test exists to prove.
+        let observedItems = 0;
         for (let i = 0; i < 200; i += 1) {
           const n = await stack.db.adminPool.query<{ n: string }>(
             `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
             [attemptId],
           );
-          if (Number(n.rows[0]!.n) >= 1) break;
+          observedItems = Number(n.rows[0]!.n);
+          if (observedItems >= 1) break;
           await new Promise((r) => setTimeout(r, 25));
         }
+        expect({ reachedMidDrain: observedItems >= 1 }).toEqual({ reachedMidDrain: true });
         await stack.db.adminPool.query(
           `UPDATE govai.ai_conversation_attempts SET claim_token = gen_random_uuid() WHERE id = $1::uuid`,
           [attemptId],
@@ -2862,6 +2877,7 @@ describe('R3 — round-three review findings', () => {
 
     let firstDone = 0;
     let secondDone = 0;
+    let pendingAtRelease = { first: false, second: false };
     await withProviderBehaviour(
       (req, res) => {
         req.on('data', () => undefined);
@@ -2894,6 +2910,12 @@ describe('R3 — round-three review findings', () => {
         // can only produce a false PASS, never a false failure, which is the safe direction for a
         // negative property.
         await new Promise((r) => setTimeout(r, 200));
+        // ★ THE ORDERING IS OBSERVED DIRECTLY, WITH NO CLOCK INVOLVED. Comparing timestamps was
+        // still a proxy: `Date.now()` has millisecond resolution, so a stop that settled just
+        // before the release could share its timestamp and satisfy `>=` while having resolved
+        // with the gate CLOSED. Whether a promise has settled is a fact, not a measurement — so
+        // it is read as one, here, while the drain is provably still blocked.
+        pendingAtRelease = { first: firstDone === 0, second: secondDone === 0 };
         releasedAt = Date.now();
         releaseDrain();
         await Promise.all([a, b]);
@@ -2911,15 +2933,74 @@ describe('R3 — round-three review findings', () => {
     // early. What actually matters is that NEITHER caller resolves before the drain completes,
     // because each handler calls `process.exit(0)` the moment its own stop resolves.
     //
-    // Asserted as a causal ordering against an event the test controls: contention can move both
-    // timestamps, but it cannot make a stop settle before the mid-drain step that was blocked.
     expect(releasedAt).toBeGreaterThan(0);
+    // The block actually engaged, so the window below was real rather than skipped.
     expect({ gateWasReached: gatedOnce }).toEqual({ gateWasReached: true });
-    expect({
-      firstWaitedForDrain: firstDone >= releasedAt,
-      secondWaitedForDrain: secondDone >= releasedAt,
-    }).toEqual({ firstWaitedForDrain: true, secondWaitedForDrain: true });
+    // ★ NEITHER STOP HAD SETTLED WHILE THE DRAIN WAS BLOCKED. This is the property the signal
+    // handlers depend on, stated without a clock: each handler calls `process.exit(0)` the moment
+    // its own stop resolves, so a stop that is still PENDING here cannot have killed the process
+    // mid-drain.
+    expect(pendingAtRelease).toEqual({ first: true, second: true });
+    // And both did eventually settle, so the test is not passing on two promises that never
+    // resolved at all.
+    expect({ firstSettled: firstDone > 0, secondSettled: secondDone > 0 }).toEqual({
+      firstSettled: true,
+      secondSettled: true,
+    });
   }, 60_000);
+
+  it('R15-1 — a RATCHET to outcome_unknown releases the branch, in the same transaction', async () => {
+    // ★ NOTHING IN THIS SUITE COVERED THIS BEFORE, AND I FOUND THAT OUT BY FALSIFYING. Removing
+    // the branch bump from the ratchet path left all 72 tests passing — so the P1 fix for it was
+    // about to ship with no evidence at all. `C4` proves the attempt terminalizes; not one test
+    // asked whether the BRANCH was released.
+    //
+    // Terminalization must ACTIVELY release the branch: the causal-version bump is what lets a
+    // concurrently-building sibling detect that its context is stale (§7.8), and what makes the
+    // branch's next `accepted` head claimable. Ordinary finalization does the bump inside the
+    // finalizing transaction; the recovery ratchet used to commit first and bump in a SECOND
+    // transaction, which leaves the head claimable against a pre-ratchet version in the gap and
+    // loses the bump PERMANENTLY if the process dies between the two — nothing revisits an
+    // already-terminal attempt.
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R15-1'));
+
+    const versionOf = async (): Promise<number> => {
+      const r = await stack.db.adminPool.query<{ v: string }>(
+        `SELECT causal_version::text AS v FROM govai.ai_conversation_branches WHERE id = $1::uuid`,
+        [conv.branchId],
+      );
+      return Number(r.rows[0]!.v);
+    };
+    const before = await versionOf();
+
+    // Strand it exactly as C4 does: past the boundary, provenance present, lease long expired.
+    const stale = randomUUID();
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts
+          SET claim_token = $2::uuid, claimant = 'dead-worker',
+              claim_deadline_at = now() - interval '5 minutes', heartbeat_at = now() - interval '5 minutes',
+              state = 'dispatching', dispatch_boundary_committed_at = now(),
+              govai_request_id = gen_random_uuid(), causal_version_at_build = 0,
+              provider_credential_id = $3::uuid
+        WHERE id = $1::uuid`,
+      [attemptId, stale, credentialId],
+    );
+
+    expect(await driveOne(attemptId)).toBe('ratcheted_outcome_unknown');
+    expect((await attempt(attemptId)).state).toBe('outcome_unknown');
+
+    // ★ THE ASSERTION: the branch was released. Without the bump the version is unchanged and a
+    // queued sibling waits on a head that will never signal it.
+    const after = await versionOf();
+    expect({ branchReleased: after > before }).toEqual({ branchReleased: true });
+
+    // ★ ATOMICITY IS A STRUCTURAL PROPERTY, NOT ONE THIS TEST PROVES, AND SAYING SO MATTERS. This
+    // asserts the bump HAPPENED; that it happens in the SAME transaction as the ratchet is
+    // verifiable by reading `ratchetAndWake` — both statements run inside one `withOwnerContext`
+    // callback — and is what closes the gap and the crash window. A test that claimed to prove
+    // atomicity here would be overstating what it observes.
+  });
 
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
     // The byte-safe path must not swallow the ordinary case: a legitimate UTF-8 error page is

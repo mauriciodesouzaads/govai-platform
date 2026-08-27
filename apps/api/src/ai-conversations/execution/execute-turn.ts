@@ -237,7 +237,7 @@ export async function processCandidate(
         if (restored) return { kind: 'drive' as const, claim: restored };
         return {
           kind: 'ambiguous' as const,
-          ratcheted: await ex.ratchetStrandedToOutcomeUnknown(tx, {
+          ratcheted: await ratchetAndWake(tx, {
             attemptId: candidate.attemptId,
             expectedToken: candidate.claimToken,
             graceMs: deps.recoveryGraceMs,
@@ -250,7 +250,7 @@ export async function processCandidate(
         // explicit): a stream proves a POST happened. The only honest arm is the ratchet.
         return {
           kind: 'ambiguous' as const,
-          ratcheted: await ex.ratchetStrandedToOutcomeUnknown(tx, {
+          ratcheted: await ratchetAndWake(tx, {
             attemptId: candidate.attemptId,
             expectedToken: candidate.claimToken,
             graceMs: deps.recoveryGraceMs,
@@ -265,8 +265,9 @@ export async function processCandidate(
   if (armed.kind === 'none') return 'no_action';
   if (armed.kind === 'ambiguous') {
     if (armed.ratcheted) {
-      // Terminalization RELEASES the branch queue (§8: outcome_unknown is QUEUE-TERMINAL).
-      await wakeBranchAfterTerminal(deps, owner, candidate.attemptId);
+      // The branch was released in the SAME transaction as the ratchet (§8: outcome_unknown is
+      // QUEUE-TERMINAL), so there is no window in which the head is claimable against a stale
+      // causal version, and no second commit that a crash could omit.
       return 'ratcheted_outcome_unknown';
     }
     return 'no_action';
@@ -1233,21 +1234,36 @@ async function finalizeAndWake(
   return outcome;
 }
 
-/** Bump the branch's causal version after a recovery ratchet, so the queue advances. */
-async function wakeBranchAfterTerminal(
-  deps: ConversationExecutorDeps,
-  owner: ConversationWorkerOwner,
-  attemptId: string,
-): Promise<void> {
-  await deps.db.withOwnerContext(owner, async (tx) => {
-    const context = await ex.readExecutionContext(tx, attemptId);
-    if (!context) return;
-    await ex.bumpBranchCausalVersion(tx, {
-      conversationId: context.conversationId,
-      branchId: context.branchId,
-    });
-  });
+/**
+ * Ratchet a stranded attempt to `outcome_unknown` AND release its branch, in ONE transaction.
+ *
+ * ★ THE BUMP BELONGS INSIDE THE RATCHET'S TRANSACTION, EXACTLY AS `finalizeAndWake` ALREADY DOES
+ * IT. Committing the ratchet first and bumping in a SECOND transaction opens two failure modes,
+ * both silent. In the gap, the branch's newly released head is claimable while `causal_version`
+ * still reads pre-ratchet — so a concurrently-building sibling cannot detect that its context is
+ * stale (§7.8), which is the entire purpose of the bump. And if the process dies or the second
+ * transaction fails, the branch keeps the stale version PERMANENTLY, with nothing left to retry
+ * it: the attempt is already terminal, so no later sweep revisits it.
+ *
+ * Terminalization must ACTIVELY release the branch, and "actively" has to mean atomically.
+ */
+async function ratchetAndWake(
+  tx: PoolClient,
+  input: { attemptId: string; expectedToken: string; graceMs: number },
+): Promise<boolean> {
+  const ratcheted = await ex.ratchetStrandedToOutcomeUnknown(tx, input);
+  if (ratcheted) {
+    const context = await ex.readExecutionContext(tx, input.attemptId);
+    if (context) {
+      await ex.bumpBranchCausalVersion(tx, {
+        conversationId: context.conversationId,
+        branchId: context.branchId,
+      });
+    }
+  }
+  return ratcheted;
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Heartbeat
