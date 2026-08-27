@@ -1886,14 +1886,24 @@ describe('R3 — round-three review findings', () => {
           isBranchHead: true,
         });
         // Wait until the drain is provably live (a chunk is durable), then rotate the claim.
+        //
+        // ★ AN EXHAUSTED POLL MUST FAIL, NOT PROCEED. If the loop runs out on a slow database or
+        // KMS path and we rotate anyway, the rotation lands BEFORE the drain — `markStreaming`
+        // loses its fence, the PRE-DRAIN guard cancels the body, and the assertion below still
+        // sees a closed connection. The test would pass having never exercised the mid-drain
+        // iterator-break path it exists to prove: a silent substitution of one code path for
+        // another, which is the vacuous-pass class in a new disguise.
+        let observedItems = 0;
         for (let i = 0; i < 400; i += 1) {
           const n = await stack.db.adminPool.query<{ n: string }>(
             `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
             [attemptId],
           );
-          if (Number(n.rows[0]!.n) >= 1) break;
+          observedItems = Number(n.rows[0]!.n);
+          if (observedItems >= 1) break;
           await new Promise((r) => setTimeout(r, 25));
         }
+        expect({ reachedMidDrain: observedItems >= 1 }).toEqual({ reachedMidDrain: true });
         await stack.db.adminPool.query(
           `UPDATE govai.ai_conversation_attempts SET claim_token = gen_random_uuid() WHERE id = $1::uuid`,
           [attemptId],
@@ -2789,9 +2799,13 @@ describe('R3 — round-three review findings', () => {
     // behaviour the bound exists to forbid. Once the timing became deterministic, the correct
     // number became derivable — so it is asserted.
     expect({ candidatesDispatched: dispatches }).toEqual({ candidatesDispatched: 1 });
-    // And that one candidate really finished, so the count above is a bounded drain rather than a
-    // stop that landed before any work began.
-    expect({ completedOfBacklog: completed }).toEqual({ completedOfBacklog: 1 });
+    // ★ NO ASSERTION ON `completed` — AND REMOVING IT CORRECTS A DEFECT I INTRODUCED WHILE FIXING
+    // THE SAME ONE. The dispatch count moved to this test's own upstream precisely because
+    // oldest-first discovery in a shared database can pick a FOREIGN attempt first; asserting a
+    // completion from *this* backlog reintroduces exactly that false-failure path, since a correct
+    // shutdown that drained the foreign candidate leaves `completed` at zero. The dispatch count
+    // above already excludes a vacuous pass: one dispatch provably started and was drained.
+    void completed;
     // ★ NO WALL-CLOCK ASSERTION, AND THE REASON IS THE COMMENT DIRECTLY ABOVE. An earlier version
     // of this test stated that per-candidate cost cannot be bounded on a contended machine — and
     // then asserted a duration anyway. The ONE candidate a bounded shutdown intentionally drains
@@ -2820,14 +2834,31 @@ describe('R3 — round-three review findings', () => {
       firstDispatchSeen = resolve;
     });
 
-    // ★ A CONTROLLABLE GATE, NOT A TIMER. The provider holds its response until the test releases
-    // it, so "did either stop settle too early?" becomes a question about an event the test OWNS
-    // rather than about elapsed milliseconds.
-    let releaseProvider!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      releaseProvider = resolve;
+    // ★ THE GATE SITS INSIDE THE DRAIN, NOT IN FRONT OF IT. Holding the PROVIDER RESPONSE was not
+    // enough: releasing that gate lets the response land, but the drain continues afterwards
+    // through persistence, audit capture and finalization. A broken implementation whose second
+    // `stop()` resolves just after the response arrives would still satisfy an
+    // "after the gate opened" check while the signal handler could exit MID-DRAIN — which is the
+    // whole failure. So the gate is moved to a POST-RESPONSE persistence step: the executor's
+    // audit capture blocks until the test releases it, and "settled before release" therefore
+    // means "settled while the drain was demonstrably still running".
+    let releaseDrain!: () => void;
+    const drainGate = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
     });
     let releasedAt = 0;
+    let gatedOnce = false;
+
+    const gatedDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      captureAuditEvent: async (event: unknown, identity?: unknown) => {
+        // Only the FIRST post-response capture blocks; later ones must not deadlock shutdown.
+        if (!gatedOnce) {
+          gatedOnce = true;
+          await drainGate;
+        }
+        return (db.captureAuditEvent as (e: unknown, i?: unknown) => Promise<void>)(event, identity);
+      },
+    }) as typeof db;
 
     let firstDone = 0;
     let secondDone = 0;
@@ -2836,14 +2867,12 @@ describe('R3 — round-three review findings', () => {
         req.on('data', () => undefined);
         req.on('end', () => {
           firstDispatchSeen();
-          void gate.then(() => {
-            res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ ok: true }));
-          });
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
         });
       },
       async () => {
-        const handle = startConversationWorker(deps, {
+        const handle = startConversationWorker({ ...deps, db: gatedDb }, {
           batchSize: 50,
           intervalMs: 50,
           maxPagesPerSweep: 2,
@@ -2866,7 +2895,7 @@ describe('R3 — round-three review findings', () => {
         // negative property.
         await new Promise((r) => setTimeout(r, 200));
         releasedAt = Date.now();
-        releaseProvider();
+        releaseDrain();
         await Promise.all([a, b]);
         return null;
       },
@@ -2883,8 +2912,9 @@ describe('R3 — round-three review findings', () => {
     // because each handler calls `process.exit(0)` the moment its own stop resolves.
     //
     // Asserted as a causal ordering against an event the test controls: contention can move both
-    // timestamps, but it cannot make a stop settle before the gate that unblocks its dispatch.
+    // timestamps, but it cannot make a stop settle before the mid-drain step that was blocked.
     expect(releasedAt).toBeGreaterThan(0);
+    expect({ gateWasReached: gatedOnce }).toEqual({ gateWasReached: true });
     expect({
       firstWaitedForDrain: firstDone >= releasedAt,
       secondWaitedForDrain: secondDone >= releasedAt,
