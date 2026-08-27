@@ -32,6 +32,10 @@ const MIGRATION = join(
 
 const WORKER = 'govai_conversation_worker';
 
+/** See the note in the 0035 suite: `migrate()` replays every migration, so the 60s default is
+ *  under-provisioned for it under full-suite load. Assertions unchanged; budget corrected. */
+const MIGRATION_TEST_TIMEOUT_MS = 240_000;
+
 let db: TestDb;
 let worker: Pool;
 let owner: OwnerIds;
@@ -380,7 +384,7 @@ describe('0034 — the migration text itself', () => {
     expect(await columnPrivs('ai_conversations', 'UPDATE')).toEqual(['updated_at']);
     expect(await hasTablePriv('ai_conversation_attempts', 'INSERT')).toBe(false);
     expect(await hasTablePriv('ai_conversation_attempts', 'DELETE')).toBe(false);
-  });
+  }, MIGRATION_TEST_TIMEOUT_MS);
 
   it('M14 — pre-existing P0-A1/P0-A2/P0-B rows survive the migration byte-identically', async () => {
     // The chain seeded BEFORE the re-run above is still intact and unmodified.

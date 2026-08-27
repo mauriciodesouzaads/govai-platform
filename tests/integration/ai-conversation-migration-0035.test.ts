@@ -46,6 +46,17 @@ const PROVIDER_CLASSES = [
 /** P0-C's GovAI-local additions. */
 const LOCAL_CLASSES = ['local_error', 'persistence_error'] as const;
 
+/**
+ * Timeout for tests that re-run the WHOLE migration set.
+ *
+ * ★ NOT A FLAKE WORKAROUND — a provisioning correction. `migrate()` replays every migration in
+ * the repository, which is seconds of work on an idle machine and can exceed the 60s default when
+ * the full integration suite is running 240 other files with their own containers. The repository
+ * already uses this bound for migration-heavy work (`bootstrap-idempotent.test.ts`). The
+ * assertions are unchanged; only the budget is honest about what the test actually does.
+ */
+const MIGRATION_TEST_TIMEOUT_MS = 240_000;
+
 let db: TestDb;
 let owner: OwnerIds;
 let conversationId: string;
@@ -257,7 +268,7 @@ describe('0035 — migration shape and safety', () => {
         [attemptId],
       ),
     ).rejects.toSatisfy(isCheckViolation);
-  });
+  }, MIGRATION_TEST_TIMEOUT_MS);
 
   it('T9 — PRE-EXISTING rows survive the widening untouched', async () => {
     // The change only WIDENS an accepted set, so every already-stored value still satisfies it
@@ -276,7 +287,7 @@ describe('0035 — migration shape and safety', () => {
       [attemptId],
     );
     expect(r.rows[0]).toEqual({ state: 'failed', error_class: 'rate_limited' });
-  });
+  }, MIGRATION_TEST_TIMEOUT_MS);
 
   it('T10 — the migration adds NO grant, policy, table, column, index or function', async () => {
     const sql = (await readFile(MIGRATION, 'utf8')).replace(/^\s*--.*$/gm, ' ');
