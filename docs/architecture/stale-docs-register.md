@@ -776,6 +776,16 @@ Standing-Owner-Authorization note above; and the M3-era residual mirror above th
 read as current state, no repository-enforcement assessment is deferred or pending, because the
 decision has been made.
 
+One standing statement is **not** movement provenance but a currently inaccurate comment, and is
+superseded on the same terms: `.github/workflows/ci.yml:97` describes the integration job as the
+strong gate that "branch protection requires … on `main`". No branch protection requires that job,
+because none exists — the job is mandatory as development-protocol merge evidence, not as a
+GitHub-enforced status check (`CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
+`GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`). That comment configures nothing, is **not** evidence that
+GitHub-side enforcement exists, and creates no action item under the owner's settled disposition.
+Correcting its wording would be a comment edit, never an enforcement change, and is deliberately out
+of scope here: this movement is docs-only and does not touch `.github/**`.
+
 Still correct and still load-bearing: `CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
 `GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`. Never infer that GitHub-side enforcement exists from the
 existence of a CI workflow — it does not exist, by design.
