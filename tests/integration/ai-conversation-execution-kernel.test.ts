@@ -2386,6 +2386,118 @@ describe('R3 — round-three review findings', () => {
     expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'local_error', cred: null });
   });
 
+  it('R8-1 — a REAL audit-capture failure (no spy) is not marked completed', async () => {
+    // ★ THE MOST IMPORTANT TEST IN THIS FILE, BECAUSE IT INDICTS THE OTHERS. R7-2 and R7-3 proved
+    // the executor classifies a REJECTED capture correctly — by injecting a `captureAuditEvent`
+    // spy that rejects. Production could never produce that rejection: the worker built its audit
+    // bridge WITHOUT `posture: 'strict'`, and the bridge SWALLOWS capture failures in
+    // `best_effort`. The handler was unreachable, and a spy-driven test certified it anyway.
+    //
+    // So this test refuses the spy entirely. It breaks the capture where it actually breaks — the
+    // privilege on the SECURITY DEFINER function the bridge calls — and drives the real path:
+    // executor → bridge → `govai.audit_capture_insert_locked` → permission denied → strict
+    // rethrow → classification. Nothing about the failure is simulated.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R8-1', false));
+
+    // 0026's signature, which 0034 grants to the worker role.
+    const SIG = `govai.audit_capture_insert_locked(
+      uuid, uuid, text, text, bigint, text, text, text, uuid, timestamptz,
+      bytea, bytea, bytea, text, integer, jsonb, text, bytea, text, text
+    )`;
+
+    await stack.db.adminPool.query(
+      `REVOKE EXECUTE ON FUNCTION ${SIG} FROM govai_conversation_worker`,
+    );
+    try {
+      await withProviderBehaviour(
+        (req, res) => {
+          req.on('data', () => undefined);
+          req.on('end', () => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, answer: 'durable' }));
+          });
+        },
+        async () =>
+          processCandidate(deps, {
+            orgId: org.org_id,
+            ownerUserId: org.user_id,
+            conversationId: conv.id,
+            attemptId,
+            state: 'accepted',
+            reason: 'queued_head',
+            claimToken: null,
+            isBranchHead: true,
+          }),
+      );
+    } finally {
+      // Restore unconditionally — every later test in this file shares this database.
+      await stack.db.adminPool.query(
+        `GRANT EXECUTE ON FUNCTION ${SIG} TO govai_conversation_worker`,
+      );
+    }
+
+    const row = await stack.db.adminPool.query<{ state: string; error_class: string | null }>(
+      `SELECT state, error_class FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    // The provider answered; only the durable evidence write failed. `completed` here would be an
+    // attempt asserting success with its required evidence permanently absent.
+    expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'persistence_error' });
+  });
+
+  it('R8-1b — the same REAL failure on the STREAM terminal path is not marked completed', async () => {
+    // ★ THE ADJACENT CASE, COVERED THIS TIME RATHER THAN LEFT FOR THE NEXT ROUND. R8-1 drives the
+    // non-stream `invoked` emit; the stream terminal event is a DIFFERENT code path
+    // (`recordStream`'s `finally`), reached only after a clean EOF, and it carries the same
+    // obligation. Both are exercised through the real bridge with no spy.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R8-1b', true));
+
+    const SIG = `govai.audit_capture_insert_locked(
+      uuid, uuid, text, text, bigint, text, text, text, uuid, timestamptz,
+      bytea, bytea, bytea, text, integer, jsonb, text, bytea, text, text
+    )`;
+
+    await stack.db.adminPool.query(
+      `REVOKE EXECUTE ON FUNCTION ${SIG} FROM govai_conversation_worker`,
+    );
+    try {
+      await withProviderBehaviour(
+        (req, res) => {
+          req.on('data', () => undefined);
+          req.on('end', () => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.write(`data: {"phase":"one","pad":"${'b'.repeat(120)}"}\n\n`);
+            // A CLEAN EOF: the drain succeeds, so the evidence write is the only thing wrong.
+            setTimeout(() => res.end(), 40);
+          });
+        },
+        async () =>
+          processCandidate(deps, {
+            orgId: org.org_id,
+            ownerUserId: org.user_id,
+            conversationId: conv.id,
+            attemptId,
+            state: 'accepted',
+            reason: 'queued_head',
+            claimToken: null,
+            isBranchHead: true,
+          }),
+      );
+    } finally {
+      await stack.db.adminPool.query(
+        `GRANT EXECUTE ON FUNCTION ${SIG} TO govai_conversation_worker`,
+      );
+    }
+
+    const row = await stack.db.adminPool.query<{ state: string; error_class: string | null }>(
+      `SELECT state, error_class FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'persistence_error' });
+  });
+
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
     // The byte-safe path must not swallow the ordinary case: a legitimate UTF-8 error page is
     // still the more useful `text`.

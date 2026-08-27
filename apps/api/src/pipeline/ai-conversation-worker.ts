@@ -443,7 +443,23 @@ export function createConversationWorkerDb(deps: ConversationWorkerDbDeps): Conv
       return fn(client, markUnusable);
     });
 
-  const auditBridge = makeAuditBridge({ pool, log, withClient: withAttestedClient });
+  // ★ `strict` IS WHAT MAKES THE EXECUTOR'S EVIDENCE CLASSIFICATION REACHABLE AT ALL. The bridge
+  // defaults to `best_effort`, which SWALLOWS a capture failure and resolves normally — correct
+  // for the request path, where v1 deliberately never fails a user's request over evidence. On
+  // the worker path it is wrong, and silently so: the executor classifies a failed terminal-
+  // evidence write as `persistence_error` precisely so an attempt is never marked `completed`
+  // with its required evidence missing, and under `best_effort` that classification could NEVER
+  // RUN. The handler existed, the tests exercised it with an injected rejection, and production
+  // could not produce one.
+  //
+  // This is scoped to the worker's OWN bridge instance. The direct routes construct their own and
+  // keep best-effort semantics unchanged.
+  const auditBridge = makeAuditBridge({
+    pool,
+    log,
+    withClient: withAttestedClient,
+    posture: 'strict',
+  });
   let closed = false;
 
   return {

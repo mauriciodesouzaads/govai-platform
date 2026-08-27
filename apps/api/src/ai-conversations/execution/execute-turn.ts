@@ -1309,7 +1309,15 @@ function startHeartbeat(
   // naively accumulating schedule would fire a BURST of catch-up ticks after one slow tick, and
   // each of those takes a pool checkout — reintroducing the starvation this chaining exists to
   // prevent.
-  let nextDueAt = Date.now() + deps.heartbeatIntervalMs;
+  // ★ MONOTONIC, NOT WALL CLOCK. `Date.now()` jumps when NTP or a VM host corrects the clock, and
+  // a BACKWARD correction is the dangerous direction: `nextDueAt` would still hold the old epoch,
+  // so the computed delay absorbs the entire correction and renewals stall — potentially past the
+  // database lease, letting recovery rotate a claim out from under a live provider call. The lease
+  // deadline itself is committed from PostgreSQL's clock and is unaffected; only OUR cadence would
+  // drift, which is exactly the asymmetry that makes it dangerous. `performance.now()` is
+  // monotonic and immune to both directions of adjustment.
+  const monotonicNow = (): number => performance.now();
+  let nextDueAt = monotonicNow() + deps.heartbeatIntervalMs;
 
   const schedule = (): void => {
     if (stopped) return;
@@ -1320,12 +1328,12 @@ function startHeartbeat(
         inFlight = tick;
         void tick.finally(() => {
           if (inFlight === tick) inFlight = null;
-          nextDueAt = Math.max(Date.now(), nextDueAt + deps.heartbeatIntervalMs);
+          nextDueAt = Math.max(monotonicNow(), nextDueAt + deps.heartbeatIntervalMs);
           // Re-arm only now, so a tick can never overlap its own successor.
           schedule();
         });
       },
-      Math.max(0, nextDueAt - Date.now()),
+      Math.max(0, nextDueAt - monotonicNow()),
     );
     timer.unref?.();
   };
