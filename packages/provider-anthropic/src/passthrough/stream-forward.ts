@@ -17,6 +17,24 @@ export type StreamForwardInput = {
   body: Buffer;
   /** Caller-controlled abort signal — propagated to upstream fetch. */
   signal?: AbortSignal;
+  /**
+   * EP-AI-CONVERSATION-CONTINUITY-V1 P0-C: OPTIONAL asynchronous durable dispatch gate,
+   * awaited AFTER the request is fully described and IMMEDIATELY before the local `fetch`.
+   * Fail-closed: a rejection here makes the fetch structurally unreachable. Supplied ONLY by
+   * the durable conversation executor (which persists its credential-provenance commit inside
+   * it); direct-route callers omit it and keep their existing behavior byte-for-byte. This
+   * package stays storage-agnostic — it awaits the callback without knowing what "durable"
+   * means for the caller. NOT a provider-receipt claim. Mirrors `forwardRaw.beforeDispatch`.
+   */
+  beforeDispatch?: () => Promise<void>;
+  /**
+   * EP-AI-CONVERSATION-CONTINUITY-V1 P0-C: synchronous, in-memory-only marker invoked
+   * immediately before `fetch` (after `beforeDispatch`). Lets the caller distinguish a KNOWN
+   * LOCAL error — raised before any transmission attempt — from a POST-INVOCATION unknown
+   * outcome. If it throws, the fetch is NOT invoked. It is NOT proof the provider received
+   * bytes. Mirrors `forwardRaw.onDispatchStart`.
+   */
+  onDispatchStart?: () => void;
 };
 
 export type StreamForwardResult = {
@@ -42,6 +60,13 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
   const url = `${input.baseUrl.replace(/\/$/, '')}${input.concretePath}`;
   const native_request_hash = sha256Hex(input.body);
   const t0 = Date.now();
+
+  // P0-C §12.3 ordering, identical to `forwardRaw`: request fully described -> await the
+  // durable gate -> recheck the abort signal -> in-memory forward marker -> fetch. A gate
+  // rejection or an already-aborted signal makes the fetch structurally unreachable.
+  if (input.beforeDispatch) await input.beforeDispatch();
+  input.signal?.throwIfAborted();
+  input.onDispatchStart?.();
 
   const res = await fetch(url, {
     method: input.method,
