@@ -767,12 +767,14 @@ Consequently `R9` is **not** unresolved repository-governance work:
 - enabling branch protection or creating a ruleset must not be proposed as future work or as a
   future requirement (any such change remains an owner-reserved action — resume-playbook.md §9).
 
-This subsection also supersedes the **current** reading of the
-`REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` token wherever it still stands in the tree —
-the post-M3 operational note in [development-roadmap.md](./development-roadmap.md), the `R9` row in
-`foundation-v1-freeze.md` §6, and this register's own EP-11-era row above. Those occurrences remain
-as the provenance of their movements; read as current state, no repository-enforcement assessment
-is deferred or pending, because the decision has been made.
+This subsection also supersedes the **current** reading of every earlier repository-enforcement
+statement still standing in the tree: the `REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` token
+in the operational note of [development-roadmap.md](./development-roadmap.md), in the `R9` row of
+`foundation-v1-freeze.md` §6 and in this register's own EP-11-era table row and
+Standing-Owner-Authorization note above; and the M3-era residual mirror above that lists
+`R9 branch protection deferred`. Those occurrences remain as the provenance of their movements;
+read as current state, no repository-enforcement assessment is deferred or pending, because the
+decision has been made.
 
 Still correct and still load-bearing: `CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
 `GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`. Never infer that GitHub-side enforcement exists from the
