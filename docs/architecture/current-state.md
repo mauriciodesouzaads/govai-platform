@@ -50,7 +50,7 @@ is one collected test module.
 | Workspace packages | `packages/*` | 13 |
 | Other workspace members | literal entries in `pnpm-workspace.yaml` | `scripts`, `tests` |
 | API route files | `apps/api/src/routes/*.ts` | 20 |
-| DB migrations | `apps/api/src/db/migrations/*.sql` | 32 |
+| DB migrations | `apps/api/src/db/migrations/*.sql` | 33 |
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
@@ -58,7 +58,7 @@ is one collected test module.
 | Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 92 | 1407 |
 | Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 240 | 3096 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
-| Live-gated | `pnpm test:live` (never in CI) | 5 | files only — see manifest `reason` |
+| Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 
 Acceptance harnesses (NOT vitest suites): `tests/acceptance/ai-console` —
 operator-driven harnesses, not vitest suites; excluded from every vitest config.

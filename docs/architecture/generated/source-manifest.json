@@ -32,7 +32,7 @@
       "tests"
     ],
     "api_route_files": 20,
-    "db_migrations": 32
+    "db_migrations": 33
   },
   "tests": {
     "root_unit": {
@@ -52,7 +52,7 @@
       "tests": 753
     },
     "live_gated": {
-      "files": 5,
+      "files": 6,
       "tests": null,
       "reason": "not enumerated: collection would import live-gated modules whose import-time guards read provider environment; files-only by design"
     },
