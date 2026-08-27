@@ -663,3 +663,129 @@ foundation, migration `0031`) is implemented in this tree; `CONVERSATION_PERSIST
 `NOT_IMPLEMENTED` (no Send/hydrate/reload runtime exists). The continuity spec's schema sections
 (§3/§6) are now PARTIALLY REALIZED by 0031; every runtime section (§7–§14, §19) remains
 design-only.
+
+## P0-B post-merge canonical reconciliation (P0-B-POST-MERGE-DOCS-RECONCILIATION-01)
+
+Documentation-only. No backend runtime, no test, no migration, no grant/RLS, no event schema, no
+CI configuration and no repository setting changed in this movement. It exists because the
+independently audited P0-B tree was merged **byte-identically** — `TREE(6567d8da…) ==
+770dffba…` — and that tree deliberately still carried the pre-merge wording
+`P0_B_CONVERSATION_CONTROL_PLANE=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`. That wording was
+truthful when it was audited; promoting it could not be smuggled into the technical squash tree
+without breaking the tree identity that is the whole proof, so the promotion lands here.
+
+**Closes independent-audit finding `P0B-AUDIT-P3-02`** (`resume-playbook.md` /
+`development-roadmap.md` still presented the P0-A1-era state as current — pre-existing at the
+frozen base, untouched by PR #145) and **`P0B-AUDIT-P3-03`** (the carry-forward IDs
+`P0B-P3-ERR-SHAPE-01` and `P0B-P4-BASE64URL-LENIENCY-01` existed only in the external handoff and
+had no canonical in-tree register entry).
+
+| Document | Was (stale at `6567d8da`) | Now |
+|---|---|---|
+| `current-state.md` §P0-B canonical state | `P0_B_CONVERSATION_CONTROL_PLANE=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`; "deliberately NOT `COMPLETE`"; `CONVERSATION_CONTROL_PLANE=CANDIDATE_IMPLEMENTED` | `P0_B…=COMPLETE` with the full immutable evidence block (PR #145 · reviewed head `cd7a137d` · reviewed tree `770dffba` · audit PASS + its SHA-256 · squash `6567d8da` · tree identity PASS · main CI `33023935331` GREEN); `CONVERSATION_CONTROL_PLANE=COMPLETE`; a canonical nine-row carry-forward register (the seven audit P3s + the two formerly handoff-only IDs, with `P0B-AUDIT-P3-05` documented as an ALIAS of `P0B-P3-ERR-SHAPE-01` so the one risk is never double-counted); explicit restated non-claims; `P0-C` named as the next implementation movement with the `P0A2-P3-A1` / `P0A2-P3-A4` activation gates |
+| `resume-playbook.md` §4 | "movement P0-A1 … is implemented in this tree … next movement P0-A2" | a dedicated current-lane bullet: `COMPLETE = P0-A1 · T1 · P0-A2 · P0-B`, `NEXT = P0-C-DURABLE-SEND-EXECUTION-KERNEL-01` (not started), the P0-B technical evidence, the two pre-activation gates, and the unchanged honesty boundary |
+| `development-roadmap.md` §GOVAI_NATIVE_EXPERIENCE_PARITY_V1 | "its first movement, **P0-A1** … is implemented in this tree … Next movements: P0-A2 … onward" | a milestone token block (P0-A1 / T1 / P0-A2 / P0-B `COMPLETE`; P0-C `NOT_STARTED` marked CURRENT/NEXT; P0-D/E/F `NOT_STARTED`) with a short paragraph per finished movement and the P0-C durable-execution path |
+
+Register-relevant facts this reconciliation records but does NOT change:
+
+- **Five of the seven independent-audit P3 findings remain OPEN** (`P0B-AUDIT-P3-01`, `-04`,
+  `-05`, `-06`, `-07`). Only the two DOCUMENTARY ones (`-02`, `-03`) are closed here. The P3
+  count is **not** zero, and none of the five was fixed opportunistically — fixing behaviour is
+  not what a documentation reconciliation is for.
+- **`P0A2-P3-A1` and `P0A2-P3-A4` survive unchanged** as gates on the FIRST real
+  conversation-worker runtime activation / on worker runtime callers expanding. They do not gate
+  this reconciliation and they do not gate every preparatory P0-C step.
+- `R14` / `LATENT_AUTH_LIFECYCLE_DESIGN_RISK`, the `AUTH-READ-CACHE-01` platform class, the
+  provider-sourced rejection discriminator and `P0B-FORK-BAO-TRIPLE-SWITCH` are all UNCHANGED in
+  status.
+- **Branch protection / repository rulesets — no finding, no action, no setting touched.** This
+  movement inspected no repository setting for change and modified none. Per a standing owner
+  governance decision, GitHub branch protection and rulesets are **intentionally not used**, so
+  multi-agent development is not blocked at the repository layer: CI is enforced by the
+  development protocol and reviewed as merge evidence, and the absence of GitHub-side
+  enforcement is `BY_DESIGN` rather than technical debt. This movement therefore raises no
+  branch-protection finding and creates no branch-protection action item. It leaves Foundation V1
+  residual `R9` byte-unchanged in [foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 as
+  freeze-era provenance; `R9`'s CURRENT disposition is recorded in the subsection below and is
+  settled by the owner, not pending.
+
+`EP-AI-CONVERSATION-CONTINUITY-V1-01` remains IN_PROGRESS. **Superseding the parity-baseline
+section's closing note above** — which said "every runtime section (§7–§14, §19) remains
+design-only" and was written at PR #139's head, before P0-A2 and P0-B existed; it is retained
+above as that movement's history and is no longer the current reading of the tree:
+
+- Storage and encryption (§3/§6) are realized by migration `0031`, extended by `0033`
+  (the fork-idempotency arbiter + the minimum request-plane column authority).
+- §7's state PHYSICS are realized STRUCTURALLY as database guard triggers (`0031`, plus `0033`'s
+  fork-pin validity and `current_attempt_id` monotonic-handoff triggers). §7's runtime
+  EXECUTOR — the thing that drives those transitions — does not exist.
+- §7.7/§8 recovery DISCOVERY is realized read-only by `0032`'s content-free `SECURITY DEFINER`
+  function, reachable only by `govai_conversation_worker`. Nothing calls it at runtime.
+- §13's control-plane API is PARTIALLY REALIZED: exactly five endpoints exist
+  (`POST` / `GET` `/v1/ai/conversations`, `GET` and `PATCH` `…/:id`, `POST …/:id/branches`).
+  `DELETE …/:id`, `GET …/:id/turns`, `GET …/turns/:turnId`, the stream re-attach endpoint,
+  `POST …/:id/turns` (durable send), `POST …/retry` and `POST …/stop` do NOT exist.
+- Everything else the runtime sections specify is still absent: durable send and `client_turn_id`
+  reservation (§8), the dispatch boundary and server-owned stream (§9), reload/reconnection
+  (§10), the provider conversation adapter and continuation (§11/§17), turn↔evidence correlation
+  (§14) and the whole §19 delete protocol. No worker process runs; no provider call is made from
+  a durable turn.
+
+`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`.
+
+### Foundation V1 residual `R9` — final owner disposition
+
+```text
+FOUNDATION_V1_R9_HISTORICAL_PROVENANCE = RETAINED
+CURRENT_R9_DISPOSITION                 = SUPERSEDED_BY_OWNER_GOVERNANCE_DECISION
+MAIN_BRANCH_PROTECTION                 = INTENTIONALLY_DISABLED_BY_OWNER
+REPOSITORY_RULESETS                    = INTENTIONALLY_NONE_BY_OWNER
+R9_CURRENT_ACTION                      = NONE
+R9_FUTURE_GATE                         = NONE
+```
+
+Foundation V1 residual `R9` is retained **unchanged** in
+[foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 as freeze-era historical provenance. What
+that row recorded at freeze time — GitHub branch-protection / ruleset enforcement absent, merge
+safety process-enforced — was true when it was written and is **not** being called an error. The
+anti-evaporation clause is honoured: nothing is erased, rewritten or silently reclassified.
+
+Its **current operational meaning is superseded by an explicit owner governance decision**. GitHub
+branch protection and repository rulesets are intentionally not used in this repository because the
+development workflow deliberately runs multiple AI executors, reviewers and orchestration agents,
+and the owner prefers process-controlled merge discipline — exact SHAs, exact-head CI evidence,
+review evidence and expected-head race guards — over repository-level enforcement that can block
+that workflow. The absence of GitHub-side enforcement is therefore a **chosen design point**, not a
+gap.
+
+Consequently `R9` is **not** unresolved repository-governance work:
+
+- it is **not** awaiting owner disposition — this IS the disposition;
+- there is no remediation, no action item and no technical-debt entry;
+- it gates nothing — not P0-C, not any later movement;
+- no `OPS-*` branch-protection finding may be raised from it;
+- enabling branch protection or creating a ruleset must not be proposed as future work or as a
+  future requirement (any such change remains an owner-reserved action — resume-playbook.md §9).
+
+This subsection also supersedes the **current** reading of every earlier repository-enforcement
+statement still standing in the tree: the `REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` token
+in the operational note of [development-roadmap.md](./development-roadmap.md), in the `R9` row of
+`foundation-v1-freeze.md` §6 and in this register's own EP-11-era table row and
+Standing-Owner-Authorization note above; and the M3-era residual mirror above that lists
+`R9 branch protection deferred`. Those occurrences remain as the provenance of their movements;
+read as current state, no repository-enforcement assessment is deferred or pending, because the
+decision has been made.
+
+One standing statement is **not** movement provenance but a currently inaccurate comment, and is
+superseded on the same terms: `.github/workflows/ci.yml:97` describes the integration job as the
+strong gate that "branch protection requires … on `main`". No branch protection requires that job,
+because none exists — the job is mandatory as development-protocol merge evidence, not as a
+GitHub-enforced status check (`CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
+`GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`). That comment configures nothing, is **not** evidence that
+GitHub-side enforcement exists, and creates no action item under the owner's settled disposition.
+Correcting its wording would be a comment edit, never an enforcement change, and is deliberately out
+of scope here: this movement is docs-only and does not touch `.github/**`.
+
+Still correct and still load-bearing: `CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
+`GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`. Never infer that GitHub-side enforcement exists from the
+existence of a CI workflow — it does not exist, by design.

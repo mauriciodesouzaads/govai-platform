@@ -309,12 +309,72 @@ prerequisite `CONVERSATION_CONTINUITY=P0_NATIVE_EXPERIENCE_PREREQUISITE` with it
 `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`). No capability implementation wave has started.
 The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; the implementation
 mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated candidate scope in the
-baseline doc §10) is **IN_PROGRESS**: its first movement, **P0-A1** (operational storage +
-crypto purpose isolation + owner-scoped FORCE RLS — migration `0031`, KMS
-`conversation_content`/`conversation_content_integrity` purposes, `withOwnerContext`), is
-implemented in this tree. Storage foundation only: no Send, no runner, no worker, no routes —
-`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` remains true (see current-state.md's P0-A1 canonical
-state section). Next movements: P0-A2 (detached worker trust + recovery discovery) onward.
+baseline doc §10) is **IN_PROGRESS**, with four movements finished and merged and the durable
+execution kernel next:
+
+```text
+EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
+
+P0_A1=COMPLETE                                      (PR #140; docs closeout #141)
+T1=COMPLETE                                         (PR #142 — TEST-ISSUANCE BOUNDARY ONLY)
+  TEST_FIXTURE_COLLISION=CLOSED_BY_BOUNDED_DB_COLLISION_RETRY
+  PRODUCTION_API_KEY_ISSUANCE_LIFECYCLE=NOT_IMPLEMENTED
+  LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14
+P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=COMPLETE      (PR #143; docs closeout #144)
+P0_B_CONVERSATION_CONTROL_PLANE=COMPLETE            (PR #145, merge 6567d8da)
+
+P0_C_DURABLE_SEND_EXECUTION_KERNEL=NOT_STARTED      <- CURRENT / NEXT
+P0_D=NOT_STARTED
+P0_E=NOT_STARTED
+P0_F=NOT_STARTED
+
+CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED
+```
+
+**P0-A1 (done).** Operational storage + crypto purpose isolation + owner-scoped FORCE RLS —
+migration `0031`, the KMS `conversation_content` / `conversation_content_integrity` purposes and
+`withOwnerContext`. Storage foundation only.
+
+**T1 (done — test-issuance boundary only; NOT production collision hardening).** `T1` is
+`EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING` movement `T1-TEST-ISSUANCE-BOUNDARY-RETRY-01`, and
+`T1=COMPLETE` means exactly one thing: the SHARED TEST issuance boundary now performs a bounded
+whole-transaction retry on the exact `23505`/`api_keys_pkey` collision. It made **no production
+runtime change** — no migration, and `PREFIX_LOOKUP_LEN` / key format / `lookupPrefix` /
+`api_key_lookup_v2` are all unchanged, with the DB uniqueness constraint still the authority. The
+short lookup-prefix contract that CAUSES the collision domain is untouched, so
+`PRODUCTION_API_KEY_ISSUANCE_LIFECYCLE=NOT_IMPLEMENTED` and
+`LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14` both remain open: prefix entropy/length, backward
+compatibility, production-boundary collision retry, rotation, revocation and issuance UX are still
+future R14 design. Do not read this row as finished production collision handling — see
+current-state.md §8 *F4 follow-up register*.
+
+**P0-A2 (done).** Detached worker trust + recovery discovery — the `govai_conversation_worker`
+role, migration `0032`'s content-free `SECURITY DEFINER` discovery function, live database
+identity attestation, and an inert runtime layer nothing calls at startup. A trust boundary and
+a read, not a runner.
+
+**P0-B (done).** The conversation CONTROL PLANE — migration `0033`, five
+`/v1/ai/conversations*` routes, encrypted titles with a keyed digest, the fork control plane
+with body-carried `client_fork_id` idempotency, `Cache-Control: no-store` for the conversation
+surface, and the STRUCTURAL closure of `P0A1-C4` / `P0A1-C5`. Merged tree-identically to the
+independently audited tree (reviewed tree `770dffba…`, audit PASS with `P0=0 · P1=0 · P2=0 ·
+P3=7`, post-merge main CI run `33023935331` GREEN). Seven P3 carry-forwards are registered and
+five remain open — see current-state.md's *P0-B canonical state* section.
+
+**P0-C — durable send / execution kernel (NEXT, not started).** The durable execution path:
+Send → `client_turn_id` durable reservation → immutable user input → immutable native request
+config → initial attempt → branch execution authority → claim → lease → fencing → detached
+worker → durable credential resolution → provider dispatch → durable finalize → hydrate →
+reload → reconnection. ★ `P0A2-P3-A1` must be adjudicated/closed before the FIRST real
+conversation-worker runtime activation and `P0A2-P3-A4` must receive its required pre-activation
+review before worker runtime callers expand — these gate the ACTIVATION boundary, not every
+preparatory P0-C step.
+
+None of the above makes conversation persistence real:
+`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` remains true — no user-facing
+`Send → durable accepted turn → server-owned execution → hydrate/reload` path exists, no worker
+process runs, and the AI Console transcript is still memory-only (see current-state.md's P0-A1 /
+P0-A2 / P0-B canonical state sections).
 
 ---
 

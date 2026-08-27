@@ -70,9 +70,15 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   mandatory under the GovAI development/merge protocol. **Do not infer
   GitHub branch-protection enforcement from workflow existence** —
   `CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
-  `GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`; do not state current branch
-  protection/ruleset status unless independently verified against current
-  repository settings (`REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING`).
+  `GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`. The repository's current status is
+  settled by an explicit owner governance decision, not deferred:
+  `MAIN_BRANCH_PROTECTION=INTENTIONALLY_DISABLED_BY_OWNER`,
+  `REPOSITORY_RULESETS=INTENTIONALLY_NONE_BY_OWNER` — merge safety is
+  process-enforced **by design**. Do not carry repository enforcement as
+  pending work and do not propose enabling it (a branch-protection / ruleset
+  change stays an owner-reserved action, §9). This supersedes the earlier
+  `REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` reading; see residual
+  `R9` in §4.
 - P0 packages: P0.1 F5+F6 (PR #118), P0.2 F1+C-2 (PR #119), F4 preventive hardening (PR #120), **P0.3-A F3 durable dispatch (PR #123)** — F3 `DEMONSTRATED → CORRECTED`.
 - **P0.3-C — COMPLETE (PR #129, squash `f381d3fa`).** Cross-request run
   execution idempotency on both run-creation surfaces (standalone `/v1/runs`
@@ -114,9 +120,58 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
 ## 4. Open gates and residuals
 
 - **Foundation V1 residual register** — R1–R16 in [foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 (evidence-granularity R1–R4, diagnostics noise R5, beta snapshot R6, real EC-5 R7, P0.3-C liveness window R8, branch protection R9, broader parity R10, Workroom 5–7 R11, Phase 5 primitives R12, tier/profile separation R13, human auth for a production UI R14, SPEC v2.2 R15, legacy docs-root hygiene R16). None is a runtime blocker; none may be silently erased (anti-evaporation clause §7 for schema residuals).
+  - **★ `R9` (branch protection) is NOT open work.** The freeze row stays unchanged as freeze-era
+    provenance, but its current disposition is
+    `CURRENT_R9_DISPOSITION=SUPERSEDED_BY_OWNER_GOVERNANCE_DECISION`: GitHub branch protection and
+    repository rulesets are intentionally unused in this multi-agent workflow
+    (`MAIN_BRANCH_PROTECTION=INTENTIONALLY_DISABLED_BY_OWNER`,
+    `REPOSITORY_RULESETS=INTENTIONALLY_NONE_BY_OWNER`, `R9_CURRENT_ACTION=NONE`,
+    `R9_FUTURE_GATE=NONE`). It is not awaiting owner disposition, it gates nothing, and it must not
+    be reopened, raised as a finding or proposed as future work. See stale-docs-register.md,
+    *Foundation V1 residual `R9` — final owner disposition*.
 - **Runtime hard-deny enforcement** beyond the computer-use floor and the governed matrix `blocked` outcome is not implemented (regulatory prohibited-use/high-risk/agent hard-deny-floor are evidence-only; Phase 5).
 - **Current product lane:** `UI_UX_V1_FOUNDATION` — **STARTED**. **U1 (evidence cockpit, `apps/ui`) is implemented**; **EP-B2 (`GET /v1/me`, the shared identity prerequisite) is implemented**; **U1.5 (AI Console, `/ai`) is IMPLEMENTED** — and the two backend findings its live acceptance produced were owner-adjudicated and are **FIXED** in the same lane (`EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02`): `AI-CONSOLE-ORIGIN-RELAY-01` (the server→provider hop no longer relays the browser's `Origin`, class-wide across both providers and both modes — the Anthropic surface works from a browser, live-reaccepted) and `AI-CONSOLE-RESPONSES-DLP-GAP-01` (governed Responses DLP now reads all five accepted message spellings). Those two are this milestone's ONLY backend runtime change. Two residuals stay OPEN and deliberately unfixed, both provider-route behaviour the owner adjudicates per finding: `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01` (`referer` / `cookie`) and `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01` (non-stream `forwardRaw` has no deadline and no body ceiling; streaming is unaffected); **U2 (workroom console) is NOT started** and is now gated only on EP-B4 (workroom participants). A production human release still requires the human auth / session / API-key lifecycle that does not exist (residual R14) — the U1 session is an explicitly labelled development / controlled-pilot mechanism, not production auth. No UI may represent ask/sandbox/enforcement as applied (R12) or couple commercial tier to governance profile (R13). See development-roadmap.md and current-state.md §1 *Interface layer*.
-- **`GOVAI_NATIVE_EXPERIENCE_PARITY_V1` = `BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`.** The owner's declared program direction — the baseline movement is complete in this tree, the target itself is NOT implemented and no capability wave is in flight: expose OpenAI, Anthropic, **Codex** and **Claude Code** capabilities with provider-native fidelity where an official supported programmatic interface exists, and a GovAI-product-equivalent experience where the provider app has no equivalent public interface. Doctrine: native semantics preserved (no normalization to a common denominator); a registered endpoint is NOT a fully-available capability; Native and Governed coverage proven independently; UI exposure an independent axis; live acceptance an independent axis; app-only features are `GOVAI_PRODUCT_EQUIVALENT`, never `PROVIDER_NATIVE`; Codex via supported structured interfaces (e.g. `codex app-server`) not terminal scraping; Claude Code via the supported Agent SDK / structured CLI, not TUI scraping. First movement — **`EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`** — is **COMPLETE in this tree** (research snapshot 2026-08-21): the parity status is now `BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`. Read [native-experience-parity-v1.md](./native-experience-parity-v1.md) (baseline, findings incl. `TOOL-TAXONOMY-DRIFT-2026-08`, wave plan) + [ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) (the P0 DESIGN spec — `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`); the machine manifest is `generated/native-experience-parity-v1.json`, gated by `pnpm docs:parity:check` and the unit lane. The implementation mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` is IN_PROGRESS: movement P0-A1 (migration `0031` storage + KMS purpose isolation + owner-scoped dual-predicate FORCE RLS) is implemented in this tree — storage foundation only, `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` still holds (no Send/hydrate/reload path; next movement P0-A2). See current-state.md's P0-A1 canonical state section + development-roadmap.md.
+- **`GOVAI_NATIVE_EXPERIENCE_PARITY_V1` = `BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`.** The owner's declared program direction — the baseline movement is complete in this tree, the target itself is NOT implemented and no capability wave is in flight: expose OpenAI, Anthropic, **Codex** and **Claude Code** capabilities with provider-native fidelity where an official supported programmatic interface exists, and a GovAI-product-equivalent experience where the provider app has no equivalent public interface. Doctrine: native semantics preserved (no normalization to a common denominator); a registered endpoint is NOT a fully-available capability; Native and Governed coverage proven independently; UI exposure an independent axis; live acceptance an independent axis; app-only features are `GOVAI_PRODUCT_EQUIVALENT`, never `PROVIDER_NATIVE`; Codex via supported structured interfaces (e.g. `codex app-server`) not terminal scraping; Claude Code via the supported Agent SDK / structured CLI, not TUI scraping. First movement — **`EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`** — is **COMPLETE in this tree** (research snapshot 2026-08-21): the parity status is now `BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`. Read [native-experience-parity-v1.md](./native-experience-parity-v1.md) (baseline, findings incl. `TOOL-TAXONOMY-DRIFT-2026-08`, wave plan) + [ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) (the P0 DESIGN spec — `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`); the machine manifest is `generated/native-experience-parity-v1.json`, gated by `pnpm docs:parity:check` and the unit lane. The implementation mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` is IN_PROGRESS — see the dedicated lane bullet below for its current movement state.
+- **Current implementation lane: `EP-AI-CONVERSATION-CONTINUITY-V1-01` — IN_PROGRESS.** This is
+  the lane a new session resumes today. Do **not** start P0-A1, P0-A2 or P0-B: all three are
+  finished and merged.
+
+  ```text
+  PROGRAM   EP-AI-CONVERSATION-CONTINUITY-V1-01
+  COMPLETE  P0-A1 · T1 · P0-A2 · P0-B
+  NEXT      P0-C-DURABLE-SEND-EXECUTION-KERNEL-01   (not started)
+  LATER     P0-D · P0-E · P0-F                      (not started)
+  ```
+
+  **★ `T1=COMPLETE` is narrowly scoped.** T1 is
+  `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING` movement `T1-TEST-ISSUANCE-BOUNDARY-RETRY-01`: a
+  bounded `23505`/`api_keys_pkey` retry at the SHARED TEST issuance boundary and nothing more. It
+  made **no production runtime change** and did not touch the short lookup-prefix contract that
+  causes the collision domain, so `PRODUCTION_API_KEY_ISSUANCE_LIFECYCLE=NOT_IMPLEMENTED` and
+  `LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14` stay OPEN. Never read it as finished production
+  API-key collision handling.
+
+  **P0-B (conversation control plane) technical evidence** — PR **#145**, squash merge
+  `6567d8da75b5c72506cb8b22aba69e0d40bd4b29`, reviewed tree
+  `770dffba7dbf8784b74047a9034ffa5f8b692986` (the merge commit's tree IS that tree, byte for
+  byte), independent exact-head Opus 5 Max audit **PASS** (`P0=0 · P1=0 · P2=0 · P3=7`),
+  post-merge main CI run **33023935331 GREEN**. What shipped: migration `0033`, five
+  `/v1/ai/conversations*` routes, encrypted titles, the fork control plane with body-carried
+  `client_fork_id` idempotency, and the STRUCTURAL closure of `P0A1-C4` / `P0A1-C5`.
+  Full canonical detail — including the seven P3 carry-forwards — is in current-state.md's
+  *P0-B canonical state* section.
+
+  **★ Two gates before P0-C's ACTIVATION boundary** (they gate the first real worker activation,
+  **not** every preparatory P0-C step): `P0A2-P3-A1` must be adjudicated/closed before the FIRST
+  real conversation-worker runtime activation, and `P0A2-P3-A4` must receive its required
+  pre-activation review before worker runtime callers expand.
+
+  **★ Honesty boundary, unchanged and load-bearing:**
+  `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`. A completed control plane is **not** persistent
+  chat — there is still no `Send → durable accepted turn → server-owned execution →
+  hydrate/reload` path, no worker process, no provider dispatch from a durable turn, and the AI
+  Console transcript remains memory-only by construction. Never quote `P0_B=COMPLETE` as
+  conversation persistence.
 - Untouched documentary follow-ups: `source-spec.md` ADP-canonical declaration (owner gate), ADR-022–027 status-line normalization, `workroom-governance-room.md`/`governance-philosophy.md`/`contracts/*` prepends, two `tests/live/*` comments, legacy `docs/` root artifacts (see stale-docs-register.md, M3 section).
 
 ---
