@@ -935,6 +935,13 @@ async function recordStream(
     }
     // The only `break` above is the fenced one, so arriving here UNFENCED means the iterator ran
     // to completion — the provider's terminal frame was observed.
+    //
+    // ★ SET BEFORE THE FINAL FLUSH, DELIBERATELY. `stream_outcome` describes the STREAM; the
+    // attempt's own state describes our persistence. They are independent facts and each must be
+    // recorded truthfully. If the last flush fences or throws, the upstream still reached EOF —
+    // so the evidence correctly says `complete` while the attempt correctly becomes
+    // `finalize_fenced_out` / `persistence_error`. Moving this line after the flush would
+    // conflate the two and report a stream failure that did not happen.
     reachedUpstreamEof = !fenced;
     await flush();
   } finally {
