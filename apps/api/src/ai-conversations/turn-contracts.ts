@@ -102,11 +102,23 @@ export const ListTurnsQuery = z
   .object({
     branch_id: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(TURN_LIST_MAX_LIMIT).default(TURN_LIST_DEFAULT_LIMIT),
-    /** Exclusive keyset lower bound on the branch's dense `turn_seq`. `bigint` in the database;
-     *  accepted as a decimal string so a client never has to round-trip it through a JS number. */
+    /**
+     * Exclusive keyset lower bound on the branch's dense `turn_seq`. `bigint` in the database;
+     * accepted as a decimal string so a client never has to round-trip it through a JS number.
+     *
+     * ★ BOUNDED TO THE POSTGRESQL SIGNED-BIGINT MAXIMUM, not merely to 19 digits. A 19-digit
+     * value such as `9999999999999999999` is syntactically fine but exceeds `bigint`, so the
+     * `$5::bigint` cast raises `numeric_value_out_of_range` and the route answers 500 — a server
+     * error for what is plainly an invalid query. Comparing as a `bigint` keeps the check exact
+     * at the boundary, where a Number comparison would lose precision.
+     */
     after_turn_seq: z
       .string()
       .regex(/^[0-9]{1,19}$/, 'after_turn_seq must be a non-negative integer')
+      .refine(
+        (v) => BigInt(v) <= 9223372036854775807n,
+        'after_turn_seq exceeds the maximum turn sequence',
+      )
       .optional(),
   })
   .strict();
@@ -132,10 +144,17 @@ export type ConversationItemProjection = {
   item_seq: number;
   item_type: ConversationItemType;
   /** Provider-native JSON, decrypted, for items whose content IS a JSON document
-   *  (`native_request`, `native_response`). Null for stream chunks. */
+   *  (`native_request`, and a `native_response` that really is one). Null otherwise. */
   native: unknown;
-  /** Raw UTF-8 text for items whose content is NOT a JSON document — a `native_stream_chunk`
-   *  carries provider SSE framing, which is text, not JSON. Null otherwise. */
+  /**
+   * Raw UTF-8 text for items whose content is NOT a JSON document.
+   *
+   * Always set for `native_stream_chunk` (provider SSE framing is text, not JSON). Also set —
+   * with `native` null — when a stored `native_response` does not parse as JSON: the executor
+   * persists a provider response VERBATIM whatever its status, so an upstream proxy's HTML or a
+   * truncated error body reaches here as-is. Exactly one of `native`/`text` is non-null, and the
+   * stored bytes are never discarded.
+   */
   text: string | null;
   /** True when the row exists but its content is no longer readable (crypto-shredded, LAW 12).
    *  Honest rather than absent: the item DID exist and its position matters to ordering. */

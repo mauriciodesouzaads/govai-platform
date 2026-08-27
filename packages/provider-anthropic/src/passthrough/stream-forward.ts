@@ -61,20 +61,32 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
   const native_request_hash = sha256Hex(input.body);
   const t0 = Date.now();
 
-  // P0-C §12.3 ordering, identical to `forwardRaw`: request fully described -> await the
-  // durable gate -> recheck the abort signal -> in-memory forward marker -> fetch. A gate
-  // rejection or an already-aborted signal makes the fetch structurally unreachable.
-  if (input.beforeDispatch) await input.beforeDispatch();
-  input.signal?.throwIfAborted();
-  input.onDispatchStart?.();
-
-  const res = await fetch(url, {
+  // ★ BUILD AND VALIDATE THE REQUEST BEFORE THE DISPATCH MARKER — the `forwardRaw` ordering,
+  // and it is load-bearing for the caller's failure taxonomy. Node validates the URL and every
+  // header value when the `Request` is CONSTRUCTED, and construction opens no connection. Passing
+  // `(url, init)` straight to `fetch` instead would move that validation AFTER
+  // `onDispatchStart()`, so a malformed base URL or a stored credential containing an invalid
+  // header character — both provably local, with nothing transmitted — would be reported to the
+  // caller as a POST-invocation failure and terminalized as `outcome_unknown` rather than
+  // `failed`. duplex is required by undici when a Request carries a body.
+  const init: RequestInit = {
     method: input.method,
     // FB-3 (M1): identity on the Fetch hop — see transport-encoding.ts.
     headers: withIdentityAcceptEncoding(input.headers),
     body: input.body,
     ...(input.signal ? { signal: input.signal } : {}),
-  });
+  };
+  (init as { duplex?: string }).duplex = 'half';
+  const request = new Request(url, init);
+
+  // P0-C §12.3 ordering, identical to `forwardRaw`: request fully built and VALIDATED -> await
+  // the durable gate -> recheck the abort signal -> in-memory forward marker -> fetch. A gate
+  // rejection or an already-aborted signal makes the fetch structurally unreachable.
+  if (input.beforeDispatch) await input.beforeDispatch();
+  input.signal?.throwIfAborted();
+  input.onDispatchStart?.();
+
+  const res = await fetch(request);
 
   const rawResponseHeaders: Record<string, string> = {};
   res.headers.forEach((value, key) => {

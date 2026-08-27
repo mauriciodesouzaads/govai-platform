@@ -409,7 +409,23 @@ export function createConversationWorkerDb(deps: ConversationWorkerDbDeps): Conv
   // killing the worker; the pool reconnects on the next checkout.
   pool.on('error', (err) => report(sanitizeWorkerDbError(err), 'pool'));
 
-  const auditBridge = makeAuditBridge({ pool, log });
+  /**
+   * An ATTESTED, listener-guarded checkout WITHOUT a transaction — the AuditBridge opens and
+   * closes its own BEGIN/COMMIT, so this must not.
+   *
+   * ★ THIS IS WHAT KEEPS EVIDENCE CAPTURE INSIDE THE TRUST BOUNDARY. Handing the bridge the raw
+   * pool created a second checkout path that ran `pool.connect()` directly: no identity
+   * attestation, and — the part that matters for P0A2-P3-A1 — no per-checkout `error` listener,
+   * so a backend disconnect DURING evidence capture could still take the worker process down.
+   * Routing it through the same guarded lifecycle every other worker operation uses closes that.
+   */
+  const withAttestedClient = async <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> =>
+    withCheckedOutWorkerClient(pool, (e) => report(e, 'checkout'), async (client) => {
+      await assertConversationWorkerIdentity(client);
+      return fn(client);
+    });
+
+  const auditBridge = makeAuditBridge({ pool, log, withClient: withAttestedClient });
   let closed = false;
 
   return {

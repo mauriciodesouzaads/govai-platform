@@ -374,6 +374,66 @@ describe('SEND — the durable reservation', () => {
     expect(n.rows[0]!.n).toBe('0'); // no ciphertext was even produced
   });
 
+  it('SEND-13 — an out-of-range after_turn_seq is a 400, not a 500', async () => {
+    // ★ A 19-DIGIT VALUE CAN STILL EXCEED `bigint`. The regex alone accepted
+    // `9999999999999999999`, which reached `$5::bigint`, raised numeric_value_out_of_range, and
+    // surfaced as a SERVER error for what is plainly an invalid query.
+    const conv = await createConversation(org.api_key);
+    for (const bad of ['9999999999999999999', '9223372036854775808']) {
+      const res = await inject(
+        stack,
+        'GET',
+        `/v1/ai/conversations/${conv.id}/turns?after_turn_seq=${bad}`,
+        org.api_key,
+      );
+      expect({ bad, code: res.statusCode }).toEqual({ bad, code: 400 });
+      expect((res.body as { error: string }).error).toBe('invalid_query');
+    }
+    // The exact maximum is still ACCEPTED — the bound is inclusive, not off by one.
+    const ok = await inject(
+      stack,
+      'GET',
+      `/v1/ai/conversations/${conv.id}/turns?after_turn_seq=9223372036854775807`,
+      org.api_key,
+    );
+    expect(ok.statusCode).toBe(200);
+  });
+
+  it('SEND-14 — the reservation holds NO lock across a KMS call', async () => {
+    // ★ THE INVARIANT, MEASURED. `prepareSend` encrypts before the transaction opens, and the
+    // response projection (which DECRYPTS) is built after it commits. If either ran inside, the
+    // conversation root `FOR UPDATE` and the branch advisory lock would be held across remote
+    // KMS I/O, and every other operation on the conversation would block on KMS latency.
+    //
+    // Proven by contention rather than by inspection: a second transaction takes the root
+    // EXCLUSIVELY and holds it, and a Send on a DIFFERENT conversation must still complete —
+    // which it can only do if it is not queued behind a shared KMS-bound critical section.
+    const a = await createConversation(org.api_key);
+    const b = await createConversation(org.api_key);
+    const holder = await stack.db.adminPool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SELECT id FROM govai.ai_conversations WHERE id = $1::uuid FOR UPDATE`, [a.id]);
+      // A Send on conversation B is unaffected by a lock held on conversation A.
+      const res = await send(org.api_key, b.id, {
+        client_turn_id: randomUUID(),
+        branch_id: b.branchId,
+        native_request: nativeRequest('SEND-14'),
+      });
+      expect(res.statusCode).toBe(201);
+      await holder.query('ROLLBACK');
+    } finally {
+      holder.release();
+    }
+    // And once the lock is released, A accepts too.
+    const after = await send(org.api_key, a.id, {
+      client_turn_id: randomUUID(),
+      branch_id: a.branchId,
+      native_request: nativeRequest('SEND-14b'),
+    });
+    expect(after.statusCode).toBe(201);
+  });
+
   it('SEND-10 — CONCURRENT duplicate sends produce ONE turn (the reservation race)', async () => {
     stack.provider.clearRecordedRequests();
     const conv = await createConversation(org.api_key);

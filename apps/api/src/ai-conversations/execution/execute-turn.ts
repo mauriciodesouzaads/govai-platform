@@ -25,6 +25,23 @@
 //    unreachable on that path. That is what makes "commit 4 precedes EVERY POST" a proof rather
 //    than a convention, and the whole §7.7 provenance-absent recovery arm rests on it.
 //
+// THE CONTEXT CONTRACT — what P0-C does NOT do, stated before anyone infers otherwise.
+//
+// The body this executor POSTs is the turn's OWN stored `native_request`, verbatim. GovAI does
+// NOT assemble conversation history, does NOT replay earlier turns' output into the request, and
+// does NOT carry provider continuation state. For the two P0-C surfaces that is coherent because
+// both are STATELESS provider APIs whose request carries its own history: an Anthropic
+// `/v1/messages` `messages[]` and an OpenAI `/v1/responses` `input` are supplied by the caller,
+// exactly as they are on the direct `/governed/*` routes this executor shares a pipeline with.
+//
+// ★ THE BOUNDED CONSEQUENCE, NOT HIDDEN: a client that PIPELINES — sending turn N+1 before turn
+// N has completed — composes N+1's history without N's answer, and the queue will still dispatch
+// it in order afterwards. Nothing here detects that, and nothing here could: the only mechanism
+// that would is §11's ProviderConversationAdapter building the request from durable branch
+// context, which is P0-D and is deliberately excluded (§23). The honest position is that P0-C
+// executes the request the client asked for, and that server-assembled continuity arrives with
+// P0-D — not to imply continuity that does not exist.
+//
 // 3. AMBIGUITY IS REPRESENTED, NEVER GUESSED. `forwardStarted` flips inside `onDispatchStart`,
 //    synchronously, immediately before `fetch`. If it is FALSE, no transmission was attempted
 //    and the outcome is a KNOWN LOCAL failure. If it is TRUE and no provider RESPONSE arrived,
@@ -315,11 +332,28 @@ async function driveClaimedAttempt(
   const plan = resolution.plan;
 
   // ── STEP 3 (part 2): decrypt OUTSIDE the transaction ────────────────────────────────────
+  //
+  // ★ TWO SEPARATE FAILURES, TWO SEPARATE VERDICTS. These were once one try block, which meant a
+  // corrupt CONFIG was durably recorded as `credential_unavailable` while the runner reported
+  // `config_unreadable` — the durable taxonomy and the operational outcome named different
+  // components, and each was wrong half the time. §29 requires the taxonomy to be honest, so the
+  // two operations are classified where they actually fail.
+  //
+  // Neither catch chains or logs its cause: a KMS error can carry key identifiers, and a JSON
+  // error can carry a fragment of the decrypted plaintext.
   let nativeRequest: unknown;
-  let apiKey: string;
   try {
     const configBytes = await decryptConversationContent(deps.kms, owner.orgId, config);
     nativeRequest = JSON.parse(configBytes.toString('utf8'));
+  } catch {
+    // A config that cannot be read or parsed is a VALIDATION failure before any provider
+    // processing — `rejected`, which carries no error_class, because no provider taxonomy value
+    // truthfully describes a GovAI-side storage fault.
+    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'rejected', null, 'config_unreadable');
+  }
+
+  let apiKey: string;
+  try {
     const keyBytes = await deps.kms.envelopeDecrypt({
       orgId: owner.orgId,
       keyId: credential.kms_key_id,
@@ -329,9 +363,8 @@ async function driveClaimedAttempt(
     });
     apiKey = Buffer.from(keyBytes).toString('utf8');
   } catch {
-    // Deliberately NOT chained and NOT logged with the cause: a KMS error can carry key
-    // identifiers, and a JSON error can carry a fragment of the plaintext body.
-    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'failed', 'credential_unavailable', 'config_unreadable');
+    // An undecryptable credential IS a credential outage, and the taxonomy has a value for it.
+    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'failed', 'credential_unavailable', 'credential_unavailable');
   }
 
   const isStream = isStreamingNativeRequest(nativeRequest);
@@ -512,10 +545,24 @@ type DispatchHooks = {
   emitAuditEvent: (event: unknown) => Promise<void>;
 };
 
+/**
+ * How a provider stream ENDED, in the vocabulary `@govai/provider-stream-http` already uses.
+ *
+ * ★ `client_disconnect` is deliberately absent from the worker's vocabulary: there is no client.
+ * The server owns the drain, so a stream either completes or the UPSTREAM failed.
+ */
+type StreamTerminalOutcome = 'complete' | 'upstream_error';
+
 type DispatchResult =
   | { kind: 'blocked' }
   | { kind: 'response'; status: number; bodyBytes: Buffer }
-  | { kind: 'stream'; status: number; chunks: AsyncIterable<Uint8Array>; finalize: () => Promise<void> };
+  | {
+      kind: 'stream';
+      status: number;
+      chunks: AsyncIterable<Uint8Array>;
+      /** MUST be invoked exactly once, on EVERY path — including a throwing drain. */
+      finalize: (outcome: StreamTerminalOutcome) => Promise<void>;
+    };
 
 /**
  * GOVERNED mode — `handleAnthropicGovernedMessages` / `handleOpenAIGovernedResponses`, the very
@@ -586,10 +633,10 @@ async function dispatchGoverned(
     kind: 'stream',
     status: streamResult.status_code,
     chunks: readableToAsyncIterable(streamResult.body),
-    finalize: async () => {
-      // The handler owns the terminal evidence emit; `complete` is the truthful outcome because
-      // the SERVER drained to the end. There is no client connection to disconnect.
-      await streamResult.finalize('complete');
+    // The handler owns the terminal evidence emit. The outcome is REPORTED, not assumed:
+    // `complete` only when the server actually drained to the end.
+    finalize: async (outcome: StreamTerminalOutcome) => {
+      await streamResult.finalize(outcome);
     },
   };
 }
@@ -675,7 +722,7 @@ async function dispatchPassthrough(
       kind: 'stream',
       status: fwd.status,
       chunks: readableToAsyncIterable(fwd.body),
-      finalize: async () => {
+      finalize: async (outcome: StreamTerminalOutcome) => {
         const final = await fwd.finalize();
         await hooks.emitAuditEvent(
           buildInvoked({
@@ -683,7 +730,7 @@ async function dispatchPassthrough(
             is_stream: true,
             native_request_hash: fwd.native_request_hash,
             stream_final_hash: final.stream_final_hash,
-            stream_outcome: 'complete',
+            stream_outcome: outcome,
             latency_ms: final.latency_ms,
             status_code: fwd.status,
             ...(fwd.provider_request_id ? { provider_request_id: fwd.provider_request_id } : {}),
@@ -806,19 +853,42 @@ async function recordStream(
     if (!ok) fenced = true;
   };
 
-  for await (const chunk of result.chunks) {
-    const bytes = Buffer.from(chunk);
-    buffer.push(bytes);
-    buffered += bytes.byteLength;
-    if (buffered >= deps.streamFlushBytes) await flush();
-    // A fenced-out writer STOPS reading: continuing would spend memory draining a stream whose
-    // output can never be persisted. The upstream connection closes with the reader.
-    if (fenced) break;
+  // ★ THE TERMINAL EVIDENCE EMIT MUST HAPPEN ON EVERY PATH, INCLUDING A THROWING DRAIN.
+  // A provider stream that resets or times out AFTER response headers makes `for await` throw.
+  // Before this `finally`, that threw straight past the finalizer to the `outcome_unknown`
+  // handler: the attempt terminalized, but the governed/passthrough finalizer never emitted its
+  // audit event — an evidence gap precisely for FAILED provider calls, which is when evidence
+  // matters most. The outcome is REPORTED (`upstream_error`), never assumed to be `complete`.
+  let drained = false;
+  try {
+    for await (const chunk of result.chunks) {
+      const bytes = Buffer.from(chunk);
+      buffer.push(bytes);
+      buffered += bytes.byteLength;
+      if (buffered >= deps.streamFlushBytes) await flush();
+      // A fenced-out writer STOPS reading: continuing would spend memory draining a stream whose
+      // output can never be persisted. The upstream connection closes with the reader.
+      if (fenced) break;
+    }
+    drained = true;
+    await flush();
+  } finally {
+    // ★ FLUSH WHAT ACTUALLY ARRIVED, EVEN ON A THROW. Bytes already received are durable truth;
+    // discarding them because the stream later died would make the prefix describe less than the
+    // server really got. The append is fenced, so this is safe on a rotated claim too.
+    if (!drained) await flush().catch(() => undefined);
+    // The evidence describes the PROVIDER CALL, not our durable-write authority, so it is emitted
+    // whether or not the fence held and whether or not the drain completed. A finalizer that
+    // itself fails must not mask the original drain error.
+    await result
+      .finalize(drained ? 'complete' : 'upstream_error')
+      .catch((err: unknown) =>
+        deps.log.warn(
+          { attempt_id: args.attemptId, err_class: errClass(err) },
+          'conversation executor: stream terminal evidence emit failed',
+        ),
+      );
   }
-  await flush();
-  // The terminal evidence emit happens whether or not the fence held: the provider WAS called,
-  // and the evidence describes that call, not our durable-write authority.
-  await result.finalize();
 
   if (fenced) {
     deps.log.warn(
@@ -832,6 +902,25 @@ async function recordStream(
 }
 
 /** Encrypt (outside the transaction) then append, FENCED (inside one short transaction). */
+/** Internal signal: the fenced append matched zero rows, so the whole write must roll back. */
+class OutputFenceLost extends Error {
+  constructor() {
+    super('output append lost its claim-token fence');
+    this.name = 'OutputFenceLost';
+  }
+}
+
+/**
+ * Encrypt (outside the transaction) then append, FENCED (inside one short transaction).
+ *
+ * ★ THE FENCE LOSS MUST ROLL THE CONTENT ROW BACK, NOT JUST REPORT ITSELF. The content INSERT
+ * happens first, and if `appendFencedOutputItem` then matches zero rows — the claim was rotated
+ * between the encryption and this transaction — returning `false` NORMALLY would COMMIT, leaving
+ * an encrypted blob that no item references. Every fence loss during response or stream
+ * persistence would accumulate one, for the lifetime of the conversation. Throwing makes
+ * `withOwnerContext` roll the whole write back; the signal is caught here and reported as the
+ * ordinary `false` the callers already handle.
+ */
 async function persistOutputItem(
   deps: ConversationExecutorDeps,
   owner: ConversationWorkerOwner,
@@ -840,17 +929,24 @@ async function persistOutputItem(
   bytes: Buffer,
 ): Promise<boolean> {
   const enc = await encryptConversationContent(deps.kms, owner.orgId, bytes);
-  return deps.db.withOwnerContext(owner, async (tx) => {
-    const itemSeq = await ex.nextAttemptItemSeq(tx, args.attemptId);
-    const contentId = await insertWorkerContent(tx, owner, args.context.conversationId, enc);
-    return ex.appendFencedOutputItem(tx, {
-      attemptId: args.attemptId,
-      claimToken: args.claim.claimToken,
-      itemSeq,
-      itemType,
-      contentId,
+  try {
+    await deps.db.withOwnerContext(owner, async (tx) => {
+      const itemSeq = await ex.nextAttemptItemSeq(tx, args.attemptId);
+      const contentId = await insertWorkerContent(tx, owner, args.context.conversationId, enc);
+      const appended = await ex.appendFencedOutputItem(tx, {
+        attemptId: args.attemptId,
+        claimToken: args.claim.claimToken,
+        itemSeq,
+        itemType,
+        contentId,
+      });
+      if (!appended) throw new OutputFenceLost();
     });
-  });
+    return true;
+  } catch (err) {
+    if (err instanceof OutputFenceLost) return false;
+    throw err;
+  }
 }
 
 async function insertWorkerContent(

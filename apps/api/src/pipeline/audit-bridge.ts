@@ -36,6 +36,20 @@ export type AuditBridgeFailureReason =
 export interface AuditBridgeDeps {
   pool: Pool;
   log: FastifyBaseLogger;
+  /**
+   * OPTIONAL checkout override. When present it replaces `pool.connect()`/`release()` entirely,
+   * and the dispatcher runs its BEGIN → set_config → capture → COMMIT envelope on the client this
+   * hands it.
+   *
+   * ★ WHY IT EXISTS (EP-AI-CONVERSATION-CONTINUITY-V1 P0-C). The detached conversation worker's
+   * connections must pass a LIVE database-identity attestation and must carry a per-checkout
+   * `error` listener — without the listener an asynchronous backend disconnect while the client
+   * is checked out is an unhandled `'error'` that kills the process, and without the attestation
+   * a misconfigured elevated credential reaches the operation unchecked. Handing this dispatcher
+   * a raw pool created a SECOND checkout path that had neither, silently bypassing both for
+   * evidence capture specifically. Direct routes omit this and keep using `deps.pool` unchanged.
+   */
+  withClient?: <T>(fn: (client: PoolClient) => Promise<T>) => Promise<T>;
   /** `strict` is plumbed but NEVER enabled in v1 (ADR-028 §9). */
   posture?: 'best_effort' | 'strict';
   /**
@@ -229,12 +243,26 @@ export function makeAuditBridge(
     // 7. B1 transaction envelope (caller-owned): connect -> BEGIN ->
     // setLocalAppOrgId -> captureAuditEvent -> COMMIT; ROLLBACK + release on error.
     let client: PoolClient | undefined;
+    let usingOverride = false;
     try {
-      client = await deps.pool.connect();
-      await client.query('BEGIN');
-      await setLocalAppOrgId(client, orgId);
-      await captureAuditEvent(client, input);
-      await client.query('COMMIT');
+      // The transaction envelope is IDENTICAL on both paths; only how the client is obtained and
+      // released differs, so no capture semantics change with the override present.
+      const runEnvelope = async (c: PoolClient): Promise<void> => {
+        await c.query('BEGIN');
+        await setLocalAppOrgId(c, orgId);
+        await captureAuditEvent(c, input);
+        await c.query('COMMIT');
+      };
+      if (deps.withClient) {
+        usingOverride = true;
+        await deps.withClient(async (c) => {
+          client = c;
+          await runEnvelope(c);
+        });
+      } else {
+        client = await deps.pool.connect();
+        await runEnvelope(client);
+      }
       // 7b. Per-attempt traceability that intentionally left the capture row (to
       // keep it replay-stable) is preserved here as ONE structured log line. A
       // durable side table is a future EP, not this revN.
@@ -258,7 +286,9 @@ export function makeAuditBridge(
         }),
       );
     } catch (err) {
-      if (client) {
+      // The override owns its own client lifecycle (and its own rollback-on-throw), so rolling
+      // back here would issue a ROLLBACK on a connection it has already released.
+      if (client && !usingOverride) {
         await client.query('ROLLBACK').catch(() => undefined);
       }
       const reason = classifyCaptureError(err);
@@ -296,7 +326,9 @@ export function makeAuditBridge(
       if (posture === 'strict') throw err;
       return;
     } finally {
-      if (client) client.release();
+      // Only release what THIS function checked out. The override released its own client when
+      // its callback returned, and releasing twice throws.
+      if (client && !usingOverride) client.release();
     }
   };
 }

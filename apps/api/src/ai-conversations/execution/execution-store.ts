@@ -302,9 +302,16 @@ export type BoundaryCommitResult =
  *                                   wake notification can be lost, and the flag-reading
  *                                   heartbeat timer does not start until the boundary commits.
  *   branch-order                    §8 single-flight: the earlier turn is still running
- *   causal_version = <as sampled>   §7.8: the context this request was BUILT from is still
- *                                   current. A sibling that terminalized meanwhile bumped it,
- *                                   so this request's context is stale and must be rebuilt.
+ *   causal_version = <as sampled>   §7.8: the branch has not advanced since this dispatch cycle
+ *                                   sampled it. ★ STATED PRECISELY, BECAUSE THE OBVIOUS READING
+ *                                   OVERCLAIMS: in P0-C the request body is the CLIENT's stored
+ *                                   provider-native request, so this predicate does NOT certify
+ *                                   that GovAI-assembled context is fresh — GovAI assembles none
+ *                                   (see `execute-turn.ts`, "THE CONTEXT CONTRACT"). What it
+ *                                   does certify is that no sibling turn on this branch
+ *                                   terminalized between the sample and the boundary, which is
+ *                                   what keeps the single-flight queue and the §7.8 monotonic
+ *                                   ordering coherent.
  *
  * The winning commit also:
  *   * stamps a FRESH deadline — the lease's first renewal, consistent with the heartbeat timer

@@ -63,8 +63,14 @@ describe('forwardStream', () => {
     expect(final.stream_final_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(final.bytes_streamed).toBeGreaterThan(0);
     expect(typeof final.latency_ms).toBe('number');
-    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
-    expect(init.signal).toBeUndefined();
+    // P0-C: the forward now builds and VALIDATES a `Request` before the dispatch marker (the
+    // `forwardRaw` ordering), so `fetch` receives ONE argument. A `Request` always carries a
+    // signal of its own, so the meaningful assertion is that nothing is aborted when the caller
+    // supplied no signal.
+    const sent = fetchSpy.mock.calls[0]?.[0] as Request;
+    expect(sent).toBeInstanceOf(Request);
+    expect(fetchSpy.mock.calls[0]?.[1]).toBeUndefined();
+    expect(sent.signal.aborted).toBe(false);
   });
 
   it('passes the caller-supplied AbortSignal to fetch', async () => {
@@ -80,8 +86,14 @@ describe('forwardStream', () => {
       body: Buffer.alloc(0),
       signal: ac.signal,
     });
-    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
-    expect(init.signal).toBe(ac.signal);
+    // The caller's signal reaches the request through the `Request`, which links rather than
+    // reuses it — so identity is the wrong assertion and PROPAGATION is the right one: aborting
+    // the caller's controller must abort what fetch is watching.
+    const sent = fetchSpy.mock.calls[0]?.[0] as Request;
+    expect(sent).toBeInstanceOf(Request);
+    expect(sent.signal.aborted).toBe(false);
+    ac.abort();
+    expect(sent.signal.aborted).toBe(true);
   });
 
   it('falls back to x-request-id when openai-request-id is absent', async () => {
@@ -146,7 +158,7 @@ describe('forwardStream', () => {
       headers: {},
       body: Buffer.alloc(0),
     });
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe(
+    expect((fetchSpy.mock.calls[0]?.[0] as Request).url).toBe(
       'https://api.openai.example/v1/chat/completions',
     );
   });

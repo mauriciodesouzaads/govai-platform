@@ -177,9 +177,18 @@ export async function sendTurn(
           contentId,
         });
 
-        return await projectOneTurn(c, deps.kms, scope, conversationId, minted.turnId);
+        // ★ RETURN IDS, NOT A PROJECTION. Building the response here would decrypt INSIDE this
+        // transaction — while it holds the conversation root `FOR UPDATE` and the branch
+        // advisory lock — and `decryptConversationContent` is a KMS call that is REMOTE on the
+        // AWS adapter. Every successful Send would then hold both locks across a network round
+        // trip, so KMS latency (or an outage) would block every other operation on that
+        // conversation. It is the same invariant `prepareSend` exists to honour on the write
+        // side, and it has to hold on the read side too.
+        return minted.turnId;
       });
-      return { turn: created, replay: false };
+      // COMMITTED. The projection now runs in its own short read transaction, holding nothing.
+      const turn = await readTurnAfterCommit(client, deps.kms, scope, conversationId, created);
+      return { turn, replay: false };
     } catch (err) {
       if (err instanceof SendIdempotencyLoserSignal) {
         return await resolveCommittedSend(client, deps.kms, scope, conversationId, input);
@@ -246,64 +255,93 @@ async function resolveCommittedSend(
   conversationId: string,
   input: SendTurnInput,
 ): Promise<SendTurnResult> {
-  return withConversationOwnerContext(client, scope, async (c) => {
-    const committed = await turnStore.findTurnByClientTurnId(
+  // ── PHASE 1 (transaction): resolve the committed turn and READ its config envelope ────────
+  // No decryption here — see the KMS note in `sendTurn`. This transaction holds no locks, but
+  // keeping every KMS call outside a transaction is the invariant, not a case-by-case judgement.
+  const committed = await withConversationOwnerContext(client, scope, async (c) => {
+    const row = await turnStore.findTurnByClientTurnId(
       c,
       scope,
       conversationId,
       input.client_turn_id,
     );
-    if (!committed) {
+    if (!row) {
       // The reservation was lost to a contender that then rolled back. Nothing is committed
       // under this key, so this is not a replay and not a conflict — it is a transient loss the
       // client may simply retry.
       throw new SendIdempotencyLoserSignal();
     }
-
     const stored = await turnStore.getContentById(
       c,
       scope,
       conversationId,
-      committed.native_request_config_content_id,
+      row.native_request_config_content_id,
     );
-    if (!stored) throw new SendIdempotencyConflictError();
-
-    let committedNativeRequest: unknown;
-    try {
-      const plaintext = await decryptConversationContent(kms, scope.orgId, stored);
-      committedNativeRequest = JSON.parse(plaintext.toString('utf8'));
-    } catch (err) {
-      if (err instanceof ConversationContentUnreadableError) {
-        throw new SendIdempotencyConflictError();
-      }
-      throw err;
-    }
-
-    const committedHash = sendIntentHash(
-      buildSendIntent({
-        conversationId,
-        branchId: committed.branch_id,
-        nativeRequest: committedNativeRequest,
-      }),
-    );
-    const incomingHash = sendIntentHash(
-      buildSendIntent({
-        conversationId,
-        branchId: input.branch_id,
-        nativeRequest: input.native_request,
-      }),
-    );
-    if (!committedHash.equals(incomingHash)) throw new SendIdempotencyConflictError();
-
-    // Same key, same intent: REPLAY the turn's CURRENT durable state. Not a cached copy of the
-    // original response — the live truth, so a duplicate arriving while the turn is streaming
-    // reports `streaming`, and one arriving after completion reports the answer.
-    return {
-      turn: await projectOneTurn(c, kms, scope, conversationId, committed.id),
-      replay: true,
-    };
+    return { turnId: row.id, branchId: row.branch_id, stored };
   });
+  if (!committed.stored) throw new SendIdempotencyConflictError();
+
+  // ── PHASE 2 (no transaction): decrypt and compare the canonical intents ───────────────────
+  let committedNativeRequest: unknown;
+  try {
+    const plaintext = await decryptConversationContent(kms, scope.orgId, committed.stored);
+    committedNativeRequest = JSON.parse(plaintext.toString('utf8'));
+  } catch (err) {
+    // Unreadable (crypto-shred or a key fault) or unparseable ⇒ divergence can be neither proven
+    // nor disproven ⇒ fail CLOSED.
+    if (err instanceof ConversationContentUnreadableError || err instanceof SyntaxError) {
+      throw new SendIdempotencyConflictError();
+    }
+    throw err;
+  }
+  const committedHash = sendIntentHash(
+    buildSendIntent({
+      conversationId,
+      branchId: committed.branchId,
+      nativeRequest: committedNativeRequest,
+    }),
+  );
+  const incomingHash = sendIntentHash(
+    buildSendIntent({
+      conversationId,
+      branchId: input.branch_id,
+      nativeRequest: input.native_request,
+    }),
+  );
+  if (!committedHash.equals(incomingHash)) throw new SendIdempotencyConflictError();
+
+  // ── PHASE 3 (transaction): project the turn's CURRENT durable state ───────────────────────
+  // Not a cached copy of the original response — the live truth, so a duplicate arriving while
+  // the turn is streaming reports `streaming`, and one arriving after completion reports the
+  // answer.
+  return {
+    turn: await readTurnAfterCommit(client, kms, scope, conversationId, committed.turnId),
+    replay: true,
+  };
 }
+
+/**
+ * Build a turn projection in its OWN short read transaction, holding no lock.
+ *
+ * ★ WHY THIS IS A SEPARATE PHASE EVERYWHERE IT IS USED. `projectItem` decrypts, and on the AWS
+ * KMS adapter that is remote network I/O. Building the response inside the reservation
+ * transaction would hold the conversation root `FOR UPDATE` and the branch advisory lock across
+ * that round trip, so KMS latency — or a KMS outage — would block every other operation on the
+ * conversation. The write side already honours this (`prepareSend` encrypts before the
+ * transaction opens); this is the same invariant on the read side.
+ */
+async function readTurnAfterCommit(
+  client: PoolClient,
+  kms: Kms,
+  scope: OwnerScope,
+  conversationId: string,
+  turnId: string,
+): Promise<ConversationTurnProjection> {
+  return withConversationOwnerContext(client, scope, (c) =>
+    projectOneTurn(c, kms, scope, conversationId, turnId),
+  );
+}
+
 
 async function readConversationMode(
   c: PoolClient,
@@ -496,16 +534,21 @@ async function projectItem(
     kms_key_id: row.kms_key_id,
     kms_key_version: row.kms_key_version,
   });
-  // A stream chunk is provider SSE framing — text, not a JSON document. Everything else this
-  // movement writes is a JSON document. Parsing is attempted only where a document is expected,
-  // so a malformed chunk can never be silently reshaped into `native`.
+  const text = plaintext.toString('utf8');
+  // A stream chunk is provider SSE framing — text, not a JSON document. Parsing is attempted only
+  // where a document is expected, so a chunk is never silently reshaped into `native`.
   if (row.item_type === 'native_stream_chunk') {
-    return { ...base, native: null, text: plaintext.toString('utf8'), content_unreadable: false };
+    return { ...base, native: null, text, content_unreadable: false };
   }
-  return {
-    ...base,
-    native: JSON.parse(plaintext.toString('utf8')),
-    text: null,
-    content_unreadable: false,
-  };
+  // ★ A NON-JSON RESPONSE MUST STILL HYDRATE. The executor persists a provider response VERBATIM
+  // whatever its status, so the stored bytes are not guaranteed to be a JSON document: an
+  // upstream proxy can return HTML, and an error path can return an empty or truncated body.
+  // Parsing unconditionally made every later hydrate of that turn — and of any PAGE containing
+  // it — throw a 500, permanently, for an attempt that was durably finalized. The fallback is
+  // LOSSLESS: the exact bytes are returned as `text` rather than discarded or replaced.
+  try {
+    return { ...base, native: JSON.parse(text), text: null, content_unreadable: false };
+  } catch {
+    return { ...base, native: null, text, content_unreadable: false };
+  }
 }

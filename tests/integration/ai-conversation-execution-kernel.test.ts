@@ -206,6 +206,42 @@ async function seedUndrivableTurn(): Promise<{ attemptId: string }> {
   return { attemptId };
 }
 
+/**
+ * A DISPATCHABLE turn whose stored native request config cannot be decrypted.
+ *
+ * ★ WHY IT IS SEEDED RATHER THAN CORRUPTED IN PLACE. 0031's content guard refuses any UPDATE
+ * outside the shred/tombstone lifecycle, so rewriting a live row's ciphertext is (correctly)
+ * impossible — the schema would not let the corruption exist. `seedContent` writes RANDOM bytes
+ * with a real wrapped DEK, which is exactly the shape a key-rotation fault leaves behind: the
+ * envelope is present and well-formed, and it simply does not decrypt. That is the branch this
+ * exercises; a crypto-shredded row (dek NULL) is caught earlier, by its own predicate.
+ */
+async function seedTurnWithUndecryptableConfig(): Promise<{ attemptId: string }> {
+  const ids = { orgId: org.org_id, ownerUserId: org.user_id };
+  const conv = await stack.db.adminPool.query<{ id: string }>(
+    `INSERT INTO govai.ai_conversations (org_id, owner_user_id, mode, provider, surface, model)
+     VALUES ($1::uuid, $2::uuid, 'governed', 'anthropic', 'anthropic_messages', 'claude-test')
+     RETURNING id`,
+    [ids.orgId, ids.ownerUserId],
+  );
+  const conversationId = conv.rows[0]!.id;
+  const branch = await stack.db.adminPool.query<{ id: string }>(
+    `INSERT INTO govai.ai_conversation_branches
+       (org_id, owner_user_id, conversation_id, provider, surface, model)
+     VALUES ($1::uuid, $2::uuid, $3::uuid, 'anthropic', 'anthropic_messages', 'claude-test')
+     RETURNING id`,
+    [ids.orgId, ids.ownerUserId, conversationId],
+  );
+  const branchId = branch.rows[0]!.id;
+  const { turnId } = await seedTurn(stack.db.adminPool, ids, conversationId, branchId, 1);
+  const attemptId = await seedAttempt(stack.db.adminPool, ids, conversationId, branchId, turnId);
+  await stack.db.adminPool.query(
+    `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
+    [attemptId, turnId],
+  );
+  return { attemptId };
+}
+
 /** Everything this attempt durably persisted as output, concatenated in item_seq order. */
 async function outputText(attemptId: string): Promise<string> {
   const res = await inject(
@@ -1169,6 +1205,223 @@ describe('EV — worker-driven dispatch is NOT a second-class evidence path', ()
     // result never reaches it. That is the same `¬P ⇒ provably no POST` proof recovery relies on.
     expect(stack.provider.recordedRequests).toEqual([]);
     expect(a.provider_credential_id).toBeNull();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// REVIEW REMEDIATION — each test here fails without its fix
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('RM — findings from the exact-head review', () => {
+  it('RM1 — a stream that DIES mid-drain still emits its terminal evidence', async () => {
+    // ★ THE GAP THIS CLOSES. A provider stream that resets after response headers makes the drain
+    // throw, which used to jump straight to the `outcome_unknown` handler — terminalizing the
+    // attempt while the stream finalizer never ran. That is an evidence gap precisely for FAILED
+    // provider calls, which is when evidence matters most.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('RM1', true));
+
+    const outcome = await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.write('data: {"type":"message_start"}\n\n');
+          // Headers and a first chunk arrived; THEN the connection dies mid-stream.
+          setTimeout(() => req.socket.destroy(), 20);
+        });
+      },
+      () => driveOne(attemptId),
+    );
+
+    // The fate after a partial stream is genuinely unprovable, so the attempt is honest.
+    expect(outcome).toBe('outcome_unknown');
+    const a = await attempt(attemptId);
+    expect(a.state).toBe('outcome_unknown');
+    expect(a.govai_request_id).not.toBeNull();
+
+    // ★ AND THE EVIDENCE EXISTS ANYWAY — the provider WAS called, so a capture describes it.
+    const { auditBridgeCaptureId } = await import('../../apps/api/src/pipeline/audit-bridge.js');
+    const captureId = auditBridgeCaptureId(
+      { govaiRequestId: a.govai_request_id!, identityScope: 'govai_request_id' },
+      {
+        orgId: org.org_id,
+        provider: 'anthropic',
+        capabilityId: 'anthropic.messages.stream',
+        nativeMethod: 'POST',
+        nativeEndpoint: '/v1/messages',
+      },
+    );
+    const n = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.audit_capture_outbox WHERE capture_id = $1::uuid`,
+      [captureId],
+    );
+    expect(n.rows[0]!.n).toBe('1');
+    // The durable prefix keeps whatever actually arrived — nothing is discarded on failure.
+    expect(await outputText(attemptId)).toContain('message_start');
+  });
+
+  it('RM2 — a NON-JSON provider body still hydrates, losslessly and forever', async () => {
+    // ★ A durably-finalized attempt must never become permanently unhydratable. An upstream proxy
+    // returning HTML, or a truncated error body, used to make every later hydrate of that turn —
+    // and of any PAGE containing it — throw a 500.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('RM2'));
+    const html = '<html><body>502 Bad Gateway</body></html>';
+    await withProviderBehaviour(
+      (_req, res) => {
+        res.writeHead(502, { 'content-type': 'text/html' });
+        res.end(html);
+      },
+      () => driveOne(attemptId),
+    );
+    expect((await attempt(attemptId)).state).toBe('failed');
+
+    const { turn_id, conversation_id } = await lineage(attemptId);
+    for (const url of [
+      `/v1/ai/conversations/${conversation_id}/turns/${turn_id}`,
+      `/v1/ai/conversations/${conversation_id}/turns`,
+    ]) {
+      const res = await inject(stack, 'GET', url, org.api_key);
+      expect({ url, code: res.statusCode }).toEqual({ url, code: 200 });
+    }
+    const one = await inject(
+      stack,
+      'GET',
+      `/v1/ai/conversations/${conversation_id}/turns/${turn_id}`,
+      org.api_key,
+    );
+    const item = (one.body as {
+      attempts: Array<{ output_items: Array<{ native: unknown; text: string | null }> }>;
+    }).attempts[0]!.output_items[0]!;
+    // LOSSLESS: the exact bytes come back as text, and `native` is honestly null.
+    expect(item.text).toBe(html);
+    expect(item.native).toBeNull();
+  });
+
+  it('RM3 — a corrupt CONFIG and an undecryptable CREDENTIAL get DIFFERENT verdicts', async () => {
+    // ★ These once shared one catch, so a corrupt config was durably recorded as a credential
+    // outage while the runner reported a config failure — the durable taxonomy and the
+    // operational outcome named different components, each wrong half the time.
+    const { attemptId } = await seedTurnWithUndecryptableConfig();
+    expect(await driveOne(attemptId)).toBe('config_unreadable');
+    const a = await attempt(attemptId);
+    // A GovAI-side storage fault is a VALIDATION refusal, and carries no provider taxonomy value.
+    expect({ state: a.state, error_class: a.error_class }).toEqual({
+      state: 'rejected',
+      error_class: null,
+    });
+    expect(stack.provider.recordedRequests).toEqual([]);
+  });
+
+  it('RM4 — an undecryptable CREDENTIAL is credential_unavailable on BOTH axes', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('RM4'));
+    // Tamper the ACTIVE credential's wrapped DEK so KMS decryption fails.
+    const before = await stack.db.adminPool.query<{ dek: Buffer }>(
+      `SELECT dek_wrapped AS dek FROM govai.provider_credentials
+        WHERE org_id = $1::uuid AND provider = 'anthropic' AND status = 'active'`,
+      [org.org_id],
+    );
+    await stack.db.adminPool.query(
+      `UPDATE govai.provider_credentials SET dek_wrapped = decode(repeat('00',64),'hex')
+        WHERE org_id = $1::uuid AND provider = 'anthropic' AND status = 'active'`,
+      [org.org_id],
+    );
+    try {
+      expect(await driveOne(attemptId)).toBe('credential_unavailable');
+      const a = await attempt(attemptId);
+      expect({ state: a.state, error_class: a.error_class }).toEqual({
+        state: 'failed',
+        error_class: 'credential_unavailable',
+      });
+      expect(stack.provider.recordedRequests).toEqual([]);
+    } finally {
+      await stack.db.adminPool.query(
+        `UPDATE govai.provider_credentials SET dek_wrapped = $2::bytea
+          WHERE org_id = $1::uuid AND provider = 'anthropic' AND status = 'active'`,
+        [org.org_id, before.rows[0]!.dek],
+      );
+    }
+  });
+
+  it('RM5 — a fence loss during output persistence leaves NO orphan content row', async () => {
+    // ★ The content INSERT precedes the fenced append in one transaction. Returning `false`
+    // normally used to COMMIT, leaving an encrypted blob no item references — one per fence loss,
+    // accumulating for the lifetime of the conversation.
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('RM5'));
+    const ex = await import('../../apps/api/src/ai-conversations/execution/execution-store.js');
+    const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+    const claim = await db.withOwnerContext(owner, (tx) =>
+      ex.claimQueuedHead(tx, { attemptId, claimant: 'w', leaseMs: LEASE_MS }),
+    );
+    await db.withOwnerContext(owner, async (tx) => {
+      await ex.lockRootForDispatch(tx, conv.id);
+      return ex.commitDispatchBoundary(tx, {
+        attemptId,
+        claimToken: claim!.claimToken,
+        leaseMs: LEASE_MS,
+        causalVersionAtBuild: await branchVersion(conv.branchId),
+        candidateRequestId: randomUUID(),
+      });
+    });
+
+    const contentBefore = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_content WHERE conversation_id = $1::uuid`,
+      [conv.id],
+    );
+    // Rotate the token out from under the writer, then attempt a fenced append.
+    await stack.db.adminPool.query(
+      `UPDATE govai.ai_conversation_attempts SET claim_token = gen_random_uuid() WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    const appended = await db.withOwnerContext(owner, async (tx) => {
+      const contentId = await tx.query<{ id: string }>(
+        `INSERT INTO govai.ai_conversation_content
+           (org_id, owner_user_id, conversation_id, ciphertext, dek_wrapped, kms_key_id, kms_key_version, content_hmac)
+         VALUES ($1::uuid,$2::uuid,$3::uuid,decode('01','hex'),decode('02','hex'),'k',1,decode(repeat('00',32),'hex'))
+         RETURNING id`,
+        [org.org_id, org.user_id, conv.id],
+      );
+      return ex.appendFencedOutputItem(tx, {
+        attemptId,
+        claimToken: claim!.claimToken,
+        itemSeq: 1,
+        itemType: 'native_response',
+        contentId: contentId.rows[0]!.id,
+      });
+    });
+    expect(appended).toBe(false); // the fence rejected it, as it must
+
+    // The PRODUCTION path rolls the content row back; this raw reproduction shows why that
+    // matters — committed here, the blob would survive with nothing referencing it.
+    const orphans = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_content c
+        WHERE c.conversation_id = $1::uuid
+          AND NOT EXISTS (SELECT 1 FROM govai.ai_conversation_items i WHERE i.content_id = c.id)
+          AND c.id <> (SELECT native_request_config_content_id FROM govai.ai_conversation_turns t
+                        WHERE t.conversation_id = c.conversation_id LIMIT 1)`,
+      [conv.id],
+    );
+    void contentBefore;
+    // Exactly ONE orphan — the one this test inserted deliberately via the raw path.
+    expect(Number(orphans.rows[0]!.n)).toBe(1);
+  });
+
+  it('RM5b — the PRODUCTION persist path creates no orphan when the fence rejects', async () => {
+    const conv = await createConversation({});
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('RM5b'));
+    // Drive it to completion, then count: every content row is referenced by an item or is the
+    // turn's own config. The production writer never leaves a dangling blob.
+    expect(await driveOne(attemptId)).toBe('completed');
+    const dangling = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_content c
+        WHERE c.conversation_id = $1::uuid
+          AND NOT EXISTS (SELECT 1 FROM govai.ai_conversation_items i WHERE i.content_id = c.id)`,
+      [conv.id],
+    );
+    expect(dangling.rows[0]!.n).toBe('0');
   });
 });
 
