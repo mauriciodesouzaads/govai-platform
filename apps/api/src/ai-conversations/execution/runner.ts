@@ -139,7 +139,16 @@ export type ConversationWorkerHandle = {
  * (`setTimeout` chaining, not `setInterval`), so a slow provider cannot stack sweeps on top of
  * each other and exhaust the small worker pool. This is the audit-sealer claim-loop shape.
  *
- * ★ THE TIMER IS `unref`'d and cleared on stop, so it can never hold the process open.
+ * ★ THE TIMER IS DELIBERATELY **REFERENCED**, AND THAT IS THE WHOLE LIFECYCLE OF THIS PROCESS.
+ * An earlier revision `unref`'d it, reasoning that a sweep timer should never hold a process open.
+ * That is sound advice for a timer running BESIDE a live server listener — and this function has
+ * exactly one caller, the DEDICATED worker entrypoint, where nothing else holds the event loop at
+ * all: the signal handlers do not, and the pool is lazy and has not connected. The `unref`'d timer
+ * was therefore the only referenced handle, so the process exited normally BEFORE its first sweep
+ * and no durable turn was ever discovered. The deployable unit was a silent no-op.
+ *
+ * Shutdown does not depend on the `unref`: `stop()` clears the timer and drains the in-flight
+ * sweep, and the entrypoint's signal handler calls `process.exit(0)` explicitly.
  */
 export function startConversationWorker(
   deps: ConversationExecutorDeps,
@@ -165,7 +174,6 @@ export function startConversationWorker(
         }
       })();
     }, config.intervalMs);
-    timer.unref?.();
   };
   schedule();
 

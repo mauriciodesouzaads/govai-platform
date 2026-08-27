@@ -2510,6 +2510,148 @@ describe('R3 — round-three review findings', () => {
     expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'persistence_error' });
   });
 
+  it('R9-1 — the DEPLOYED worker process stays alive long enough to sweep', async () => {
+    // ★ THE ONLY TEST IN THIS SUITE THAT RUNS THE DEPLOYABLE UNIT AS A PROCESS, AND IT EXISTS
+    // BECAUSE NOTHING ELSE COULD HAVE CAUGHT THIS. The sweep timer was `unref`'d — sound advice
+    // for a timer running beside a live server listener, and fatal for the DEDICATED entrypoint,
+    // where nothing else holds the event loop: the signal handlers do not, and the pool is lazy
+    // and has not connected. The process therefore exited normally BEFORE its first sweep, so no
+    // durable turn was ever discovered. **The whole deployable unit was a silent no-op**, and
+    // every other test in this file passed, because they all call `runConversationSweepOnce` or
+    // `processCandidate` DIRECTLY and never start the process at all.
+    //
+    // Reachability is not testable from inside the module under test. So this spawns the real
+    // entrypoint and asks the only question that matters: is it still running when its first
+    // sweep is due?
+    const { spawn } = await import('node:child_process');
+    const INTERVAL_MS = 1_000;
+
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx', 'apps/api/src/conversation-worker/main.ts'],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          NODE_ENV: 'test',
+          GOVAI_CONVERSATION_WORKER_DATABASE_URL: stack.db.conversationWorkerUrl,
+          DATABASE_URL: stack.db.adminUrl,
+          GOVAI_KMS_PROVIDER: 'dev',
+          KMS_DEV_SEED: stack.seed,
+          JWT_ISSUER: 'https://govai.test',
+          JWT_AUDIENCE: 'govai-api',
+          CONVERSATION_WORKER_INTERVAL_MS: String(INTERVAL_MS),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    let exitedAt: number | null = null;
+    let exitCode: number | null = null;
+    const startedAt = Date.now();
+    child.on('exit', (code) => {
+      exitedAt = Date.now();
+      exitCode = code;
+    });
+    let out = '';
+    child.stdout?.on('data', (b: Buffer) => {
+      out += b.toString('utf8');
+    });
+    child.stderr?.on('data', (b: Buffer) => {
+      out += b.toString('utf8');
+    });
+
+    try {
+      // Wait past boot AND past the first sweep's due time. An `unref`'d timer lets the process
+      // exit within a second or two of boot — long before this window closes.
+      const DEADLINE = 20_000;
+      const startedLine = /conversation worker: started/;
+      let sawStarted = false;
+      for (let i = 0; i < DEADLINE / 250; i += 1) {
+        if (!sawStarted && startedLine.test(out)) {
+          sawStarted = true;
+          // Once booted, wait out two full sweep intervals with the process referenced.
+          await new Promise((r) => setTimeout(r, INTERVAL_MS * 2 + 500));
+          break;
+        }
+        if (exitedAt !== null) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+
+      // ★ THE ASSERTION: it booted, and it was STILL RUNNING when its first sweeps were due.
+      // Without the fix the process is gone here, having done nothing at all.
+      expect({
+        booted: sawStarted,
+        stillRunning: exitedAt === null,
+        exitCode,
+      }).toEqual({ booted: true, stillRunning: true, exitCode: null });
+      expect(Date.now() - startedAt).toBeGreaterThan(INTERVAL_MS);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }, 60_000);
+
+  it('R9-2 — A1 against a REAL pool: killing a checked-out backend does not kill the process', async () => {
+    // ★ FOUND BY MY OWN SWEEP AFTER ROUND EIGHT, NOT BY REVIEW. `P0A2-P3-A1` says a checked-out
+    // pg client carries no `error` listener, so a backend disconnect DURING a checkout is an
+    // unhandled 'error' event and the process dies. The closure was proven only against a FAKE
+    // pool (`ai-conversation-worker.gates.test.ts` injects a hand-rolled `connect()`), which
+    // reproduces none of pg-pool's actual checkout semantics — the very thing the defect is about.
+    // That is the same class round eight found: a fix whose only evidence is a stand-in.
+    //
+    // So this uses the REAL pool against the REAL database and kills the backend from OUTSIDE,
+    // with admin privileges the worker role deliberately does not have.
+    const observed: Array<{ scope: string; errorClass: string }> = [];
+    const victim = createConversationWorkerDb({
+      config: { connectionString: stack.db.conversationWorkerUrl, max: 1, workerId: 'r9-2' },
+      log: { info: () => undefined, warn: () => undefined, error: () => undefined } as never,
+      onDbError: (e, scope) => {
+        observed.push({ scope, errorClass: e.errorClass });
+      },
+    });
+
+    try {
+      let pid = 0;
+      const held = victim.withOwnerContext(
+        { orgId: org.org_id, ownerUserId: org.user_id },
+        async (tx) => {
+          pid = (await tx.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+          // Stay checked out long enough to be killed mid-flight. `pg_sleep` keeps a REAL query
+          // in flight, so the termination lands on an active client rather than an idle one.
+          await tx.query('SELECT pg_sleep(5)');
+          return 'survived-unexpectedly';
+        },
+      );
+
+      for (let i = 0; i < 100 && pid === 0; i += 1) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(pid).toBeGreaterThan(0);
+
+      // Kill it from the admin connection — the worker role cannot signal backends (W20).
+      await stack.db.adminPool.query('SELECT pg_terminate_backend($1)', [pid]);
+
+      // The caller still observes a rejection: pg rejects the in-flight query. What must NOT
+      // happen is the process dying on an unhandled 'error' event — and if it did, this test file
+      // would not reach the assertion below at all.
+      const outcome = await held.then(
+        (v) => ({ ok: true as const, v }),
+        (e: unknown) => ({ ok: false as const, name: e instanceof Error ? e.name : 'unknown' }),
+      );
+      expect(outcome.ok).toBe(false);
+
+      // The listener absorbed the emit and reported it through the sanitized seam.
+      for (let i = 0; i < 40 && observed.length === 0; i += 1) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(observed.length).toBeGreaterThan(0);
+      // Sanitized: a CLASS, never a message that could carry a connection string.
+      expect(typeof observed[0]!.errorClass).toBe('string');
+    } finally {
+      await victim.close().catch(() => undefined);
+    }
+  }, 60_000);
+
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
     // The byte-safe path must not swallow the ordinary case: a legitimate UTF-8 error page is
     // still the more useful `text`.
