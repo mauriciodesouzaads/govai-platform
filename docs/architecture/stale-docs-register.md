@@ -704,9 +704,10 @@ Register-relevant facts this reconciliation records but does NOT change:
   multi-agent development is not blocked at the repository layer: CI is enforced by the
   development protocol and reviewed as merge evidence, and the absence of GitHub-side
   enforcement is `BY_DESIGN` rather than technical debt. This movement therefore raises no
-  branch-protection finding and creates no branch-protection action item. It does **not**
-  restate or reclassify Foundation V1 residual `R9`, which is unchanged and remains the owner's
-  to disposition (`foundation-v1-freeze.md` §6, anti-evaporation clause).
+  branch-protection finding and creates no branch-protection action item. It leaves Foundation V1
+  residual `R9` byte-unchanged in [foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 as
+  freeze-era provenance; `R9`'s CURRENT disposition is recorded in the subsection below and is
+  settled by the owner, not pending.
 
 `EP-AI-CONVERSATION-CONTINUITY-V1-01` remains IN_PROGRESS. **Superseding the parity-baseline
 section's closing note above** — which said "every runtime section (§7–§14, §19) remains
@@ -731,3 +732,48 @@ above as that movement's history and is no longer the current reading of the tre
   a durable turn.
 
 `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`.
+
+### Foundation V1 residual `R9` — final owner disposition
+
+```text
+FOUNDATION_V1_R9_HISTORICAL_PROVENANCE = RETAINED
+CURRENT_R9_DISPOSITION                 = SUPERSEDED_BY_OWNER_GOVERNANCE_DECISION
+MAIN_BRANCH_PROTECTION                 = INTENTIONALLY_DISABLED_BY_OWNER
+REPOSITORY_RULESETS                    = INTENTIONALLY_NONE_BY_OWNER
+R9_CURRENT_ACTION                      = NONE
+R9_FUTURE_GATE                         = NONE
+```
+
+Foundation V1 residual `R9` is retained **unchanged** in
+[foundation-v1-freeze.md](./foundation-v1-freeze.md) §6 as freeze-era historical provenance. What
+that row recorded at freeze time — GitHub branch-protection / ruleset enforcement absent, merge
+safety process-enforced — was true when it was written and is **not** being called an error. The
+anti-evaporation clause is honoured: nothing is erased, rewritten or silently reclassified.
+
+Its **current operational meaning is superseded by an explicit owner governance decision**. GitHub
+branch protection and repository rulesets are intentionally not used in this repository because the
+development workflow deliberately runs multiple AI executors, reviewers and orchestration agents,
+and the owner prefers process-controlled merge discipline — exact SHAs, exact-head CI evidence,
+review evidence and expected-head race guards — over repository-level enforcement that can block
+that workflow. The absence of GitHub-side enforcement is therefore a **chosen design point**, not a
+gap.
+
+Consequently `R9` is **not** unresolved repository-governance work:
+
+- it is **not** awaiting owner disposition — this IS the disposition;
+- there is no remediation, no action item and no technical-debt entry;
+- it gates nothing — not P0-C, not any later movement;
+- no `OPS-*` branch-protection finding may be raised from it;
+- enabling branch protection or creating a ruleset must not be proposed as future work or as a
+  future requirement (any such change remains an owner-reserved action — resume-playbook.md §9).
+
+This subsection also supersedes the **current** reading of the
+`REPO_ENFORCEMENT_ASSESSMENT=DEFERRED_NON_BLOCKING` token wherever it still stands in the tree —
+the post-M3 operational note in [development-roadmap.md](./development-roadmap.md), the `R9` row in
+`foundation-v1-freeze.md` §6, and this register's own EP-11-era row above. Those occurrences remain
+as the provenance of their movements; read as current state, no repository-enforcement assessment
+is deferred or pending, because the decision has been made.
+
+Still correct and still load-bearing: `CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
+`GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`. Never infer that GitHub-side enforcement exists from the
+existence of a CI workflow — it does not exist, by design.
