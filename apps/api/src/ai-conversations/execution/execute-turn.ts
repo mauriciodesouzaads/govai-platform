@@ -482,7 +482,38 @@ async function dispatchAndFinalize(
 
   try {
     const emitAuditEvent = async (event: unknown): Promise<void> => {
-      await deps.db.captureAuditEvent(event, args.identity);
+      // ★ AN AUDIT-WRITE FAILURE HERE IS A KNOWN-RESULT FAILURE, NEVER AN UNPROVABLE ONE. Every
+      // emit this executor makes describes a COMPLETED provider interaction: `invoked` carries the
+      // status code and response hash, and the stream finalizer runs after the drain. So if the
+      // capture fails, the provider's fate is PROVEN and only our record of it is missing.
+      //
+      // Without this marker the outer catch saw an ordinary error with `forwardStarted` true and
+      // recorded `outcome_unknown` — discarding a response already in hand AND asserting
+      // ambiguity about a fate we could prove, in the one state whose entire value is that it is
+      // reserved for genuine unknowns.
+      //
+      // Wrapping it HERE rather than at each call site is what makes it cover the GOVERNED path
+      // too: the provider handlers emit through this very function, so their post-response audit
+      // writes are classified identically without forking the provider pipeline.
+      //
+      // ★ GATED ON `forwardStarted`, BECAUSE NOT EVERY EMIT IS POST-RESPONSE. The governed
+      // handlers also emit when GOVERNANCE REFUSES — before any POST exists. Marking a capture
+      // failure there as `persistence_error` would assert that the provider answered a request it
+      // never received.
+      //
+      // ★ THIS GATE IS DEFENCE IN DEPTH, NOT A BUG FIX, AND SAYING SO IS THE POINT. The outer
+      // catch ALREADY reaches the right answer without it, because it tests `!forwardStarted`
+      // BEFORE it tests this marker — so a pre-POST failure classifies as `local_error` either
+      // way (`R7-4` passes with or without this line, and is a characterization test, not a
+      // falsification one). The gate exists so the property is LOCAL to the classification rather
+      // than an emergent consequence of the order of two branches thirty lines apart, which is
+      // the kind of coupling a later edit silently breaks.
+      try {
+        await deps.db.captureAuditEvent(event, args.identity);
+      } catch (err) {
+        if (forwardStarted) throw new OutputPersistenceFailed(err);
+        throw err;
+      }
     };
     const result =
       args.plan.mode === 'governed'
@@ -983,6 +1014,9 @@ async function recordStream(
   // `stream_outcome: complete` while the terminal frame had never been observed: an affirmative
   // false claim in an audit record, which is worse than recording nothing.
   let reachedUpstreamEof = false;
+  // Distinguishes "the finalizer failed while an error was already on its way up" from "the
+  // finalizer failed and is therefore the ONLY thing wrong" — see the `finally`.
+  let drainFailure: unknown = null;
   try {
     for await (const chunk of result.chunks) {
       const bytes = Buffer.from(chunk);
@@ -1004,6 +1038,9 @@ async function recordStream(
     // conflate the two and report a stream failure that did not happen.
     reachedUpstreamEof = !fenced;
     await flush();
+  } catch (err) {
+    drainFailure = err;
+    throw err;
   } finally {
     // ★ FLUSH WHAT ACTUALLY ARRIVED, EVEN ON A THROW. Bytes already received are durable truth;
     // discarding them because the stream later died would make the prefix describe less than the
@@ -1021,14 +1058,34 @@ async function recordStream(
     // was never seen, and `client_disconnect` names a client this worker does not have. What the
     // value does say truthfully is "this stream did not finish normally", which is the fact an
     // evidence reader must not be misled about.
-    await result
-      .finalize(reachedUpstreamEof ? 'complete' : 'upstream_error')
-      .catch((err: unknown) =>
+    const terminal = result.finalize(reachedUpstreamEof ? 'complete' : 'upstream_error');
+    if (drainFailure !== null) {
+      // Something is already propagating. A finalizer failure must not MASK it — the original
+      // drain error is the more informative fact, and swallowing it to report this one would
+      // lose the reason the stream died.
+      await terminal.catch((err: unknown) =>
         deps.log.warn(
           { attempt_id: args.attemptId, err_class: errClass(err) },
           'conversation executor: stream terminal evidence emit failed',
         ),
       );
+    } else {
+      // ★ NOTHING IS PROPAGATING, SO THIS FAILURE IS THE ONLY SIGNAL THAT EVIDENCE IS MISSING.
+      // Swallowing it here let a stream that reached EOF be durably marked `completed` while its
+      // required terminal event was never recorded — a permanent evidence gap opened exactly
+      // during an audit-database failure, and invisible afterwards because the attempt looks
+      // perfectly healthy. "Must not mask the original error" is the right rule; applying it when
+      // there IS no original error was the defect.
+      await terminal.catch((err: unknown) => {
+        deps.log.error(
+          { attempt_id: args.attemptId, err_class: errClass(err) },
+          'conversation executor: stream terminal evidence could not be recorded',
+        );
+        // The provider answered and we drained it; only the durable record failed. That is
+        // `persistence_error` by definition — never `outcome_unknown`.
+        throw new OutputPersistenceFailed(err);
+      });
+    }
   }
 
   if (fenced) {
@@ -1239,18 +1296,37 @@ function startHeartbeat(
   /** The single tick currently in flight, or null. Chaining keeps this at most one. */
   let inFlight: Promise<void> | null = null;
 
+  // ★ THE SUCCESSOR IS DUE AT A FIXED CADENCE, NOT ONE INTERVAL AFTER THE LAST TICK FINISHED.
+  // Chaining alone (delay = interval, measured from settlement) silently ADDS each tick's runtime
+  // to every period, which breaks the `heartbeatIntervalMs * 3 <= leaseMs` guarantee that config
+  // validation enforces at boot. Worked example on the defaults (60s lease, 15s interval): a tick
+  // due at 15s that settles at 65s commits a deadline near 75s from PostgreSQL's transaction
+  // clock, while a settlement-relative delay would not even ATTEMPT the next renewal until 80s —
+  // leaving a window in which recovery can rotate the claim out from under a live provider call.
+  //
+  // So the due time advances by exactly one period from the PREVIOUS DUE TIME, and an already-past
+  // due time fires immediately. Clamping to `now` is what prevents the other failure mode: a
+  // naively accumulating schedule would fire a BURST of catch-up ticks after one slow tick, and
+  // each of those takes a pool checkout — reintroducing the starvation this chaining exists to
+  // prevent.
+  let nextDueAt = Date.now() + deps.heartbeatIntervalMs;
+
   const schedule = (): void => {
     if (stopped) return;
-    timer = setTimeout(() => {
-      timer = null;
-      const tick = run();
-      inFlight = tick;
-      void tick.finally(() => {
-        if (inFlight === tick) inFlight = null;
-        // Re-arm only now, so a tick can never overlap its own successor.
-        schedule();
-      });
-    }, deps.heartbeatIntervalMs);
+    timer = setTimeout(
+      () => {
+        timer = null;
+        const tick = run();
+        inFlight = tick;
+        void tick.finally(() => {
+          if (inFlight === tick) inFlight = null;
+          nextDueAt = Math.max(Date.now(), nextDueAt + deps.heartbeatIntervalMs);
+          // Re-arm only now, so a tick can never overlap its own successor.
+          schedule();
+        });
+      },
+      Math.max(0, nextDueAt - Date.now()),
+    );
     timer.unref?.();
   };
 

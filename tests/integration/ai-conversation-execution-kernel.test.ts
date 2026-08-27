@@ -2150,6 +2150,242 @@ describe('R3 — round-three review findings', () => {
     expect(inFlight).toBe(0);
   });
 
+  it('R7-1 — a slow heartbeat tick does not push the CADENCE out', async () => {
+    // ★ MY OWN ROUND-SIX FIX INTRODUCED THIS. Chaining ticks (delay measured from settlement)
+    // stops overlap, but silently ADDS each tick's runtime to every period — which breaks the
+    // `heartbeatIntervalMs * 3 <= leaseMs` guarantee that config validation enforces at boot.
+    // On the defaults a tick due at 15s that settles at 65s commits a deadline near 75s from
+    // PostgreSQL's clock, while a settlement-relative delay would not even ATTEMPT the next
+    // renewal until 80s — a window in which recovery can rotate the claim out from under a live
+    // provider call.
+    //
+    // Measured on a NON-STREAM dispatch whose provider withholds its response: during that window
+    // the executor issues no owner-context work of its own, so every checkout observed IS a
+    // heartbeat tick, with no arithmetic needed to separate them.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R7-1', false));
+
+    const TICK_COST = 40;
+    const INTERVAL = 40;
+    let respondedAt = Number.MAX_SAFE_INTEGER;
+    const tickTimes: number[] = [];
+    const tickCosts: number[] = [];
+    const realWithOwnerContext = db.withOwnerContext.bind(db) as typeof db.withOwnerContext;
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      withOwnerContext: async (owner: unknown, fn: unknown) => {
+        const at = Date.now();
+        const counted = at < respondedAt;
+        if (counted) tickTimes.push(at);
+        // Each tick costs at least a full interval, so a settlement-relative schedule inserts an
+        // extra dead interval between renewals while a due-time schedule does not.
+        await new Promise((r) => setTimeout(r, TICK_COST));
+        try {
+          return await (realWithOwnerContext as (o: unknown, f: unknown) => Promise<unknown>)(owner, fn);
+        } finally {
+          if (counted) tickCosts.push(Date.now() - at);
+        }
+      },
+    }) as typeof db;
+
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          // Long enough for many ticks at a 40 ms cadence.
+          setTimeout(() => {
+            respondedAt = Date.now();
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          }, 700);
+        });
+      },
+      async () =>
+        processCandidate({ ...deps, db: spyDb, heartbeatIntervalMs: INTERVAL }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        }),
+    );
+
+    // ★ THE ASSERTION IS A RATE, WHICH IS THE PROPERTY THAT WAS LOST. Over a ~700 ms window with a
+    // 40 ms interval and 40 ms ticks, a due-time schedule renews roughly every 40 ms (>= 12 ticks)
+    // while a settlement-relative one renews every ~80 ms (~7). The lease guarantee is a function
+    // of this rate, so the rate is what the test pins.
+    // ★ THE ASSERTION IS SCALE-FREE, WHICH MATTERS MORE THAN IT LOOKS. An absolute tick count
+    // depends on how long the window happened to be, and a first draft of this test PASSED
+    // against the unfixed code for exactly that reason. What actually distinguishes the two
+    // schedules is whether a whole idle INTERVAL is inserted between renewals on top of the
+    // tick's own cost — a difference that survives any machine speed or CI contention, because
+    // both terms are measured here rather than assumed.
+    expect(tickTimes.length).toBeGreaterThanOrEqual(4);
+    const avgPeriod =
+      (tickTimes[tickTimes.length - 1]! - tickTimes[0]!) / (tickTimes.length - 1);
+    const avgCost = tickCosts.reduce((a, b) => a + b, 0) / tickCosts.length;
+    // Due-time scheduling: period ≈ the tick's own cost. Settlement-relative: cost + INTERVAL.
+    expect({ periodExceedsCostBy: avgPeriod - avgCost < INTERVAL / 2 }).toEqual({
+      periodExceedsCostBy: true,
+    });
+  });
+
+  it('R7-2 — a stream whose TERMINAL EVIDENCE fails is not durably marked completed', async () => {
+    // ★ THE RIGHT RULE, APPLIED WHERE IT DID NOT BELONG. My comment said a finalizer failure
+    // "must not mask the original drain error" — correct, and I applied it unconditionally,
+    // including when there IS no original error. A stream that reached EOF whose terminal event
+    // failed to capture was then marked `completed`: a permanent evidence gap opened exactly
+    // during an audit-database failure, and invisible afterwards because the attempt looks
+    // healthy.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R7-2', true));
+
+    // ONLY the terminal stream event fails; every other capture succeeds, so nothing else about
+    // the run is disturbed.
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      captureAuditEvent: async (event: unknown, identity?: unknown) => {
+        if ((event as { stream_outcome?: string }).stream_outcome !== undefined) {
+          throw new Error('audit database unavailable');
+        }
+        return (db.captureAuditEvent as (e: unknown, i?: unknown) => Promise<void>)(event, identity);
+      },
+    }) as typeof db;
+
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.write(`data: {"phase":"one","pad":"${'e'.repeat(120)}"}\n\n`);
+          // A clean EOF: the drain succeeds, so the finalizer failure is the ONLY thing wrong.
+          setTimeout(() => res.end(), 40);
+        });
+      },
+      async () =>
+        processCandidate({ ...deps, db: spyDb }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        }),
+    );
+
+    const row = await stack.db.adminPool.query<{ state: string; error_class: string | null }>(
+      `SELECT state, error_class FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    // The provider answered and we drained it; only the durable record failed. That is
+    // `persistence_error` — never `completed`, and never `outcome_unknown`.
+    expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'persistence_error' });
+  });
+
+  it('R7-3 — a post-response AUDIT failure is persistence_error, not outcome_unknown', async () => {
+    // ★ `outcome_unknown` MEANS "the provider's fate is unprovable", and §7.7 builds real
+    // behaviour on it. A non-stream response is already fully in hand before the audit write, so
+    // routing that write's failure through the ambiguity arm discarded a KNOWN result and
+    // asserted ambiguity about a fate we could prove — diluting the one state whose entire value
+    // is that it is reserved for genuine unknowns.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R7-3', false));
+
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      captureAuditEvent: async (event: unknown, identity?: unknown) => {
+        if ((event as { is_stream?: boolean }).is_stream === false) {
+          throw new Error('audit database unavailable');
+        }
+        return (db.captureAuditEvent as (e: unknown, i?: unknown) => Promise<void>)(event, identity);
+      },
+    }) as typeof db;
+
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, answer: 'durable' }));
+        });
+      },
+      async () =>
+        processCandidate({ ...deps, db: spyDb }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        }),
+    );
+
+    const row = await stack.db.adminPool.query<{ state: string; error_class: string | null }>(
+      `SELECT state, error_class FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'persistence_error' });
+  });
+
+  it('R7-4 — an audit failure BEFORE any POST stays local_error, not persistence_error', async () => {
+    // ★ A CHARACTERIZATION TEST, NOT A FALSIFICATION ONE — AND THE DISTINCTION IS RECORDED
+    // BECAUSE I NEARLY GOT IT WRONG. Reviewing my own R7-3 fix I believed I had found an adjacent
+    // case: the governed handlers also emit when governance REFUSES, before any POST exists, so
+    // wrapping every capture failure as `persistence_error` looked like it would assert the
+    // provider answered a request it never received. I added a `forwardStarted` gate and this
+    // test — and the test PASSES WITHOUT THE GATE.
+    //
+    // The reason is that the outer catch tests `!forwardStarted` BEFORE it tests the persistence
+    // marker, so a pre-POST failure was already classified `local_error`. The defect was never
+    // real. What IS real is the coupling: the correct answer depends on the order of two branches
+    // thirty lines apart. The gate makes the property local, and this test pins the behaviour so
+    // a reordering cannot quietly invert it.
+    //
+    // The computer-use tool floor is the governed handler's explicit block, so this reaches the
+    // real enforcement path rather than simulating one.
+    const conv = await createConversation({ mode: 'governed' });
+    const { attemptId } = await send(conv.id, conv.branchId, {
+      model: 'claude-test',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'R7-4' }],
+      tools: [{ type: 'computer_20250124', name: 'computer', display_width_px: 1, display_height_px: 1 }],
+    });
+
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(db)), db, {
+      captureAuditEvent: async () => {
+        throw new Error('audit database unavailable');
+      },
+    }) as typeof db;
+
+    await processCandidate({ ...deps, db: spyDb }, {
+      orgId: org.org_id,
+      ownerUserId: org.user_id,
+      conversationId: conv.id,
+      attemptId,
+      state: 'accepted',
+      reason: 'queued_head',
+      claimToken: null,
+      isBranchHead: true,
+    });
+
+    const row = await stack.db.adminPool.query<{
+      state: string;
+      error_class: string | null;
+      cred: string | null;
+    }>(
+      `SELECT state, error_class, provider_credential_id::text AS cred
+         FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    // No POST happened — proved durably by the absent provenance — so the failure is GovAI-local.
+    expect(stack.provider.recordedRequests).toEqual([]);
+    expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'local_error', cred: null });
+  });
+
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
     // The byte-safe path must not swallow the ordinary case: a legitimate UTF-8 error page is
     // still the more useful `text`.
