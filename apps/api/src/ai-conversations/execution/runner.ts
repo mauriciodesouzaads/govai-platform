@@ -209,13 +209,25 @@ export function startConversationWorker(
   };
   schedule();
 
+  // ★ ONE SHARED DRAIN, NOT AN IDEMPOTENT NO-OP. `if (stopped) return` looks like correct
+  // idempotence and is not: a SECOND call resolves IMMEDIATELY while the first is still awaiting
+  // an active candidate. The entrypoint calls `process.exit(0)` as soon as its `stop()` resolves,
+  // so a second SIGTERM — an impatient operator, or an orchestrator that sends TERM twice — exits
+  // the process mid-dispatch and recreates exactly the `outcome_unknown` this bounded shutdown
+  // exists to prevent. Every caller must await the SAME drain.
+  let shutdown: Promise<void> | null = null;
+
   return {
-    async stop(): Promise<void> {
-      if (stopped) return;
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      timer = null;
-      await inFlight.catch(() => undefined);
+    stop(): Promise<void> {
+      shutdown ??= (async () => {
+        stopped = true;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        // Safe to read once: `stopped` is set synchronously above, so no further sweep can be
+        // scheduled and this value cannot be replaced after this point.
+        await inFlight.catch(() => undefined);
+      })();
+      return shutdown;
     },
   };
 }

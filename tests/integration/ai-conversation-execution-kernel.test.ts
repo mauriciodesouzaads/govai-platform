@@ -2697,7 +2697,7 @@ describe('R3 — round-three review findings', () => {
     // Cancellation is COOPERATIVE by design: it declines to START candidates and never aborts one
     // in flight, because aborting a POSTed dispatch would manufacture that same ambiguity.
     const DELAY_MS = 400;
-    const BACKLOG = 5;
+    const BACKLOG = 8;
     const ids: string[] = [];
     for (let i = 0; i < BACKLOG; i += 1) {
       const conv = await createConversation({ mode: 'passthrough' });
@@ -2705,11 +2705,25 @@ describe('R3 — round-three review findings', () => {
       ids.push(attemptId);
     }
 
+    // ★ A HANDSHAKE, NOT A SLEEP — AND I HAD ALREADY LEARNED THIS ONCE IN THIS MOVEMENT (see
+    // `RM1`, where a 20 ms timer was replaced by a durable receipt) AND REPEATED IT ANYWAY. A fixed
+    // 250 ms wait assumes boot, discovery and claim setup all fit inside it; on a loaded machine
+    // they do not, and `stop()` then runs BEFORE any dispatch begins. The test would still pass —
+    // an immediate stop is fast and zero completions is "fewer than the backlog" — so the
+    // UNBOUNDED implementation would go untested while the suite reported success. That is the
+    // same worthless-proof failure as round seven's tick-count assertion.
+    let firstDispatchSeen!: () => void;
+    const firstDispatch = new Promise<void>((resolve) => {
+      firstDispatchSeen = resolve;
+    });
+
     let stopElapsed = 0;
     await withProviderBehaviour(
       (req, res) => {
         req.on('data', () => undefined);
         req.on('end', () => {
+          // The provider has the request: a dispatch is provably in flight, not merely likely.
+          firstDispatchSeen();
           // Each dispatch is slow, so a sweep that ignores the stop takes BACKLOG × DELAY_MS.
           setTimeout(() => {
             res.writeHead(200, { 'content-type': 'application/json' });
@@ -2723,11 +2737,21 @@ describe('R3 — round-three review findings', () => {
           intervalMs: 50,
           maxPagesPerSweep: 5,
         });
-        // Let the sweep begin and get INTO its first dispatch.
-        await new Promise((r) => setTimeout(r, 250));
+        // Fail LOUD rather than vacuously if no dispatch ever starts.
+        await Promise.race([
+          firstDispatch,
+          new Promise((_r, reject) =>
+            setTimeout(() => reject(new Error('no provider dispatch started')), 30_000),
+          ),
+        ]);
         const t0 = Date.now();
         await handle.stop();
         stopElapsed = Date.now() - t0;
+
+        // ★ CONCURRENT STOPS MUST AWAIT THE SAME DRAIN. A second signal resolving early would let
+        // the entrypoint's `process.exit(0)` fire mid-dispatch — the very ambiguity this bounds.
+        const second = handle.stop();
+        await second;
         return null;
       },
     );
@@ -2739,15 +2763,90 @@ describe('R3 — round-three review findings', () => {
     );
     const completed = Number(done.rows[0]!.n);
 
-    // ★ THE BOUND, STATED AS ARITHMETIC. A shutdown that waits out the backlog takes at least
-    // (BACKLOG - 1) × DELAY_MS after the stop; one bounded by a single in-flight candidate takes
-    // at most about DELAY_MS. The midpoint separates them with margin at either end.
-    expect({ boundedByOneCandidate: stopElapsed < DELAY_MS * 2 }).toEqual({
-      boundedByOneCandidate: true,
+    // ★ THE PRIMARY ASSERTION IS A COUNT, NOT A DURATION, AND THAT IS DELIBERATE. A wall-clock
+    // bound on a machine whose per-candidate cost is not fixed is a flake waiting to happen — the
+    // dispatch carries database, KMS and HTTP work that CI contention can stretch arbitrarily.
+    // What CANNOT drift is how many candidates a sweep chose to start: the whole backlog, or the
+    // one already in flight. The untouched attempts stay durably queued for the next runner,
+    // which is exactly why declining them costs nothing.
+    // ★ THE LOWER BOUND IS WHAT MAKES A VACUOUS PASS IMPOSSIBLE. At least one candidate must have
+    // been dispatched AND completed — otherwise the stop landed before any work began and the test
+    // proved nothing, which is precisely how a fixed sleep fails silently.
+    expect({ declinedMost: completed <= 3, atLeastOneRan: completed >= 1 }).toEqual({
+      declinedMost: true,
+      atLeastOneRan: true,
     });
-    // And it genuinely DECLINED work rather than finishing early by luck: the untouched attempts
-    // stay durably queued for the next runner, which is why declining costs nothing.
-    expect(completed).toBeLessThan(BACKLOG);
+    // The duration is asserted too, but only against the FULL-DRAIN cost it must beat by a wide
+    // margin (8 × 400 ms ≈ 3.2 s), not against a tight estimate of one candidate.
+    expect({ farBelowFullDrain: stopElapsed < (BACKLOG * DELAY_MS) / 2 }).toEqual({
+      farBelowFullDrain: true,
+    });
+  }, 60_000);
+
+  it('R11-1 — a SECOND stop() awaits the same drain, it does not resolve early', async () => {
+    // ★ `if (stopped) return` LOOKS LIKE CORRECT IDEMPOTENCE AND IS NOT. The second caller gets an
+    // already-resolved promise while the FIRST is still awaiting an active candidate. That matters
+    // because the entrypoint calls `process.exit(0)` the moment its own `stop()` resolves — so a
+    // second SIGTERM (an impatient operator, or an orchestrator that sends TERM twice) exits the
+    // process mid-dispatch and recreates exactly the `outcome_unknown` the bounded shutdown exists
+    // to prevent. The failure needs two signals AND an in-flight dispatch to appear, which is why
+    // it survived the round that introduced the bound.
+    const DELAY_MS = 600;
+    const conv = await createConversation({ mode: 'passthrough' });
+    await send(conv.id, conv.branchId, nativeRequest('R11-1', false));
+
+    let firstDispatchSeen!: () => void;
+    const firstDispatch = new Promise<void>((resolve) => {
+      firstDispatchSeen = resolve;
+    });
+    let providerRespondedAt = 0;
+
+    let firstDone = 0;
+    let secondDone = 0;
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          firstDispatchSeen();
+          setTimeout(() => {
+            providerRespondedAt = Date.now();
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          }, DELAY_MS);
+        });
+      },
+      async () => {
+        const handle = startConversationWorker(deps, {
+          batchSize: 50,
+          intervalMs: 50,
+          maxPagesPerSweep: 2,
+        });
+        await Promise.race([
+          firstDispatch,
+          new Promise((_r, reject) =>
+            setTimeout(() => reject(new Error('no provider dispatch started')), 30_000),
+          ),
+        ]);
+        // Two shutdowns race, exactly as two signals would.
+        const a = handle.stop().then(() => {
+          firstDone = Date.now();
+        });
+        const b = handle.stop().then(() => {
+          secondDone = Date.now();
+        });
+        await Promise.all([a, b]);
+        return null;
+      },
+    );
+
+    // ★ THE ASSERTION: the SECOND stop did not resolve before the dispatch finished. With the
+    // early return it resolves essentially instantly — and in the real entrypoint that is the
+    // instant `process.exit(0)` runs, with a provider call still open.
+    expect(providerRespondedAt).toBeGreaterThan(0);
+    expect({
+      secondWaitedForDispatch: secondDone >= providerRespondedAt,
+      bothSawTheSameDrain: Math.abs(secondDone - firstDone) < 250,
+    }).toEqual({ secondWaitedForDispatch: true, bothSawTheSameDrain: true });
   }, 60_000);
 
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
