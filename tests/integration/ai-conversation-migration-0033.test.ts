@@ -608,10 +608,17 @@ describe('P0-B — migration 0033 on a populated 0031+0032 database', () => {
       expect(sql).not.toContain('current_attempt_monotonic');
       expect(sql).not.toContain('fork_pin_state_guard');
     }
-    // 0033 is the highest migration and is numerically next after 0032.
+    // 0033 is numerically NEXT AFTER 0032 — the claim this movement actually makes.
+    //
+    // ★ IT IS NO LONGER "the highest migration". That clause was an artefact of 0033 being the
+    // newest file when P0-B was written, not a property of P0-B: every later movement adds its
+    // own migration (P0-C adds 0034), so asserting "highest" would make this suite fail on every
+    // subsequent movement for no reason connected to what it is testing. The ADJACENCY is the
+    // real invariant — it is what would catch a renumbering or a gap in P0-B's own file.
     const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
-    expect(files.at(-1)).toBe(MIGRATION_0033);
-    expect(files.at(-2)).toBe('0032_ai_conversation_worker_trust_discovery.sql');
+    const idx = files.indexOf(MIGRATION_0033);
+    expect(idx).toBeGreaterThan(0);
+    expect(files[idx - 1]).toBe('0032_ai_conversation_worker_trust_discovery.sql');
   });
 
   it('N3b — 0033 adds no DELETE authority and no new SECURITY DEFINER function', async () => {
