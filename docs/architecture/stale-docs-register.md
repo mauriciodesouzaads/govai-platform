@@ -663,3 +663,71 @@ foundation, migration `0031`) is implemented in this tree; `CONVERSATION_PERSIST
 `NOT_IMPLEMENTED` (no Send/hydrate/reload runtime exists). The continuity spec's schema sections
 (§3/§6) are now PARTIALLY REALIZED by 0031; every runtime section (§7–§14, §19) remains
 design-only.
+
+## P0-B post-merge canonical reconciliation (P0-B-POST-MERGE-DOCS-RECONCILIATION-01)
+
+Documentation-only. No backend runtime, no test, no migration, no grant/RLS, no event schema, no
+CI configuration and no repository setting changed in this movement. It exists because the
+independently audited P0-B tree was merged **byte-identically** — `TREE(6567d8da…) ==
+770dffba…` — and that tree deliberately still carried the pre-merge wording
+`P0_B_CONVERSATION_CONTROL_PLANE=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`. That wording was
+truthful when it was audited; promoting it could not be smuggled into the technical squash tree
+without breaking the tree identity that is the whole proof, so the promotion lands here.
+
+**Closes independent-audit finding `P0B-AUDIT-P3-02`** (`resume-playbook.md` /
+`development-roadmap.md` still presented the P0-A1-era state as current — pre-existing at the
+frozen base, untouched by PR #145) and **`P0B-AUDIT-P3-03`** (the carry-forward IDs
+`P0B-P3-ERR-SHAPE-01` and `P0B-P4-BASE64URL-LENIENCY-01` existed only in the external handoff and
+had no canonical in-tree register entry).
+
+| Document | Was (stale at `6567d8da`) | Now |
+|---|---|---|
+| `current-state.md` §P0-B canonical state | `P0_B_CONVERSATION_CONTROL_PLANE=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION`; "deliberately NOT `COMPLETE`"; `CONVERSATION_CONTROL_PLANE=CANDIDATE_IMPLEMENTED` | `P0_B…=COMPLETE` with the full immutable evidence block (PR #145 · reviewed head `cd7a137d` · reviewed tree `770dffba` · audit PASS + its SHA-256 · squash `6567d8da` · tree identity PASS · main CI `33023935331` GREEN); `CONVERSATION_CONTROL_PLANE=COMPLETE`; a canonical nine-row carry-forward register (the seven audit P3s + the two formerly handoff-only IDs, with `P0B-AUDIT-P3-05` documented as an ALIAS of `P0B-P3-ERR-SHAPE-01` so the one risk is never double-counted); explicit restated non-claims; `P0-C` named as the next implementation movement with the `P0A2-P3-A1` / `P0A2-P3-A4` activation gates |
+| `resume-playbook.md` §4 | "movement P0-A1 … is implemented in this tree … next movement P0-A2" | a dedicated current-lane bullet: `COMPLETE = P0-A1 · T1 · P0-A2 · P0-B`, `NEXT = P0-C-DURABLE-SEND-EXECUTION-KERNEL-01` (not started), the P0-B technical evidence, the two pre-activation gates, and the unchanged honesty boundary |
+| `development-roadmap.md` §GOVAI_NATIVE_EXPERIENCE_PARITY_V1 | "its first movement, **P0-A1** … is implemented in this tree … Next movements: P0-A2 … onward" | a milestone token block (P0-A1 / T1 / P0-A2 / P0-B `COMPLETE`; P0-C `NOT_STARTED` marked CURRENT/NEXT; P0-D/E/F `NOT_STARTED`) with a short paragraph per finished movement and the P0-C durable-execution path |
+
+Register-relevant facts this reconciliation records but does NOT change:
+
+- **Five of the seven independent-audit P3 findings remain OPEN** (`P0B-AUDIT-P3-01`, `-04`,
+  `-05`, `-06`, `-07`). Only the two DOCUMENTARY ones (`-02`, `-03`) are closed here. The P3
+  count is **not** zero, and none of the five was fixed opportunistically — fixing behaviour is
+  not what a documentation reconciliation is for.
+- **`P0A2-P3-A1` and `P0A2-P3-A4` survive unchanged** as gates on the FIRST real
+  conversation-worker runtime activation / on worker runtime callers expanding. They do not gate
+  this reconciliation and they do not gate every preparatory P0-C step.
+- `R14` / `LATENT_AUTH_LIFECYCLE_DESIGN_RISK`, the `AUTH-READ-CACHE-01` platform class, the
+  provider-sourced rejection discriminator and `P0B-FORK-BAO-TRIPLE-SWITCH` are all UNCHANGED in
+  status.
+- **Branch protection / repository rulesets — no finding, no action, no setting touched.** This
+  movement inspected no repository setting for change and modified none. Per a standing owner
+  governance decision, GitHub branch protection and rulesets are **intentionally not used**, so
+  multi-agent development is not blocked at the repository layer: CI is enforced by the
+  development protocol and reviewed as merge evidence, and the absence of GitHub-side
+  enforcement is `BY_DESIGN` rather than technical debt. This movement therefore raises no
+  branch-protection finding and creates no branch-protection action item. It does **not**
+  restate or reclassify Foundation V1 residual `R9`, which is unchanged and remains the owner's
+  to disposition (`foundation-v1-freeze.md` §6, anti-evaporation clause).
+
+`EP-AI-CONVERSATION-CONTINUITY-V1-01` remains IN_PROGRESS. **Superseding the parity-baseline
+section's closing note above** — which said "every runtime section (§7–§14, §19) remains
+design-only" and was written at PR #139's head, before P0-A2 and P0-B existed; it is retained
+above as that movement's history and is no longer the current reading of the tree:
+
+- Storage and encryption (§3/§6) are realized by migration `0031`, extended by `0033`
+  (the fork-idempotency arbiter + the minimum request-plane column authority).
+- §7's state PHYSICS are realized STRUCTURALLY as database guard triggers (`0031`, plus `0033`'s
+  fork-pin validity and `current_attempt_id` monotonic-handoff triggers). §7's runtime
+  EXECUTOR — the thing that drives those transitions — does not exist.
+- §7.7/§8 recovery DISCOVERY is realized read-only by `0032`'s content-free `SECURITY DEFINER`
+  function, reachable only by `govai_conversation_worker`. Nothing calls it at runtime.
+- §13's control-plane API is PARTIALLY REALIZED: exactly five endpoints exist
+  (`POST` / `GET` `/v1/ai/conversations`, `GET` and `PATCH` `…/:id`, `POST …/:id/branches`).
+  `DELETE …/:id`, `GET …/:id/turns`, `GET …/turns/:turnId`, the stream re-attach endpoint,
+  `POST …/:id/turns` (durable send), `POST …/retry` and `POST …/stop` do NOT exist.
+- Everything else the runtime sections specify is still absent: durable send and `client_turn_id`
+  reservation (§8), the dispatch boundary and server-owned stream (§9), reload/reconnection
+  (§10), the provider conversation adapter and continuation (§11/§17), turn↔evidence correlation
+  (§14) and the whole §19 delete protocol. No worker process runs; no provider call is made from
+  a durable turn.
+
+`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`.

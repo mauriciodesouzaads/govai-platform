@@ -614,8 +614,9 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 - `AI_CONSOLE_V1=COMPLETE_UNCHANGED`; `FOUNDATION_V1=UNCHANGED`; `WORKROOM=SEMANTICALLY_SEPARATE`
   (the Conversation ≠ Workroom adjudication is recorded in the continuity spec §4);
   `NEXT_IMPLEMENTATION_MISSION=EP-AI-CONVERSATION-CONTINUITY-V1-01` (source-adjudicated candidate
-  scope in native-experience-parity-v1.md §10; its P0-A1 movement is implemented in this tree —
-  see the next section).
+  scope in native-experience-parity-v1.md §10; its P0-A1, P0-A2 and P0-B movements are all
+  implemented and independently confirmed in this tree, and `P0-C` is the next implementation
+  movement — see the three canonical sections that follow).
 
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-A1 canonical state (this tree)
 
@@ -637,6 +638,11 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   `P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=COMPLETE` (see the P0-A2 section below — the exact
   independently reviewed tree landed on main, and the movement is recorded as complete only
   because that review returned PASS);
+  `P0_B_CONVERSATION_CONTROL_PLANE=COMPLETE` (see the P0-B canonical section below — same
+  discipline: the exact independently audited tree landed on main and the movement is recorded
+  as complete only because that audit returned PASS);
+  `P0_C_DURABLE_SEND_EXECUTION_KERNEL=NOT_STARTED` — the NEXT implementation movement;
+  `P0_D=NOT_STARTED`; `P0_E=NOT_STARTED`; `P0_F=NOT_STARTED`;
   `CONVERSATION_CONTINUITY_ARCHITECTURE=SPECIFIED_IMPLEMENTATION_IN_PROGRESS`;
   **`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`** — there is still no durable user-facing
   Send/hydrate/reload path; the AI Console transcript remains memory-only
@@ -696,11 +702,12 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   `completed`; `before_attempt_output` pin must be an immutable terminal; `outcome_unknown`
   rejected in both modes; no non-terminal pin); and P0A1-C5 (`current_attempt_id` backward
   repoint — monotonic handoff is a P0-B acceptance proof if not taken structurally).
-  **★ UPDATED BY P0-B (candidate, this tree):** all three of those forward obligations are
-  DISCHARGED by the P0-B candidate below — AUTH-READ-CACHE-01 for the conversation surface,
+  **★ UPDATED BY P0-B (COMPLETE, this tree):** all three of those forward obligations are
+  DISCHARGED by P0-B below — AUTH-READ-CACHE-01 for the conversation surface,
   P0A1-C4 and P0A1-C5 both taken STRUCTURALLY in migration 0033 rather than as service checks
   alone. The three entries above are retained as the historical P0-A1 record; the P0-B canonical
-  section is the current state, and it is a CANDIDATE state pending independent confirmation.
+  section is the current state, and P0-B is now `COMPLETE` — independently audited at its exact
+  head and merged tree-identically (PR #145 → `6567d8da`).
 
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-A2 canonical state (this tree)
 
@@ -879,8 +886,9 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   path; the AI Console transcript is still memory-only). ★ TWO of the tokens that stood here
   were forward statements about the NEXT movement and are superseded by the P0-B canonical
   section below: `CONVERSATION_HTTP_API=NOT_IMPLEMENTED` and `P0_B=NOT_STARTED` are no longer
-  true of this tree (a control-plane candidate exists; durable send still does not). Everything
-  else in this P0-A2 list is unchanged and remains true. A worker PROCESS is
+  true of this tree (the conversation control plane is implemented and `P0_B=COMPLETE`; durable
+  send still does not exist). Everything else in this P0-A2 list is unchanged and remains true.
+  A worker PROCESS is
   not implemented either: `WORKER_RUNTIME_PROCESS=NOT_IMPLEMENTED` and
   `WORKER_RUNTIME_POOL_ACTIVATION=DEFERRED_TO_FIRST_WORKER_PROCESS` — the credential lifecycle
   and the pool factory exist, but nothing constructs a worker pool at runtime. No
@@ -888,7 +896,7 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 - Carry-forwards untouched by P0-A2 (open AT P0-A2): P0A1-C4, P0A1-C5, the provider-sourced
   rejection discriminator, AUTH-READ-CACHE-01, P0-A1 P3a–P3d, the T1 acceptance-stack residual
   and its five P3 observations, and `LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14`.
-  ★ UPDATED BY P0-B (candidate): P0A1-C4 and P0A1-C5 are CLOSED STRUCTURALLY by migration 0033,
+  ★ UPDATED BY P0-B (COMPLETE): P0A1-C4 and P0A1-C5 are CLOSED STRUCTURALLY by migration 0033,
   and the AUTH-READ-CACHE-01 obligation is met FOR THE CONVERSATION SURFACE (the class itself
   stays open — the four pre-existing authenticated read surfaces are untouched). The
   provider-sourced rejection discriminator, the P3 sets and the R14 risk are carried forward
@@ -897,18 +905,49 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-B canonical state (this tree)
 
-- `P0_B_CONVERSATION_CONTROL_PLANE=IMPLEMENTED_PENDING_INDEPENDENT_CONFIRMATION` — implemented by
-  movement `P0-B-CONVERSATION-CONTROL-PLANE-01` on base
-  `e6eb886dab68d953fab7114687fae8d34c639e0a` (tree `6be1b724739d209fa754ff380446275967f54ab4`).
-  **This status is deliberately NOT `COMPLETE`.** COMPLETE is written only after an independent
-  exact-head audit passes and the candidate merges — the discipline P0-A1 and P0-A2 both
-  followed. Nothing below is asserted on the executor's own authority beyond "this is what the
-  tree contains and what its tests prove".
+- `P0_B_CONVERSATION_CONTROL_PLANE=COMPLETE` — implemented by movement
+  `P0-B-CONVERSATION-CONTROL-PLANE-01` on base
+  `e6eb886dab68d953fab7114687fae8d34c639e0a` (tree `6be1b724739d209fa754ff380446275967f54ab4`),
+  technical PR **#145**, reviewed head `cd7a137d3ee17797cc1347a43c7299c005591f35` (tree
+  `770dffba7dbf8784b74047a9034ffa5f8b692986`), squash-merged to main as
+  `6567d8da75b5c72506cb8b22aba69e0d40bd4b29` — whose tree IS that reviewed tree, byte for byte,
+  so what landed is exactly what was audited. COMPLETE is written here only because the exact-head
+  independent audit returned PASS; it is a record of that review, not a claim made on the
+  executor's own authority. `P0_A1=COMPLETE`, `T1=COMPLETE` and `P0_A2=COMPLETE` are unchanged.
+- **Completion evidence — every anchor, immutably.**
+  ```
+  TECHNICAL_PR             = #145  (feat(ai): add conversation control plane)
+  FROZEN_REVIEWED_HEAD     = cd7a137d3ee17797cc1347a43c7299c005591f35
+  FROZEN_REVIEWED_TREE     = 770dffba7dbf8784b74047a9034ffa5f8b692986
+  INDEPENDENT_AUDIT        = PASS   (P0=0 · P1=0 · P2=0 · P3=7)
+  INDEPENDENT_AUDIT_SHA256 = b619251dda90a2e708f1e6a4601a35625155ebb29df090bc47cc238ac9bd81de
+  SQUASH_MERGE_SHA         = 6567d8da75b5c72506cb8b22aba69e0d40bd4b29
+  SQUASH_MERGE_TREE        = 770dffba7dbf8784b74047a9034ffa5f8b692986
+  TREE_IDENTITY            = PASS
+  POST_MERGE_MAIN_CI_RUN   = 33023935331
+  POST_MERGE_MAIN_CI       = GREEN  (push event on the merge SHA; unit / ui / integration)
+  ```
+  P0-B is `COMPLETE` because **all** of implementation, exact-head PR CI (run `33011593368`,
+  the only run on that head), a fresh Codex review of that exact head (0 findings, authored by
+  the genuine `chatgpt-codex-connector` Bot identity), an independent exact-head Opus 5 Max audit
+  (a different session with no authorship stake), the frozen squash merge, merge-tree identity
+  and post-merge main CI succeeded — not because any one of them did. The audit artifact lives
+  outside the repository at
+  `/Users/Shared/govai-handoff/audits/ai-conversation-continuity-v1/p0b-control-plane/P0-B-FRESH-OPUS-5-MAX-INDEPENDENT-EXACT-HEAD-AUDIT-HANDOFF.md`
+  (SHA-256 `b619251dda90a2e708f1e6a4601a35625155ebb29df090bc47cc238ac9bd81de`), and the merge
+  protocol record beside it as `P0-B-FROZEN-HEAD-MERGE-HANDOFF.md` (SHA-256
+  `37a64ad5fea7252dd389f3525d01d3c02a3ebe28c66c7f5c8480f45f9f761c1e`). The merge landed the
+  frozen tree only: `TREE(6567d8da…) == 770dffba…`, so no post-audit byte entered main, which is
+  exactly why this status promotion is a SEPARATE docs-only movement rather than an edit smuggled
+  into the technical tree.
+- **`COMPLETE` is scoped to the control plane and to nothing else.** It does NOT mean conversation
+  persistence works, that a worker runs, or that any provider call is made from a durable turn.
+  Read the explicit non-claims below before quoting this status.
 - **What P0-B is, stated precisely.** The owner-authorized CONVERSATION CONTROL PLANE: the
   request-side surfaces that can exist safely WITHOUT activating durable provider execution.
   It is not the conversation experience. After this movement:
   ```
-  CONVERSATION_CONTROL_PLANE  = CANDIDATE_IMPLEMENTED
+  CONVERSATION_CONTROL_PLANE  = COMPLETE
   CONVERSATION_PERSISTENCE    = NOT_IMPLEMENTED
   ```
   and the second line is the load-bearing one: there is still no complete user-facing
@@ -1032,6 +1071,24 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   `PERSISTENT_AI_WORKSPACE_UI=NOT_IMPLEMENTED`, `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED`,
   `P0_C=NOT_STARTED`. No parity-manifest row changed classification: a control plane is not
   provider capability.
+- **Explicit non-claims, restated because `P0_B=COMPLETE` is easy to over-read.** Completing the
+  control plane completes NONE of the following, and no later document may infer otherwise from
+  the status token above:
+  ```
+  CONVERSATION_PERSISTENCE            = NOT_IMPLEMENTED
+  P0_C_DURABLE_SEND_EXECUTION_KERNEL  = NOT_STARTED
+  WORKER_RUNTIME_PROCESS              = NOT_IMPLEMENTED
+  WORKER_RUNTIME_POOL_ACTIVATION      = DEFERRED
+  RECOVERY_CLAIM_MUTATION             = NOT_IMPLEMENTED
+  RECOVERY_STATE_MACHINE_EXECUTOR     = NOT_IMPLEMENTED
+  PROVIDER_DISPATCH_FROM_WORKER       = NOT_IMPLEMENTED
+  PROVIDER_CONTINUATION               = NOT_IMPLEMENTED
+  PERSISTENT_AI_WORKSPACE_UI          = NOT_IMPLEMENTED
+  PROVIDER_EXACTLY_ONCE               = NOT_CLAIMED
+  P0_D · P0_E · P0_F                  = NOT_STARTED
+  ```
+  There is still no `Send → durable accepted turn → server-owned execution → hydrate/reload`
+  path, and the AI Console transcript is still memory-only by construction.
 - **Test matrix** (`tests/integration/ai-conversation-*.test.ts` + the pure unit suites under
   `apps/api/src/ai-conversations/`): migration 0033 against a POPULATED 0031+0032 database
   (byte-identical row preservation, re-runnability, the exact grant/policy inventory, an
@@ -1061,4 +1118,36 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   guess. `AUTH-READ-CACHE-01` stays open as a CLASS (see above). `R14` and
   `LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14` are unchanged — persistence is keyed to the
   stable `(org_id, user_id)` the API-key lookup returns, and nothing here pretends that is a
-  human login.
+  human login. `P0B-FORK-BAO-TRIPLE-SWITCH` stays `DEFERRED`, honoured exactly (see the
+  adjudicated bound above).
+- **Canonical P0-B carry-forward register — the seven independent-audit P3 findings, plus the
+  two IDs that previously existed only in the external handoff.** None is a P0-B blocker; the
+  audit returned `P0=0 · P1=0 · P2=0`. Recording them here is what closes the audit's own
+  traceability finding: **`P0B-AUDIT-P3-03=CLOSED_BY_DOCUMENTATION_RECONCILIATION`** — the two
+  IDs below now have canonical in-tree entries. **`P0B-AUDIT-P3-02=CLOSED`** likewise: it
+  observed that `resume-playbook.md` and `development-roadmap.md` still described P0-A1 as the
+  current movement with "next movement P0-A2", and both documents are reconciled in the same
+  movement that writes this register. The other five remain visibly OPEN — the P3 count is
+  **not** zero.
+
+  | ID | Status | Class | What it is | Where it goes next |
+  |---|---|---|---|---|
+  | `P0B-AUDIT-P3-01` | **OPEN** | defence-in-depth · non-blocking | `status` is column-writable by `govai_app` (`0033:106-108`), so `deleted_pending` is representable at the DB privilege layer. **Unreachable from the P0-B HTTP contract**: `PatchConversationBody` is `.strict()` with only `title`/`archived`, and `store.updateConversation` binds `status` to the literals `'archived'`/`'active'` through a closed SET list with bound parameters. The grant is REQUIRED for archive; narrowing it in the policy `WITH CHECK` would duplicate the ratchet 0031 owns and would block the future §19 transition | §19 delete/lifecycle implementation, which decides which role may drive `deleted_pending` |
+  | `P0B-AUDIT-P3-02` | **CLOSED** | documentation | `resume-playbook.md` / `development-roadmap.md` presented the P0-A1-era state as current. Pre-existing at the frozen base — `git diff e6eb886d..cd7a137d` on both files is empty | closed by this reconciliation |
+  | `P0B-AUDIT-P3-03` | **CLOSED** | traceability | `P0B-P3-ERR-SHAPE-01` and `P0B-P4-BASE64URL-LENIENCY-01` had no canonical in-tree register entry | closed by this reconciliation — both are registered below |
+  | `P0B-AUDIT-P3-04` | **OPEN** | hardening · non-blocking | `title_hmac` is written but never independently recomputed on read (`crypto.ts:83-105`). Not a tamper hole: the envelope is AES-256-GCM with auth tags on both the DEK and the KEK wrap, so tampering already fails closed at decrypt, and §6's stated purpose (no unkeyed hash beside the ciphertext) is met | consider read-time verification when a content-integrity surface exists |
+  | `P0B-AUDIT-P3-05` | **OPEN** | informational · non-blocking | **ALIAS of `P0B-P3-ERR-SHAPE-01` — one risk, two IDs, not two findings.** `authenticate()` / `pool.connect()` sits outside the route's `try` (`routes/ai-conversations.ts:97, 184, 212, 237, 269, 311`), so an infrastructure failure may return Fastify's generic 500 body shape rather than the GovAI canonical error body. HTTP status stays correct, `no-store` is still present (asserted by C6c), and no tenant data is disclosed | carry forward unchanged; **do not fix opportunistically** |
+  | `P0B-AUDIT-P3-06` | **OPEN** | test-hardening · non-blocking | the 0031 policy-count canary was narrowed to `cmd IN ('SELECT','INSERT')`. The narrowing is legitimate (0033's lawful additions would otherwise trip it), but a future DELETE/UPDATE policy on a 0031 table would no longer trip THAT canary. Mitigated: the 0033 suite asserts table-level `del:false`/`upd:false` privileges directly, and a policy without a grant is inert | consider a policy-INVENTORY assertion rather than a count-only canary |
+  | `P0B-AUDIT-P3-07` | **OPEN** | contract clarity · non-blocking | same `client_fork_id` + divergent intent that is ALSO independently invalid may return the earlier specific 409 (`fork_source_not_forkable` / `fork_replacement_config_required`) instead of `fork_idempotency_key_conflict` (`service.ts:createFork` ordering). No durability consequence — the candidate transaction rolls back and mints nothing either way | record the expectation in the public API contract when the fork surface is documented externally |
+  | `P0B-P3-ERR-SHAPE-01` | **OPEN** | informational · non-blocking | the canonical ID for the error-shape residual described by `P0B-AUDIT-P3-05` above. Same risk, same location, same disposition — **documented as an alias so the two are never double-counted** | same as `P0B-AUDIT-P3-05` |
+  | `P0B-P4-BASE64URL-LENIENCY-01` | **RECORDED** | informational · non-blocking | `Buffer.from(raw, 'base64url')` is LENIENT — Node drops bytes outside the alphabet instead of failing, so a cursor carrying stray characters decodes to the SAME payload rather than to `null`. A tolerance, not a hole: the decoded payload is then validated field by field, such a cursor names the identical position, and nothing unvalidated proceeds. Already documented in shipped source at `decodeConversationCursor` (`apps/api/src/ai-conversations/cursor.ts`); the independent audit re-examined it and found no material consequence | no action; re-examine only if the cursor becomes an externally documented contract |
+
+- **NEXT IMPLEMENTATION MOVEMENT: `P0-C-DURABLE-SEND-EXECUTION-KERNEL-01`.** P0-B is the control
+  plane; P0-C builds the durable execution path — Send → `client_turn_id` durable reservation →
+  immutable user input → immutable native request config → initial attempt → branch execution
+  authority → claim → lease → fencing → detached worker → durable credential resolution →
+  provider dispatch → durable finalize → hydrate → reload → reconnection. ★ Two P0-A2
+  carry-forwards gate the ACTIVATION boundary, not the preparatory work: `P0A2-P3-A1` MUST be
+  adjudicated/closed before the FIRST real conversation-worker runtime activation, and
+  `P0A2-P3-A4` MUST receive its required pre-activation review before worker runtime callers
+  expand across that boundary.
