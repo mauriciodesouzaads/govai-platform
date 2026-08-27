@@ -147,15 +147,27 @@ export type ConversationItemProjection = {
    *  (`native_request`, and a `native_response` that really is one). Null otherwise. */
   native: unknown;
   /**
-   * Raw UTF-8 text for items whose content is NOT a JSON document.
+   * VALID UTF-8 text for items whose content is not a JSON document.
    *
-   * Always set for `native_stream_chunk` (provider SSE framing is text, not JSON). Also set —
-   * with `native` null — when a stored `native_response` does not parse as JSON: the executor
-   * persists a provider response VERBATIM whatever its status, so an upstream proxy's HTML or a
-   * truncated error body reaches here as-is. Exactly one of `native`/`text` is non-null, and the
-   * stored bytes are never discarded.
+   * Set for `native_stream_chunk` (provider SSE framing is text, not JSON), and for a stored
+   * `native_response` that decodes cleanly but does not parse as JSON — an upstream proxy's HTML
+   * page, a truncated error body.
    */
   text: string | null;
+  /**
+   * The stored bytes, base64 encoded, when they are NOT valid UTF-8.
+   *
+   * ★ WHY THIS FIELD EXISTS RATHER THAN A LOSSY STRING. The executor persists a provider response
+   * VERBATIM whatever its bytes, and `Buffer.toString('utf8')` silently replaces every invalid
+   * sequence with U+FFFD — so an ISO-8859-1 error page or a binary body was returned CORRUPTED
+   * while the contract claimed exactness. Decoding is now FATAL, and anything that fails it comes
+   * back here byte-for-byte.
+   *
+   * ★ THE INVARIANT: at most one of `native` / `text` / `bytes_base64` is non-null, and stored
+   * bytes are never discarded or silently normalized. All three are null only when
+   * `content_unreadable` is true.
+   */
+  bytes_base64: string | null;
   /** True when the row exists but its content is no longer readable (crypto-shredded, LAW 12).
    *  Honest rather than absent: the item DID exist and its position matters to ordering. */
   content_unreadable: boolean;

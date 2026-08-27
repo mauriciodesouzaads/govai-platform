@@ -11,6 +11,9 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { Pool } from 'pg';
+import { DevKms } from '@govai/core-identity';
+import { getTurn } from '../../apps/api/src/ai-conversations/turn-service.js';
 import {
   startStack,
   stopStack,
@@ -432,6 +435,68 @@ describe('SEND — the durable reservation', () => {
       native_request: nativeRequest('SEND-14b'),
     });
     expect(after.statusCode).toBe(201);
+  });
+
+  it('SEND-15 — a STALLED KMS holds NO database client (the request pool stays usable)', async () => {
+    // ★ THE INVARIANT, PROVEN BY CONTENTION RATHER THAN BY INSPECTION. Committing the
+    // transaction is not enough: a projection that decrypts while still HOLDING its checked-out
+    // client blocks every other caller needing that connection, and on a KMS outage it exhausts
+    // the pool. A `max: 1` pool makes the failure unambiguous — if the client is held across
+    // KMS, the concurrent probe below can never acquire one.
+    const conv = await createConversation(org.api_key);
+    const sent = await send(org.api_key, conv.id, {
+      client_turn_id: randomUUID(),
+      branch_id: conv.branchId,
+      native_request: nativeRequest('SEND-15'),
+    });
+    const turnId = (sent.body as { id: string }).id;
+
+    const pool = new Pool({ connectionString: stack.db.appUrl, max: 1 });
+    pool.on('error', () => undefined);
+    const realKms = new DevKms(stack.seed);
+    let releaseKms!: () => void;
+    const stalled = new Promise<void>((resolve) => {
+      releaseKms = resolve;
+    });
+    const stallingKms = Object.assign(Object.create(Object.getPrototypeOf(realKms)), realKms, {
+      envelopeDecrypt: async (args: Parameters<typeof realKms.envelopeDecrypt>[0]) => {
+        await stalled; // the "KMS outage"
+        return realKms.envelopeDecrypt(args);
+      },
+    }) as typeof realKms;
+
+    try {
+      const pending = getTurn(
+        { pool, kms: stallingKms },
+        { orgId: org.org_id, ownerUserId: org.user_id },
+        conv.id,
+        turnId,
+      );
+
+      // While the decrypt is stalled, the SAME single-connection pool must still serve someone
+      // else. Before the fix this raced the 3s bound and lost.
+      const probe = await Promise.race([
+        (async () => {
+          const c = await pool.connect();
+          try {
+            await c.query('SELECT 1');
+            return 'acquired';
+          } finally {
+            c.release();
+          }
+        })(),
+        new Promise<string>((resolve) => setTimeout(() => resolve('blocked'), 3_000)),
+      ]);
+      expect(probe).toBe('acquired');
+
+      releaseKms();
+      const turn = await pending;
+      expect(turn.id).toBe(turnId);
+      expect(turn.input_items[0]!.native).toEqual(nativeRequest('SEND-15'));
+    } finally {
+      releaseKms();
+      await pool.end().catch(() => undefined);
+    }
   });
 
   it('SEND-10 — CONCURRENT duplicate sends produce ONE turn (the reservation race)', async () => {

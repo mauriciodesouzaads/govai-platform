@@ -244,10 +244,20 @@ export type ConversationWorkerOwner = { orgId: string; ownerUserId: string };
 async function withCheckedOutWorkerClient<T>(
   pool: Pool,
   onClientError: ((e: SanitizedWorkerDbError) => void) | undefined,
-  fn: (client: PoolClient) => Promise<T>,
+  fn: (client: PoolClient, markUnusable: () => void) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect();
   let connectionFailed = false;
+  // ★ `markUnusable` is the callback's channel for "I cannot PROVE this connection is clean."
+  // The listener below catches connection-level failures, but it cannot see a LOGICAL one — a
+  // callback that opened a transaction and could not close it leaves an aborted or open
+  // transaction on a perfectly healthy socket. Returning that client to the pool poisons the
+  // next borrower with `25P02`, and on a `max: 2` worker pool a repeating failure takes the
+  // whole worker down. Only the callback knows; this is how it says so.
+  let unusable = false;
+  const markUnusable = (): void => {
+    unusable = true;
+  };
   const listener = (err: Error): void => {
     connectionFailed = true;
     // Absorbing the event is the WHOLE point: without a listener this emit is an unhandled
@@ -257,11 +267,11 @@ async function withCheckedOutWorkerClient<T>(
   };
   client.on('error', listener);
   try {
-    return await fn(client);
+    return await fn(client, markUnusable);
   } finally {
     client.removeListener('error', listener);
     // `release(true)` destroys; `release()` returns to the pool.
-    if (connectionFailed) client.release(true);
+    if (connectionFailed || unusable) client.release(true);
     else client.release();
   }
 }
@@ -418,11 +428,19 @@ export function createConversationWorkerDb(deps: ConversationWorkerDbDeps): Conv
    * attestation, and — the part that matters for P0A2-P3-A1 — no per-checkout `error` listener,
    * so a backend disconnect DURING evidence capture could still take the worker process down.
    * Routing it through the same guarded lifecycle every other worker operation uses closes that.
+   *
+   * ★ CHECKOUT LIFECYCLE IS NOT TRANSACTION LIFECYCLE, and conflating the two was a real defect.
+   * This helper owns the CHECKOUT: attest, listen, release or destroy. It does NOT own a
+   * transaction it never opened, so it cannot roll one back. The caller that issues `BEGIN` must
+   * close it before returning — and if it cannot, it calls `markUnusable` so the connection is
+   * destroyed instead of handed to the next borrower mid-transaction.
    */
-  const withAttestedClient = async <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> =>
-    withCheckedOutWorkerClient(pool, (e) => report(e, 'checkout'), async (client) => {
+  const withAttestedClient = async <T>(
+    fn: (client: PoolClient, markUnusable: () => void) => Promise<T>,
+  ): Promise<T> =>
+    withCheckedOutWorkerClient(pool, (e) => report(e, 'checkout'), async (client, markUnusable) => {
       await assertConversationWorkerIdentity(client);
-      return fn(client);
+      return fn(client, markUnusable);
     });
 
   const auditBridge = makeAuditBridge({ pool, log, withClient: withAttestedClient });

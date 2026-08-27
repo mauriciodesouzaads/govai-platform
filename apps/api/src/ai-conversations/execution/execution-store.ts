@@ -603,14 +603,24 @@ export async function appendFencedOutputItem(
   return (r.rowCount ?? 0) === 1;
 }
 
-/** The §7.4 failure taxonomy, exactly as 0031's CHECK admits it. */
+/**
+ * The §7.4 failure taxonomy, exactly as the database CHECK admits it (0031 + 0035).
+ *
+ * ★ THE LAST TWO ARE GOVAI-LOCAL AND OPERATIONALLY OPPOSITE. `local_error` means GovAI failed
+ * BEFORE any transmission, so the provider provably did not process the request. That is exactly
+ * the situation `outcome_unknown` must NOT be used for. `persistence_error` means the provider
+ * ANSWERED — status observed — and GovAI then failed to record it; that is also not ambiguous,
+ * and it is not safe to retry, because the provider already did the work.
+ */
 export type AttemptErrorClass =
   | 'blocked'
   | 'auth_rejected'
   | 'request_too_large'
   | 'rate_limited'
   | 'credential_unavailable'
-  | 'provider_error';
+  | 'provider_error'
+  | 'local_error'
+  | 'persistence_error';
 
 /**
  * §8 commit 5 — the FENCED FINALIZE.

@@ -50,13 +50,13 @@ is one collected test module.
 | Workspace packages | `packages/*` | 13 |
 | Other workspace members | literal entries in `pnpm-workspace.yaml` | `scripts`, `tests` |
 | API route files | `apps/api/src/routes/*.ts` | 20 |
-| DB migrations | `apps/api/src/db/migrations/*.sql` | 33 |
+| DB migrations | `apps/api/src/db/migrations/*.sql` | 34 |
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 148 | 1689 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 92 | 1415 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 240 | 3104 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 148 | 1694 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 93 | 1433 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 241 | 3127 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 

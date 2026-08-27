@@ -48,8 +48,20 @@ export interface AuditBridgeDeps {
    * a misconfigured elevated credential reaches the operation unchecked. Handing this dispatcher
    * a raw pool created a SECOND checkout path that had neither, silently bypassing both for
    * evidence capture specifically. Direct routes omit this and keep using `deps.pool` unchanged.
+   *
+   * ★ THE CONTRACT, STATED EXACTLY, BECAUSE GETTING IT WRONG POISONS A POOL. The override owns
+   * the CHECKOUT (obtain, guard, release/destroy). This dispatcher owns the TRANSACTION: it
+   * issues `BEGIN`, so it guarantees a matching `COMMIT` or `ROLLBACK` BEFORE the callback
+   * returns. The two are different lifecycles, and an earlier revision conflated them — it
+   * skipped the rollback believing the override would do it, so a capture failure after `BEGIN`
+   * returned an aborted transaction to the pool and the next borrower failed `25P02`.
+   *
+   * `markUnusable` is how this dispatcher reports the one case it cannot fix: a `ROLLBACK` that
+   * itself fails. The connection is then destroyed rather than returned healthy.
    */
-  withClient?: <T>(fn: (client: PoolClient) => Promise<T>) => Promise<T>;
+  withClient?: <T>(
+    fn: (client: PoolClient, markUnusable: () => void) => Promise<T>,
+  ) => Promise<T>;
   /** `strict` is plumbed but NEVER enabled in v1 (ADR-028 §9). */
   posture?: 'best_effort' | 'strict';
   /**
@@ -255,9 +267,24 @@ export function makeAuditBridge(
       };
       if (deps.withClient) {
         usingOverride = true;
-        await deps.withClient(async (c) => {
+        await deps.withClient(async (c, markUnusable) => {
           client = c;
-          await runEnvelope(c);
+          try {
+            await runEnvelope(c);
+          } catch (envelopeErr) {
+            // ★ THE COMPONENT THAT OPENED `BEGIN` CLOSES IT — here, before the client can leave
+            // this callback. Deferring to the override was the defect: it owns the checkout, not
+            // the transaction, so the client went back to the pool still inside one.
+            try {
+              await c.query('ROLLBACK');
+            } catch {
+              // The transaction could not be proven closed, so the connection must not be
+              // reused. Destroying it costs one reconnect; returning it costs every subsequent
+              // borrower a `25P02`.
+              markUnusable();
+            }
+            throw envelopeErr; // the ORIGINAL failure, never the rollback's
+          }
         });
       } else {
         client = await deps.pool.connect();
@@ -286,8 +313,9 @@ export function makeAuditBridge(
         }),
       );
     } catch (err) {
-      // The override owns its own client lifecycle (and its own rollback-on-throw), so rolling
-      // back here would issue a ROLLBACK on a connection it has already released.
+      // The override path has ALREADY rolled back, inside its callback and before its client was
+      // released — issuing another ROLLBACK here would target a connection this function no
+      // longer holds.
       if (client && !usingOverride) {
         await client.query('ROLLBACK').catch(() => undefined);
       }

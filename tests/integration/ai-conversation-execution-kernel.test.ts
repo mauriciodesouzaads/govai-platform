@@ -1426,6 +1426,266 @@ describe('RM — findings from the exact-head review', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
+// ROUND-THREE REMEDIATION — each test here fails without its fix
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('R3 — round-three review findings', () => {
+  it('R3-1 — a capture failure NEVER returns a poisoned transaction to the worker pool', async () => {
+    // ★ THE REAL-POOL PROOF, not the unit one. A worker pool is `max: 2` by default; here it is
+    // ONE, so the very next operation MUST reuse the same physical connection. If the failed
+    // capture left an aborted transaction on it, that next operation fails `25P02` — which is
+    // exactly how a repeating capture failure used to take the whole worker down.
+    const single = createConversationWorkerDb({
+      config: { connectionString: stack.db.conversationWorkerUrl, max: 1, workerId: 'r3-1' },
+      log: silentLog as unknown as Parameters<typeof createConversationWorkerDb>[0]['log'],
+    });
+    try {
+      // A v4 envelope whose ORG the worker has no context for: `setLocalAppOrgId` succeeds, and
+      // the capture INSERT then fails on the FORCE-RLS policy — a genuine post-BEGIN failure.
+      const bogusOrg = randomUUID();
+      const event = {
+        event_type: 'passthrough.invoked',
+        schema_version: 4,
+        tenant_context: { org_id: bogusOrg, tier: 'starter', operational_mode: 'test' },
+        provider: 'anthropic',
+        capability_id: 'anthropic.messages.create',
+        capability_level: 'policy_governed',
+        capability_canonical_level: 'policy_governed',
+        native_endpoint: '/v1/messages',
+        native_method: 'POST',
+        is_stream: false,
+        is_multipart: false,
+        base_risk_class: 'A',
+        effective_risk_class: 'A',
+        risk_escalation_reasons: [],
+        enforcement_decision: 'observe',
+        native_request_hash: 'a'.repeat(64),
+        native_response_hash: 'b'.repeat(64),
+        latency_ms: 1,
+        status_code: 200,
+        occurred_at: new Date().toISOString(),
+        credential_source: 'tenant_provider_credential',
+        allowlist_version: 'v',
+        body_forward_mode: 'raw',
+        dlp_decisions: [],
+        beta_allowlist_sources: [],
+        detected_tool_classifications: [],
+        audit_event_id: randomUUID(),
+        chain_category: 'run',
+      };
+      // best_effort: it swallows and logs. What matters is the state it leaves the pool in.
+      await single.captureAuditEvent(event, {
+        govaiRequestId: randomUUID(),
+        identityScope: 'govai_request_id',
+      });
+
+      // ★ THE ASSERTION. The next attested operation on the SAME single-connection pool must
+      // succeed. Before the fix this threw `25P02` (current transaction is aborted).
+      const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+      const seen = await single.withOwnerContext(owner, async (tx) => {
+        const r = await tx.query<{ ok: number }>('SELECT 1 AS ok');
+        return r.rows[0]!.ok;
+      });
+      expect(seen).toBe(1);
+
+      // And again, to prove it is not a one-shot recovery.
+      const second = await single.discoverRecoveryCandidates({ recoveryGraceMs: 0, limit: 1 });
+      expect(Array.isArray(second)).toBe(true);
+    } finally {
+      await single.close().catch(() => undefined);
+    }
+  });
+
+  it('R3-2 — a PERSISTENCE failure after the provider answered is NOT outcome_unknown', async () => {
+    // ★ THE HONESTY OF `outcome_unknown` IS THE POINT. It means "the provider's fate is
+    // unprovable", and §7.7 builds real behaviour on that (no re-drive; only a probe may
+    // resolve it). When the response and its status were already in hand, the fate is PROVEN —
+    // recording ambiguity there loses a known result AND dilutes the one state whose whole value
+    // is that it is reserved.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R3-2'));
+
+    // Break the KMS the executor persists WITH, so encryption fails only after the response.
+    const brokenKms = {
+      ...deps.kms,
+      envelopeEncrypt: async () => {
+        throw new Error('kms unavailable');
+      },
+      hmacSha256: async () => {
+        throw new Error('kms unavailable');
+      },
+      envelopeDecrypt: deps.kms.envelopeDecrypt.bind(deps.kms),
+    } as unknown as typeof deps.kms;
+
+    const outcome = await processCandidate(
+      { ...deps, kms: brokenKms },
+      {
+        orgId: org.org_id,
+        ownerUserId: org.user_id,
+        conversationId: conv.id,
+        attemptId,
+        state: 'accepted',
+        reason: 'queued_head',
+        claimToken: null,
+        isBranchHead: true,
+      },
+    );
+
+    expect(outcome).toBe('persistence_error');
+    const a = await attempt(attemptId);
+    expect({ state: a.state, error_class: a.error_class }).toEqual({
+      state: 'failed',
+      error_class: 'persistence_error',
+    });
+    // The provider DID answer, so provenance is present and the state is NOT ambiguous.
+    expect(a.provider_credential_id).not.toBeNull();
+    expect(a.state).not.toBe('outcome_unknown');
+    // Exactly ONE provider request, and no automatic re-drive of work the provider already did.
+    expect(stack.provider.recordedRequests).toHaveLength(1);
+    const again = await driveOne(attemptId);
+    expect(again).toBe('not_discovered'); // terminal ⇒ not a recovery candidate
+    expect(stack.provider.recordedRequests).toHaveLength(1);
+  });
+
+  it('R3-3 — a stream that dies UPSTREAM mid-drain stays outcome_unknown', async () => {
+    // ★ THE OTHER SIDE OF R3-2, AND WHY THE MARKER IS TYPED RATHER THAN A FLAG. A stream whose
+    // upstream dies HAS "had a response" — headers and a status arrived — yet its terminal frame
+    // never did, so completion is genuinely unprovable. If the classification keyed on "a
+    // response was seen" it would wrongly call this a persistence failure.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R3-3', true));
+    const outcome = await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.write('data: {"type":"message_start"}\n\n');
+          setTimeout(() => req.socket.destroy(), 20);
+        });
+      },
+      () => driveOne(attemptId),
+    );
+    expect(outcome).toBe('outcome_unknown');
+    const a = await attempt(attemptId);
+    expect({ state: a.state, error_class: a.error_class }).toEqual({
+      state: 'outcome_unknown',
+      error_class: null,
+    });
+  });
+
+  it('R3-4 — a KNOWN-LOCAL pre-transmission failure is local_error, never provider_error', async () => {
+    // ★ BLAMING A PROVIDER THAT WAS NEVER CONTACTED IS A LIE, and the old code told it. Here the
+    // stored credential contains a newline, so `new Request(...)` rejects the header during
+    // construction — provably before any transmission.
+    const lonely = await seedOrg(stack);
+    await seedProviderCredential(stack, {
+      orgId: lonely.org_id,
+      provider: 'anthropic',
+      plaintextKey: 'sk-ant-bad\nheader',
+      setByUserId: lonely.user_id,
+    });
+    const created = await inject(stack, 'POST', '/v1/ai/conversations', lonely.api_key, {
+      mode: 'passthrough',
+      provider: 'anthropic',
+      surface: 'anthropic_messages',
+      model: 'claude-test',
+    });
+    const c = created.body as { id: string; root_branch: { id: string } };
+    const sent = await inject(stack, 'POST', `/v1/ai/conversations/${c.id}/turns`, lonely.api_key, {
+      client_turn_id: randomUUID(),
+      branch_id: c.root_branch.id,
+      native_request: nativeRequest('R3-4'),
+    });
+    const attemptId = (sent.body as { current_attempt_id: string }).current_attempt_id;
+
+    stack.provider.clearRecordedRequests();
+    const outcome = await processCandidate(deps, {
+      orgId: lonely.org_id,
+      ownerUserId: lonely.user_id,
+      conversationId: c.id,
+      attemptId,
+      state: 'accepted',
+      reason: 'queued_head',
+      claimToken: null,
+      isBranchHead: true,
+    });
+
+    expect(outcome).toBe('local_error');
+    const a = await attempt(attemptId);
+    expect({ state: a.state, error_class: a.error_class }).toEqual({
+      state: 'failed',
+      error_class: 'local_error',
+    });
+    // Nothing was transmitted.
+    expect(stack.provider.recordedRequests).toEqual([]);
+  });
+
+  it('R3-5 — NON-UTF-8 provider bytes survive hydrate EXACTLY, base64 not a lossy string', async () => {
+    // ★ `Buffer.toString('utf8')` REPLACES invalid sequences with U+FFFD, so the previous
+    // "lossless text" contract was false for any ISO-8859-1 or binary body. Decoding is now
+    // FATAL, and what fails it comes back byte-for-byte.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R3-5'));
+    // Latin-1 "Café" + a lone 0xFF: invalid UTF-8 by construction.
+    const rawBody = Buffer.from([0x43, 0x61, 0x66, 0xe9, 0x20, 0xff, 0x21]);
+    await withProviderBehaviour(
+      (_req, res) => {
+        res.writeHead(502, { 'content-type': 'text/html; charset=iso-8859-1' });
+        res.end(rawBody);
+      },
+      () => driveOne(attemptId),
+    );
+    expect((await attempt(attemptId)).state).toBe('failed');
+
+    const { conversation_id, turn_id } = await lineage(attemptId);
+    const res = await inject(
+      stack,
+      'GET',
+      `/v1/ai/conversations/${conversation_id}/turns/${turn_id}`,
+      org.api_key,
+    );
+    expect(res.statusCode).toBe(200);
+    const item = (res.body as {
+      attempts: Array<{ output_items: Array<{ native: unknown; text: string | null; bytes_base64: string | null }> }>;
+    }).attempts[0]!.output_items[0]!;
+
+    expect(item.native).toBeNull();
+    expect(item.text).toBeNull(); // NOT a U+FFFD-corrupted string
+    expect(item.bytes_base64).not.toBeNull();
+    // ★ EXACT BYTE-FOR-BYTE EQUALITY with what the upstream sent.
+    expect(Buffer.from(item.bytes_base64!, 'base64').equals(rawBody)).toBe(true);
+  });
+
+  it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
+    // The byte-safe path must not swallow the ordinary case: a legitimate UTF-8 error page is
+    // still the more useful `text`.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R3-6'));
+    const html = '<html><body>Café — 502 Bad Gateway ✓</body></html>';
+    await withProviderBehaviour(
+      (_req, res) => {
+        res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(html);
+      },
+      () => driveOne(attemptId),
+    );
+    const { conversation_id, turn_id } = await lineage(attemptId);
+    const res = await inject(
+      stack,
+      'GET',
+      `/v1/ai/conversations/${conversation_id}/turns/${turn_id}`,
+      org.api_key,
+    );
+    const item = (res.body as {
+      attempts: Array<{ output_items: Array<{ native: unknown; text: string | null; bytes_base64: string | null }> }>;
+    }).attempts[0]!.output_items[0]!;
+    expect(item.text).toBe(html);
+    expect(item.bytes_base64).toBeNull();
+    expect(item.native).toBeNull();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
 // PROVIDER PIPELINE EQUIVALENCE — the §32 side-by-side
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 

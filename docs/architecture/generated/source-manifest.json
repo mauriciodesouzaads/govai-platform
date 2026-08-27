@@ -32,20 +32,20 @@
       "tests"
     ],
     "api_route_files": 20,
-    "db_migrations": 33
+    "db_migrations": 34
   },
   "tests": {
     "root_unit": {
       "files": 148,
-      "tests": 1689
+      "tests": 1694
     },
     "root_integration_only": {
-      "files": 92,
-      "tests": 1415
+      "files": 93,
+      "tests": 1433
     },
     "root_full_integration_gate": {
-      "files": 240,
-      "tests": 3104
+      "files": 241,
+      "tests": 3127
     },
     "ui": {
       "files": 33,

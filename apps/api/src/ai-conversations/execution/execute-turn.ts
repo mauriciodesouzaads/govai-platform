@@ -149,6 +149,11 @@ export type ExecutionOutcome =
   | 'rejected'
   /** The forward was invoked and no provider RESPONSE arrived: the fate is unprovable. */
   | 'outcome_unknown'
+  /** GovAI failed BEFORE any transmission — the provider provably did not process the request. */
+  | 'local_error'
+  /** The provider ANSWERED and GovAI then failed to durably record the result. NOT ambiguous,
+   *  and NOT safe to blindly retry: the provider already did the work. */
+  | 'persistence_error'
   /** A durable write lost its claim-token fence — the §7.7 zombie rule. The result is discarded. */
   | 'finalize_fenced_out'
   /** A stranded POST-BOUNDARY attempt WITH provenance was ratcheted terminal by recovery. */
@@ -504,18 +509,39 @@ async function dispatchAndFinalize(
       return restored ? 'provenance_lost_restored' : 'stopped_before_dispatch';
     }
     if (!forwardStarted) {
-      // A KNOWN LOCAL failure: request construction or the gate raised before any transmission
-      // was attempted. Provably no POST — `failed`, not `outcome_unknown`.
+      // (1) NOTHING WAS TRANSMITTED. Request construction rejected a malformed URL or an invalid
+      // header byte, or the pipeline raised before the forward. The provider provably did not
+      // process this request — so it is `failed` with a GOVAI-LOCAL class, not `provider_error`
+      // (which would blame a provider that was never contacted) and not `outcome_unknown`
+      // (which would invent ambiguity where there is proof).
       deps.log.warn(
         { attempt_id: args.attemptId, err_class: errClass(err) },
         'conversation executor: local failure before the provider forward started',
       );
-      return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'failed', 'provider_error', 'failed');
+      return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'failed', 'local_error', 'local_error');
     }
-    // ★ THE FORWARD WAS INVOKED AND NO PROVIDER RESPONSE ARRIVED. Whether bytes reached the
-    // provider is genuinely unknowable from here — a connection reset looks the same before and
-    // after the request was processed. `outcome_unknown` is the honest state; `failed` would
-    // assert non-processing, and an automatic re-drive would risk a SECOND execution.
+    if (err instanceof OutputPersistenceFailed) {
+      // (2) THE PROVIDER ANSWERED AND WE FAILED TO RECORD IT — a KMS encryption fault, a
+      // database write error, a fenced append that threw. The fate is PROVEN, so
+      // `outcome_unknown` would be a lie in the one place this codebase most needs it to be
+      // true. It is also NOT safe to blindly retry: the provider already did the work.
+      //
+      // ★ THE MARKER CARRIES THE FACT, RATHER THAN A FLAG INFERRING IT. That distinction is
+      // load-bearing for STREAMS specifically: a stream whose upstream dies mid-drain has also
+      // "had a response" (headers + status arrived), yet its terminal frame never did — so its
+      // fate IS unprovable and it must fall through to (3). Only a durable-WRITE failure is
+      // wrapped in this marker, so the two cannot be confused.
+      deps.log.error(
+        { attempt_id: args.attemptId, err_class: errClass(err) },
+        'conversation executor: provider responded but the result could not be persisted',
+      );
+      return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'failed', 'persistence_error', 'persistence_error');
+    }
+    // (3) TRANSMITTED, NO TERMINAL PROOF. Whether the provider completed is genuinely unknowable
+    // — a connection reset looks identical before and after the request was processed, and a
+    // stream without its terminal frame proves nothing about completion. THIS is what
+    // `outcome_unknown` is for: `failed` would assert non-processing, and an automatic re-drive
+    // would risk a SECOND execution.
     deps.log.warn(
       { attempt_id: args.attemptId, err_class: errClass(err) },
       'conversation executor: provider fate unprovable after forward started',
@@ -523,6 +549,21 @@ async function dispatchAndFinalize(
     return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'outcome_unknown', null, 'outcome_unknown');
   } finally {
     heartbeat.stop();
+  }
+}
+
+/**
+ * Raised when a durable write FAILS after the provider already answered.
+ *
+ * ★ IT EXISTS TO KEEP `outcome_unknown` HONEST. Without it, every post-dispatch exception looked
+ * identical to "the provider never replied", so a KMS blip while persisting a successful answer
+ * was recorded as an unprovable provider fate — losing a known result AND diluting the one state
+ * whose entire value is that it means something specific.
+ */
+class OutputPersistenceFailed extends Error {
+  constructor(readonly reason: unknown) {
+    super('failed to persist provider output');
+    this.name = 'OutputPersistenceFailed';
   }
 }
 
@@ -786,9 +827,15 @@ async function recordResult(
   // ★ EVERY SUCCESSFUL DISPATCH PASSES THROUGH `streaming`, non-stream included: 0031's forward
   // graph (and §7's own diagram) admit `completed` ONLY from `streaming`. `streaming` is the
   // schema's POST-POST RECEIVING state, not an SSE-only one.
-  const entered = await deps.db.withOwnerContext(owner, (tx) =>
-    ex.markStreaming(tx, { attemptId: args.attemptId, claimToken: args.claim.claimToken }),
-  );
+  const entered = await deps.db
+    .withOwnerContext(owner, (tx) =>
+      ex.markStreaming(tx, { attemptId: args.attemptId, claimToken: args.claim.claimToken }),
+    )
+    // A DB failure HERE is a durable-write failure after the provider answered, not provider
+    // ambiguity. `false` (the fence rejecting) is a different thing and stays a normal return.
+    .catch((err: unknown) => {
+      throw new OutputPersistenceFailed(err);
+    });
   if (!entered) {
     // Fenced out between the POST and here — recovery already owns this attempt. The response is
     // discarded with a diagnostic; it never becomes durable and never becomes context (§7.7's
@@ -810,7 +857,9 @@ async function recordResult(
     args,
     'native_response',
     result.bodyBytes,
-  );
+  ).catch((err: unknown) => {
+    throw new OutputPersistenceFailed(err);
+  });
   if (!persisted) return 'finalize_fenced_out';
   const { state, errorClass, outcome } = classifyStatus(result.status);
   return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, state, errorClass, outcome);
@@ -849,7 +898,15 @@ async function recordStream(
     const bytes = Buffer.concat(buffer);
     buffer = [];
     buffered = 0;
-    const ok = await persistOutputItem(deps, owner, args, 'native_stream_chunk', bytes);
+    // ★ ONLY THE WRITE IS WRAPPED. An exception from `result.chunks` — the upstream dying — must
+    // NOT be marked as a persistence failure: that stream has no terminal frame, so its fate is
+    // genuinely unprovable and belongs in `outcome_unknown`. Wrapping the whole drain would
+    // silently convert every upstream reset into a false "we know what happened".
+    const ok = await persistOutputItem(deps, owner, args, 'native_stream_chunk', bytes).catch(
+      (err: unknown) => {
+        throw new OutputPersistenceFailed(err);
+      },
+    );
     if (!ok) fenced = true;
   };
 

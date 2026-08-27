@@ -16,7 +16,7 @@
 // transaction body performs no KMS call at all. Provider dispatch is the worker's, and it holds
 // no database client while it runs.
 
-import type { PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { Kms } from '@govai/core-identity';
 import {
   ConversationNotFoundError,
@@ -55,6 +55,29 @@ import {
   type SendTurnResult,
   NATIVE_REQUEST_MAX_BYTES,
 } from './turn-contracts.js';
+
+/**
+ * Run ONE owner-scoped transaction on a client checked out for exactly that long.
+ *
+ * ★ THE RELEASE IS THE POINT, NOT JUST THE COMMIT. An earlier revision committed the reservation
+ * and then decrypted for the response — outside the transaction, but still on the SAME checked-out
+ * client. Releasing row locks while holding a pool connection across remote KMS latency still
+ * blocks every other request needing that connection, and on an outage it exhausts the pool.
+ * Binding the checkout to the transaction makes "no KMS while holding a DB client" structural
+ * rather than a rule each call site has to remember.
+ */
+async function withPooledOwnerContext<T>(
+  pool: Pool,
+  scope: OwnerScope,
+  fn: (c: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    return await withConversationOwnerContext(client, scope, fn);
+  } finally {
+    client.release();
+  }
+}
 
 /** The single turn-owned input item every reservation writes (§3: TURN OWNS INPUT). */
 const INPUT_ITEM_SEQ = 1;
@@ -106,10 +129,9 @@ export async function sendTurn(
   // whole conversation behind KMS latency.
   const prepared = await prepareSend(deps.kms, scope.orgId, input);
 
-  const client = await deps.pool.connect();
+  let createdTurnId: string;
   try {
-    try {
-      const created = await withConversationOwnerContext(client, scope, async (c) => {
+    createdTurnId = await withPooledOwnerContext(deps.pool, scope, async (c) => {
         // ── LAW 16 (1): conversation root lifecycle authority ────────────────────────────
         const root = await lockConversationRoot(c, conversationId);
         // Unreachable-then-ineligible, in that order: a root this caller cannot address is a
@@ -184,20 +206,41 @@ export async function sendTurn(
         // trip, so KMS latency (or an outage) would block every other operation on that
         // conversation. It is the same invariant `prepareSend` exists to honour on the write
         // side, and it has to hold on the read side too.
-        return minted.turnId;
-      });
-      // COMMITTED. The projection now runs in its own short read transaction, holding nothing.
-      const turn = await readTurnAfterCommit(client, deps.kms, scope, conversationId, created);
-      return { turn, replay: false };
-    } catch (err) {
-      if (err instanceof SendIdempotencyLoserSignal) {
-        return await resolveCommittedSend(client, deps.kms, scope, conversationId, input);
-      }
-      throw err;
+      return minted.turnId;
+    });
+  } catch (err) {
+    if (err instanceof SendIdempotencyLoserSignal) {
+      return await resolveCommittedSend(deps, scope, conversationId, input);
     }
-  } finally {
-    client.release();
+    throw err;
   }
+  // COMMITTED, and the reservation's client is RELEASED. The response is built by the two-phase
+  // read below, which never holds a client across KMS.
+  return { turn: await readAndProjectTurn(deps, scope, conversationId, createdTurnId), replay: false };
+}
+
+/**
+ * The TWO-PHASE turn read, used by every surface that returns a turn.
+ *
+ *   PHASE A — one short owner transaction: structural rows + encrypted envelopes. COMMIT, RELEASE.
+ *   PHASE B — no client, no transaction: KMS decrypt and projection.
+ *
+ * ★ WHY IT IS ONE FUNCTION RATHER THAN A CONVENTION. Send, replay, list and get all need this
+ * shape; four hand-written copies is four chances for the next edit to slide a decrypt back
+ * inside a transaction. Here the phases cannot be interleaved, because Phase B does not receive
+ * a client at all.
+ */
+async function readAndProjectTurn(
+  deps: ConversationServiceDeps,
+  scope: OwnerScope,
+  conversationId: string,
+  turnId: string,
+): Promise<ConversationTurnProjection> {
+  const bundle = await withPooledOwnerContext(deps.pool, scope, (c) =>
+    readTurnBundleById(c, scope, conversationId, turnId),
+  );
+  const projected = await projectTurnBundle(deps.kms, scope.orgId, bundle);
+  return projected[0]!;
 }
 
 /**
@@ -249,16 +292,15 @@ async function prepareSend(
  * config, so this is a guard, not a routine path.
  */
 async function resolveCommittedSend(
-  client: PoolClient,
-  kms: Kms,
+  deps: ConversationServiceDeps,
   scope: OwnerScope,
   conversationId: string,
   input: SendTurnInput,
 ): Promise<SendTurnResult> {
-  // ── PHASE 1 (transaction): resolve the committed turn and READ its config envelope ────────
-  // No decryption here — see the KMS note in `sendTurn`. This transaction holds no locks, but
-  // keeping every KMS call outside a transaction is the invariant, not a case-by-case judgement.
-  const committed = await withConversationOwnerContext(client, scope, async (c) => {
+  // ── PHASE 1 (transaction, client released on exit): resolve the turn, READ its envelope ───
+  // No decryption here. This transaction holds no row locks, but keeping every KMS call outside
+  // a DB checkout is the invariant, not a case-by-case judgement.
+  const committed = await withPooledOwnerContext(deps.pool, scope, async (c) => {
     const row = await turnStore.findTurnByClientTurnId(
       c,
       scope,
@@ -281,10 +323,10 @@ async function resolveCommittedSend(
   });
   if (!committed.stored) throw new SendIdempotencyConflictError();
 
-  // ── PHASE 2 (no transaction): decrypt and compare the canonical intents ───────────────────
+  // ── PHASE 2 (NO transaction, NO client): decrypt and compare the canonical intents ────────
   let committedNativeRequest: unknown;
   try {
-    const plaintext = await decryptConversationContent(kms, scope.orgId, committed.stored);
+    const plaintext = await decryptConversationContent(deps.kms, scope.orgId, committed.stored);
     committedNativeRequest = JSON.parse(plaintext.toString('utf8'));
   } catch (err) {
     // Unreadable (crypto-shred or a key fault) or unparseable ⇒ divergence can be neither proven
@@ -310,38 +352,15 @@ async function resolveCommittedSend(
   );
   if (!committedHash.equals(incomingHash)) throw new SendIdempotencyConflictError();
 
-  // ── PHASE 3 (transaction): project the turn's CURRENT durable state ───────────────────────
+  // ── PHASE 3 (two-phase read): project the turn's CURRENT durable state ────────────────────
   // Not a cached copy of the original response — the live truth, so a duplicate arriving while
   // the turn is streaming reports `streaming`, and one arriving after completion reports the
   // answer.
   return {
-    turn: await readTurnAfterCommit(client, kms, scope, conversationId, committed.turnId),
+    turn: await readAndProjectTurn(deps, scope, conversationId, committed.turnId),
     replay: true,
   };
 }
-
-/**
- * Build a turn projection in its OWN short read transaction, holding no lock.
- *
- * ★ WHY THIS IS A SEPARATE PHASE EVERYWHERE IT IS USED. `projectItem` decrypts, and on the AWS
- * KMS adapter that is remote network I/O. Building the response inside the reservation
- * transaction would hold the conversation root `FOR UPDATE` and the branch advisory lock across
- * that round trip, so KMS latency — or a KMS outage — would block every other operation on the
- * conversation. The write side already honours this (`prepareSend` encrypts before the
- * transaction opens); this is the same invariant on the read side.
- */
-async function readTurnAfterCommit(
-  client: PoolClient,
-  kms: Kms,
-  scope: OwnerScope,
-  conversationId: string,
-  turnId: string,
-): Promise<ConversationTurnProjection> {
-  return withConversationOwnerContext(client, scope, (c) =>
-    projectOneTurn(c, kms, scope, conversationId, turnId),
-  );
-}
-
 
 async function readConversationMode(
   c: PoolClient,
@@ -373,31 +392,32 @@ export async function listTurns(
   conversationId: string,
   query: ListTurnsInput,
 ): Promise<ConversationTurnPage> {
-  const client = await deps.pool.connect();
-  try {
-    return await withConversationOwnerContext(client, scope, async (c) => {
-      const root = await store.getConversation(c, conversationId);
-      if (!root) throw new ConversationNotFoundError();
+  // PHASE A — DB only; the client is released when this returns.
+  const page = await withPooledOwnerContext(deps.pool, scope, async (c) => {
+    const root = await store.getConversation(c, conversationId);
+    if (!root) throw new ConversationNotFoundError();
 
-      const branchId = await resolveBranchForRead(c, scope, conversationId, query.branch_id);
-      const turnRows = await turnStore.listBranchTurns(c, scope, {
-        conversationId,
-        branchId,
-        limit: query.limit,
-        afterTurnSeq: query.after_turn_seq ?? null,
-      });
-      const turns = await projectTurns(c, deps.kms, scope, conversationId, turnRows);
-      return {
-        turns,
-        // The keyset advances only on a FULL page: a short page means the branch is exhausted,
-        // and handing back a cursor there would invite an endless empty-page poll.
-        next_after_turn_seq:
-          turnRows.length === query.limit ? (turnRows[turnRows.length - 1]!.turn_seq ?? null) : null,
-      };
+    const branchId = await resolveBranchForRead(c, scope, conversationId, query.branch_id);
+    const turnRows = await turnStore.listBranchTurns(c, scope, {
+      conversationId,
+      branchId,
+      limit: query.limit,
+      afterTurnSeq: query.after_turn_seq ?? null,
     });
-  } finally {
-    client.release();
-  }
+    return {
+      bundle: await readTurnBundle(c, scope, conversationId, turnRows),
+      // The keyset advances only on a FULL page: a short page means the branch is exhausted,
+      // and handing back a cursor there would invite an endless empty-page poll.
+      nextAfterTurnSeq:
+        turnRows.length === query.limit ? (turnRows[turnRows.length - 1]!.turn_seq ?? null) : null,
+    };
+  });
+  // PHASE B — KMS decrypt + projection, holding no client. A whole page of decrypts is exactly
+  // the work the §13 page cap exists to bound, and none of it blocks the request pool.
+  return {
+    turns: await projectTurnBundle(deps.kms, scope.orgId, page.bundle),
+    next_after_turn_seq: page.nextAfterTurnSeq,
+  };
 }
 
 export async function getTurn(
@@ -406,18 +426,15 @@ export async function getTurn(
   conversationId: string,
   turnId: string,
 ): Promise<ConversationTurnProjection> {
-  const client = await deps.pool.connect();
-  try {
-    return await withConversationOwnerContext(client, scope, async (c) => {
-      const root = await store.getConversation(c, conversationId);
-      if (!root) throw new ConversationNotFoundError();
-      const turn = await turnStore.getTurnById(c, scope, conversationId, turnId);
-      if (!turn) throw new TurnNotFoundError();
-      return projectOneTurn(c, deps.kms, scope, conversationId, turn.id);
-    });
-  } finally {
-    client.release();
-  }
+  // PHASE A — DB only; the client is released when this returns.
+  const bundle = await withPooledOwnerContext(deps.pool, scope, async (c) => {
+    const root = await store.getConversation(c, conversationId);
+    if (!root) throw new ConversationNotFoundError();
+    return readTurnBundleById(c, scope, conversationId, turnId);
+  });
+  // PHASE B — KMS decrypt + projection, holding no client.
+  const projected = await projectTurnBundle(deps.kms, scope.orgId, bundle);
+  return projected[0]!;
 }
 
 /** Default the read to the conversation's ROOT branch — the only branch a client that has never
@@ -439,44 +456,69 @@ async function resolveBranchForRead(
   return branch.id;
 }
 
-async function projectOneTurn(
+/**
+ * Everything a projection needs, read from the database and NOTHING decrypted.
+ *
+ * ★ THIS TYPE IS THE PHASE BOUNDARY. Phase A produces it; Phase B consumes it. Because it carries
+ * only rows — never a client — Phase B structurally cannot issue a query, and a future edit
+ * cannot quietly reintroduce a decrypt inside a transaction.
+ */
+type TurnBundle = {
+  turns: readonly turnStore.TurnRow[];
+  attempts: readonly turnStore.AttemptRow[];
+  items: readonly turnStore.ItemWithContentRow[];
+};
+
+/** PHASE A for one turn, resolved through its full conversation lineage (LAW 1). */
+async function readTurnBundleById(
   c: PoolClient,
-  kms: Kms,
   scope: OwnerScope,
   conversationId: string,
   turnId: string,
-): Promise<ConversationTurnProjection> {
+): Promise<TurnBundle> {
   const turn = await turnStore.getTurnById(c, scope, conversationId, turnId);
   if (!turn) throw new TurnNotFoundError();
-  const projected = await projectTurns(c, kms, scope, conversationId, [turn]);
-  return projected[0]!;
+  return readTurnBundle(c, scope, conversationId, [turn]);
 }
 
 /**
- * Build the owner-visible projection for a page of turns.
+ * PHASE A for a page of turns.
  *
- * Two queries for the whole page (attempts, items+content) rather than per-turn reads, then a
- * decrypt per item. Decryption is the bounded cost the page cap exists to bound.
+ * Two queries for the whole page (attempts, items+content) rather than per-turn reads.
  */
-async function projectTurns(
+async function readTurnBundle(
   c: PoolClient,
-  kms: Kms,
   scope: OwnerScope,
   conversationId: string,
   turnRows: readonly turnStore.TurnRow[],
-): Promise<ConversationTurnProjection[]> {
-  if (turnRows.length === 0) return [];
+): Promise<TurnBundle> {
+  if (turnRows.length === 0) return { turns: [], attempts: [], items: [] };
   const turnIds = turnRows.map((t) => t.id);
-  const [attemptRows, itemRows] = await Promise.all([
+  const [attempts, items] = await Promise.all([
     turnStore.listAttemptsForTurns(c, scope, conversationId, turnIds),
     turnStore.listItemsForTurns(c, scope, conversationId, turnIds),
   ]);
+  return { turns: turnRows, attempts, items };
+}
+
+/**
+ * PHASE B — decrypt and project. NO database client, NO transaction, by signature.
+ *
+ * Decryption is the bounded cost the §13 page cap exists to bound; none of it holds a connection.
+ */
+async function projectTurnBundle(
+  kms: Kms,
+  orgId: string,
+  bundle: TurnBundle,
+): Promise<ConversationTurnProjection[]> {
+  const { turns: turnRows, attempts: attemptRows, items: itemRows } = bundle;
+  if (turnRows.length === 0) return [];
 
   const items = await Promise.all(
     itemRows.map(async (row) => ({
       turnId: row.turn_id,
       attemptId: row.attempt_id,
-      item: await projectItem(kms, scope.orgId, row),
+      item: await projectItem(kms, orgId, row),
     })),
   );
 
@@ -526,7 +568,7 @@ async function projectItem(
   };
   if (row.content_status !== 'active' || row.dek_wrapped === null) {
     // Honest rather than absent: the item DID exist and its position matters to ordering.
-    return { ...base, native: null, text: null, content_unreadable: true };
+    return { ...base, native: null, text: null, bytes_base64: null, content_unreadable: true };
   }
   const plaintext = await decryptConversationContent(kms, orgId, {
     ciphertext: row.ciphertext,
@@ -534,21 +576,44 @@ async function projectItem(
     kms_key_id: row.kms_key_id,
     kms_key_version: row.kms_key_version,
   });
-  const text = plaintext.toString('utf8');
+
+  // ★ FATAL DECODE, NOT `Buffer.toString('utf8')`. The executor stores a provider response
+  // VERBATIM whatever its bytes, and `toString('utf8')` SILENTLY substitutes U+FFFD for every
+  // invalid sequence — so an ISO-8859-1 error page from a proxy, or any binary body, came back
+  // CORRUPTED while the contract claimed the text was exact. `TextDecoder(fatal)` refuses rather
+  // than guessing, which is what lets the fallback below be honestly byte-safe.
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(plaintext);
+  } catch {
+    // NOT valid UTF-8 ⇒ there is no truthful string form. Return the bytes themselves, base64
+    // encoded, so a client can reconstruct the upstream body EXACTLY.
+    return {
+      ...base,
+      native: null,
+      text: null,
+      bytes_base64: plaintext.toString('base64'),
+      content_unreadable: false,
+    };
+  }
+
   // A stream chunk is provider SSE framing — text, not a JSON document. Parsing is attempted only
   // where a document is expected, so a chunk is never silently reshaped into `native`.
   if (row.item_type === 'native_stream_chunk') {
-    return { ...base, native: null, text, content_unreadable: false };
+    return { ...base, native: null, text, bytes_base64: null, content_unreadable: false };
   }
-  // ★ A NON-JSON RESPONSE MUST STILL HYDRATE. The executor persists a provider response VERBATIM
-  // whatever its status, so the stored bytes are not guaranteed to be a JSON document: an
-  // upstream proxy can return HTML, and an error path can return an empty or truncated body.
-  // Parsing unconditionally made every later hydrate of that turn — and of any PAGE containing
-  // it — throw a 500, permanently, for an attempt that was durably finalized. The fallback is
-  // LOSSLESS: the exact bytes are returned as `text` rather than discarded or replaced.
+  // Valid UTF-8 that is not a JSON document — an HTML error page, a truncated body — comes back
+  // as text. Parsing unconditionally used to make every later hydrate of that turn, and of any
+  // PAGE containing it, a permanent 500 for an attempt that was durably finalized.
   try {
-    return { ...base, native: JSON.parse(text), text: null, content_unreadable: false };
+    return {
+      ...base,
+      native: JSON.parse(text),
+      text: null,
+      bytes_base64: null,
+      content_unreadable: false,
+    };
   } catch {
-    return { ...base, native: null, text, content_unreadable: false };
+    return { ...base, native: null, text, bytes_base64: null, content_unreadable: false };
   }
 }
