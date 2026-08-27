@@ -1221,17 +1221,43 @@ describe('RM — findings from the exact-head review', () => {
     const conv = await createConversation({ mode: 'passthrough' });
     const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('RM1', true));
 
+    // ★ RECEIPT IS PROVEN, NOT TIMED. The first revision of this test wrote one small chunk and
+    // destroyed the socket 20ms later, assuming the reader would have consumed it by then. Under
+    // a loaded machine it had not — the durable prefix came back empty and the suite failed only
+    // in a full clean run, never in isolation. A wall-clock window is not a receipt.
+    //
+    // The chunk is now larger than this suite's 64-byte flush threshold, so consuming it produces
+    // a DURABLE ITEM; the test polls for that row and only then releases the upstream to die.
+    // The database is the handshake, so the assertion below cannot race.
+    let releaseDestroy!: () => void;
+    const armed = new Promise<void>((resolve) => {
+      releaseDestroy = resolve;
+    });
+    const firstChunk = `data: {"type":"message_start","pad":"${'m'.repeat(120)}"}\n\n`;
+
     const outcome = await withProviderBehaviour(
       (req, res) => {
         req.on('data', () => undefined);
         req.on('end', () => {
           res.writeHead(200, { 'content-type': 'text/event-stream' });
-          res.write('data: {"type":"message_start"}\n\n');
-          // Headers and a first chunk arrived; THEN the connection dies mid-stream.
-          setTimeout(() => req.socket.destroy(), 20);
+          res.write(firstChunk);
+          // The connection dies only once the test has PROVEN the chunk was durably persisted.
+          void armed.then(() => req.socket.destroy());
         });
       },
-      () => driveOne(attemptId),
+      async () => {
+        const driving = driveOne(attemptId);
+        for (let i = 0; i < 400; i += 1) {
+          const n = await stack.db.adminPool.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+            [attemptId],
+          );
+          if (Number(n.rows[0]!.n) >= 1) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        releaseDestroy();
+        return driving;
+      },
     );
 
     // The fate after a partial stream is genuinely unprovable, so the attempt is honest.
@@ -1257,7 +1283,8 @@ describe('RM — findings from the exact-head review', () => {
       [captureId],
     );
     expect(n.rows[0]!.n).toBe('1');
-    // The durable prefix keeps whatever actually arrived — nothing is discarded on failure.
+    // The durable prefix keeps what actually arrived — nothing is discarded because the stream
+    // later died.
     expect(await outputText(attemptId)).toContain('message_start');
   });
 
