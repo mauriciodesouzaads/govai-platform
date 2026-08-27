@@ -128,6 +128,14 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   LATER     P0-D · P0-E · P0-F                      (not started)
   ```
 
+  **★ `T1=COMPLETE` is narrowly scoped.** T1 is
+  `EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING` movement `T1-TEST-ISSUANCE-BOUNDARY-RETRY-01`: a
+  bounded `23505`/`api_keys_pkey` retry at the SHARED TEST issuance boundary and nothing more. It
+  made **no production runtime change** and did not touch the short lookup-prefix contract that
+  causes the collision domain, so `PRODUCTION_API_KEY_ISSUANCE_LIFECYCLE=NOT_IMPLEMENTED` and
+  `LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14` stay OPEN. Never read it as finished production
+  API-key collision handling.
+
   **P0-B (conversation control plane) technical evidence** — PR **#145**, squash merge
   `6567d8da75b5c72506cb8b22aba69e0d40bd4b29`, reviewed tree
   `770dffba7dbf8784b74047a9034ffa5f8b692986` (the merge commit's tree IS that tree, byte for

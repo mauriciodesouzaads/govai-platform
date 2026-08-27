@@ -316,7 +316,10 @@ execution kernel next:
 EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
 
 P0_A1=COMPLETE                                      (PR #140; docs closeout #141)
-T1=COMPLETE                                         (PR #142)
+T1=COMPLETE                                         (PR #142 — TEST-ISSUANCE BOUNDARY ONLY)
+  TEST_FIXTURE_COLLISION=CLOSED_BY_BOUNDED_DB_COLLISION_RETRY
+  PRODUCTION_API_KEY_ISSUANCE_LIFECYCLE=NOT_IMPLEMENTED
+  LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14
 P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=COMPLETE      (PR #143; docs closeout #144)
 P0_B_CONVERSATION_CONTROL_PLANE=COMPLETE            (PR #145, merge 6567d8da)
 
@@ -331,6 +334,19 @@ CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED
 **P0-A1 (done).** Operational storage + crypto purpose isolation + owner-scoped FORCE RLS —
 migration `0031`, the KMS `conversation_content` / `conversation_content_integrity` purposes and
 `withOwnerContext`. Storage foundation only.
+
+**T1 (done — test-issuance boundary only; NOT production collision hardening).** `T1` is
+`EP-AUTH-API-KEY-PREFIX-COLLISION-HARDENING` movement `T1-TEST-ISSUANCE-BOUNDARY-RETRY-01`, and
+`T1=COMPLETE` means exactly one thing: the SHARED TEST issuance boundary now performs a bounded
+whole-transaction retry on the exact `23505`/`api_keys_pkey` collision. It made **no production
+runtime change** — no migration, and `PREFIX_LOOKUP_LEN` / key format / `lookupPrefix` /
+`api_key_lookup_v2` are all unchanged, with the DB uniqueness constraint still the authority. The
+short lookup-prefix contract that CAUSES the collision domain is untouched, so
+`PRODUCTION_API_KEY_ISSUANCE_LIFECYCLE=NOT_IMPLEMENTED` and
+`LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14` both remain open: prefix entropy/length, backward
+compatibility, production-boundary collision retry, rotation, revocation and issuance UX are still
+future R14 design. Do not read this row as finished production collision handling — see
+current-state.md §8 *F4 follow-up register*.
 
 **P0-A2 (done).** Detached worker trust + recovery discovery — the `govai_conversation_worker`
 role, migration `0032`'s content-free `SECURITY DEFINER` discovery function, live database
