@@ -313,10 +313,10 @@ baseline doc §10) is **IN_PROGRESS**, with four movements finished and merged a
 execution kernel next:
 
 ```text
-EP_AI_CONVERSATION_CONTINUITY_V1=IN_PROGRESS
+EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
 
-P0_A1_STORAGE_SECURITY_FOUNDATION=COMPLETE          (PR #140; docs closeout #141)
-T1_API_KEY_PREFIX_COLLISION_HARDENING=COMPLETE      (PR #142)
+P0_A1=COMPLETE                                      (PR #140; docs closeout #141)
+T1=COMPLETE                                         (PR #142)
 P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=COMPLETE      (PR #143; docs closeout #144)
 P0_B_CONVERSATION_CONTROL_PLANE=COMPLETE            (PR #145, merge 6567d8da)
 
