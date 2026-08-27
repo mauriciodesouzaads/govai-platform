@@ -55,6 +55,8 @@ let credentialId: string;
 
 const LEASE_MS = 60_000;
 const GRACE_MS = 1_000;
+/** Mirrors `KMS_DECRYPT_CONCURRENCY` in turn-service.ts. */
+const KMS_CAP = 8;
 
 const silentLog = {
   info: () => undefined,
@@ -1830,6 +1832,154 @@ describe('R3 — round-three review findings', () => {
     // ...and the burst was CAPPED.
     expect(peak).toBeGreaterThan(1); // it really is concurrent, not accidentally serial
     expect(peak).toBeLessThanOrEqual(8);
+  });
+
+  it('R5-1 — a FENCED break CANCELS the provider body, it does not just detach', async () => {
+    // ★ `releaseLock()` IS NOT CANCELLATION. When the fence is lost mid-drain the consumer breaks,
+    // and merely detaching the reader leaves the provider streaming: it keeps generating and we
+    // keep downloading for a response nobody can persist, until the dispatch timeout.
+    //
+    // Observed from the SERVER side — the only place that can distinguish "the client stopped
+    // reading" from "the client hung up".
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R5-1', true));
+
+    let closedAt = 0;
+    let writesAfterClose = 0;
+    let releaseFence!: () => void;
+    const armed = new Promise<void>((resolve) => {
+      releaseFence = resolve;
+    });
+
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          // The response is UNBOUNDED: if the body is never cancelled it keeps producing.
+          const timer = setInterval(() => {
+            if (closedAt !== 0) {
+              writesAfterClose += 1;
+              if (writesAfterClose > 6) clearInterval(timer);
+              return;
+            }
+            res.write(`data: {"pad":"${'k'.repeat(120)}"}\n\n`);
+          }, 15);
+          res.on('close', () => {
+            if (closedAt === 0) closedAt = Date.now();
+            clearInterval(timer);
+          });
+        });
+      },
+      async () => {
+        const driving = processCandidate(deps, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        });
+        // Wait until the drain is provably live (a chunk is durable), then rotate the claim.
+        for (let i = 0; i < 400; i += 1) {
+          const n = await stack.db.adminPool.query<{ n: string }>(
+            `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+            [attemptId],
+          );
+          if (Number(n.rows[0]!.n) >= 1) break;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        await stack.db.adminPool.query(
+          `UPDATE govai.ai_conversation_attempts SET claim_token = gen_random_uuid() WHERE id = $1::uuid`,
+          [attemptId],
+        );
+        releaseFence();
+        const outcome = await driving;
+        // Give the server a moment to observe the close.
+        await new Promise((r) => setTimeout(r, 300));
+        return outcome;
+      },
+    );
+    void armed;
+
+    // ★ THE ASSERTION: the provider connection was CLOSED, not left running. Without the cancel
+    // the response stays open and `close` never fires within this window.
+    expect(closedAt).toBeGreaterThan(0);
+  });
+
+  it('R5-2 — the FIRST decrypt failure stops new decryptions being scheduled', async () => {
+    // ★ I AUDITED THIS CASE AND CLEARED IT FOR THE WRONG PROPERTY. I checked that a rejecting
+    // worker could not produce an UNHANDLED rejection — true, and irrelevant. What matters is
+    // that the surviving workers kept claiming items and issuing more KMS calls after the caller
+    // had already been handed a failure, prolonging the very throttling incident the concurrency
+    // cap exists to contain.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R5-2', true));
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          let n = 0;
+          const tick = (): void => {
+            if (n >= 60) {
+              res.end();
+              return;
+            }
+            res.write(`data: {"i":${n},"pad":"${'w'.repeat(90)}"}\n\n`);
+            n += 1;
+            setTimeout(tick, 2);
+          };
+          tick();
+        });
+      },
+      () => driveOne(attemptId),
+    );
+    const itemCount = Number(
+      (
+        await stack.db.adminPool.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+          [attemptId],
+        )
+      ).rows[0]!.n,
+    );
+    expect(itemCount).toBeGreaterThan(20); // plenty of room to keep going after a failure
+
+    // A KMS that fails the 3rd decrypt and COUNTS every call.
+    const realKms = deps.kms;
+    let calls = 0;
+    const failingKms = Object.assign(Object.create(Object.getPrototypeOf(realKms)), realKms, {
+      envelopeDecrypt: async (a: Parameters<typeof realKms.envelopeDecrypt>[0]) => {
+        calls += 1;
+        const mine = calls;
+        await new Promise((r) => setTimeout(r, 5));
+        if (mine === 3) throw new Error('kms throttled');
+        return realKms.envelopeDecrypt(a);
+      },
+    }) as typeof realKms;
+
+    const { getTurn } = await import('../../apps/api/src/ai-conversations/turn-service.js');
+    const { turn_id, conversation_id } = await lineage(attemptId);
+    await expect(
+      getTurn(
+        { pool: stack.db.appPool, kms: failingKms },
+        { orgId: org.org_id, ownerUserId: org.user_id },
+        conversation_id,
+        turn_id,
+      ),
+    ).rejects.toThrow();
+
+    // Let any straggler work land before counting.
+    const settled = calls;
+    await new Promise((r) => setTimeout(r, 400));
+
+    // ★ NO NEW WORK AFTER THE FAILURE — the count is frozen once the caller has been failed...
+    expect(calls).toBe(settled);
+    // ...and it stopped FAR short of decrypting the whole set (bounded by the in-flight batch).
+    expect(calls).toBeLessThanOrEqual(KMS_CAP + 2);
+    expect(calls).toBeLessThan(itemCount);
   });
 
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {

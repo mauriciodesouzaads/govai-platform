@@ -525,15 +525,36 @@ async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const out = new Array<R>(items.length);
   let cursor = 0;
+  let firstFailure: unknown = null;
+  let failed = false;
+
+  // ★ THE FIRST FAILURE STOPS NEW WORK. A bare `Promise.all` rejects as soon as one worker
+  // throws, but the OTHER workers keep looping — claiming items and issuing more decryptions
+  // into the background long after the caller has been handed a 500. During a KMS throttling
+  // incident that is precisely backwards: this helper exists to CONTAIN such an incident, and
+  // unbounded continuation would prolong it. Surviving workers therefore stop claiming, the
+  // in-flight ones are allowed to settle, and the original error is rethrown afterwards.
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     for (;;) {
+      if (failed) return;
       const index = cursor;
       cursor += 1;
       if (index >= items.length) return;
-      out[index] = await fn(items[index]!);
+      try {
+        out[index] = await fn(items[index]!);
+      } catch (err) {
+        if (!failed) {
+          failed = true;
+          firstFailure = err;
+        }
+        return;
+      }
     }
   });
+
+  // No worker rejects any more, so this SETTLES them all rather than abandoning in-flight work.
   await Promise.all(workers);
+  if (failed) throw firstFailure;
   return out;
 }
 

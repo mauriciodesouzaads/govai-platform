@@ -107,9 +107,17 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
     resolveFinal = resolve;
   });
 
+  // ★ THE READER IS ACQUIRED OUTSIDE `start` SO `cancel` CAN REACH IT (P0-C). Without a `cancel`
+  // handler this wrapper swallowed consumer cancellation: releasing or cancelling the OUTER
+  // stream left the provider's body streaming, so a consumer that abandons the stream (the
+  // durable executor does, when an append loses its fence) kept the upstream generating and
+  // downloading for a response nobody could persist — until the dispatch timeout. Purely
+  // additive: nothing previously called `out.cancel()`, so the direct routes are unaffected.
+  const upstreamReader = upstream ? upstream.getReader() : null;
+
   const out = new ReadableStream<Uint8Array>({
     async start(controller) {
-      if (!upstream) {
+      if (!upstreamReader) {
         controller.close();
         resolveFinal({
           stream_final_hash: hasher.digest('hex'),
@@ -118,7 +126,7 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
         });
         return;
       }
-      const reader = upstream.getReader();
+      const reader = upstreamReader;
       try {
         while (true) {
           const { value, done } = await reader.read();
@@ -140,6 +148,11 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
           latency_ms: Date.now() - t0,
         });
       }
+    },
+    // Consumer cancellation PROPAGATES to the provider body, closing the connection rather than
+    // merely detaching this wrapper from it.
+    async cancel(reason?: unknown) {
+      await upstreamReader?.cancel(reason).catch(() => undefined);
     },
   });
 

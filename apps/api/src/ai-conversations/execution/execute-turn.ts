@@ -1231,17 +1231,40 @@ function errClass(err: unknown): string {
   return err instanceof Error && typeof err.name === 'string' ? err.name : 'unknown';
 }
 
+/**
+ * Adapt a `ReadableStream` to an async iterable, CANCELLING the body if the consumer abandons it.
+ *
+ * ★ `releaseLock()` IS NOT CANCELLATION, and the difference is a live provider stream. When a
+ * mid-drain append loses its fence the consumer `break`s, which runs this `finally` — and
+ * releasing the lock merely detaches the reader. The underlying fetch body keeps streaming, so the
+ * provider goes on generating and we go on downloading for a response nobody can persist, until
+ * the dispatch timeout. Cancelling closes it at once.
+ *
+ * The EOF path deliberately does NOT cancel: the stream is already closed, and calling `cancel()`
+ * on a completed body is pointless noise.
+ */
 async function* readableToAsyncIterable(
   stream: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Uint8Array> {
   const reader = stream.getReader();
+  let reachedEof = false;
   try {
     for (;;) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) {
+        reachedEof = true;
+        break;
+      }
       if (value) yield value;
     }
   } finally {
-    reader.releaseLock();
+    // Abandoned by the consumer (a `break`, a `throw`, or a `return`) ⇒ stop the provider.
+    if (!reachedEof) await reader.cancel().catch(() => undefined);
+    try {
+      reader.releaseLock();
+    } catch {
+      // `cancel()` can already have closed and released it; a double release is not an error
+      // worth propagating out of a cleanup path.
+    }
   }
 }
