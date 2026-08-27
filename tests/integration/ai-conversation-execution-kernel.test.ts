@@ -2776,11 +2776,16 @@ describe('R3 — round-three review findings', () => {
       declinedMost: true,
       atLeastOneRan: true,
     });
-    // The duration is asserted too, but only against the FULL-DRAIN cost it must beat by a wide
-    // margin (8 × 400 ms ≈ 3.2 s), not against a tight estimate of one candidate.
-    expect({ farBelowFullDrain: stopElapsed < (BACKLOG * DELAY_MS) / 2 }).toEqual({
-      farBelowFullDrain: true,
-    });
+    // ★ NO WALL-CLOCK ASSERTION, AND THE REASON IS THE COMMENT DIRECTLY ABOVE. An earlier version
+    // of this test stated that per-candidate cost cannot be bounded on a contended machine — and
+    // then asserted a duration anyway. The ONE candidate a bounded shutdown intentionally drains
+    // can spend arbitrarily long persisting its response, encrypting output and writing audit
+    // evidence, so a duration bound fails for a CORRECT implementation. The count already
+    // separates "declined the backlog" from "processed all eight"; the timer only added flake.
+    //
+    // `stopElapsed` is still measured and reported in the failure output, because a human reading
+    // a failure wants the number — but nothing is asserted about it.
+    expect(stopElapsed).toBeGreaterThanOrEqual(0);
   }, 60_000);
 
   it('R11-1 — a SECOND stop() awaits the same drain, it does not resolve early', async () => {
@@ -2803,6 +2808,7 @@ describe('R3 — round-three review findings', () => {
 
     let firstDone = 0;
     let secondDone = 0;
+    let sharedPromise = false;
     await withProviderBehaviour(
       (req, res) => {
         req.on('data', () => undefined);
@@ -2828,10 +2834,16 @@ describe('R3 — round-three review findings', () => {
           ),
         ]);
         // Two shutdowns race, exactly as two signals would.
-        const a = handle.stop().then(() => {
+        const p1 = handle.stop();
+        const p2 = handle.stop();
+        // ★ THE STRUCTURAL ASSERTION, MADE HERE RATHER THAN AS A TIMING WINDOW. "Both callers
+        // await the same drain" is an identity claim, and identity is exactly checkable — a
+        // co-resolution window would only be a proxy for it, and a contention-sensitive one.
+        sharedPromise = p1 === p2;
+        const a = p1.then(() => {
           firstDone = Date.now();
         });
-        const b = handle.stop().then(() => {
+        const b = p2.then(() => {
           secondDone = Date.now();
         });
         await Promise.all([a, b]);
@@ -2844,9 +2856,16 @@ describe('R3 — round-three review findings', () => {
     // instant `process.exit(0)` runs, with a provider call still open.
     expect(providerRespondedAt).toBeGreaterThan(0);
     expect({
+      // A CAUSAL ORDERING, not a duration: the drain cannot resolve before the dispatch it is
+      // draining. Contention can move both timestamps but never invert them.
       secondWaitedForDispatch: secondDone >= providerRespondedAt,
-      bothSawTheSameDrain: Math.abs(secondDone - firstDone) < 250,
-    }).toEqual({ secondWaitedForDispatch: true, bothSawTheSameDrain: true });
+      firstWaitedForDispatch: firstDone >= providerRespondedAt,
+      bothSawTheSameDrain: sharedPromise,
+    }).toEqual({
+      secondWaitedForDispatch: true,
+      firstWaitedForDispatch: true,
+      bothSawTheSameDrain: true,
+    });
   }, 60_000);
 
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {

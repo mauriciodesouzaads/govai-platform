@@ -193,9 +193,16 @@ export function startConversationWorker(
   const schedule = (): void => {
     if (stopped) return;
     timer = setTimeout(() => {
+      // ★ A FIRED TIMER CANNOT BE CLEARED. If this callback was already queued when `stop()` ran,
+      // `clearTimeout` is a no-op and the callback still executes — arming a NEW sweep after the
+      // shutdown promise has resolved, and reassigning `inFlight` to something nobody awaits.
+      // That sweep does no work today only because `runConversationSweepOnce` re-checks the
+      // signal itself; this guard makes the property LOCAL to the scheduler rather than an
+      // emergent consequence of a check in another function.
+      if (stopped) return;
       inFlight = (async () => {
         try {
-              await runConversationSweepOnce(deps, { ...config, shouldStop: () => stopped });
+          await runConversationSweepOnce(deps, { ...config, shouldStop: () => stopped });
         } catch (err) {
           deps.log.error(
             { err_class: err instanceof Error ? err.name : 'unknown' },
