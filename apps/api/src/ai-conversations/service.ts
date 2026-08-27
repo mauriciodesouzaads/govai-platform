@@ -108,7 +108,7 @@ export class InvalidCursorError extends Error {
  * no grant, role or bootstrap change is involved. The pin lands AFTER `BEGIN` and BEFORE any
  * domain statement, which is what makes it cover every read this file performs.
  */
-async function withConversationOwnerContext<T>(
+export async function withConversationOwnerContext<T>(
   client: PoolClient,
   scope: OwnerScope,
   fn: (c: PoolClient) => Promise<T>,
@@ -130,7 +130,7 @@ async function withConversationOwnerContext<T>(
  * protocol it does not run. The lifecycle ratchet in 0031 is the independent backstop: there is
  * no edge back out of `deleted_pending`, whatever any route does.
  */
-function isAddressable(status: string): boolean {
+export function isAddressable(status: string): boolean {
   return status === 'active' || status === 'archived';
 }
 
@@ -148,7 +148,7 @@ function isAddressable(status: string): boolean {
  * conversation is execution-INELIGIBLE while its owner may legitimately still need to READ it.
  * Collapsing them into one predicate now would silently decide that future question here.
  */
-function isExecutionEligible(status: string): boolean {
+export function isExecutionEligible(status: string): boolean {
   return status !== 'deleted_pending' && status !== 'deleted';
 }
 

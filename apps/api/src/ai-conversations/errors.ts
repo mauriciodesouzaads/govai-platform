@@ -93,3 +93,70 @@ export class ForkIdempotencyLoserSignal extends Error {
     this.name = 'ForkIdempotencyLoserSignal';
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// P0-C durable send / hydrate failures.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The named branch does not exist inside THIS (already owner-proven) conversation. Distinct
+ *  from `conversation_not_found` because ownership of the root is already established, so this
+ *  discloses only the caller's own state. */
+export class BranchNotFoundError extends Error {
+  readonly code = 'branch_not_found';
+  constructor() {
+    super('branch not found in this conversation');
+    this.name = 'BranchNotFoundError';
+  }
+}
+
+/** The turn is not reachable inside this (owner-proven) conversation. */
+export class TurnNotFoundError extends Error {
+  readonly code = 'turn_not_found';
+  constructor() {
+    super('turn not found in this conversation');
+    this.name = 'TurnNotFoundError';
+  }
+}
+
+/** The `client_turn_id` is committed to a DIFFERENT canonical send intent (§8). Static: never
+ *  the key, never either hash, never the stored intent — the `routes/runs.ts:180` discipline. */
+export class SendIdempotencyConflictError extends Error {
+  readonly code = 'send_idempotency_key_conflict';
+  constructor() {
+    super('client_turn_id is already bound to a different send intent');
+    this.name = 'SendIdempotencyConflictError';
+  }
+}
+
+/**
+ * Internal control-flow signal: this transaction LOST the turn reservation to a concurrent
+ * contender. The service rolls the candidate transaction back and answers from the COMMITTED
+ * turn (replay or conflict). The `fork-intent` loser-signal shape; never route-visible.
+ */
+export class SendIdempotencyLoserSignal extends Error {
+  constructor() {
+    super('send reservation lost');
+    this.name = 'SendIdempotencyLoserSignal';
+  }
+}
+
+/**
+ * The branch's durable (provider, surface) is not dispatchable by P0-C (§23's P0-D wall).
+ *
+ * ★ RAISED AT RESERVATION TIME, ON PURPOSE. A reservation is a promise that the server will
+ * execute this turn; making that promise for a surface no executor can drive would leave a
+ * permanently queued turn blocking its branch. Failing here means nothing durable is written and
+ * the client learns the truth immediately. The executor re-checks the same registry before
+ * claiming, so a conversation whose surface stops being supported cannot be dispatched either.
+ */
+export class ConversationSurfaceUnsupportedError extends Error {
+  readonly code = 'conversation_surface_unsupported';
+  constructor(
+    readonly provider: string,
+    readonly surface: string,
+    readonly reason: string,
+  ) {
+    super('this conversation provider/surface cannot be executed by this server yet');
+    this.name = 'ConversationSurfaceUnsupportedError';
+  }
+}
