@@ -36,16 +36,16 @@
   },
   "tests": {
     "root_unit": {
-      "files": 144,
-      "tests": 1648
+      "files": 148,
+      "tests": 1689
     },
     "root_integration_only": {
-      "files": 89,
-      "tests": 1324
+      "files": 92,
+      "tests": 1407
     },
     "root_full_integration_gate": {
-      "files": 233,
-      "tests": 2972
+      "files": 240,
+      "tests": 3096
     },
     "ui": {
       "files": 33,
