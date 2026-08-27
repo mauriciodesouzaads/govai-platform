@@ -1900,8 +1900,14 @@ describe('R3 — round-three review findings', () => {
         );
         releaseFence();
         const outcome = await driving;
-        // Give the server a moment to observe the close.
-        await new Promise((r) => setTimeout(r, 300));
+        // ★ POLL FOR THE CONDITION, DO NOT SLEEP A GUESS AT IT. A fixed wait fails for a CORRECT
+        // implementation whenever the machine is slower than the guess — the flake class round
+        // twelve identified, where the punishment lands on the fix rather than the defect. Waiting
+        // UNTIL the server observes the close (with a generous ceiling) can only be slow, never
+        // wrong; the assertion below still fails if the close never comes.
+        for (let i = 0; i < 100 && closedAt === 0; i += 1) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
         return outcome;
       },
     );
@@ -2064,8 +2070,10 @@ describe('R3 — round-three review findings', () => {
         );
         releaseHeaders();
         const settled = await driving;
-        // Give the server a moment to observe the close.
-        await new Promise((r) => setTimeout(r, 300));
+        // Poll for the close rather than sleeping a guess at it — see the note in R5-1.
+        for (let i = 0; i < 100 && closedAt === 0; i += 1) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
         return settled;
       },
     );
@@ -2718,10 +2726,14 @@ describe('R3 — round-three review findings', () => {
     });
 
     let stopElapsed = 0;
+    let dispatches = 0;
     await withProviderBehaviour(
       (req, res) => {
         req.on('data', () => undefined);
         req.on('end', () => {
+          // Counted on THIS test's own upstream, so the number cannot be perturbed by attempts
+          // other tests left in the shared database.
+          dispatches += 1;
           // The provider has the request: a dispatch is provably in flight, not merely likely.
           firstDispatchSeen();
           // Each dispatch is slow, so a sweep that ignores the stop takes BACKLOG × DELAY_MS.
@@ -2769,13 +2781,17 @@ describe('R3 — round-three review findings', () => {
     // What CANNOT drift is how many candidates a sweep chose to start: the whole backlog, or the
     // one already in flight. The untouched attempts stay durably queued for the next runner,
     // which is exactly why declining them costs nothing.
-    // ★ THE LOWER BOUND IS WHAT MAKES A VACUOUS PASS IMPOSSIBLE. At least one candidate must have
-    // been dispatched AND completed — otherwise the stop landed before any work began and the test
-    // proved nothing, which is precisely how a fixed sleep fails silently.
-    expect({ declinedMost: completed <= 3, atLeastOneRan: completed >= 1 }).toEqual({
-      declinedMost: true,
-      atLeastOneRan: true,
-    });
+    // ★ EXACTLY ONE, NOT "FEWER THAN THE BACKLOG". Because the stop is synchronized on the first
+    // provider receipt and the runner processes candidates sequentially, a correct cooperative
+    // shutdown drains precisely the one candidate already in flight. A tolerance of "<= 3" was
+    // left over from the pre-handshake version of this test and no longer describes anything: it
+    // would accept a regression that starts two MORE candidates after shutdown, which is the very
+    // behaviour the bound exists to forbid. Once the timing became deterministic, the correct
+    // number became derivable — so it is asserted.
+    expect({ candidatesDispatched: dispatches }).toEqual({ candidatesDispatched: 1 });
+    // And that one candidate really finished, so the count above is a bounded drain rather than a
+    // stop that landed before any work began.
+    expect({ completedOfBacklog: completed }).toEqual({ completedOfBacklog: 1 });
     // ★ NO WALL-CLOCK ASSERTION, AND THE REASON IS THE COMMENT DIRECTLY ABOVE. An earlier version
     // of this test stated that per-candidate cost cannot be bounded on a contended machine — and
     // then asserted a duration anyway. The ONE candidate a bounded shutdown intentionally drains
@@ -2796,7 +2812,6 @@ describe('R3 — round-three review findings', () => {
     // process mid-dispatch and recreates exactly the `outcome_unknown` the bounded shutdown exists
     // to prevent. The failure needs two signals AND an in-flight dispatch to appear, which is why
     // it survived the round that introduced the bound.
-    const DELAY_MS = 600;
     const conv = await createConversation({ mode: 'passthrough' });
     await send(conv.id, conv.branchId, nativeRequest('R11-1', false));
 
@@ -2804,21 +2819,27 @@ describe('R3 — round-three review findings', () => {
     const firstDispatch = new Promise<void>((resolve) => {
       firstDispatchSeen = resolve;
     });
-    let providerRespondedAt = 0;
+
+    // ★ A CONTROLLABLE GATE, NOT A TIMER. The provider holds its response until the test releases
+    // it, so "did either stop settle too early?" becomes a question about an event the test OWNS
+    // rather than about elapsed milliseconds.
+    let releaseProvider!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let releasedAt = 0;
 
     let firstDone = 0;
     let secondDone = 0;
-    let sharedPromise = false;
     await withProviderBehaviour(
       (req, res) => {
         req.on('data', () => undefined);
         req.on('end', () => {
           firstDispatchSeen();
-          setTimeout(() => {
-            providerRespondedAt = Date.now();
+          void gate.then(() => {
             res.writeHead(200, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ ok: true }));
-          }, DELAY_MS);
+          });
         });
       },
       async () => {
@@ -2834,18 +2855,18 @@ describe('R3 — round-three review findings', () => {
           ),
         ]);
         // Two shutdowns race, exactly as two signals would.
-        const p1 = handle.stop();
-        const p2 = handle.stop();
-        // ★ THE STRUCTURAL ASSERTION, MADE HERE RATHER THAN AS A TIMING WINDOW. "Both callers
-        // await the same drain" is an identity claim, and identity is exactly checkable — a
-        // co-resolution window would only be a proxy for it, and a contention-sensitive one.
-        sharedPromise = p1 === p2;
-        const a = p1.then(() => {
+        const a = handle.stop().then(() => {
           firstDone = Date.now();
         });
-        const b = p2.then(() => {
+        const b = handle.stop().then(() => {
           secondDone = Date.now();
         });
+        // Give an early-resolving stop every chance to settle BEFORE the gate opens. This wait
+        // can only produce a false PASS, never a false failure, which is the safe direction for a
+        // negative property.
+        await new Promise((r) => setTimeout(r, 200));
+        releasedAt = Date.now();
+        releaseProvider();
         await Promise.all([a, b]);
         return null;
       },
@@ -2854,18 +2875,20 @@ describe('R3 — round-three review findings', () => {
     // ★ THE ASSERTION: the SECOND stop did not resolve before the dispatch finished. With the
     // early return it resolves essentially instantly — and in the real entrypoint that is the
     // instant `process.exit(0)` runs, with a provider call still open.
-    expect(providerRespondedAt).toBeGreaterThan(0);
+    // ★ THE SAFETY PROPERTY ITSELF, NOT A STRONGER PROXY FOR IT. An earlier version asserted that
+    // both calls return the SAME promise object. That is stronger than what the signal handlers
+    // require and would REJECT a correct refactor — `async stop() { await cachedDrain; }` returns
+    // a distinct adopting promise per call while still preventing either caller from resolving
+    // early. What actually matters is that NEITHER caller resolves before the drain completes,
+    // because each handler calls `process.exit(0)` the moment its own stop resolves.
+    //
+    // Asserted as a causal ordering against an event the test controls: contention can move both
+    // timestamps, but it cannot make a stop settle before the gate that unblocks its dispatch.
+    expect(releasedAt).toBeGreaterThan(0);
     expect({
-      // A CAUSAL ORDERING, not a duration: the drain cannot resolve before the dispatch it is
-      // draining. Contention can move both timestamps but never invert them.
-      secondWaitedForDispatch: secondDone >= providerRespondedAt,
-      firstWaitedForDispatch: firstDone >= providerRespondedAt,
-      bothSawTheSameDrain: sharedPromise,
-    }).toEqual({
-      secondWaitedForDispatch: true,
-      firstWaitedForDispatch: true,
-      bothSawTheSameDrain: true,
-    });
+      firstWaitedForDrain: firstDone >= releasedAt,
+      secondWaitedForDrain: secondDone >= releasedAt,
+    }).toEqual({ firstWaitedForDrain: true, secondWaitedForDrain: true });
   }, 60_000);
 
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {
