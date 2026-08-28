@@ -680,9 +680,12 @@ type DispatchResult =
        * ★ WHY THIS CANNOT BE FOLDED INTO THE ITERATOR. `chunks` is an async GENERATOR, and a
        * generator body does not run until its first `next()`. An exit that never begins the
        * drain therefore never acquires the reader and never reaches the iterator's cancelling
-       * `finally` — while `forwardStream`'s pump, which starts EAGERLY at construction, goes on
-       * reading and buffering the provider's body. Calling `return()` on the generator does not
-       * help either: a suspended-start generator completes without executing its body.
+       * `finally` — while the wrapper still holds a LIVE provider connection open. (Since
+       * R16-2 its pump is demand-driven, so it reads ahead only a bounded amount rather than
+       * buffering the whole body — but nothing closes the socket, and by the wrapper's
+       * documented contract `finalize()` stays pending until the body is drained, cancelled
+       * or aborted.) Calling `return()` on the generator does not help either: a
+       * suspended-start generator completes without executing its body.
        */
       cancel: () => Promise<void>;
       /** MUST be invoked exactly once, on EVERY path — including a throwing drain. */

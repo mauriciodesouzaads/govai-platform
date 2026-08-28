@@ -54,9 +54,9 @@ is one collected test module.
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 148 | 1706 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 93 | 1452 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 241 | 3158 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 148 | 1718 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 93 | 1453 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 241 | 3171 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 

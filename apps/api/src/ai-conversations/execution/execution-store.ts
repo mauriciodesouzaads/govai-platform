@@ -542,11 +542,13 @@ export async function heartbeatClaim(
  * `dispatching → streaming`, fenced.
  *
  * ★ WHY EVERY SUCCESSFUL DISPATCH PASSES THROUGH `streaming`, INCLUDING A NON-STREAM ONE.
- * 0031's forward graph — and §7's own diagram — admit `completed` ONLY from `streaming`; there
- * is no `dispatching → completed` edge in either. `streaming` is therefore the schema's
- * POST-POST RECEIVING state, not an SSE-only state. A non-stream dispatch passes through it in
- * one commit. Inventing an edge to skip it would mean editing 0031's guard trigger, which is
- * frozen historical source.
+ * On the FORWARD dispatch graph, 0031 — and §7's own diagram — admit `completed` only from
+ * `streaming`; there is no `dispatching → completed` edge. (The one other lawful entry to
+ * `completed` is the §7.7 probe resolution `outcome_unknown → completed` in 0031's
+ * outcome-unknown arm — a RECOVERY edge, not a dispatch edge, and no dispatch passes through
+ * it.) `streaming` is therefore the schema's POST-POST RECEIVING state, not an SSE-only
+ * state. A non-stream dispatch passes through it in one commit. Inventing an edge to skip it
+ * would mean editing 0031's guard trigger, which is frozen historical source.
  *
  * This is also the first state for which 0031 requires provenance
  * (`streaming|completed ⟹ provider_credential_id IS NOT NULL`), so reaching it without commit 4
@@ -628,8 +630,12 @@ export type AttemptErrorClass =
  * ★ A ZOMBIE THAT SLIPS THROUGH EVERY EARLIER GUARD STILL CANNOT WRITE. Suppose a runner pauses
  * for an unbounded time between its pre-POST lease check and its POST, recovery ratchets the
  * attempt to `outcome_unknown` and releases the branch queue, and the zombie then wakes with a
- * real provider response in hand. Its finalize carries the OLD token, matches zero rows, and is
- * discarded with a diagnostic. Its answer never becomes durable, never becomes
+ * real provider response in hand. The ratchet does NOT rotate the claim token — the row still
+ * carries the zombie's own token — so what fences the late write is the STATE predicate: the
+ * attempt is now terminal, `state IN ('accepted','dispatching','streaming')` matches zero
+ * rows, and the write is discarded with a diagnostic. (The item append, the heartbeat and
+ * commit 4 carry the same non-terminal state predicate, so the same zombie cannot slip a late
+ * write through any of them either.) Its answer never becomes durable, never becomes
  * `eligible_for_context`, and never displaces the recovered state.
  *
  * `error_class` is set ONLY for `failed` — 0031 enforces both directions (`failed ⟹ class` and

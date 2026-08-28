@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { Server } from 'node:http';
 import { forwardStream } from './stream-forward.js';
 
 function bodyFromString(s: string): ReadableStream<Uint8Array> {
@@ -342,37 +344,81 @@ describe('forwardStream — R16-2 backpressure', () => {
     expect(up.reads()).toBeLessThanOrEqual(readsAtStall + 1);
   });
 
-  // ── THE ONE CALLER THAT DOES NOT DRAIN ───────────────────────────────────────────────────
+  // ── THE CALLER THAT DOES NOT DRAIN, AND WHAT ACTUALLY SETTLES IT (R17) ──────────────────
   // `pumpStreamWithTerminalEmit` SKIPS the drain entirely when the client socket is already
-  // closed (EP-008C P2#2) — it aborts the upstream and goes straight to `finalize()`. The eager
-  // pump settled that caller as a side effect of always running to completion; a demand-driven
-  // one must settle it deliberately, or the hijacked reply would await a promise forever. These
-  // two cover both ways the body can end underneath a consumer that never asks for a byte.
+  // closed (EP-008C P2#2) — but it ABORTS the upstream first and only then awaits
+  // `finalize()`. The abort is load-bearing: it REJECTS `reader.closed` immediately, whatever
+  // is queued, and that rejection is what wakes the parked pump. Graceful EOF gives no such
+  // wake-up — a real fetch body reports EOF only through a read — so a body that is merely
+  // ABANDONED (no drain, no cancel, no abort) leaves `finalize()` pending BY CONTRACT
+  // (`StreamForwardResult.finalize`). An earlier revision of these tests asserted the
+  // stronger "settles with no consumer and no cancel" property; it held only for a
+  // single-chunk synthetic body whose lone chunk the pump's one initial demand consumed, and
+  // it is false for real bodies (R17). The tests below pin the TRUE contract: the three
+  // lawful endings settle, abandonment does not.
 
-  it('R16-2 — finalize() settles when the body ENDS and the consumer never reads', async () => {
-    const payload = 'event: a\ndata: 1\n\nevent: b\ndata: 2\n\n';
+  it('R17 — CANCEL with the body never read settles finalize() over the relayed prefix', async () => {
+    // TWO chunks + close, the exact multi-chunk shape whose graceful EOF cannot wake a parked
+    // pump on its own — with the lawful cancel, finalize() must settle anyway.
     const enc = new TextEncoder();
+    const first = enc.encode('event: a\ndata: 1\n\n');
+    const second = enc.encode('event: b\ndata: 2\n\n');
     const r = await open(
       new ReadableStream<Uint8Array>({
         start(controller) {
-          // A body whose source completes on its own — a fetch response that already arrived.
-          controller.enqueue(enc.encode(payload));
+          controller.enqueue(first);
+          controller.enqueue(second);
           controller.close();
         },
       }),
     );
-    // NOTHING reads `r.body`.
+    // NOTHING reads `r.body`. The pump's single initial demand deterministically takes and
+    // hashes exactly the FIRST chunk (HWM 1, no further pull without a reader), so the
+    // terminal truthfully describes a one-chunk relayed prefix — never the unread remainder.
+    await settleEventLoop();
+    await r.body.cancel('caller abandoned the stream');
     const final = await r.finalize();
-    // The terminal still describes the WHOLE provider response: after the body has ended, what
-    // is left was already received, so reading it out costs no memory and keeps the evidence
-    // byte-complete — the semantic the direct routes' `stream_final_hash` already had.
-    expect(final.bytes_streamed).toBe(Buffer.byteLength(payload));
+    expect(final.bytes_streamed).toBe(first.byteLength);
     expect(final.stream_final_hash).toBe(
-      createHash('sha256').update(Buffer.from(payload, 'utf8')).digest('hex'),
+      createHash('sha256').update(Buffer.from(first)).digest('hex'),
     );
+    // Idempotent: a second call returns the SAME terminal, never a second `hasher.digest()`.
+    expect(await r.finalize()).toEqual(final);
   });
 
-  it('R16-2 — finalize() settles when the body FAILS and the consumer never reads', async () => {
+  it('R17 — an ABANDONED body (no drain, no cancel, no abort) leaves finalize() pending', async () => {
+    // The negative space of the contract, pinned deliberately: if a later edit makes this
+    // settle — an eager pump reading to EOF, or an unadjudicated auto-settle in finalize() —
+    // this test fails, and that change must be a conscious contract revision, not a drive-by.
+    const enc = new TextEncoder();
+    const r = await open(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(enc.encode('event: a\ndata: 1\n\n'));
+          controller.enqueue(enc.encode('event: b\ndata: 2\n\n'));
+          controller.close();
+        },
+      }),
+    );
+    let settled = false;
+    const finalized = r.finalize().then((f) => {
+      settled = true;
+      return f;
+    });
+    // Deterministic job-queue bound, not a timing sleep (see `settleEventLoop`): every wake-up
+    // the pump could receive from an already-arrived body has run by now.
+    await settleEventLoop();
+    expect(settled).toBe(false);
+    // Cleanup IS the contract's remedy: the lawful cancel settles the same promise.
+    await r.body.cancel('test cleanup');
+    await finalized;
+    expect(settled).toBe(true);
+  });
+
+  it('R17 — a FAILED body settles finalize() with no consumer (the aborted-fetch rejection shape)', async () => {
+    // A fetch-signal abort ERRORS a real body — `reader.closed` rejects immediately, whatever
+    // is queued. This synthetic body models exactly that rejection, which is why NO cancel is
+    // needed here: failure is one of the three lawful endings.
     const boom = new Error('upstream aborted');
     const r = await open(
       new ReadableStream<Uint8Array>({
@@ -381,7 +427,7 @@ describe('forwardStream — R16-2 backpressure', () => {
         },
       }),
     );
-    // NOTHING reads `r.body` — this is the aborted-fetch shape of the same caller.
+    // NOTHING reads `r.body`.
     const final = await r.finalize();
     expect(final.bytes_streamed).toBe(0);
     expect(final.stream_final_hash).toMatch(/^[a-f0-9]{64}$/);
@@ -426,5 +472,121 @@ describe('forwardStream — R16-2 backpressure', () => {
     expect(final.bytes_streamed).toBe(OK_CHUNKS * CHUNK);
     expect(final.stream_final_hash).toBe(createHash('sha256').update(expected).digest('hex'));
     expect(await r.finalize()).toEqual(final);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+// R17 — REAL-BODY LIFECYCLE, against a real `fetch` over loopback (NO fetch stub)
+//
+// ★ WHY SYNTHETIC BODIES ARE NOT ENOUGH HERE. The R17 adjudication turned on two facts of real
+// undici response bodies that a hand-built `ReadableStream` cannot model: (1) graceful EOF is
+// DISCOVERED ONLY BY A READ — even a fully-arrived, fully-buffered body never fulfils
+// `reader.closed` behind zero demand, so an abandoned body leaves `finalize()` pending in every
+// shape, single-chunk included; (2) aborting the fetch signal REJECTS the body — and must
+// settle `finalize()` — even when the response has already been received in full, which is the
+// exact condition `pumpStreamWithTerminalEmit`'s already-closed-client path depends on.
+//
+// Local loopback only; no public internet; no credentials; each test's own drain/cancel/abort
+// is its bound; the server is torn down (connections included) in `finally`.
+// ═════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('forwardStream — R17 real-body lifecycle (loopback node:http, real fetch)', () => {
+  const CHUNKS = ['data: one\n\n', 'data: two\n\n', 'data: three\n\n'];
+  const EXPECTED = Buffer.from(CHUNKS.join(''), 'utf8');
+
+  /**
+   * Serve `CHUNKS` as an SSE-shaped 200 over a loopback server, run `fn`, tear down.
+   *
+   * The inter-chunk `setTimeout(2)` is NOT assertion synchronization — no assertion depends on
+   * chunk boundaries — it only encourages the writes onto separate TCP segments so the wire
+   * shape is realistically multi-frame rather than one coalesced buffer.
+   */
+  async function withSseServer<T>(fn: (baseUrl: string) => Promise<T>): Promise<T> {
+    const server: Server = createServer((req, res) => {
+      req.on('data', () => undefined);
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        void (async () => {
+          for (const chunk of CHUNKS) {
+            res.write(chunk);
+            await new Promise((r) => setTimeout(r, 2));
+          }
+          res.end();
+        })();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      return await fn(`http://127.0.0.1:${port}`);
+    } finally {
+      server.close();
+      // Undici keeps loopback connections alive; without this the suite's teardown would wait
+      // on the keep-alive socket.
+      server.closeAllConnections();
+    }
+  }
+
+  const openReal = (baseUrl: string): ReturnType<typeof forwardStream> =>
+    forwardStream({
+      baseUrl,
+      concretePath: '/v1/responses',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{"stream":true}', 'utf8'),
+    });
+
+  it('R17 — drain to EOF relays every byte and settles finalize() with the exact terminal hash', async () => {
+    await withSseServer(async (baseUrl) => {
+      const r = await openReal(baseUrl);
+      const reader = r.body.getReader();
+      const seen: Uint8Array[] = [];
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) seen.push(value);
+      }
+      expect(Buffer.concat(seen.map((c) => Buffer.from(c))).equals(EXPECTED)).toBe(true);
+      const final = await r.finalize();
+      expect(final.bytes_streamed).toBe(EXPECTED.byteLength);
+      expect(final.stream_final_hash).toBe(createHash('sha256').update(EXPECTED).digest('hex'));
+      expect(await r.finalize()).toEqual(final);
+    });
+  });
+
+  it('R17 — ABORT with the body never read settles finalize() (the skip-drain caller shape)', async () => {
+    await withSseServer(async (baseUrl) => {
+      const ac = new AbortController();
+      const r = await forwardStream({
+        baseUrl,
+        concretePath: '/v1/responses',
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from('{"stream":true}', 'utf8'),
+        signal: ac.signal,
+      });
+      // NOTHING reads `r.body` — this is `pumpStreamWithTerminalEmit` on an already-closed
+      // client: abort first, drain skipped, finalize() awaited. The abort must settle it.
+      ac.abort();
+      const final = await r.finalize();
+      expect(final.bytes_streamed).toBeLessThanOrEqual(EXPECTED.byteLength);
+      expect(final.stream_final_hash).toMatch(/^[a-f0-9]{64}$/);
+      expect(await r.finalize()).toEqual(final);
+    });
+  });
+
+  it('R17 — CANCEL with the body never read settles finalize() and closes the upstream', async () => {
+    await withSseServer(async (baseUrl) => {
+      const r = await openReal(baseUrl);
+      // NOTHING reads `r.body` — the pre-drain abandonment shape (the P0-C executor's guard
+      // cancels exactly like this before it finalizes).
+      await r.body.cancel('consumer abandoned the stream before the drain');
+      const final = await r.finalize();
+      // Real-socket chunk boundaries are not deterministic, so the exact prefix is not; the
+      // terminal's TRUTHFULNESS is: it never claims more than the whole response.
+      expect(final.bytes_streamed).toBeLessThanOrEqual(EXPECTED.byteLength);
+      expect(final.stream_final_hash).toMatch(/^[a-f0-9]{64}$/);
+      expect(await r.finalize()).toEqual(final);
+    });
   });
 });

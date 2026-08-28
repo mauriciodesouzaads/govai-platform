@@ -1563,7 +1563,12 @@ describe('RM — findings from the exact-head review', () => {
     expect(Number(orphans.rows[0]!.n)).toBe(1);
   });
 
-  it('RM5b — the PRODUCTION persist path creates no orphan when the fence rejects', async () => {
+  it('RM5b — a COMPLETED production run leaves no dangling content row', async () => {
+    // ★ RETITLED TO WHAT IT PROVES (P0-C closeout). This drives the production writer through
+    // a run in which NO fence rejection occurs, so it proves the happy path's referential
+    // hygiene — not the rejection rollback its old name claimed. The rejection property is
+    // proven where a REAL fence loss happens: R4-1's closing orphan count, after its mid-drain
+    // rotation forces the production writer through `OutputFenceLost`.
     const conv = await createConversation({});
     const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('RM5b'));
     // Drive it to completion, then count: every content row is referenced by an item or is the
@@ -1898,6 +1903,26 @@ describe('R3 — round-three review findings', () => {
     for (const e of streamEvents) {
       expect({ outcome: e.stream_outcome }).toEqual({ outcome: 'upstream_error' });
     }
+
+    // ★ THE PRODUCTION NO-ORPHAN PROOF, ON A REAL FENCE LOSS (P0-C closeout). RM5 demonstrates
+    // the hazard through the raw store; RM5b proves the happy path leaves nothing dangling —
+    // but neither drives the PRODUCTION writer through an actual rejection. This run did: the
+    // mid-drain precondition above proved a fenced flush landed BEFORE the rotation, the
+    // upstream then delivered two more over-threshold frames, so the next production flush hit
+    // `appendFencedOutputItem` with a rotated token and rolled its whole transaction back —
+    // content INSERT included (`OutputFenceLost`). If a regression ever COMMITS that rejection
+    // instead (returning `false` from inside the transaction, the original RM5 hazard), the
+    // rejected flush's encrypted blob survives with no item referencing it, and this count —
+    // scoped to THIS test's conversation, immune to shared-suite state — goes nonzero. Every
+    // content row this conversation owns is item-referenced (the reservation's config content
+    // is shared with the turn-owned input item, LAW 2), so the invariant is exactly zero.
+    const orphanAfterRealFenceLoss = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_content c
+        WHERE c.conversation_id = $1::uuid
+          AND NOT EXISTS (SELECT 1 FROM govai.ai_conversation_items i WHERE i.content_id = c.id)`,
+      [conv.id],
+    );
+    expect(orphanAfterRealFenceLoss.rows[0]!.n).toBe('0');
   });
 
   it('R4-2 — a page hydrate BOUNDS its concurrent KMS decryptions', async () => {
@@ -2624,6 +2649,40 @@ describe('R3 — round-three review findings', () => {
       [attemptId],
     );
     expect(row.rows[0]).toEqual({ state: 'failed', error_class: 'persistence_error' });
+  });
+
+  it('T-STRICT-5 — the WORKER-WIRED bridge rejects an EARLY drop class, not only transaction failures', async () => {
+    // ★ THE ADJACENT GAP OF R8-1, CLOSED THE SAME WAY R8-1 CLOSED R7's. R8-1 proved strict is
+    // real for the TRANSACTION stage by breaking the real privilege. But strict originally
+    // governed ONLY that stage: the early drop classes — missing identity, schema validation,
+    // canonicalization — resolved normally regardless of posture, so a worker-internal
+    // regression producing a schema-invalid envelope would have dropped every capture with a
+    // warn log while every attempt still completed. This drives the early class through the
+    // ACTUAL worker capability (`createConversationWorkerDb` → `makeAuditBridge` with
+    // `posture: 'strict'` — the same construction `conversation-worker/main.ts` runs), not a
+    // test substitute: the production wiring itself must surface the drop to the executor seam,
+    // where `emitAuditEvent` classifies it (`persistence_error` post-forward, per R7/R8).
+    const invalidEvent = { event_type: 'passthrough.invoked', schema_version: 4 };
+    await expect(
+      db.captureAuditEvent(invalidEvent, {
+        govaiRequestId: randomUUID(),
+        identityScope: 'govai_request_id',
+      }),
+    ).rejects.toMatchObject({
+      name: 'AuditBridgeCaptureDropped',
+      reason: 'invalid_runtime_event',
+    });
+    // And the direct-route posture is untouched: the DEFAULT bridge resolves the same drop.
+    // (Proven per-class in `audit-bridge.test.ts` T-STRICT-1..4; asserted here once against
+    // the identical event so the contrast lives next to the worker-wiring proof.)
+    const { makeAuditBridge } = await import('../../apps/api/src/pipeline/audit-bridge.js');
+    const laxBridge = makeAuditBridge({
+      pool: stack.db.appPool,
+      log: silentLog as unknown as Parameters<typeof makeAuditBridge>[0]['log'],
+    });
+    await expect(
+      laxBridge(invalidEvent, { govaiRequestId: randomUUID(), identityScope: 'govai_request_id' }),
+    ).resolves.toBeUndefined();
   });
 
   it('R9-1 — the DEPLOYED worker process stays alive long enough to sweep', async () => {

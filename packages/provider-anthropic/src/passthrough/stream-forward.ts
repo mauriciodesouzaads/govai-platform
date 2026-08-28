@@ -43,7 +43,21 @@ export type StreamForwardResult = {
   /** Pull-style: caller iterates to get raw byte chunks preserved. */
   body: ReadableStream<Uint8Array>;
   native_request_hash: string;
-  /** Promise of the final hash + length once the stream fully drains. */
+  /**
+   * Resolves the terminal stream facts (final hash, byte count, latency) exactly once; a
+   * second call returns the same settled terminal.
+   *
+   * ★ THE LIFECYCLE CONTRACT (P0-C R17): the CALLER owns the body lifecycle. `finalize()`
+   * is guaranteed to settle only after one of:
+   *   (a) `body` was drained to EOF;
+   *   (b) `body` (or an acquired reader on it) was CANCELLED;
+   *   (c) the fetch `signal` ABORTED.
+   * A body that is merely ABANDONED — no drain, no cancel, no abort — leaves this promise
+   * pending, and that is a property of real fetch bodies, not an implementation choice: a
+   * real response body reports graceful EOF only through a read, so no wake-up exists that
+   * does not also move data. Every production caller already ends the body one of the three
+   * lawful ways before awaiting this; new callers must too.
+   */
   finalize: () => Promise<{
     stream_final_hash: string;
     bytes_streamed: number;
@@ -177,13 +191,19 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
    * `hasher.update` calls and digest a permutation of the response. One loop makes that
    * impossible by construction and gives the terminal settlement exactly one owner.
    *
-   * ★ THE DEMAND WAIT IS RACED AGAINST THE UPSTREAM'S OWN END. A provider body can finish — or
-   * fail — while this pump is parked with no demand, and `pumpStreamWithTerminalEmit` really
-   * does reach that state: when the client socket is already closed it SKIPS the drain entirely
-   * and then awaits `finalize()`. Waiting for a demand that will never arrive would strand that
-   * caller forever. `closed` settles on EVERY way the body can end, so the pump wakes and reads
-   * out the remainder — which is bounded, because after EOF whatever is left has already been
-   * received.
+   * ★ THE DEMAND WAIT IS RACED AGAINST THE UPSTREAM'S OWN END — for the ways an end can WAKE a
+   * parked pump, which are FEWER than "every way the body can end". `closed` REJECTS the
+   * instant the body ERRORS or the fetch signal ABORTS, whatever is queued — that is what
+   * settles `finalize()` for `pumpStreamWithTerminalEmit`, which on an already-closed client
+   * ABORTS the upstream, skips the drain, and then awaits `finalize()`. A consumer CANCEL
+   * settles the terminal latch directly in the `cancel` handler below. Graceful EOF is
+   * different, and this race deliberately does not promise to observe it: a real fetch body
+   * reports EOF only through a read, so close-requested data — or the EOF itself — parked
+   * behind zero demand stays unobserved and `finalize()` stays pending. That is the documented
+   * contract (`StreamForwardResult.finalize`): the caller owns the body lifecycle — drain to
+   * EOF, cancel, or abort — and no production caller abandons a body without one of the three.
+   * When `closed` does settle under the race, whatever remains is read out — bounded, because
+   * after the body has ended everything left has already been received.
    */
   const pump = async (
     controller: ReadableStreamDefaultController<Uint8Array>,
@@ -224,8 +244,10 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
         return;
       }
       const reader = upstreamReader;
-      // Fulfils on EOF, on failure AND on cancellation — every way the provider body can end.
-      // Both arms are handled, so this never becomes an unhandled rejection.
+      // Settles on error and abort (rejection, immediate) and on cancellation (fulfilment);
+      // for graceful EOF only once the end has been OBSERVED by reads — see the pump's
+      // contract note above. Both arms are handled, so this never becomes an unhandled
+      // rejection.
       const upstreamEnded = reader.closed.then(
         () => undefined,
         () => undefined,

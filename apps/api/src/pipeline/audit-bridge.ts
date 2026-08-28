@@ -62,7 +62,14 @@ export interface AuditBridgeDeps {
   withClient?: <T>(
     fn: (client: PoolClient, markUnusable: () => void) => Promise<T>,
   ) => Promise<T>;
-  /** `strict` is plumbed but NEVER enabled in v1 (ADR-028 §9). */
+  /**
+   * Failure posture. `best_effort` (the default, and every DIRECT ROUTE): a capture drop or
+   * failure is logged + counted and the promise RESOLVES — v1 never fails a user's request
+   * over evidence (ADR-028 §9). `strict` (the CONVERSATION WORKER's own bridge instance,
+   * P0-C): EVERY drop class — identity, validation, canonicalization and transaction alike —
+   * REJECTS, so the executor can classify a missing capture as `persistence_error` instead of
+   * completing an attempt whose required evidence silently vanished.
+   */
   posture?: 'best_effort' | 'strict';
   /**
    * Cardinality-safe OTel drop/capture counters (EP-008B / EC-3b). Optional;
@@ -110,6 +117,20 @@ function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * Raised under `strict` posture when the dispatcher DROPS a capture before its transaction
+ * stage — a missing identity, an event that failed schema validation, or a projection/
+ * canonicalization failure. It carries the drop reason and nothing else: the log line at the
+ * drop site already recorded the diagnostic detail, and this error's job is to make the drop
+ * OBSERVABLE to a strict caller, never to transport payload material.
+ */
+export class AuditBridgeCaptureDropped extends Error {
+  constructor(readonly reason: AuditBridgeFailureReason) {
+    super(`audit-bridge capture dropped: ${reason}`);
+    this.name = 'AuditBridgeCaptureDropped';
+  }
+}
+
 function classifyCaptureError(err: unknown): 'evidence_idempotency_conflict' | 'capture_failed' {
   // B1 fails safe on divergent immutable content for an existing captureId with
   // SQLSTATE 23505 (unique_violation) — a reportable integrity signal, not a
@@ -128,8 +149,9 @@ function classifyCaptureError(err: unknown): 'evidence_idempotency_conflict' | '
 /**
  * Build the AuditBridge dispatcher. The returned function is AWAITED by the
  * caller (no fire-and-forget): the cost is ~ms and silent evidence loss is worse
- * than a little latency. In v1 it is best_effort and never throws on the request
- * path (ADR-028 §9); `strict` is plumbed into the capture row but not enabled.
+ * than a little latency. Under `best_effort` (the direct routes) it never throws
+ * on the request path (ADR-028 §9); under `strict` (the conversation worker's
+ * bridge instance) every drop class rejects — see `AuditBridgeDeps.posture`.
  */
 export function makeAuditBridge(
   deps: AuditBridgeDeps,
@@ -150,6 +172,25 @@ export function makeAuditBridge(
     }
   };
 
+  // ★ ONE DROP POLICY FOR EVERY FAILURE CLASS (P0-C closeout). Observability is
+  // posture-independent — by the time this runs, the drop site has ALREADY logged and
+  // counted. What the posture decides is whether the CALLER is told. `best_effort`
+  // resolves: the request path never fails over evidence capture. `strict` rejects: the
+  // conversation worker adopted it precisely so an attempt can never reach a successful
+  // terminal state while its required evidence silently vanished — and a validation or
+  // canonicalization drop is exactly such a vanishing, no less than a failed INSERT. An
+  // earlier revision enforced `strict` only at the transaction stage (step 7), so a
+  // schema-invalid worker event resolved normally and the executor's `persistence_error`
+  // classification was structurally unreachable for that whole drop class.
+  //
+  // `cause` carries the ORIGINAL error where one exists (the step-7 transaction path), so
+  // the executor seam keeps observing exactly the failure it always observed; the
+  // validation/identity/canonicalization drops have no failure object a caller should see
+  // and throw the typed reason-bearing marker instead.
+  const dropped = (reason: AuditBridgeFailureReason, cause?: unknown): void => {
+    if (posture === 'strict') throw cause ?? new AuditBridgeCaptureDropped(reason);
+  };
+
   return async (event: unknown, identityArg?: AuditBridgeRequestIdentity): Promise<void> => {
     // 1. Resolve request identity (arg overrides ALS store).
     const identity = identityArg ?? requestIdentityAls.getStore();
@@ -157,6 +198,7 @@ export function makeAuditBridge(
       deps.log.error({ reason: 'missing_request_identity' }, 'audit-bridge: no request identity');
       // S1: no identity/event parsed yet → reason-only (cardinality-safe).
       safeMetric(() => metrics.dropTotal({ reason: 'missing_request_identity' }));
+      dropped('missing_request_identity');
       return;
     }
 
@@ -170,6 +212,7 @@ export function makeAuditBridge(
       // S2: event failed to parse → reason-only (govai_request_id is high-
       // cardinality; it stays in the log, never as a label).
       safeMetric(() => metrics.dropTotal({ reason: 'invalid_runtime_event' }));
+      dropped('invalid_runtime_event');
       return;
     }
     const e: PassthroughInvoked = parsed.data;
@@ -194,6 +237,9 @@ export function makeAuditBridge(
           org_id: e.tenant_context.org_id,
         }),
       );
+      // The typed marker, NOT the raw error: a canonicalization failure can carry a fragment
+      // of the projected payload in its message, and the log line above already recorded it.
+      dropped('canonicalization_failed');
       return;
     }
 
@@ -349,9 +395,10 @@ export function makeAuditBridge(
           }),
         );
       }
-      // 8. best_effort: the request path never fails in v1. `strict` request-
-      // failing enforcement is intentionally deferred to a future PR.
-      if (posture === 'strict') throw err;
+      // 8. The posture decides visibility. `best_effort` resolves — the request path never
+      // fails over evidence. `strict` rethrows the ORIGINAL failure (`cause`), so the
+      // executor seam observes exactly the error the transaction stage produced.
+      dropped(reason, err);
       return;
     } finally {
       // Only release what THIS function checked out. The override released its own client when

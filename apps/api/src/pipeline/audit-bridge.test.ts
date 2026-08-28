@@ -1023,3 +1023,104 @@ describe('audit-bridge: EP-008B drop/capture counters (EC-3b)', () => {
     expect(s.sql('ROLLBACK')).toHaveLength(1);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// P0-C closeout — `strict` posture covers EVERY drop class, not only the transaction stage.
+//
+// ★ THE GAP THESE TESTS CLOSE. The conversation worker's bridge is `strict` so the executor
+// can classify a missing capture as `persistence_error` instead of completing an attempt whose
+// required evidence silently vanished. An earlier revision enforced `strict` only at step 7
+// (the capture transaction): the early drop classes — missing identity, schema validation,
+// canonicalization — logged, counted, and RESOLVED NORMALLY regardless of posture. A
+// worker-internal regression (a provider package emitting an envelope field the schema does
+// not yet accept, say) would therefore have dropped EVERY capture with a warn log while every
+// attempt still reached `completed` — precisely the state `strict` exists to prevent, and
+// invisible outside the logs. Now every drop class is posture-governed by one policy:
+// best_effort resolves (direct routes, byte-for-byte unchanged), strict rejects.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+describe('makeAuditBridge — strict posture rejects every drop class (best_effort unchanged)', () => {
+  it('T-STRICT-1 — missing_request_identity: strict REJECTS the typed marker; best_effort resolves; neither touches the pool', async () => {
+    const strict = makeStack();
+    const strictBridge = makeAuditBridge({ pool: strict.pool, log: strict.log, posture: 'strict' });
+    await expect(strictBridge(baseEnvelope(), undefined)).rejects.toMatchObject({
+      name: 'AuditBridgeCaptureDropped',
+      reason: 'missing_request_identity',
+    });
+    // Observability is posture-independent: the drop was logged before the reject.
+    expect(strict.log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'missing_request_identity' }),
+      expect.any(String),
+    );
+    // The drop happens before any checkout on both postures.
+    expect(strict.connect).not.toHaveBeenCalled();
+
+    const lax = makeStack();
+    const laxBridge = makeAuditBridge({ pool: lax.pool, log: lax.log });
+    await expect(laxBridge(baseEnvelope(), undefined)).resolves.toBeUndefined();
+    expect(lax.connect).not.toHaveBeenCalled();
+  });
+
+  it('T-STRICT-2 — invalid_runtime_event: strict REJECTS the typed marker; best_effort resolves; nothing is ever inserted', async () => {
+    const invalid = { ...baseEnvelope(), event_type: 'not.passthrough' };
+
+    const strict = makeStack();
+    const strictBridge = makeAuditBridge({ pool: strict.pool, log: strict.log, posture: 'strict' });
+    await expect(strictBridge(invalid, REQ_IDENTITY)).rejects.toMatchObject({
+      name: 'AuditBridgeCaptureDropped',
+      reason: 'invalid_runtime_event',
+    });
+    expect(strict.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'invalid_runtime_event' }),
+      expect.any(String),
+    );
+    expect(strict.connect).not.toHaveBeenCalled();
+    expect(strict.insert()).toBeUndefined();
+
+    const lax = makeStack();
+    const laxBridge = makeAuditBridge({ pool: lax.pool, log: lax.log });
+    await expect(laxBridge(invalid, REQ_IDENTITY)).resolves.toBeUndefined();
+    expect(lax.connect).not.toHaveBeenCalled();
+    expect(lax.insert()).toBeUndefined();
+  });
+
+  it('T-STRICT-3 — canonicalization_failed: strict REJECTS the typed marker, never the raw projection error; best_effort resolves', async () => {
+    // The same injected-projection seam S3 uses — the drop is driven through the REAL
+    // dispatcher, not a substitute bridge.
+    coreEventsCtl.projectThrows = true;
+    try {
+      const strict = makeStack();
+      const strictBridge = makeAuditBridge({ pool: strict.pool, log: strict.log, posture: 'strict' });
+      let caught: unknown = null;
+      await strictBridge(baseEnvelope(), REQ_IDENTITY).catch((err: unknown) => {
+        caught = err;
+      });
+      // The typed marker, NOT the projection's own error: a canonicalization failure can carry
+      // a fragment of the projected payload in its message, and the log line owns that detail.
+      expect(caught).toMatchObject({
+        name: 'AuditBridgeCaptureDropped',
+        reason: 'canonicalization_failed',
+      });
+      expect((caught as Error).message).not.toContain('projection failed');
+      expect(strict.connect).not.toHaveBeenCalled();
+
+      const lax = makeStack();
+      const laxBridge = makeAuditBridge({ pool: lax.pool, log: lax.log });
+      await expect(laxBridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+      expect(lax.connect).not.toHaveBeenCalled();
+    } finally {
+      coreEventsCtl.projectThrows = false;
+    }
+  });
+
+  it('T-STRICT-4 — a capture-transaction failure under strict rethrows the ORIGINAL error, exactly as before', async () => {
+    const original = Object.assign(new Error('insert failed'), { code: '57P01' });
+    const s = makeStack({ insertError: original });
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log, posture: 'strict' });
+    // `toBe` — identity, not shape: the executor seam classifies what the transaction stage
+    // actually threw, and wrapping it here would change what `persistence_error` wraps.
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).rejects.toBe(original);
+    expect(s.sql('ROLLBACK')).toHaveLength(1);
+    expect(s.release).toHaveBeenCalledTimes(1);
+  });
+});
