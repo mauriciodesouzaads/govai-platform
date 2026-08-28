@@ -115,47 +115,134 @@ export async function forwardStream(input: StreamForwardInput): Promise<StreamFo
   // additive: nothing previously called `out.cancel()`, so the direct routes are unaffected.
   const upstreamReader = upstream ? upstream.getReader() : null;
 
+  // ── R16-2 (a): ONE TERMINAL SETTLEMENT, ONE DIGEST ───────────────────────────────────────
+  // `hasher.digest()` may be called ONCE — a second call throws — and `finalize()` must report
+  // the terminal truth exactly once. A demand-driven pump can be PARKED when the stream ends,
+  // so EOF, an upstream failure and a consumer cancellation now race to terminalize instead of
+  // all arriving through one loop's `finally`. Every path routes through this latch, which is
+  // what makes double-digestion and a never-settling `finalize()` both impossible.
+  let settled = false;
+  const settle = (): void => {
+    if (settled) return;
+    settled = true;
+    resolveFinal({
+      stream_final_hash: hasher.digest('hex'),
+      bytes_streamed,
+      latency_ms: Date.now() - t0,
+    });
+  };
+
+  // ── R16-2 (b): THE DEMAND SIGNAL ─────────────────────────────────────────────────────────
+  // WHATWG calls `pull` exactly when this stream has room for another chunk, so `pull` IS the
+  // downstream demand. `pendingDemand` remembers a `pull` that arrived while the pump was busy,
+  // so a signal is never dropped between iterations.
+  let releaseDemand: (() => void) | null = null;
+  let pendingDemand = false;
+  const signalDemand = (): void => {
+    const release = releaseDemand;
+    releaseDemand = null;
+    if (release) release();
+    else pendingDemand = true;
+  };
+  const awaitDemand = (): Promise<void> => {
+    if (pendingDemand) {
+      pendingDemand = false;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      releaseDemand = resolve;
+    });
+  };
+  let cancelled = false;
+
+  /**
+   * ONE upstream read per unit of downstream demand.
+   *
+   * ★ THE DEFECT THIS REPLACES. The previous pump looped on `reader.read()` and called
+   * `controller.enqueue()` unconditionally, never consulting `desiredSize`. WHATWG queues
+   * whatever a source enqueues past the high-water mark, so a consumer SLOWER than the provider
+   * did not slow the provider down — it grew this wrapper's internal queue by the whole
+   * response. P0-C is the first structurally slow consumer (`recordStream` pauses for a KMS
+   * encrypt plus a fenced database append on every flush), and it runs in a dedicated worker
+   * whose heap is the blast radius. Reading only on demand pushes the backpressure back onto the
+   * provider socket, where undici can pause it.
+   *
+   * ★ A LOOP, NOT A `pull` HANDLER, AND THAT IS LOAD-BEARING. Every upstream read must be
+   * SERIALIZED: the hash is order-sensitive, and two overlapping readers would interleave their
+   * `hasher.update` calls and digest a permutation of the response. One loop makes that
+   * impossible by construction and gives the terminal settlement exactly one owner.
+   *
+   * ★ THE DEMAND WAIT IS RACED AGAINST THE UPSTREAM'S OWN END. A provider body can finish — or
+   * fail — while this pump is parked with no demand, and `pumpStreamWithTerminalEmit` really
+   * does reach that state: when the client socket is already closed it SKIPS the drain entirely
+   * and then awaits `finalize()`. Waiting for a demand that will never arrive would strand that
+   * caller forever. `closed` settles on EVERY way the body can end, so the pump wakes and reads
+   * out the remainder — which is bounded, because after EOF whatever is left has already been
+   * received.
+   */
+  const pump = async (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    upstreamEnded: Promise<void>,
+  ): Promise<void> => {
+    try {
+      for (;;) {
+        await Promise.race([awaitDemand(), upstreamEnded]);
+        const { value, done } = await reader.read();
+        if (done) break;
+        // ★ DEFENCE IN DEPTH, AND SAYING SO IS THE POINT. WHATWG resolves a pending read with
+        // `done: true` once the body is cancelled and REJECTS it once the body errors, so
+        // neither guard below is reachable today. They keep "never hash past the terminal" and
+        // "never enqueue into a closed stream" LOCAL to this loop, instead of an emergent
+        // consequence of spec ordering that a later edit could quietly break.
+        /* c8 ignore next 2 */
+        if (cancelled || settled) break;
+        if (!value) continue;
+        bytes_streamed += value.byteLength;
+        hasher.update(Buffer.from(value));
+        controller.enqueue(value);
+      }
+      // A cancelled stream is already closed; `close()` would throw on it.
+      if (!cancelled) controller.close();
+    } catch (err) {
+      controller.error(err);
+    } finally {
+      settle();
+    }
+  };
+
   const out = new ReadableStream<Uint8Array>({
-    async start(controller) {
+    start(controller) {
       if (!upstreamReader) {
         controller.close();
-        resolveFinal({
-          stream_final_hash: hasher.digest('hex'),
-          bytes_streamed,
-          latency_ms: Date.now() - t0,
-        });
+        settle();
         return;
       }
       const reader = upstreamReader;
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          /* c8 ignore next 4 -- WHATWG Streams: reader.read() with done:false always yields a value chunk; defensive guard */
-          if (value) {
-            bytes_streamed += value.byteLength;
-            hasher.update(Buffer.from(value));
-            controller.enqueue(value);
-          }
-        }
-        controller.close();
-      } catch (err) {
-        controller.error(err);
-      } finally {
-        resolveFinal({
-          stream_final_hash: hasher.digest('hex'),
-          bytes_streamed,
-          latency_ms: Date.now() - t0,
-        });
-      }
+      // Fulfils on EOF, on failure AND on cancellation — every way the provider body can end.
+      // Both arms are handled, so this never becomes an unhandled rejection.
+      const upstreamEnded = reader.closed.then(
+        () => undefined,
+        () => undefined,
+      );
+      // ★ STARTED, NOT RETURNED. WHATWG sets `[[started]]` — and therefore first calls `pull` —
+      // only once the `start` result settles, so returning the pump would mean the demand signal
+      // never arrives and the stream deadlocks before its first chunk.
+      void pump(controller, reader, upstreamEnded);
+    },
+    pull() {
+      signalDemand();
     },
     // Consumer cancellation PROPAGATES to the provider body, closing the connection rather than
     // merely detaching this wrapper from it.
     async cancel(reason?: unknown) {
+      cancelled = true;
       await upstreamReader?.cancel(reason).catch(() => undefined);
+      // Cancelling ends the body, which releases the pump — but settle here too, so `finalize()`
+      // resolves even when the pump has already exited.
+      settle();
     },
   });
-
   return {
     status: res.status,
     responseHeaders,

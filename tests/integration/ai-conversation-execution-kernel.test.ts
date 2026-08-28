@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { DevKms } from '@govai/core-identity';
 import {
   startStack,
@@ -263,6 +263,121 @@ async function outputText(attemptId: string): Promise<string> {
   return a.output_items
     .map((i) => (i.item_type === 'native_stream_chunk' ? (i.text ?? '') : JSON.stringify(i.native)))
     .join('');
+}
+
+/**
+ * A provider handler that writes `frames` SSE frames, each one only AFTER the previous frame has
+ * become a DURABLE item.
+ *
+ * ★ WHY A HANDSHAKE AND NOT A TIMER, AS OF R16-2 — AND WHAT CHANGED UNDERNEATH THESE FIXTURES.
+ * Two hydrate tests need MANY durable items on ONE turn, and they used to get them by writing
+ * frames on a 2ms timer. That worked only because the EAGER forwarder drained the provider
+ * socket continuously: every frame arrived as its own `read()`, so every frame produced its own
+ * flush and its own item. The demand-driven forwarder deliberately stops reading while the
+ * consumer is busy (a KMS encrypt plus a fenced append), so frames COALESCE in the socket and a
+ * single `read()` can carry a dozen of them — one durable item instead of twelve.
+ *
+ * ★ THAT IS THE FIX WORKING, NOT A REGRESSION, AND THE DISTINCTION IS EXACT. The durable bytes
+ * are unchanged: concatenating an attempt's chunks in `item_seq` order still reproduces the
+ * provider's stream exactly (`E1.3` asserts precisely that, unchanged and passing). Item
+ * GRANULARITY was never a contract — `streamFlushBytes` is a floor on flush size, never a
+ * promise about how many items a response becomes. What is no longer true is the fixture's
+ * hidden assumption that "40 frames ⇒ 40 items", which made these two tests measure the
+ * scheduler rather than the property they exist for. Measured: 40 frames produced 40 items
+ * before the fix, and 11–32 in isolation (3 under a saturated machine) after it.
+ *
+ * Gating each write on the previous item landing removes the assumption entirely: the count is
+ * what the test asked for, on any machine and under any load. NEITHER TEST'S ASSERTIONS WERE
+ * TOUCHED — only the fixture that feeds them, and it got stronger.
+ */
+function pacedDurableStream(
+  attemptId: string,
+  frames: number,
+  padChar: string,
+): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    req.on('data', () => undefined);
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      void (async () => {
+        for (let n = 0; n < frames; n += 1) {
+          res.write(`data: {"i":${n},"pad":"${padChar.repeat(90)}"}\n\n`);
+          // Wait for THIS frame to be durable before writing the next one. A stall ends the
+          // stream so the test fails on its own count assertion rather than hanging here.
+          let landed = false;
+          for (let poll = 0; poll < 400 && !landed; poll += 1) {
+            await new Promise((r) => setTimeout(r, 5));
+            landed = (await itemCount(attemptId)) >= n + 1;
+          }
+          if (!landed) break;
+        }
+        res.end();
+      })();
+    });
+  };
+}
+
+/** How many durable output items this attempt persisted. */
+async function itemCount(attemptId: string): Promise<number> {
+  const r = await stack.db.adminPool.query<{ n: string }>(
+    `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
+    [attemptId],
+  );
+  return Number(r.rows[0]!.n);
+}
+
+/**
+ * A worker DB whose FIRST TERMINALIZING transaction fails with a REAL Postgres error.
+ *
+ * ★ THE FAULT IS INJECTED AT THE PERSISTENCE SEAM, NOT AT A SPY BOUNDARY. `withOwnerContext` is
+ * the worker's ONLY sanctioned door to SQL, and what is raised inside it is a genuine
+ * server-side error (`22012`) issued on the very statement `finalizeAttempt` runs: the
+ * transaction really aborts, `withOwnerContext` really ROLLBACKs, and `finalizeAndWake` really
+ * throws. That is indistinguishable — to this executor, and by construction — from the transient
+ * faults the statement is exposed to in production: a deadlock (`40P01`) on the attempt row, a
+ * serialization failure, a backend terminated between the terminal UPDATE and the branch bump.
+ * Nothing about the failure is simulated except its trigger.
+ *
+ * ★ KEYED ON THE STATEMENT, NOT ON A CALL COUNT. `terminal_at = now()` appears in exactly one
+ * statement the drive path issues, so the injection cannot drift onto the claim, boundary or
+ * output-append writes that must keep working for the test to mean anything.
+ *
+ * ★ ONE-SHOT, DELIBERATELY. The finding names a "one-shot failure updating the attempt", and it
+ * is the shape that makes the CLASSIFICATION observable: the executor's own recovery finalize —
+ * the one that records the verdict — must be allowed to succeed, or there is no durable row to
+ * assert on.
+ */
+function dbFailingFirstTerminalWrite(base: ConversationWorkerDb): {
+  db: ConversationWorkerDb;
+  fired: () => number;
+} {
+  let fired = 0;
+  const wrapped = Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
+    withOwnerContext<T>(
+      owner: Parameters<ConversationWorkerDb['withOwnerContext']>[0],
+      fn: (tx: PoolClient) => Promise<T>,
+    ): Promise<T> {
+      return base.withOwnerContext(owner, (tx) =>
+        fn(
+          new Proxy(tx, {
+            get(target, prop, receiver): unknown {
+              if (prop !== 'query') return Reflect.get(target, prop, receiver);
+              return async (...a: unknown[]): Promise<unknown> => {
+                const text = typeof a[0] === 'string' ? a[0] : '';
+                const q = target.query as unknown as (...x: unknown[]) => Promise<unknown>;
+                if (fired === 0 && text.includes('terminal_at = now()')) {
+                  fired += 1;
+                  await q.call(target, 'SELECT 1 / 0');
+                }
+                return q.apply(target, a);
+              };
+            },
+          }) as PoolClient,
+        ),
+      );
+    },
+  }) as ConversationWorkerDb;
+  return { db: wrapped, fired: () => fired };
 }
 
 async function lineage(attemptId: string): Promise<{ conversation_id: string; turn_id: string; branch_id: string }> {
@@ -1792,27 +1907,10 @@ describe('R3 — round-three review findings', () => {
     // entire hydrate.
     const conv = await createConversation({ mode: 'passthrough' });
     const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R4-2', true));
-    // 40 chunks at a 64-byte flush threshold ⇒ many durable items on ONE turn.
-    await withProviderBehaviour(
-      (req, res) => {
-        req.on('data', () => undefined);
-        req.on('end', () => {
-          res.writeHead(200, { 'content-type': 'text/event-stream' });
-          let n = 0;
-          const tick = (): void => {
-            if (n >= 40) {
-              res.end();
-              return;
-            }
-            res.write(`data: {"i":${n},"pad":"${'q'.repeat(90)}"}\n\n`);
-            n += 1;
-            setTimeout(tick, 2);
-          };
-          tick();
-        });
-      },
-      () => driveOne(attemptId),
-    );
+    // 40 frames, each above the 64-byte flush threshold and each gated on the previous one
+    // becoming durable ⇒ 40 durable items on ONE turn, deterministically (see
+    // `pacedDurableStream`).
+    await withProviderBehaviour(pacedDurableStream(attemptId, 40, 'q'), () => driveOne(attemptId));
     const itemCount = await stack.db.adminPool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM govai.ai_conversation_items WHERE attempt_id = $1::uuid`,
       [attemptId],
@@ -1951,26 +2049,8 @@ describe('R3 — round-three review findings', () => {
     // cap exists to contain.
     const conv = await createConversation({ mode: 'passthrough' });
     const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R5-2', true));
-    await withProviderBehaviour(
-      (req, res) => {
-        req.on('data', () => undefined);
-        req.on('end', () => {
-          res.writeHead(200, { 'content-type': 'text/event-stream' });
-          let n = 0;
-          const tick = (): void => {
-            if (n >= 60) {
-              res.end();
-              return;
-            }
-            res.write(`data: {"i":${n},"pad":"${'w'.repeat(90)}"}\n\n`);
-            n += 1;
-            setTimeout(tick, 2);
-          };
-          tick();
-        });
-      },
-      () => driveOne(attemptId),
-    );
+    // 60 frames, each gated on the previous one becoming durable (see `pacedDurableStream`).
+    await withProviderBehaviour(pacedDurableStream(attemptId, 60, 'w'), () => driveOne(attemptId));
     const itemCount = Number(
       (
         await stack.db.adminPool.query<{ n: string }>(
@@ -3000,6 +3080,139 @@ describe('R3 — round-three review findings', () => {
     // verifiable by reading `ratchetAndWake` — both statements run inside one `withOwnerContext`
     // callback — and is what closes the gap and the crash window. A test that claimed to prove
     // atomicity here would be overstating what it observes.
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════════════════════
+  // R16-1 — a POST-RESPONSE TERMINAL WRITE FAILURE IS `persistence_error`
+  // ═══════════════════════════════════════════════════════════════════════════════════════════
+
+  it('R16-1a — a NON-STREAM terminal write failure is persistence_error, never outcome_unknown', async () => {
+    // ★ THE LAST PLACE THE TAXONOMY STILL LIED. R3-2/R7-3/R8-1 all close the window between the
+    // response arriving and it becoming durable. This is the window AFTER that: the response is
+    // persisted, the status is classified, and the only thing left is COMMIT 5. A throw there —
+    // a deadlock on the attempt row, a connection lost between the terminal UPDATE and the
+    // branch bump — reached the outer catch as an ordinary error with `forwardStarted` true and
+    // was recorded as `outcome_unknown`: an affirmative claim that the provider's fate was
+    // unprovable, made at the one moment it was fully proven and already on disk.
+    //
+    // PROPERTY_PROVEN          a throw from the post-response `finalizeAndWake` classifies as
+    //                          `persistence_error`
+    // PRODUCTION_PATH_REACHED  processCandidate → dispatchAndFinalize → recordResult →
+    //                          finalizeKnownResult → the REAL `finalizeAttempt` statement
+    // FAULT_INJECTION_POINT    a genuine server-side Postgres error inside the REAL
+    //                          `withOwnerContext` transaction, keyed on that statement's SQL
+    // WITHOUT_THE_FIX          the same run terminalizes `outcome_unknown` (falsified: it did)
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R16-1a', false));
+    const injected = dbFailingFirstTerminalWrite(db);
+    // `withProviderBehaviour` points the executor at THIS server, so the hermetic fixture's
+    // recorder sees nothing — the dispatch count has to be taken here.
+    let posts = 0;
+
+    const outcome = await withProviderBehaviour(
+      (req, res) => {
+        posts += 1;
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, answer: 'R16-1a-durable' }));
+        });
+      },
+      async () =>
+        processCandidate({ ...deps, db: injected.db }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        }),
+    );
+
+    // The fault really fired, on the real statement — the test is not passing vacuously.
+    expect(injected.fired()).toBe(1);
+    expect(outcome).toBe('persistence_error');
+
+    const a = await attempt(attemptId);
+    expect({ state: a.state, error_class: a.error_class }).toEqual({
+      state: 'failed',
+      error_class: 'persistence_error',
+    });
+    expect(a.state).not.toBe('outcome_unknown');
+    // The provider's answer WAS durable when the terminal write failed — which is precisely why
+    // `outcome_unknown` would have been a lie.
+    expect(await itemCount(attemptId)).toBeGreaterThan(0);
+    // Exactly ONE provider request, and no automatic re-drive of work the provider already did.
+    expect(posts).toBe(1);
+    expect(await driveOne(attemptId)).toBe('not_discovered');
+    expect(posts).toBe(1);
+  });
+
+  it('R16-1b — the same terminal write failure on the STREAM path is persistence_error too', async () => {
+    // ★ THE ADJACENT PATH, COVERED IN THE SAME ROUND RATHER THAN THE NEXT ONE. `recordStream`
+    // terminalizes from its own function, and this file already records two rounds where the
+    // stream twin of a fix had to be made a round late (R7-2 after R7-3, R8-1b after R8-1). Here
+    // the stream has reached EOF and its terminal evidence has ALREADY been emitted, so the
+    // provider's fate is proven twice over before COMMIT 5 is even attempted.
+    const conv = await createConversation({ mode: 'passthrough' });
+    const { attemptId } = await send(conv.id, conv.branchId, nativeRequest('R16-1b', true));
+    const injected = dbFailingFirstTerminalWrite(db);
+
+    const emitted: Array<{ is_stream?: boolean; stream_outcome?: string }> = [];
+    const spyDb = Object.assign(Object.create(Object.getPrototypeOf(injected.db)), injected.db, {
+      captureAuditEvent: async (event: unknown, identity?: unknown) => {
+        emitted.push(event as { is_stream?: boolean; stream_outcome?: string });
+        return (
+          injected.db.captureAuditEvent as (e: unknown, i?: unknown) => Promise<void>
+        )(event, identity);
+      },
+    }) as typeof db;
+
+    let posts = 0;
+
+    const outcome = await withProviderBehaviour(
+      (req, res) => {
+        posts += 1;
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.write(`data: {"phase":"one","pad":"${'r'.repeat(120)}"}\n\n`);
+          res.write(`data: {"phase":"two","pad":"${'s'.repeat(120)}"}\n\n`);
+          // A CLEAN EOF: the drain succeeds, so the terminal write is the only thing wrong.
+          setTimeout(() => res.end(), 40);
+        });
+      },
+      async () =>
+        processCandidate({ ...deps, db: spyDb }, {
+          orgId: org.org_id,
+          ownerUserId: org.user_id,
+          conversationId: conv.id,
+          attemptId,
+          state: 'accepted',
+          reason: 'queued_head',
+          claimToken: null,
+          isBranchHead: true,
+        }),
+    );
+
+    expect(injected.fired()).toBe(1);
+    expect(outcome).toBe('persistence_error');
+
+    const a = await attempt(attemptId);
+    expect({ state: a.state, error_class: a.error_class }).toEqual({
+      state: 'failed',
+      error_class: 'persistence_error',
+    });
+    // The stream reached its terminal frame and said so, BEFORE the failing write — the fate is
+    // not merely known, it is already attested.
+    expect(emitted.filter((e) => e.stream_outcome === 'complete')).toHaveLength(1);
+    // And the drained prefix is durable.
+    expect(await itemCount(attemptId)).toBeGreaterThan(0);
+    expect(posts).toBe(1);
+    expect(await driveOne(attemptId)).toBe('not_discovered');
+    expect(posts).toBe(1);
   });
 
   it('R3-6 — a VALID-UTF-8 non-JSON body still comes back as text, not base64', async () => {

@@ -8,7 +8,8 @@
 //   - gated by GOVAI_LIVE_TESTS=1; `tests/live/**` is excluded from the default vitest config,
 //     so normal CI never makes a provider call;
 //   - both calls are capped at 16 output tokens;
-//   - exactly TWO provider requests total (one Anthropic, one OpenAI);
+//   - exactly FOUR provider requests total: one non-stream and one STREAM per provider (the
+//     stream lanes are the R16-2 post-Foundation corrective re-acceptance);
 //   - NO provider key value is ever printed, logged, asserted or echoed. A leak canary checks
 //     the last 20 characters of each real key — a high-entropy substring — against the durable
 //     conversation store and the hydrate response.
@@ -146,6 +147,8 @@ async function acceptance(input: {
   model: string;
   nativeRequest: Record<string, unknown>;
   key: string;
+  /** SSE lane: the worker owns the drain and the durable prefix is the provider's byte stream. */
+  stream?: boolean;
 }): Promise<void> {
   const created = await inject(stack, 'POST', '/v1/ai/conversations', org.api_key, {
     mode: 'governed',
@@ -241,8 +244,25 @@ async function acceptance(input: {
   };
   expect(body.attempts[0]!.state).toBe('completed');
   expect(body.attempts[0]!.output_items.length).toBeGreaterThan(0);
-  // A real provider document came back and round-tripped through the envelope intact.
-  expect(body.attempts[0]!.output_items[0]!.native).toBeTruthy();
+  if (input.stream) {
+    // ★ THE DURABLE PREFIX IS THE PROVIDER'S OWN BYTE STREAM, REASSEMBLED. Every item is a
+    // `native_stream_chunk` in `item_seq` order, so concatenating them must reproduce real SSE
+    // frames that ran to the provider's terminal event — which is exactly the property the
+    // R16-2 demand-driven forwarder had to preserve while it stopped reading ahead without
+    // bound. `message_stop` / `response.completed` are the two providers' terminal frames.
+    const kinds = new Set(body.attempts[0]!.output_items.map((i) => i.item_type));
+    expect([...kinds]).toEqual(['native_stream_chunk']);
+    const sse = body.attempts[0]!.output_items
+      .map((i) => (i as { text?: string | null }).text ?? '')
+      .join('');
+    expect(sse).toContain('data:');
+    expect(sse).toContain(
+      input.provider === 'anthropic' ? 'message_stop' : 'response.completed',
+    );
+  } else {
+    // A real provider document came back and round-tripped through the envelope intact.
+    expect(body.attempts[0]!.output_items[0]!.native).toBeTruthy();
+  }
 
   // ── 4. LEAK CANARY: no key material in the durable conversation store or the response ─────
   const tail = canary(input.key);
@@ -292,6 +312,56 @@ describeLive('P0-C live acceptance — durable send, detached execution, durable
           input: 'Reply with the single word: durable',
         },
         key: OPENAI_KEY,
+      });
+    },
+    180_000,
+  );
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────
+  // R16-2 POST-FOUNDATION CORRECTIVE RE-ACCEPTANCE — the durable STREAMING lanes.
+  //
+  // ★ WHY THESE EXIST AND WHY THEY ARE HERE. `forwardStream` — shared with the accepted
+  // Foundation V1 direct/governed runtime — no longer drains the provider eagerly; it reads one
+  // chunk per unit of downstream demand. The P0-C durable drain is the SLOWEST consumer in the
+  // system (a KMS encrypt plus a fenced database append on every flush), so it is the lane where
+  // a backpressure regression would show up first and the hermetic suites' controlled upstream
+  // cannot stand in for a real provider socket. Same cap, same canary, same single dispatch.
+  // ───────────────────────────────────────────────────────────────────────────────────────────
+  it.skipIf(!ANTHROPIC_KEY)(
+    'LIVE-3 — Anthropic /v1/messages STREAM: reserve → detached drain → durable SSE prefix',
+    async () => {
+      await acceptance({
+        provider: 'anthropic',
+        surface: 'anthropic_messages',
+        model: ANTHROPIC_MODEL,
+        nativeRequest: {
+          model: ANTHROPIC_MODEL,
+          max_tokens: MAX_TOKENS,
+          stream: true,
+          messages: [{ role: 'user', content: 'Reply with the single word: durable' }],
+        },
+        key: ANTHROPIC_KEY,
+        stream: true,
+      });
+    },
+    180_000,
+  );
+
+  it.skipIf(!OPENAI_KEY)(
+    'LIVE-4 — OpenAI /v1/responses STREAM: reserve → detached drain → durable SSE prefix',
+    async () => {
+      await acceptance({
+        provider: 'openai',
+        surface: 'openai_responses',
+        model: OPENAI_MODEL,
+        nativeRequest: {
+          model: OPENAI_MODEL,
+          max_output_tokens: MAX_TOKENS,
+          stream: true,
+          input: 'Reply with the single word: durable',
+        },
+        key: OPENAI_KEY,
+        stream: true,
       });
     },
     180_000,

@@ -954,7 +954,7 @@ async function recordResult(
   });
   if (!persisted) return 'finalize_fenced_out';
   const { state, errorClass, outcome } = classifyStatus(result.status);
-  return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, state, errorClass, outcome);
+  return finalizeKnownResult(deps, owner, args, state, errorClass, outcome);
 }
 
 /**
@@ -1097,7 +1097,7 @@ async function recordStream(
     return 'finalize_fenced_out';
   }
   const { state, errorClass, outcome } = classifyStatus(result.status);
-  return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, state, errorClass, outcome);
+  return finalizeKnownResult(deps, owner, args, state, errorClass, outcome);
 }
 
 /** Encrypt (outside the transaction) then append, FENCED (inside one short transaction). */
@@ -1232,6 +1232,57 @@ async function finalizeAndWake(
     return 'finalize_fenced_out';
   }
   return outcome;
+}
+
+/**
+ * COMMIT 5 for a KNOWN provider result: `finalizeAndWake`, with its FAILURES classified by what
+ * is already PROVEN rather than by which branch of the outer catch they happen to land in.
+ *
+ * ★ THE DISTINCTION THIS RESTORES IS THE ONE THIS EXECUTOR IS BUILT ON. When these two calls
+ * run, the provider has answered, the status has been classified and the response (or the whole
+ * drained stream) is already durable. If the terminal transaction then throws — a deadlock on
+ * the attempt row, a lost connection between the `finalizeAttempt` UPDATE and the branch bump,
+ * any transient fault — the fate is not ambiguous in the slightest; only OUR record of it
+ * failed. Before this wrapper such a throw arrived at the outer catch as an ordinary error with
+ * `forwardStarted` true and terminalized as `outcome_unknown`: an affirmative claim of
+ * ambiguity, made at the one moment the outcome was fully proven, in the one state whose entire
+ * value is that it is reserved for genuine unknowns (§7.7 builds real behaviour on it — no
+ * automatic re-drive, only a probe may resolve it).
+ *
+ * ★ A WRAPPER, NOT TWO POINT FIXES. The non-stream and the stream paths terminalize from two
+ * different functions, and this codebase has already had to re-fix the second one a round after
+ * fixing the first (`R7-2` after `R7-3`, `R8-1b` after `R8-1`). One call site for both means the
+ * classification cannot diverge again.
+ *
+ * ★ WHAT IS DELIBERATELY *NOT* WRAPPED. A `false` from the terminal CAS — the fence rejecting a
+ * rotated claim — is a NORMAL RETURN, not an exception, so it still reports
+ * `finalize_fenced_out`; a fencing miss is not a persistence fault and must not be recoloured as
+ * one. And the PRE-DISPATCH callers keep calling `finalizeAndWake` directly: no provider was
+ * contacted there, so a write failure is GovAI-local, and marking it `persistence_error` would
+ * assert that a provider answered a request it never received.
+ */
+async function finalizeKnownResult(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  args: DispatchArgs,
+  state: 'completed' | 'failed',
+  errorClass: ex.AttemptErrorClass | null,
+  outcome: ExecutionOutcome,
+): Promise<ExecutionOutcome> {
+  try {
+    return await finalizeAndWake(
+      deps,
+      owner,
+      args.context,
+      args.attemptId,
+      args.claim.claimToken,
+      state,
+      errorClass,
+      outcome,
+    );
+  } catch (err) {
+    throw new OutputPersistenceFailed(err);
+  }
 }
 
 /**
