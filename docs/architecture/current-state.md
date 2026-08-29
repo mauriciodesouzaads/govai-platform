@@ -1381,9 +1381,11 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   resolves it without any discriminator column, because the P0-C executor never uses `rejected`
   for a provider-originated outcome at all:
   - **GovAI-side / pre-provider refusals → `rejected` with `error_class` NULL.** Exactly three
-    executor sites, all provably pre-POST and provenance-free: unsupported branch
+    refusal CATEGORIES across FOUR `finalizeAndWake(…, 'rejected', …)` call sites, all provably
+    pre-POST and provenance-free: unsupported branch
     surface (`execution/execute-turn.ts:322`), unreadable/unparseable stored native request
-    config (`:325`, `:358`), and a governance `blocked` result — the gate sits inside the
+    config (two call sites — `:325` pre-decrypt, `:358` decrypt/parse), and a governance
+    `blocked` result — the gate sits inside the
     forward, so a blocked dispatch never contacts the provider (`:919`). 0031's bidirectional
     CHECK (`state='failed' ⟺ error_class present`, `0031:361-364`) structurally forbids any
     error taxonomy on `rejected`.
