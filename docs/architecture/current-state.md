@@ -1158,8 +1158,10 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   the distinction became material, and it is dispositioned
   `PROVIDER_SOURCED_REJECTION_DISCRIMINATOR=CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS` by
   source adjudication (see the dedicated block in the P0-C canonical section): the P0-C
-  executor never represents a provider-originated HTTP failure as `rejected` — every provider
-  response classifies `completed` or `failed` with provider/error taxonomy, and `rejected` is
+  executor never represents a provider-originated HTTP failure as `rejected` — a fully
+  consumed provider result classifies `completed` or `failed` with provider/error taxonomy,
+  the not-fully-consumed and post-response-persistence exception arms finalize
+  `outcome_unknown` / `failed` (never `rejected`), and `rejected` is
   reserved for GovAI-side/pre-provider refusals with `error_class` NULL. No new column or enum
   was invented; the schema stays general.**
   `AUTH-READ-CACHE-01` stays open as a CLASS (see above). `R14` and
@@ -1390,11 +1392,20 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
     CHECK (`state='failed' ⟺ error_class present`, `0031:361-364`) structurally forbids any
     error taxonomy on `rejected`.
   - **Provider HTTP non-2xx responses → `failed` with provider/error taxonomy, never
-    `rejected`.** Every provider response — stream and non-stream alike — classifies through
+    `rejected`.** Every FULLY CONSUMED provider result — stream and non-stream alike —
+    classifies through
     ONE function (`classifyStatus`, `execute-turn.ts:1186-1204`, called at `:959` and `:1102`):
     2xx → `completed`; 401/403 → `auth_rejected`; 413 → `request_too_large`; 429 →
-    `rate_limited`; anything else → `provider_error`. A response of ANY status proves the
-    provider processed the request, so none of these is ever `outcome_unknown` either.
+    `rate_limited`; anything else → `provider_error`. A fully consumed response of ANY status
+    proves the provider processed the request, so nothing that reaches `classifyStatus` is ever
+    `outcome_unknown`. The EXCEPTION paths that never reach status classification are honest
+    and equally rejected-free: a post-status body/stream failure before full consumption (a
+    connection reset mid-body, a stream without its terminal frame) finalizes
+    `outcome_unknown` via the generic post-forward catch (`:612-621` — the fate is genuinely
+    unprovable), and a durable-write failure AFTER a complete response finalizes `failed` +
+    `persistence_error` (`:595-610`). Neither arm — nor the pre-forward `local_error` arm
+    (`:583-593`) — ever produces `rejected`, so the disposition holds on every path, not only
+    the classified one.
   ```
   PROVIDER_SOURCED_REJECTION_DISCRIMINATOR = CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS
   NO_NEW_SCHEMA_COLUMN_REQUIRED            = TRUE

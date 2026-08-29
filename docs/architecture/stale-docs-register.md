@@ -866,10 +866,15 @@ merged tree:
 PROVIDER_SOURCED_REJECTION_DISCRIMINATOR = CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS
 
 RATIONALE = the P0-C executor never represents a provider-originated HTTP failure as
-`rejected`: every provider response — stream and non-stream — classifies through ONE
+`rejected`: every FULLY CONSUMED provider result — stream and non-stream — classifies
+through ONE
 function (execute-turn.ts:1186-1204; call sites :959/:1102) as `completed` (2xx) or `failed`
 with provider/error taxonomy (401/403 auth_rejected · 413 request_too_large ·
-429 rate_limited · other provider_error), while `rejected` is reserved for GovAI-side/
+429 rate_limited · other provider_error); the exception paths that never reach status
+classification are equally rejected-free (post-status body/stream failure before full
+consumption → outcome_unknown via the generic catch :612-621; durable-write failure after
+a complete response → failed + persistence_error :595-610; pre-forward local failure →
+failed + local_error :583-593); while `rejected` is reserved for GovAI-side/
 pre-provider refusals (surface_unsupported :322 · config_unreadable :325/:358 · governance
 blocked pre-forward :919), each provably pre-POST and carrying error_class NULL —
 structurally enforced by 0031's bidirectional CHECK (0031:361-364).
