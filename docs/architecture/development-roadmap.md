@@ -329,10 +329,17 @@ P0_C_DURABLE_SEND_EXECUTION_KERNEL=COMPLETE         (PR #147, merge c1ddfd30,
                                                      tree 92ffaa7d == audited head 13392bbd,
                                                      post-merge CI 33226802442 SUCCESS)
 
-NEXT: EP-PROVIDER-NATIVE-PARITY-V1-
-      NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01   (documentary/normative — see below)
+EP-PROVIDER-NATIVE-PARITY-V1-
+NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01
+    = AUTHORED_IN_THIS_TREE                         (documentary/normative + deterministic
+                                                     research tooling; contract v1 + parity
+                                                     baseline V2 + additive validator; V1
+                                                     baseline byte-preserved; the movement
+                                                     does NOT self-merge — independent
+                                                     architecture review required; see below)
 
-P0_D=NOT_STARTED                                    <- first implementation movement AFTER it
+P0_D=NOT_STARTED                                    <- first implementation movement AFTER
+                                                       that review/merge
 P0_E=NOT_STARTED
 P0_F=NOT_STARTED
 
@@ -401,6 +408,13 @@ current baseline is a NEW version); define the user model-chooser data source; d
 API-native vs provider-product-equivalent boundary; define external-provider
 exit/acknowledgement policy requirements; and establish the laws that P0-D/P0-E must obey.
 Nothing in it is implemented by this roadmap insertion — it is planning only.
+**★ EXECUTED (this tree, research snapshot 2026-08-29):** delivered as
+`native-experience-contract-v1.md` (LAWs NX-1…NX-26 + P0-D/P0-E/P0-F obligations),
+`native-experience-parity-v2.md` + `generated/native-experience-parity-v2.json` (252 rows,
+`pnpm docs:parity2:check`, additive V2 validator lane; V1 baseline byte-preserved), and the
+carry-forward re-adjudications recorded in `current-state.md`'s canonical section. NO runtime
+change; `P0-D / P0-E / P0-F` remain `NOT_STARTED`; the movement's PR awaits independent
+architecture review — it does not self-merge.
 
 **P0-D — provider continuation (not started, AFTER the contract movement).** Server-assembled
 durable branch context via the `ProviderConversationAdapter` (continuity spec §11), provider
