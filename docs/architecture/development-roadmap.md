@@ -305,12 +305,15 @@ Its first movement, `EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`, is **COMPLETE in
 and the unit lane), the surface baselines and findings
 ([native-experience-parity-v1.md](./native-experience-parity-v1.md)) and the owner-accepted P0
 prerequisite `CONVERSATION_CONTINUITY=P0_NATIVE_EXPERIENCE_PREREQUISITE` with its DESIGN spec
-([ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) —
-`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`). No capability implementation wave has started.
+([ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) — a VERSIONED
+2026-08-21 design snapshot whose header verdict `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` is
+its historical anchor state, superseded for the current tree by the P0-C completion recorded
+below). The P0 wave (conversation continuity) is the only wave in flight; waves P1–P9 have not
+started.
 The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; the implementation
 mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated candidate scope in the
-baseline doc §10) is **IN_PROGRESS**, with four movements finished and merged and the durable
-execution kernel next:
+baseline doc §10) is **IN_PROGRESS**, with five movements finished and merged and a
+program-level architectural movement next before P0-D:
 
 ```text
 EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
@@ -322,13 +325,22 @@ T1=COMPLETE                                         (PR #142 — TEST-ISSUANCE B
   LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14
 P0_A2_WORKER_TRUST_RECOVERY_DISCOVERY=COMPLETE      (PR #143; docs closeout #144)
 P0_B_CONVERSATION_CONTROL_PLANE=COMPLETE            (PR #145, merge 6567d8da)
+P0_C_DURABLE_SEND_EXECUTION_KERNEL=COMPLETE         (PR #147, merge c1ddfd30,
+                                                     tree 92ffaa7d == audited head 13392bbd,
+                                                     post-merge CI 33226802442 SUCCESS)
 
-P0_C_DURABLE_SEND_EXECUTION_KERNEL=NOT_STARTED      <- CURRENT / NEXT
-P0_D=NOT_STARTED
+NEXT: EP-PROVIDER-NATIVE-PARITY-V1-
+      NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01   (documentary/normative — see below)
+
+P0_D=NOT_STARTED                                    <- first implementation movement AFTER it
 P0_E=NOT_STARTED
 P0_F=NOT_STARTED
 
-CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED
+CONVERSATION_PERSISTENCE=IMPLEMENTED_API_LEVEL_FOR_P0C_SURFACES_ONLY
+  (durable Send → server-owned execution → hydrate/reload for anthropic_messages +
+   openai_responses; the persistent AI workspace UI is P0-E and the AI Console transcript
+   remains memory-only)
+PROVIDER_EXACTLY_ONCE=NOT_CLAIMED                   (permanent)
 ```
 
 **P0-A1 (done).** Operational storage + crypto purpose isolation + owner-scoped FORCE RLS —
@@ -361,20 +373,51 @@ independently audited tree (reviewed tree `770dffba…`, audit PASS with `P0=0 �
 P3=7`, post-merge main CI run `33023935331` GREEN). Seven P3 carry-forwards are registered and
 five remain open — see current-state.md's *P0-B canonical state* section.
 
-**P0-C — durable send / execution kernel (NEXT, not started).** The durable execution path:
+**P0-C (done — durable send / execution kernel).** The durable execution path is implemented:
 Send → `client_turn_id` durable reservation → immutable user input → immutable native request
 config → initial attempt → branch execution authority → claim → lease → fencing → detached
-worker → durable credential resolution → provider dispatch → durable finalize → hydrate →
-reload → reconnection. ★ `P0A2-P3-A1` must be adjudicated/closed before the FIRST real
-conversation-worker runtime activation and `P0A2-P3-A4` must receive its required pre-activation
-review before worker runtime callers expand — these gate the ACTIVATION boundary, not every
-preparatory P0-C step.
+worker → durable credential resolution (provenance durable BEFORE any provider POST) →
+provider dispatch → durable finalize → hydrate → reload. Anthropic Messages + OpenAI Responses
+execution, governed and passthrough where implemented, stream and non-stream; honest
+`outcome_unknown`; recovery/ratchet; strict worker AuditBridge posture; migrations `0034`
+(worker authority only) and `0035` (local failure taxonomy). Merged tree-identically to the
+independently audited tree (PR #147, merge `c1ddfd30`, tree `92ffaa7d` == audited head
+`13392bbd`; audit PASS with `P0=0 · P1=0 · P2=0 · P3=1 · P4=3`; post-merge main CI run
+`33226802442` SUCCESS). ★ The two activation gates were discharged INSIDE P0-C:
+`P0A2-P3-A1=CLOSED_BEFORE_FIRST_WORKER_ACTIVATION`, `P0A2-P3-A4=CLOSED_FOR_P0C_ACTIVATION`.
+The pinned carry-forward `P3-1-CHAT-COMPLETIONS-STREAM-GATE-ASYMMETRY` (non-blocking, no
+production-reachable defect today) is owned by the first future movement that gives Chat
+Completions streaming a durable/gated caller. Full canonical detail — surface matrix,
+model-agnosticism proof, carry-forward register, explicit non-claims — is in current-state.md's
+*P0-C canonical state* section.
 
-None of the above makes conversation persistence real:
-`CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` remains true — no user-facing
-`Send → durable accepted turn → server-owned execution → hydrate/reload` path exists, no worker
-process runs, and the AI Console transcript is still memory-only (see current-state.md's P0-A1 /
-P0-A2 / P0-B canonical state sections).
+**EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01 (NEXT — a
+DOCUMENTARY/normative planning movement, not implementation).** The small program-level
+architectural movement inserted between P0-C and P0-D. Its purpose: formalize dynamic model
+discovery; formalize surface-aware model compatibility; formalize a first-class OpenAI /
+Anthropic native experience contract; refresh the research/current parity snapshot WITHOUT
+rewriting V1 history (the 2026-08-21 baseline stays a versioned historical snapshot — a
+current baseline is a NEW version); define the user model-chooser data source; define the
+API-native vs provider-product-equivalent boundary; define external-provider
+exit/acknowledgement policy requirements; and establish the laws that P0-D/P0-E must obey.
+Nothing in it is implemented by this roadmap insertion — it is planning only.
+
+**P0-D — provider continuation (not started, AFTER the contract movement).** Server-assembled
+durable branch context via the `ProviderConversationAdapter` (continuity spec §11), provider
+continuation strategies, and the `R1_DURABLE_CONTEXT_P1` carry-forward remedy — P0-C posts the
+client's stored provider-native request verbatim, so a pipelining client composes turn N+1
+without turn N's answer; the mechanism that closes that is P0-D's, by design.
+
+What P0-C does and does not make real, stated precisely:
+`CONVERSATION_PERSISTENCE=IMPLEMENTED_API_LEVEL_FOR_P0C_SURFACES_ONLY` — the durable
+`Send → durable accepted turn → server-owned execution → hydrate/reload` path EXISTS for
+`anthropic_messages` and `openai_responses`, and a detached worker process is implemented (its
+deployable packaging — `WORKER_DEPLOYABLE_BUNDLE_DOCKER` — is required before production
+activation and does not exist). Still absent: provider continuation, public Retry, complete
+public Stop terminalization, the §19 Delete protocol, reattach-to-live-stream, the persistent
+AI workspace UI (the AI Console transcript is still memory-only), exact turn↔evidence
+correlation, full provider parity — and provider exactly-once is never claimed (see
+current-state.md's P0-A1 / P0-A2 / P0-B / P0-C canonical state sections).
 
 ---
 
