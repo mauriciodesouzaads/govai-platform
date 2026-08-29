@@ -916,7 +916,9 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   stays open — the four pre-existing authenticated read surfaces are untouched). The
   provider-sourced rejection discriminator, the P3 sets and the R14 risk are carried forward
   UNCHANGED; the five P0-A2 P3 items are restated in the P0-B section, including P0A2-P3-A1's
-  status as a MANDATORY GATE before the first worker runtime activation.
+  status as a MANDATORY GATE before the first worker runtime activation. ★ UPDATED BY P0-C:
+  the provider-sourced rejection discriminator is since dispositioned
+  `CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS` — see the P0-C canonical section.
 
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-B canonical state (this tree)
 
@@ -1148,10 +1150,19 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   existing classifications. **★ UPDATED BY P0-C: both activation gates were discharged inside
   P0-C before any worker activation — `P0A2-P3-A1=CLOSED_BEFORE_FIRST_WORKER_ACTIVATION` and
   `P0A2-P3-A4=CLOSED_FOR_P0C_ACTIVATION` (see the P0-C canonical section).** The
-  **provider-sourced rejection discriminator** stays OPEN and is
-  deliberately NOT closed cosmetically: P0-B exposes no durable turn hydration or execution, so
-  the distinction is not yet material, and inventing a column or HTTP enum now would freeze a
-  guess. `AUTH-READ-CACHE-01` stays open as a CLASS (see above). `R14` and
+  **provider-sourced rejection discriminator** stayed OPEN at P0-B and was
+  deliberately NOT closed cosmetically — the P0-B rationale, preserved as provenance: P0-B
+  exposed no durable turn hydration or execution, so the distinction was not yet material, and
+  inventing a column or HTTP enum then would have frozen a guess. **★ UPDATED BY P0-C: that
+  rationale is no longer the current reading — P0-C implements durable execution and hydration,
+  the distinction became material, and it is dispositioned
+  `PROVIDER_SOURCED_REJECTION_DISCRIMINATOR=CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS` by
+  source adjudication (see the dedicated block in the P0-C canonical section): the P0-C
+  executor never represents a provider-originated HTTP failure as `rejected` — every provider
+  response classifies `completed` or `failed` with provider/error taxonomy, and `rejected` is
+  reserved for GovAI-side/pre-provider refusals with `error_class` NULL. No new column or enum
+  was invented; the schema stays general.**
+  `AUTH-READ-CACHE-01` stays open as a CLASS (see above). `R14` and
   `LATENT_AUTH_LIFECYCLE_DESIGN_RISK=OPEN_R14` are unchanged — persistence is keyed to the
   stable `(org_id, user_id)` the API-key lookup returns, and nothing here pretends that is a
   human login. `P0B-FORK-BAO-TRIPLE-SWITCH` stays `DEFERRED`, honoured exactly (see the
@@ -1334,6 +1345,7 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   | ID | Status | What it is / where it goes next |
   |---|---|---|
   | `P3-1-CHAT-COMPLETIONS-STREAM-GATE-ASYMMETRY` | **OPEN — pinned, non-blocking** | see the dedicated block below |
+  | `PROVIDER_SOURCED_REJECTION_DISCRIMINATOR` | **CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS** | the P0-A1/P0-B carry-forward became material with P0-C's durable execution/hydration and is dispositioned by source adjudication — see the dedicated block below; re-adjudicate only if a future execution surface introduces a provider-sourced `state = rejected` |
   | `R1_DURABLE_CONTEXT_P1` | P0-D_CARRY_FORWARD | server-assembled durable branch context (the pipelining limitation above); P0-D's adapter owns the remedy — the P0-C lane-wall test bans it here |
   | `P0C-SWEEP-01-P0B-KMS-HELD-CHECKOUT` | OPEN (P2) | merged P0-B control-plane code holds a checked-out client across KMS decryption (`service.ts` list/get/patch, up to 50 title decrypts); remedy pattern already proven in P0-C; mechanical follow-up |
   | `P4-1` (audit) / `AUDITBRIDGE_RAW_ERR_MESSAGE_ON_WORKER_LOGS` | REGISTERED P3 | pre-existing `err: errMessage(err)` lines now also reach the NEW worker log sink; no new code, widened audience |
@@ -1362,6 +1374,36 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   movement MUST close P3-1 before activation** (a streaming gated caller today would POST with
   no durable provenance, and the provenance-absent recovery arm would re-drive a dispatched
   attempt — exactly the P1 class P0-C fixed twice).
+- **`PROVIDER_SOURCED_REJECTION_DISCRIMINATOR=CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS` —
+  source-adjudicated disposition of the P0-A1/P0-B carry-forward.** The historical carry-forward
+  said the distinction between a provider-sourced and a GovAI-side `rejected` would become
+  material once durable execution/hydration existed; P0-C is that point, and the merged source
+  resolves it without any discriminator column, because the P0-C executor never uses `rejected`
+  for a provider-originated outcome at all:
+  - **GovAI-side / pre-provider refusals → `rejected` with `error_class` NULL.** Exactly three
+    executor sites, all provably pre-POST and provenance-free: unsupported branch
+    surface (`execution/execute-turn.ts:322`), unreadable/unparseable stored native request
+    config (`:325`, `:358`), and a governance `blocked` result — the gate sits inside the
+    forward, so a blocked dispatch never contacts the provider (`:919`). 0031's bidirectional
+    CHECK (`state='failed' ⟺ error_class present`, `0031:361-364`) structurally forbids any
+    error taxonomy on `rejected`.
+  - **Provider HTTP non-2xx responses → `failed` with provider/error taxonomy, never
+    `rejected`.** Every provider response — stream and non-stream alike — classifies through
+    ONE function (`classifyStatus`, `execute-turn.ts:1186-1204`, called at `:959` and `:1102`):
+    2xx → `completed`; 401/403 → `auth_rejected`; 413 → `request_too_large`; 429 →
+    `rate_limited`; anything else → `provider_error`. A response of ANY status proves the
+    provider processed the request, so none of these is ever `outcome_unknown` either.
+  ```
+  PROVIDER_SOURCED_REJECTION_DISCRIMINATOR = CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS
+  NO_NEW_SCHEMA_COLUMN_REQUIRED            = TRUE
+  SCHEMA_GENERALITY                        = UNCHANGED   (0031's state graph still admits
+                                             `rejected` generally; no origin column or enum
+                                             member was added)
+  FUTURE_REOPEN_CONDITION                  = only if a future execution surface introduces a
+                                             genuinely provider-sourced terminal outcome
+                                             represented as state = rejected — that movement
+                                             must re-adjudicate this disposition
+  ```
 - **The 2026-08-21 Native Experience Parity V1 baseline is PRESERVED, and `FULL` must be read
   correctly.** The baseline (248 rows, `verified_at`/`source_anchor`/counts) is a versioned
   historical/research snapshot; post-baseline P0-C implementation and live proofs do not

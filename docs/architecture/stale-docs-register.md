@@ -697,7 +697,10 @@ Register-relevant facts this reconciliation records but does NOT change:
   this reconciliation and they do not gate every preparatory P0-C step.
 - `R14` / `LATENT_AUTH_LIFECYCLE_DESIGN_RISK`, the `AUTH-READ-CACHE-01` platform class, the
   provider-sourced rejection discriminator and `P0B-FORK-BAO-TRIPLE-SWITCH` are all UNCHANGED in
-  status.
+  status. *(Superseded in part — the provider-sourced rejection discriminator was UNCHANGED at
+  this movement's anchor, before P0-C existed; it is since dispositioned
+  `CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS`. See the P0-C post-merge reconciliation section
+  below.)*
 - **Branch protection / repository rulesets — no finding, no action, no setting touched.** This
   movement inspected no repository setting for change and modified none. Per a standing owner
   governance decision, GitHub branch protection and rulesets are **intentionally not used**, so
@@ -820,6 +823,10 @@ lives in current-state.md's *P0-C canonical state* section; the entries, by ID:
 
 ```text
 P3-1-CHAT-COMPLETIONS-STREAM-GATE-ASYMMETRY   = OPEN — pinned (see the block below)
+PROVIDER_SOURCED_REJECTION_DISCRIMINATOR      = CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS
+                                                (source-adjudicated; see the disposition block
+                                                below — reopen only on a future provider-sourced
+                                                state = rejected)
 R1_DURABLE_CONTEXT_P1                         = P0-D_CARRY_FORWARD (pipelining limitation)
 P0C-SWEEP-01-P0B-KMS-HELD-CHECKOUT            = OPEN (P2 — merged P0-B code; mechanical follow-up)
 DIRECT_HTTP_WRITABLE_BACKPRESSURE             = OPEN (pre-existing Foundation follow-up)
@@ -839,12 +846,46 @@ USER_MODEL_CHOOSER                            = API model token exists; dynamic 
 
 Unchanged in status and NOT absorbed by P0-C: `R14` / `LATENT_AUTH_LIFECYCLE_DESIGN_RISK`, the
 `AUTH-READ-CACHE-01` platform class (conversations joined it already closed; the four
-pre-existing read surfaces are untouched), the provider-sourced rejection discriminator,
+pre-existing read surfaces are untouched),
 `P0B-FORK-BAO-TRIPLE-SWITCH=DEFERRED`, the five open P0-B audit P3s (`P0B-AUDIT-P3-01/-04/-05/
 -06/-07` + alias `P0B-P3-ERR-SHAPE-01`), `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`,
 `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01`, `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`,
 `EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION` (absorbed into P0-F's remit, still open) and every
 Foundation V1 residual (R1–R16 per their current dispositions).
+
+**Dispositioned BY P0-C's merged source (finding `DOCS-P0C-REJECTION-DISCRIMINATOR-01`,
+P2_DOCUMENTARY — a canonical-state inconsistency in the first draft of this section, corrected
+here):** the **provider-sourced rejection discriminator**. Its P0-B-era rationale ("P0-B exposes
+no durable turn hydration or execution, so the distinction is not yet material") stopped being a
+valid current reading the moment P0-C shipped durable execution and hydration; an earlier draft
+of this section nevertheless listed the item as "unchanged / not absorbed", which contradicted
+the carry-forward's own instruction to re-adjudicate it at P0-C. Source adjudication against the
+merged tree:
+
+```text
+PROVIDER_SOURCED_REJECTION_DISCRIMINATOR = CLOSED_FOR_CURRENT_P0C_EXECUTION_SEMANTICS
+
+RATIONALE = the P0-C executor never represents a provider-originated HTTP failure as
+`rejected`: every provider response — stream and non-stream — classifies through ONE
+function (execute-turn.ts:1186-1204; call sites :959/:1102) as `completed` (2xx) or `failed`
+with provider/error taxonomy (401/403 auth_rejected · 413 request_too_large ·
+429 rate_limited · other provider_error), while `rejected` is reserved for GovAI-side/
+pre-provider refusals (surface_unsupported :322 · config_unreadable :325/:358 · governance
+blocked pre-forward :919), each provably pre-POST and carrying error_class NULL —
+structurally enforced by 0031's bidirectional CHECK (0031:361-364).
+
+NO_NEW_SCHEMA_COLUMN_REQUIRED = TRUE
+SCHEMA_GENERALITY             = UNCHANGED (0031's state graph still admits `rejected`
+                                generally; 0035 widened only the error_class enum)
+FUTURE_REOPEN_CONDITION       = only if a future execution surface introduces a genuinely
+                                provider-sourced terminal outcome represented as
+                                state = rejected — that movement re-adjudicates
+RUNTIME_DEFECT                = NO · P0-C_TECHNICAL_REOPEN = NO
+```
+
+The canonical disposition block lives in current-state.md's *P0-C canonical state* section; the
+historical P0-B wording is preserved there as provenance with its ★ UPDATED BY P0-C disposition
+beside it.
 
 ### `P3-1-CHAT-COMPLETIONS-STREAM-GATE-ASYMMETRY` — non-blocking, PINNED
 
