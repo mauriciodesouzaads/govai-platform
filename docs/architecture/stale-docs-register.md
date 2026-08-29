@@ -789,3 +789,144 @@ of scope here: this movement is docs-only and does not touch `.github/**`.
 Still correct and still load-bearing: `CI_EVIDENCE=REAL`, `MERGE_PROTOCOL=PROCESS_ENFORCED`,
 `GITHUB_BRANCH_ENFORCEMENT=NOT_ASSUMED`. Never infer that GitHub-side enforcement exists from the
 existence of a CI workflow — it does not exist, by design.
+
+## P0-C post-merge canonical reconciliation (P0-C-POST-MERGE-DOCS-RECONCILIATION-01)
+
+Documentation-only. No runtime source, no test, no migration, no grant/RLS, no event schema, no
+CI configuration, no `.env*`, no generated parity-baseline byte and no repository setting changed
+in this movement. It exists because the independently audited P0-C tree was merged
+**byte-identically** — `TREE(c1ddfd30…) == 92ffaa7d…` — so the P0-C promotion could not be
+smuggled into the technical squash tree without breaking the tree identity that is the merge
+proof; the P0-C PR deliberately rolled only the machine-derived source manifest, and the
+hand-maintained narrative still predated the merge (independent-audit finding **P4-3**, which
+named this movement as its owner). Anchors: PR **#147**, final frozen head `13392bbd`, merge
+`c1ddfd30c811e453fc042b81f3500795b22a6837`, merged tree `92ffaa7df74635f0a9caa68a0b5373f85084e5d9`,
+post-merge main CI run `33226802442` SUCCESS. `P0-C = COMPLETE`; `P0-D / P0-E / P0-F =
+NOT_STARTED`.
+
+| Document | Was (stale at `c1ddfd30`) | Now |
+|---|---|---|
+| `current-state.md` | status bullets and the P0-A1/P0-A2/P0-B canonical sections still carried `P0_C…=NOT_STARTED`, `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`, "no worker process", "P0-C is the next implementation movement" | a new status bullet + a full *P0-C canonical state* section (immutable evidence block, shipped scope, surface matrix, model-agnosticism proof with its exact probative bounds, carry-forward register incl. the pinned `P3-1`, explicit non-claims); ★ UPDATED BY P0-C annotations on every superseded forward token in the P0-A1/P0-A2/P0-B sections — historical text preserved, never rewritten |
+| `resume-playbook.md` §4 | lane bullet: `NEXT P0-C … (not started)`; "Two gates before P0-C's ACTIVATION boundary"; honesty boundary `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` | `COMPLETE = P0-A1 · T1 · P0-A2 · P0-B · P0-C` with the frozen closeout anchors and an explicit do-not-reopen-P0-C guard; gates recorded DISCHARGED (`P0A2-P3-A1` / `P0A2-P3-A4` closed inside P0-C); honesty boundary updated (durable path exists API-level for the two P0-C surfaces ONLY; workspace UI / continuation / delete / correlation still absent; exactly-once never claimed); `NEXT = EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01`, `THEN = P0-D` |
+| `development-roadmap.md` | `P0_C…=NOT_STARTED <- CURRENT / NEXT`; "P0-C — durable send / execution kernel (NEXT, not started)"; "None of the above makes conversation persistence real" | P0-C `COMPLETE` with merge evidence; the intervening DOCUMENTARY movement `EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01` inserted (planning only — nothing implemented here) with P0-D explicitly AFTER it; the persistence statement made precise (`IMPLEMENTED_API_LEVEL_FOR_P0C_SURFACES_ONLY`) |
+| `stale-docs-register.md` | no P0-C section; the P0-B section's closing "current reading" (five endpoints; durable send does NOT exist; `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`) still read as current | this section. **Superseding the P0-B post-merge section's closing "current reading" above** — retained as that movement's history: §13's control-plane API now has EIGHT registered endpoints (the five P0-B ones plus `POST …/:id/turns`, `GET …/:id/turns`, `GET …/turns/:turnId`); durable send (§8), the dispatch boundary and server-owned execution (§9), and reload-hydration's minimum bar (§10) are implemented for the two P0-C surfaces; `DELETE`, retry, stop and the stream re-attach endpoint still do NOT exist; §11 continuation, §14 correlation and the whole §19 delete protocol remain absent |
+
+### Carry-forwards after P0-C — resolved aspects vs. preserved entries
+
+Entries whose SOLE staleness reason was "conversation persistence not implemented / P0-C pending
+/ durable execution absent" are resolved by PR #147 **for exactly that aspect**; broader entries
+that also cover P0-D/E/F scope stay OPEN unchanged. The current canonical carry-forward register
+lives in current-state.md's *P0-C canonical state* section; the entries, by ID:
+
+```text
+P3-1-CHAT-COMPLETIONS-STREAM-GATE-ASYMMETRY   = OPEN — pinned (see the block below)
+R1_DURABLE_CONTEXT_P1                         = P0-D_CARRY_FORWARD (pipelining limitation)
+P0C-SWEEP-01-P0B-KMS-HELD-CHECKOUT            = OPEN (P2 — merged P0-B code; mechanical follow-up)
+DIRECT_HTTP_WRITABLE_BACKPRESSURE             = OPEN (pre-existing Foundation follow-up)
+WORKER_DEPLOYABLE_BUNDLE_DOCKER               = REQUIRED_BEFORE_PRODUCTION_ACTIVATION
+PUBLIC_STOP_TERMINALIZATION_ARM               = MUST_SHIP_WITH_STOP_ENDPOINT
+DELETE_ROOT_LOCK_DISCIPLINE                   = PIN on the §19 implementer
+BOUNDARY_CAUSAL_VERSION_SNAPSHOT              = RE-EXAMINE in P0-D
+STREAM_OUTCOME_FENCED_EXIT_VOCABULARY         = P0-F evidence formalization
+AUDITBRIDGE_RAW_ERR_MESSAGE_ON_WORKER_LOGS    = REGISTERED P3 (P4-1: pre-existing lines, new
+                                                worker log sink audience)
+NATIVE_PROVIDER_MODEL_DISCOVERY               = needs a productized dynamic catalogue
+NATIVE_PROVIDER_FULL_PARITY                   = V1 baseline exists; implementation remains
+                                                partial (3/248 FULL at the 2026-08-21 snapshot)
+USER_MODEL_CHOOSER                            = API model token exists; dynamic product
+                                                chooser/UI not complete
+```
+
+Unchanged in status and NOT absorbed by P0-C: `R14` / `LATENT_AUTH_LIFECYCLE_DESIGN_RISK`, the
+`AUTH-READ-CACHE-01` platform class (conversations joined it already closed; the four
+pre-existing read surfaces are untouched), the provider-sourced rejection discriminator,
+`P0B-FORK-BAO-TRIPLE-SWITCH=DEFERRED`, the five open P0-B audit P3s (`P0B-AUDIT-P3-01/-04/-05/
+-06/-07` + alias `P0B-P3-ERR-SHAPE-01`), `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01`,
+`PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01`, `EP-PROVIDER-RESPONSE-HEADER-PROVENANCE`,
+`EP-AI-CONSOLE-TURN-EVIDENCE-CORRELATION` (absorbed into P0-F's remit, still open) and every
+Foundation V1 residual (R1–R16 per their current dispositions).
+
+### `P3-1-CHAT-COMPLETIONS-STREAM-GATE-ASYMMETRY` — non-blocking, PINNED
+
+Current source fact: `packages/provider-openai/src/governed/handle-chat-completions.ts` threads
+`beforeDispatch`/`onDispatchStart` into its NON-stream `forwardRaw` only; the stream branch's
+`forwardStream` call carries neither hook. Current reachability fact: NO production caller
+combines this stream branch with the durable dispatch gate (the direct governed route passes no
+hooks; the run orchestrator pins `isStream: false`; P0-C's dispatch registry admits no
+`chat.completions` surface).
+
+```text
+CURRENT_P0C_DEFECT                = NO
+CURRENT_PRODUCTION_REACHABLE_DEFECT = NO
+CARRY_FORWARD                     = YES
+OWNER = the first future movement that makes Chat Completions streaming reachable from a
+        durable/gated caller — that movement MUST close P3-1 before activation
+```
+
+### Correction ledger — `P0C-MERGE-REPORT-KEY-WORDING-CORRECTION-01`
+
+The sealed P0-C frozen-tree merge report (external, byte-frozen with its SHA-256 sidecar) states:
+
+```text
+Historical wording:
+"ANTHROPIC_API_KEY and OPENAI_API_KEY were never read, printed, copied, or modified"
+```
+
+Taken literally, "never read" is impossible — authenticated provider calls occurred during the
+bounded live exercise. The sealed report is NOT modified; this ledger entry records the precise
+meaning:
+
+```text
+Precise meaning:
+Provider credentials were consumed in-process from the local environment
+for authenticated provider requests, but their values were never printed,
+logged, copied into generated handoff/audit artifacts, modified, or committed.
+
+SECURITY_DEFECT           = NO
+RUNTIME_DEFECT            = NO
+HISTORICAL_REPORT_REWRITE = NO
+CLASSIFICATION            = DOCUMENTARY_PRECISION
+```
+
+No API key value or fragment appears in any artifact. `.env.local` remains ignored and outside
+repository state; its live-model values were updated locally during the merge protocol
+(`ANTHROPIC_LIVE_MODEL=claude-sonnet-5`, `OPENAI_LIVE_MODEL=gpt-5.6-luna`) and this movement did
+not touch it.
+
+### Versioned parity baseline — preserved, and how to read `FULL`
+
+`native-experience-parity-v1.md` + `generated/native-experience-parity-v1.json` remain the
+versioned research baseline anchored at `RESEARCH_SNAPSHOT_DATE=2026-08-21` with meaning
+`BASELINE_COMPLETE — TARGET_NOT_IMPLEMENTED` at that anchor. This movement changed ZERO bytes of
+either (`PARITY_V1_BYTES_CHANGED=NO`): the 248 rows, the FULL/PARTIAL/MISSING counts,
+`verified_at`, `source_anchor` and `research_snapshot_date` are all untouched. Post-baseline
+P0-C implementation and live proofs do not retroactively rewrite its rows; a refreshed current
+parity baseline requires a separate deliberate movement/version (the named next movement above).
+
+Do NOT read "OpenAI FULL = 0" as "OpenAI does not work". `FULL` is the baseline's strongest bar —
+ALL applicable parity axes satisfied (provider exposure, GovAI registration, native route,
+native hermetic proof, native live acceptance, governed route/proof where applicable, UI
+exposure, UI test/browser acceptance, evidence path) — and conversation-level
+persistence/resume/fork are separate axes. The precise post-P0-C reading:
+
+```text
+NATIVE_ROUTING_FOUNDATION          = SUBSTANTIAL
+MODEL_ID_AGNOSTICISM               = PROVEN   (GOVAI_MODEL_GATE_DEFECT = NOT PRESENT)
+P0C_DURABLE_CONVERSATION_EXECUTION = IMPLEMENTED FOR ANTHROPIC_MESSAGES + OPENAI_RESPONSES
+FULL_NATIVE_EXPERIENCE_PARITY      = NOT COMPLETE
+```
+
+### Sealed P0-C artifacts — unchanged
+
+The P0-C implementation exact-head handoff + its SHA-256 sidecar, the independent final Opus
+exact-head audit, and the frozen-tree merge report + its sidecar (all under
+`/Users/Shared/govai-handoff/audits/ai-conversation-continuity-v1/`) are evidence records and
+remain byte-identical (`SEALED_P0C_ARTIFACTS_CHANGED=NO`). Corrections are ledger entries here,
+never edits there.
+
+### Branch protection / repository rulesets — no finding, no action, no setting touched
+
+Unchanged from the settled owner disposition above: `MAIN_BRANCH_PROTECTION =
+INTENTIONALLY_DISABLED_BY_OWNER`, `REPOSITORY_RULESETS = INTENTIONALLY_NONE_BY_OWNER`,
+`STATUS = BY_DESIGN / NOT_A_FINDING`. This movement inspected no repository setting for change,
+modified none, raises no branch-protection finding, and creates no action item.
