@@ -253,7 +253,7 @@ P0-D remains provider-specific per continuity spec §11: OpenAI conversation-obj
 taint-and-rotation discipline); Anthropic stateless replay with thinking-signature
 preservation; Codex thread identity via the app-server stable surface; Claude Code session
 identity via the Agent SDK SessionStore. No universal fake `conversation_id` abstraction
-may erase these differences. *2026-08-29 reverification:* every §11 provider dependency
+may erase these differences. *2026-08-29 reverification:* every continuity-spec §11 provider dependency
 still holds (Conversations API GA with no-TTL items vs 30-day stored responses;
 `/v1/messages` still stateless; Codex `thread/*` on the stable schema subset; SessionStore
 now with reference adapters and a conformance suite). *Owner:* P0-D.
@@ -338,7 +338,7 @@ is a separate concern. *Owner:* P0-E shell (exit links), tenant policy wave.
 ### LAW NX-25 — Performance is part of parity
 
 GovAI must not turn native usage into a visibly slower enterprise portal without
-necessity. Architecture accounts for: discovery cache freshness (§6), stream rendering,
+necessity. Architecture accounts for: discovery cache freshness (§5), stream rendering,
 background operations, latency disclosure, long-running progress, minimal governance round
 trips, provider-specific caching (prompt caching is a cost/latency optimization, never a
 correctness dependency — continuity spec §11). Correctness is never traded for speed;
@@ -705,7 +705,7 @@ P0-E consumes P0-D + this contract and MUST deliver:
 
 1. Exact turn↔evidence correlation triple materialized and surfaced (continuity §14;
    `exact_turn_evidence_correlation` flips only on proof).
-2. §19 delete/retention truth table implemented end-to-end (fencing protocol, provider-side
+2. Continuity spec §19 delete/retention truth table implemented end-to-end (fencing protocol, provider-side
    cleanup with recorded outcomes, crypto-shred eligibility, `DELETE_ROOT_LOCK_DISCIPLINE`
    pin honored).
 3. `STREAM_OUTCOME_FENCED_EXIT_VOCABULARY` formalized as evidence vocabulary.

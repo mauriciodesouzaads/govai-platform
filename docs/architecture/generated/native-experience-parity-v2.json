@@ -664,7 +664,7 @@
       "capability_name": "Fine-tuning API",
       "official_status": "DEPRECATED",
       "protocol_stability": null,
-      "retirement_date": null,
+      "retirement_date": "2027-01-06",
       "official_source": "https://developers.openai.com/api/docs/deprecations.md",
       "source_type": "guide",
       "verified_at": "2026-08-29",
@@ -692,7 +692,7 @@
       "govai_product_equivalent_required": false,
       "next_wave": null,
       "classification": "NOT_APPLICABLE",
-      "notes": "Self-serve wind-down: no new-org access since 2026-05-07; job creation ends 2027-01-06."
+      "notes": "Self-serve wind-down: no new-org access since 2026-05-07; job creation ends 2027-01-06 — the retirement_date records that job-creation cutoff (the fine-tuning API's core function); inference on EXISTING fine-tunes continues on the model endpoints until base-model retirement."
     },
     {
       "provider": "openai",
