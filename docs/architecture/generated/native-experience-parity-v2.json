@@ -3276,7 +3276,7 @@
       "govai_product_equivalent_required": false,
       "next_wave": "P0-D",
       "classification": "FULL",
-      "notes": "All FULLY_AVAILABLE axes proven at the anchor: registered, native+governed routes, hermetic suites, M2/M2A live acceptance, UI lane, browser live acceptance (U1.5 executed against real Anthropic), v4 evidence captures live-proven (F1 3/3). Correlation/persistence axes remain false (continuity spec). ★ P0-C (merged c1ddfd30): durable Send/execution kernel for surface `anthropic_messages` (governed + passthrough) live-accepted on the merged tree; fork durable since P0-B. UI transcript memory-only (P0-E); reattach/public Retry absent; exact_turn_evidence_correlation remains false (P0-F)."
+      "notes": "All FULLY_AVAILABLE axes proven at the anchor: registered, native+governed routes, hermetic suites, M2/M2A live acceptance, UI lane, browser live acceptance (U1.5 executed against real Anthropic), v4 evidence captures live-proven (F1 3/3). ★ P0-C (merged c1ddfd30): durable Send/execution kernel for surface `anthropic_messages` (governed + passthrough) live-accepted on the merged tree; fork durable since P0-B. UI transcript memory-only (P0-E); reattach/public Retry absent; exact_turn_evidence_correlation remains false (P0-F)."
     },
     {
       "provider": "anthropic",
