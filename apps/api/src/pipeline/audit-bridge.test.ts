@@ -480,6 +480,115 @@ describe('makeAuditBridge dispatch', () => {
 // REQ_IDENTITY. captureId is derived from coordinates+identity; payload_hash from
 // the projected payload — NEITHER reads redaction_metadata, so these literals are
 // unchanged by the enrichment. Pinned (not recomputed) to prove byte-invariance.
+describe('makeAuditBridge — the `withClient` override owns the CHECKOUT, this owns the TRANSACTION', () => {
+  /** A checkout override in the shape the conversation worker supplies. */
+  function makeOverride(stack: ReturnType<typeof makeStack>) {
+    const released: Array<'ok' | 'destroyed'> = [];
+    const withClient = async <T>(
+      fn: (client: PoolClient, markUnusable: () => void) => Promise<T>,
+    ): Promise<T> => {
+      const client = await stack.pool.connect();
+      let unusable = false;
+      try {
+        return await fn(client, () => {
+          unusable = true;
+        });
+      } finally {
+        released.push(unusable ? 'destroyed' : 'ok');
+      }
+    };
+    return { withClient, released };
+  }
+
+  it('OV1 — a capture failure after BEGIN ROLLS BACK before the client leaves the callback', async () => {
+    // ★ THE DEFECT THIS PINS. An earlier revision skipped the rollback here, believing the
+    // override owned it — but the override owns the CHECKOUT, not a transaction it never opened.
+    // The client went back to the pool still inside an aborted transaction, and the next borrower
+    // failed `25P02`. On the worker's `max: 2` pool a repeating capture failure took the whole
+    // worker down.
+    const stack = makeStack({ insertError: Object.assign(new Error('capture exploded'), { code: '42501' }) });
+    const ov = makeOverride(stack);
+    const bridge = makeAuditBridge({ pool: stack.pool, log: stack.log, withClient: ov.withClient });
+
+    await bridge(baseEnvelope(), REQ_IDENTITY);
+
+    const order = stack.calls.map((c) => c.sql).filter((q) => /BEGIN|ROLLBACK|COMMIT|audit_capture_insert_locked/.test(q));
+    expect(order[0]).toBe('BEGIN');
+    // The ROLLBACK is issued, and it is issued BEFORE the callback returns — i.e. before the
+    // override can release the client.
+    expect(order).toContain('ROLLBACK');
+    expect(order).not.toContain('COMMIT');
+    expect(ov.released).toEqual(['ok']); // rollback succeeded ⇒ the connection is reusable
+  });
+
+  it('OV2 — a ROLLBACK that itself fails DESTROYS the connection instead of returning it', async () => {
+    // If the transaction cannot be proven closed, reuse is not safe at any price. Destroying
+    // costs one reconnect; returning costs every subsequent borrower a `25P02`.
+    const stack = makeStack({ insertError: new Error('capture exploded') });
+    const original = stack.query.getMockImplementation()!;
+    stack.query.mockImplementation(async (sql: string, values?: unknown[]) => {
+      if (sql === 'ROLLBACK') throw new Error('connection is gone');
+      return original(sql, values);
+    });
+    const ov = makeOverride(stack);
+    const bridge = makeAuditBridge({ pool: stack.pool, log: stack.log, withClient: ov.withClient });
+
+    await bridge(baseEnvelope(), REQ_IDENTITY);
+
+    expect(ov.released).toEqual(['destroyed']);
+  });
+
+  it('OV3 — the ORIGINAL failure is preserved, never replaced by the rollback error', async () => {
+    // best_effort: the dispatcher swallows and logs rather than throwing into the caller. What
+    // matters is that the reason it logs is the CAPTURE failure, not the rollback's.
+    const stack = makeStack({ insertError: Object.assign(new Error('the real cause'), { code: '23505' }) });
+    const ov = makeOverride(stack);
+    const bridge = makeAuditBridge({ pool: stack.pool, log: stack.log, withClient: ov.withClient });
+
+    await bridge(baseEnvelope(), REQ_IDENTITY);
+
+    // 23505 classifies as an evidence idempotency conflict — proving the original error, not a
+    // rollback error, reached the classifier.
+    const logged = (stack.log.error as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(JSON.stringify(logged)).toContain('evidence_idempotency_conflict');
+  });
+
+  it('OV4 — a SUCCESSFUL capture commits and issues no rollback', async () => {
+    const stack = makeStack();
+    const ov = makeOverride(stack);
+    const bridge = makeAuditBridge({ pool: stack.pool, log: stack.log, withClient: ov.withClient });
+
+    await bridge(baseEnvelope(), REQ_IDENTITY);
+
+    const sqls = stack.calls.map((c) => c.sql);
+    expect(sqls).toContain('BEGIN');
+    expect(sqls).toContain('COMMIT');
+    expect(sqls).not.toContain('ROLLBACK');
+    expect(ov.released).toEqual(['ok']);
+    expect(stack.insert()).toBeDefined();
+  });
+
+  it('OV5 — the direct-route path is UNCHANGED when no override is supplied', async () => {
+    // The override must be inert by absence: same statements, same release, for the four direct
+    // provider routes that pass only `pool`.
+    const withOv = makeStack({ insertError: new Error('boom') });
+    const ov = makeOverride(withOv);
+    await makeAuditBridge({ pool: withOv.pool, log: withOv.log, withClient: ov.withClient })(
+      baseEnvelope(),
+      REQ_IDENTITY,
+    );
+
+    const plain = makeStack({ insertError: new Error('boom') });
+    await makeAuditBridge({ pool: plain.pool, log: plain.log })(baseEnvelope(), REQ_IDENTITY);
+
+    // Both paths run the identical envelope and both roll back; only the checkout differs.
+    const shape = (st: ReturnType<typeof makeStack>) =>
+      st.calls.map((c) => (c.sql.includes('audit_capture_insert_locked') ? 'CAPTURE' : c.sql));
+    expect(shape(plain)).toEqual(shape(withOv));
+    expect(plain.release).toHaveBeenCalledTimes(1);
+  });
+});
+
 const GOLDEN_CAPTURE_ID = '8855c5de-d646-5bf5-9cc6-86114f297281';
 const GOLDEN_PAYLOAD_HASH_HEX =
   'a9d55b006d8084554b7f1228e7095ce744904452e8ea12f4c94ee51e17a519b0';
@@ -912,5 +1021,106 @@ describe('audit-bridge: EP-008B drop/capture counters (EC-3b)', () => {
       expect.any(String),
     );
     expect(s.sql('ROLLBACK')).toHaveLength(1);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// P0-C closeout — `strict` posture covers EVERY drop class, not only the transaction stage.
+//
+// ★ THE GAP THESE TESTS CLOSE. The conversation worker's bridge is `strict` so the executor
+// can classify a missing capture as `persistence_error` instead of completing an attempt whose
+// required evidence silently vanished. An earlier revision enforced `strict` only at step 7
+// (the capture transaction): the early drop classes — missing identity, schema validation,
+// canonicalization — logged, counted, and RESOLVED NORMALLY regardless of posture. A
+// worker-internal regression (a provider package emitting an envelope field the schema does
+// not yet accept, say) would therefore have dropped EVERY capture with a warn log while every
+// attempt still reached `completed` — precisely the state `strict` exists to prevent, and
+// invisible outside the logs. Now every drop class is posture-governed by one policy:
+// best_effort resolves (direct routes, byte-for-byte unchanged), strict rejects.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+describe('makeAuditBridge — strict posture rejects every drop class (best_effort unchanged)', () => {
+  it('T-STRICT-1 — missing_request_identity: strict REJECTS the typed marker; best_effort resolves; neither touches the pool', async () => {
+    const strict = makeStack();
+    const strictBridge = makeAuditBridge({ pool: strict.pool, log: strict.log, posture: 'strict' });
+    await expect(strictBridge(baseEnvelope(), undefined)).rejects.toMatchObject({
+      name: 'AuditBridgeCaptureDropped',
+      reason: 'missing_request_identity',
+    });
+    // Observability is posture-independent: the drop was logged before the reject.
+    expect(strict.log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'missing_request_identity' }),
+      expect.any(String),
+    );
+    // The drop happens before any checkout on both postures.
+    expect(strict.connect).not.toHaveBeenCalled();
+
+    const lax = makeStack();
+    const laxBridge = makeAuditBridge({ pool: lax.pool, log: lax.log });
+    await expect(laxBridge(baseEnvelope(), undefined)).resolves.toBeUndefined();
+    expect(lax.connect).not.toHaveBeenCalled();
+  });
+
+  it('T-STRICT-2 — invalid_runtime_event: strict REJECTS the typed marker; best_effort resolves; nothing is ever inserted', async () => {
+    const invalid = { ...baseEnvelope(), event_type: 'not.passthrough' };
+
+    const strict = makeStack();
+    const strictBridge = makeAuditBridge({ pool: strict.pool, log: strict.log, posture: 'strict' });
+    await expect(strictBridge(invalid, REQ_IDENTITY)).rejects.toMatchObject({
+      name: 'AuditBridgeCaptureDropped',
+      reason: 'invalid_runtime_event',
+    });
+    expect(strict.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'invalid_runtime_event' }),
+      expect.any(String),
+    );
+    expect(strict.connect).not.toHaveBeenCalled();
+    expect(strict.insert()).toBeUndefined();
+
+    const lax = makeStack();
+    const laxBridge = makeAuditBridge({ pool: lax.pool, log: lax.log });
+    await expect(laxBridge(invalid, REQ_IDENTITY)).resolves.toBeUndefined();
+    expect(lax.connect).not.toHaveBeenCalled();
+    expect(lax.insert()).toBeUndefined();
+  });
+
+  it('T-STRICT-3 — canonicalization_failed: strict REJECTS the typed marker, never the raw projection error; best_effort resolves', async () => {
+    // The same injected-projection seam S3 uses — the drop is driven through the REAL
+    // dispatcher, not a substitute bridge.
+    coreEventsCtl.projectThrows = true;
+    try {
+      const strict = makeStack();
+      const strictBridge = makeAuditBridge({ pool: strict.pool, log: strict.log, posture: 'strict' });
+      let caught: unknown = null;
+      await strictBridge(baseEnvelope(), REQ_IDENTITY).catch((err: unknown) => {
+        caught = err;
+      });
+      // The typed marker, NOT the projection's own error: a canonicalization failure can carry
+      // a fragment of the projected payload in its message, and the log line owns that detail.
+      expect(caught).toMatchObject({
+        name: 'AuditBridgeCaptureDropped',
+        reason: 'canonicalization_failed',
+      });
+      expect((caught as Error).message).not.toContain('projection failed');
+      expect(strict.connect).not.toHaveBeenCalled();
+
+      const lax = makeStack();
+      const laxBridge = makeAuditBridge({ pool: lax.pool, log: lax.log });
+      await expect(laxBridge(baseEnvelope(), REQ_IDENTITY)).resolves.toBeUndefined();
+      expect(lax.connect).not.toHaveBeenCalled();
+    } finally {
+      coreEventsCtl.projectThrows = false;
+    }
+  });
+
+  it('T-STRICT-4 — a capture-transaction failure under strict rethrows the ORIGINAL error, exactly as before', async () => {
+    const original = Object.assign(new Error('insert failed'), { code: '57P01' });
+    const s = makeStack({ insertError: original });
+    const bridge = makeAuditBridge({ pool: s.pool, log: s.log, posture: 'strict' });
+    // `toBe` — identity, not shape: the executor seam classifies what the transaction stage
+    // actually threw, and wrapping it here would change what `persistence_error` wraps.
+    await expect(bridge(baseEnvelope(), REQ_IDENTITY)).rejects.toBe(original);
+    expect(s.sql('ROLLBACK')).toHaveLength(1);
+    expect(s.release).toHaveBeenCalledTimes(1);
   });
 });

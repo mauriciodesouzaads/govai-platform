@@ -157,7 +157,7 @@ export type GovernedHandleInput = {
    *  omit it. */
   dispatchSignal?: AbortSignal;
   /** EP-P03A-A (REV4 §12.1): optional asynchronous durable dispatch gate,
-   *  threaded to the NON-stream forward and awaited immediately before its
+   *  threaded to BOTH the stream and non-stream forwards (P0-C) and awaited immediately before its
    *  `fetch` — i.e. only after tool/enforcement validation ruled out a
    *  governed block. Supplied ONLY by protocol-v1 run execution; direct
    *  routes omit it. Fail-closed — see ForwardInput.beforeDispatch. */
@@ -168,7 +168,7 @@ export type GovernedHandleInput = {
    *  orchestrator; direct routes omit it. */
   monotonicDeadlineMs?: number;
   /** EP-P03A-A (F3 §19.1): synchronous in-memory marker run immediately
-   *  before the non-stream `fetch` — see ForwardInput.onDispatchStart. */
+   *  before EITHER forward's `fetch` (P0-C) — see ForwardInput.onDispatchStart. */
   onDispatchStart?: () => void;
 };
 
@@ -385,6 +385,19 @@ export async function handleAnthropicGovernedMessages(
       headers: outHeaders,
       body: input.rawBody,
       signal: input.signal,
+      // EP-AI-CONVERSATION-CONTINUITY-V1 P0-C: the durable gate and the forward marker belong on
+      // the STREAM path exactly as they already do on the non-stream one below.
+      //
+      // ★ WHY THIS WAS A REAL DEFECT, NOT A TIDY-UP. A caller that persists its durable
+      // dispatch boundary inside `beforeDispatch` — the conversation executor does, committing
+      // credential provenance there — would, on a STREAMING request, have reached `fetch` with
+      // the gate never awaited. The provider would have been called with NO durable provenance,
+      // breaking the invariant that "credential provenance precedes EVERY POST" — which is the
+      // premise the whole provenance-absent recovery arm rests on (an attempt with no
+      // provenance is treated as PROVABLY undispatched and re-driven). Direct routes pass
+      // neither hook and are byte-for-byte unaffected.
+      beforeDispatch: input.beforeDispatch,
+      onDispatchStart: input.onDispatchStart,
     });
 
     const finalize = async (outcome: StreamOutcome): Promise<{

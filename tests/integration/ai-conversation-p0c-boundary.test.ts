@@ -1,16 +1,25 @@
-// EP-AI-CONVERSATION-CONTINUITY-V1 P0-B — the P0-C NEGATIVE BOUNDARY.
+// EP-AI-CONVERSATION-CONTINUITY-V1 — THE P0-D / P0-E / P0-F NEGATIVE BOUNDARY.
 //
-// A movement that says "no execution was implemented" has to prove it, not assert it. This
-// suite is that proof, from four independent directions:
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// WHY THIS FILE CHANGED, AND WHY IT WAS NOT DELETED
 //
-//   L1 ROUTE SURFACE   — the forbidden endpoints do not exist (not even as a stub)
-//   L2 PROVIDER        — a full control-plane exercise produces ZERO upstream requests
-//   L3 DURABLE STATE   — every row the control plane writes is unclaimed and pre-boundary
-//   L4 SOURCE          — the shipped P0-B code contains no dispatch, worker, claim, queue,
-//                        timer or notification construct at all
+// At P0-B this suite proved "no execution was implemented" from four directions. P0-C IMPLEMENTS
+// execution, so those assertions are no longer true — and, more importantly, the CLAIM they
+// guarded is no longer being made. Deleting the file would have removed the discipline along
+// with the obsolete claim; keeping it unchanged would have made it a false test.
+//
+// So it is RETARGETED to the boundary P0-C actually asserts. The structure is deliberately the
+// same, one stage further along:
+//
+//   L1 ROUTE SURFACE   — retry / stop / delete / stream re-attach still do not exist
+//   L2 PROVIDER        — the request plane still performs ZERO provider work
+//   L3 DURABLE STATE   — no provider continuation state or evidence link is ever written
+//   L4 SOURCE          — no P0-D continuation construct entered the tree
+//   L5 API PROCESS     — the request-serving API is STILL not the execution authority
 //
 // L4 scans CODE, not prose: comments are stripped first, so a file that DISCUSSES the boundary
 // (as these files do, at length) cannot accidentally satisfy — or violate — the scan.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -21,83 +30,87 @@ import {
   startStack,
   stopStack,
   seedOrg,
+  seedProviderCredential,
   inject,
   type SeededOrg,
   type Stack,
 } from './helpers/server-fixture.js';
-import {
-  seedAttempt,
-  seedConversation,
-  seedTurn,
-  type OwnerIds,
-} from './helpers/ai-conversation-seed.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
 const AI_DIR = join(ROOT, 'apps', 'api', 'src', 'ai-conversations');
+const EXEC_DIR = join(AI_DIR, 'execution');
 const ROUTE_FILE = join(ROOT, 'apps', 'api', 'src', 'routes', 'ai-conversations.ts');
-const MIGRATION_0033 = join(
+const MIGRATION_0034 = join(
   ROOT,
   'apps',
   'api',
   'src',
   'db',
   'migrations',
-  '0033_ai_conversation_control_plane.sql',
+  '0034_ai_conversation_durable_execution.sql',
 );
 
 let stack: Stack;
 let org: SeededOrg;
-let owner: OwnerIds;
 
 beforeAll(async () => {
   stack = await startStack();
   org = await seedOrg(stack);
-  owner = { orgId: org.org_id, ownerUserId: org.user_id };
+  await seedProviderCredential(stack, {
+    orgId: org.org_id,
+    provider: 'anthropic',
+    plaintextKey: 'sk-ant-boundary',
+    setByUserId: org.user_id,
+  });
 }, 300_000);
 
 afterAll(async () => {
   if (stack) await stopStack(stack);
 });
 
-/** Remove `//` line comments and `/* *\/` block comments so the scan sees CODE only. */
+/** Remove `//` line comments and block comments so the scan sees CODE only. */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
-async function shippedTypeScriptSources(): Promise<Array<{ path: string; code: string }>> {
-  const files = (await readdir(AI_DIR))
-    .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
-    .map((f) => join(AI_DIR, f));
+async function shippedConversationSources(): Promise<Array<{ path: string; code: string }>> {
+  const files: string[] = [];
+  for (const dir of [AI_DIR, EXEC_DIR]) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.isFile() && e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) {
+        files.push(join(dir, e.name));
+      }
+    }
+  }
   files.push(ROUTE_FILE);
   return Promise.all(
     files.map(async (path) => ({ path, code: stripComments(await readFile(path, 'utf8')) })),
   );
 }
 
-describe('P0-B L1 — the forbidden route surface does not exist', () => {
-  it('no turn, retry, stop, re-attach or delete endpoint is registered', async () => {
-    const created = await inject(stack, 'POST', '/v1/ai/conversations', org.api_key, {
-      mode: 'governed',
-      provider: 'anthropic',
-      surface: 'anthropic_api',
-      model: 'm',
-    });
-    const id = (created.body as { id: string }).id;
+async function createConversation(): Promise<{ id: string; branchId: string }> {
+  const res = await inject(stack, 'POST', '/v1/ai/conversations', org.api_key, {
+    mode: 'governed',
+    provider: 'anthropic',
+    surface: 'anthropic_messages',
+    model: 'claude-test',
+  });
+  const body = res.body as { id: string; root_branch: { id: string } };
+  return { id: body.id, branchId: body.root_branch.id };
+}
 
+describe('P0-C L1 — the P0-D/P0-E/P0-F route surface does not exist', () => {
+  it('no retry, stop, stream re-attach, delete or events endpoint is registered', async () => {
+    const conv = await createConversation();
     const forbidden: Array<['GET' | 'POST' | 'PATCH' | 'DELETE', string]> = [
-      ['POST', `/v1/ai/conversations/${id}/turns`],
-      ['GET', `/v1/ai/conversations/${id}/turns`],
-      ['GET', `/v1/ai/conversations/${id}/turns/${randomUUID()}`],
-      ['POST', `/v1/ai/conversations/${id}/turns/${randomUUID()}/retry`],
-      [
-        'POST',
-        `/v1/ai/conversations/${id}/turns/${randomUUID()}/attempts/${randomUUID()}/stop`,
-      ],
-      ['GET', `/v1/ai/conversations/${id}/turns/${randomUUID()}/stream`],
-      ['GET', `/v1/ai/conversations/${id}/events`],
-      ['DELETE', `/v1/ai/conversations/${id}`],
-      ['GET', `/v1/ai/conversations/${id}/branches`],
+      ['POST', `/v1/ai/conversations/${conv.id}/turns/${randomUUID()}/retry`],
+      ['POST', `/v1/ai/conversations/${conv.id}/turns/${randomUUID()}/attempts/${randomUUID()}/stop`],
+      ['GET', `/v1/ai/conversations/${conv.id}/turns/${randomUUID()}/stream`],
+      ['GET', `/v1/ai/conversations/${conv.id}/events`],
+      ['DELETE', `/v1/ai/conversations/${conv.id}`],
+      ['GET', `/v1/ai/conversations/${conv.id}/branches`],
     ];
     for (const [method, url] of forbidden) {
       const res = await inject(stack, method, url, org.api_key, method === 'POST' ? {} : undefined);
@@ -113,19 +126,36 @@ describe('P0-B L1 — the forbidden route surface does not exist', () => {
     }
   });
 
-  it('the AUTH-READ-CACHE-01 hook is ENCAPSULATED: it changes no other route’s behaviour', async () => {
-    // The `no-store` hook is registered INSIDE this plugin's context. If it had leaked to the
-    // root, it would silently change four pre-existing authenticated read surfaces — a
-    // behaviour change to routes this movement is not scoped to touch. `/v1/me` sets the header
-    // itself (its own precedent) and must keep doing so; the other three must be UNCHANGED,
-    // which is precisely why AUTH-READ-CACHE-01 remains OPEN as a class.
+  it('the registered conversation surface is EXACTLY the eight P0-B + P0-C endpoints', async () => {
+    const hasRoute = (method: string, url: string): boolean =>
+      stack.app.hasRoute({ method: method as 'GET', url });
+    // P0-B's five...
+    expect(hasRoute('POST', '/v1/ai/conversations')).toBe(true);
+    expect(hasRoute('GET', '/v1/ai/conversations')).toBe(true);
+    expect(hasRoute('GET', '/v1/ai/conversations/:id')).toBe(true);
+    expect(hasRoute('PATCH', '/v1/ai/conversations/:id')).toBe(true);
+    expect(hasRoute('POST', '/v1/ai/conversations/:id/branches')).toBe(true);
+    // ...plus P0-C's three, and NOTHING else.
+    expect(hasRoute('POST', '/v1/ai/conversations/:id/turns')).toBe(true);
+    expect(hasRoute('GET', '/v1/ai/conversations/:id/turns')).toBe(true);
+    expect(hasRoute('GET', '/v1/ai/conversations/:id/turns/:turnId')).toBe(true);
+    expect(hasRoute('DELETE', '/v1/ai/conversations/:id')).toBe(false);
+
+    const printed = stack.app.printRoutes({ commonPrefix: false });
+    const lines = printed.split('\n').filter((l) => l.includes('/v1/ai/')).map((l) => l.trim());
+    for (const banned of ['attempts', 'stream', 'stop', 'retry', 'events']) {
+      expect({ banned, lines: lines.filter((l) => l.includes(banned)) }).toEqual({ banned, lines: [] });
+    }
+  });
+
+  it('the AUTH-READ-CACHE-01 hook is STILL encapsulated: no other route’s behaviour changed', async () => {
     const me = await stack.app.inject({
       method: 'GET',
       url: '/v1/me',
       headers: { 'x-govai-api-key': org.api_key },
     });
     expect(me.statusCode).toBe(200);
-    expect(me.headers['cache-control']).toBe('no-store'); // me.ts:48-62, unchanged
+    expect(me.headers['cache-control']).toBe('no-store'); // me.ts:48-62, its own precedent
     for (const url of ['/v1/capabilities', '/v1/audit-events?chain_category=run']) {
       const res = await stack.app.inject({
         method: 'GET',
@@ -136,184 +166,134 @@ describe('P0-B L1 — the forbidden route surface does not exist', () => {
       expect({ url, cache: res.headers['cache-control'] }).toEqual({ url, cache: undefined });
     }
   });
-
-  it('the registered conversation surface is EXACTLY the five §13 P0-B endpoints', async () => {
-    const printed = stack.app.printRoutes({ commonPrefix: false });
-    const lines = printed
-      .split('\n')
-      .filter((l) => l.includes('/v1/ai/'))
-      .map((l) => l.trim());
-    // The printed tree lists paths with their method sets; assert the method sets directly.
-    const hasRoute = (method: string, url: string): boolean =>
-      stack.app.hasRoute({ method: method as 'GET', url });
-    expect(hasRoute('POST', '/v1/ai/conversations')).toBe(true);
-    expect(hasRoute('GET', '/v1/ai/conversations')).toBe(true);
-    expect(hasRoute('GET', '/v1/ai/conversations/:id')).toBe(true);
-    expect(hasRoute('PATCH', '/v1/ai/conversations/:id')).toBe(true);
-    expect(hasRoute('POST', '/v1/ai/conversations/:id/branches')).toBe(true);
-    expect(hasRoute('DELETE', '/v1/ai/conversations/:id')).toBe(false);
-    expect(hasRoute('POST', '/v1/ai/conversations/:id/turns')).toBe(false);
-    // Nothing under /v1/ai/ mentions a turn, an attempt, a stream or a stop.
-    for (const banned of ['turns', 'attempts', 'stream', 'stop', 'retry', 'events']) {
-      expect({ banned, lines: lines.filter((l) => l.includes(banned)) }).toEqual({
-        banned,
-        lines: [],
-      });
-    }
-  });
 });
 
-describe('P0-B L2 — zero provider requests', () => {
-  it('a full control-plane exercise produces no upstream request at all', async () => {
+describe('P0-C L2 — the REQUEST plane still performs zero provider work', () => {
+  it('a full control-plane + durable-send exercise produces no upstream request at all', async () => {
     stack.provider.clearRecordedRequests();
     stack.provider.clearRecordedRequestHeaders();
 
-    // Create, rename, archive, restore, list, get — and fork in BOTH boundary modes, including
-    // the mode that mints a child turn and a fresh attempt.
-    const created = await inject(stack, 'POST', '/v1/ai/conversations', org.api_key, {
-      mode: 'governed',
-      provider: 'anthropic',
-      surface: 'anthropic_api',
-      model: 'm',
-    });
-    const conversationId = (created.body as { id: string }).id;
-    await inject(stack, 'PATCH', `/v1/ai/conversations/${conversationId}`, org.api_key, {
-      title: 'provider silence probe',
-    });
-    await inject(stack, 'PATCH', `/v1/ai/conversations/${conversationId}`, org.api_key, {
-      archived: true,
-    });
-    await inject(stack, 'PATCH', `/v1/ai/conversations/${conversationId}`, org.api_key, {
-      archived: false,
-    });
+    const conv = await createConversation();
+    await inject(stack, 'PATCH', `/v1/ai/conversations/${conv.id}`, org.api_key, { title: 'probe' });
+    await inject(stack, 'PATCH', `/v1/ai/conversations/${conv.id}`, org.api_key, { archived: true });
+    await inject(stack, 'PATCH', `/v1/ai/conversations/${conv.id}`, org.api_key, { archived: false });
     await inject(stack, 'GET', '/v1/ai/conversations', org.api_key);
-    await inject(stack, 'GET', `/v1/ai/conversations/${conversationId}`, org.api_key);
+    await inject(stack, 'GET', `/v1/ai/conversations/${conv.id}`, org.api_key);
 
-    const { conversationId: forkConv, branchId } = await seedConversation(
-      stack.db.adminPool,
-      owner,
-    );
-    const { turnId } = await seedTurn(stack.db.adminPool, owner, forkConv, branchId, 1);
-    const attemptId = await seedAttempt(stack.db.adminPool, owner, forkConv, branchId, turnId, {
-      state: 'completed',
+    // ★ THE P0-C STATEMENT: a SEND is a durable RESERVATION, not a provider call. Reserve
+    // several turns, hydrate them, replay a duplicate — the provider stays silent throughout,
+    // because execution belongs to the detached worker, which this suite never starts.
+    const clientTurnId = randomUUID();
+    const body = {
+      client_turn_id: clientTurnId,
+      branch_id: conv.branchId,
+      native_request: { model: 'claude-test', max_tokens: 8, messages: [{ role: 'user', content: 'silence' }] },
+    };
+    const first = await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, body);
+    expect(first.statusCode).toBe(201);
+    const replay = await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, body);
+    expect(replay.statusCode).toBe(200);
+    await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, {
+      ...body,
+      client_turn_id: randomUUID(),
     });
-    await stack.db.adminPool.query(
-      `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
-      [attemptId, turnId],
+    await inject(stack, 'GET', `/v1/ai/conversations/${conv.id}/turns`, org.api_key);
+    await inject(
+      stack,
+      'GET',
+      `/v1/ai/conversations/${conv.id}/turns/${(first.body as { id: string }).id}`,
+      org.api_key,
     );
-    for (const boundary_mode of ['after_attempt', 'before_attempt_output']) {
-      const res = await inject(
-        stack,
-        'POST',
-        `/v1/ai/conversations/${forkConv}/branches`,
-        org.api_key,
-        {
-          client_fork_id: randomUUID(),
-          parent_branch_id: branchId,
-          forked_from_turn_id: turnId,
-          forked_from_attempt_id: attemptId,
-          boundary_mode,
-        },
-      );
-      expect({ boundary_mode, code: res.statusCode }).toEqual({ boundary_mode, code: 201 });
-    }
 
     expect(stack.provider.recordedRequests).toEqual([]);
     expect(stack.provider.recordedRequestHeaders).toEqual([]);
   });
 });
 
-describe('P0-B L3 — the durable state the control plane writes carries no execution authority', () => {
-  it('every attempt it mints is unclaimed, pre-boundary and provenance-free', async () => {
-    // Across the WHOLE database at this point: every attempt written by any P0-B code path is
-    // in the §7.1b birth shape. (The suite's own seeds advance some attempts through the lawful
-    // transitions, so this asserts over the branches the CONTROL PLANE created.)
-    const rows = await stack.db.adminPool.query<{
-      state: string;
-      claim_token: string | null;
-      claim_deadline_at: Date | null;
-      heartbeat_at: Date | null;
-      dispatch_boundary_committed_at: Date | null;
-      provider_credential_id: string | null;
-      govai_request_id: string | null;
-      capture_id: string | null;
-      causal_version_at_build: string | null;
-      stop_requested: boolean;
-    }>(
-      `SELECT a.state, a.claim_token, a.claim_deadline_at, a.heartbeat_at,
-              a.dispatch_boundary_committed_at, a.provider_credential_id,
-              a.govai_request_id, a.capture_id, a.causal_version_at_build, a.stop_requested
-         FROM govai.ai_conversation_attempts a
-         JOIN govai.ai_conversation_branches b ON b.id = a.branch_id
-        WHERE b.parent_branch_id IS NOT NULL`,
-    );
-    expect(rows.rowCount).toBeGreaterThan(0);
-    for (const row of rows.rows) {
-      expect(row).toEqual({
-        state: 'accepted',
-        claim_token: null,
-        claim_deadline_at: null,
-        heartbeat_at: null,
-        dispatch_boundary_committed_at: null,
-        provider_credential_id: null,
-        govai_request_id: null,
-        capture_id: null,
-        causal_version_at_build: null,
-        stop_requested: false,
-      });
-    }
-    // No branch causal_version was bumped: eligibility is a P0-C/§7.8 concern and the control
-    // plane changes none of it.
-    const bumped = await stack.db.adminPool.query<{ n: string }>(
-      `SELECT count(*)::text AS n FROM govai.ai_conversation_branches WHERE causal_version <> 0`,
-    );
-    expect(bumped.rows[0]!.n).toBe('0');
-    // No provider state, no evidence link, no continuation anchor exists anywhere.
-    for (const table of [
-      'ai_conversation_provider_state',
-      'ai_conversation_evidence_links',
-    ] as const) {
+describe('P0-C L3 — the durable state carries no P0-D continuation and no P0-F evidence link', () => {
+  it('no provider continuation state and no evidence-link row exists anywhere', async () => {
+    // P0-C stores durable INPUT, durable OUTPUT and execution lifecycle. It stores NO provider
+    // continuation object, NO `previous_response_id`, NO thread or session anchor (§23's wall),
+    // and it does not materialize §14's evidence-link table (P0-F's closeout).
+    for (const table of ['ai_conversation_provider_state', 'ai_conversation_evidence_links'] as const) {
       const n = await stack.db.adminPool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM govai.${table}`,
       );
       expect({ table, n: n.rows[0]!.n }).toEqual({ table, n: '0' });
     }
+    // No attempt anywhere carries a continuation anchor.
+    const anchored = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_attempts
+        WHERE continuation_parent_ciphertext IS NOT NULL`,
+    );
+    expect(anchored.rows[0]!.n).toBe('0');
+    // And no turn has more than ONE attempt: retry/regenerate is P0-D, so nothing mints attempt 2.
+    const multi = await stack.db.adminPool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM (
+         SELECT turn_id FROM govai.ai_conversation_attempts GROUP BY turn_id HAVING count(*) > 1
+       ) t`,
+    );
+    expect(multi.rows[0]!.n).toBe('0');
+  });
+
+  it('every turn the REQUEST plane reserves is unclaimed and pre-boundary', async () => {
+    const conv = await createConversation();
+    const sent = await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/turns`, org.api_key, {
+      client_turn_id: randomUUID(),
+      branch_id: conv.branchId,
+      native_request: { model: 'claude-test', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] },
+    });
+    const attemptId = (sent.body as { current_attempt_id: string }).current_attempt_id;
+    const row = await stack.db.adminPool.query<Record<string, unknown>>(
+      `SELECT state, claim_token, claim_deadline_at, heartbeat_at, dispatch_boundary_committed_at,
+              provider_credential_id, govai_request_id, capture_id, causal_version_at_build,
+              stop_requested
+         FROM govai.ai_conversation_attempts WHERE id = $1::uuid`,
+      [attemptId],
+    );
+    expect(row.rows[0]).toEqual({
+      state: 'accepted',
+      claim_token: null,
+      claim_deadline_at: null,
+      heartbeat_at: null,
+      dispatch_boundary_committed_at: null,
+      provider_credential_id: null,
+      govai_request_id: null,
+      capture_id: null,
+      causal_version_at_build: null,
+      stop_requested: false,
+    });
   });
 });
 
-describe('P0-B L4 — the shipped source contains no P0-C construct', () => {
-  it('no provider call, worker activation, claim mutation, queue wake, timer or notification', async () => {
-    const sources = await shippedTypeScriptSources();
-    expect(sources.length).toBeGreaterThan(5);
+describe('P0-C L4 — the shipped source contains no P0-D continuation construct', () => {
+  it('no provider conversation object, response chaining, thread or session continuation', async () => {
+    const sources = await shippedConversationSources();
+    expect(sources.length).toBeGreaterThan(8);
     const banned: Array<[string, RegExp]> = [
-      // Provider I/O of any kind.
-      ['fetch call', /\bfetch\s*\(/],
-      ['undici', /\bundici\b/],
-      ['node:http client', /require\(['"]node:https?['"]\)|from\s+['"]node:https?['"]/],
-      // ★ `passthrough` alone is NOT banned: it is one of 0031's two durable execution-lane
-      // values (`mode`), so the conversation contract must name it. What is banned is a
-      // reference to the passthrough/governed PIPELINE — a module, route or executor.
-      [
-        'provider pipeline',
-        /invokeProvider|providerInvoke|executePassthrough|executeGoverned|passthrough[-/]|governed-(anthropic|openai)|routes\/(passthrough|governed)/i,
-      ],
-      ['provider credential resolution', /resolveProviderCredential|provider_credentials/],
-      // Worker runtime activation.
-      ['worker pool construction', /createConversationWorkerPool/],
-      ['worker owner context', /withConversationWorkerOwnerContext/],
-      ['recovery discovery', /ai_turn_recovery_candidates|recoveryCandidates/],
-      // Claim / lease / dispatch mutation.
-      ['claim token', /claim_token|claimToken/],
-      ['claim deadline', /claim_deadline_at|claimDeadline/],
-      ['heartbeat', /heartbeat/i],
-      ['dispatch boundary', /dispatch_boundary_committed_at|dispatchBoundary/],
-      ['stop request flag', /stop_requested|stopRequested/],
-      ['request identity ALS', /requestIdentityAls|AuditBridgeRequestIdentity/],
-      // Queue / scheduling / notification.
-      ['timer', /setInterval|setTimeout|setImmediate/],
-      ['listen/notify', /\bLISTEN\b|\bNOTIFY\b|pg_notify/],
-      // Evidence and workroom coupling.
-      ['audit bridge', /auditBridge|auditAppend|audit_events|capture_outbox/],
+      // §11's provider continuation strategies — ALL of them are P0-D.
+      ['openai conversation object', /conversations?\.create|\/v1\/conversations/i],
+      ['previous_response_id', /previous_response_id|previousResponseId/],
+      ['codex thread', /codex[_-]?thread|threadId|thread_id/i],
+      ['claude code session', /claude[_-]?code[_-]?session|sessionId|session_id/i],
+      ['continuation anchor write', /continuation_parent_(ciphertext|dek_wrapped|kms_key)/],
+      ['provider state table', /ai_conversation_provider_state/],
+      ['state taint / rotation', /\btainted\b|seeded_at_causal_version/],
+      ['compaction', /compact(ion|Provider)/i],
+      // P0-D/P0-E/P0-F operations.
+      ['retry / regenerate', /\bregenerate\b|attempt_seq\s*\+\s*1|retryAttempt/i],
+      // ★ THESE BAN ACTIONS, NOT RECOGNITION. P0-C must be UNABLE to delete or shred — but it
+      // MUST recognise those states: `service.ts` refuses to create a descendant of a
+      // `deleted_pending` root (LAW 10), and `crypto.ts` reports a `crypto_shredded` content row
+      // honestly instead of as a decrypt fault. An earlier revision of this scan banned the bare
+      // status literals and flagged both of those correct behaviours.
+      ['deletion write', /SET\s+status\s*=\s*'deleted/i],
+      ['crypto-shred write', /SET\s+dek_wrapped\s*=\s*NULL|crypto_shred\s*\(/i],
+      ['disposal ledger', /disposal_ledger/i],
+      ['cleanup worker', /ai_cleanup_candidates|cleanupWorker/i],
+      ['evidence link materialization', /ai_conversation_evidence_links/],
+      ['attachments / projects', /attachment|\bprojects\b/i],
+      // The workroom boundary (§4) is unchanged: a conversation is not a workroom.
       ['workroom', /workroom/i],
     ];
     for (const { path, code } of sources) {
@@ -323,30 +303,76 @@ describe('P0-B L4 — the shipped source contains no P0-C construct', () => {
     }
   });
 
-  it('the migration grants no DELETE, no TRUNCATE and no worker authority', async () => {
-    const sql = stripComments(await readFile(MIGRATION_0033, 'utf8'))
-      // SQL comments are `--`, which the TS stripper does not handle.
-      .replace(/^\s*--.*$/gm, ' ');
+  it('migration 0034 grants to exactly one role and no forbidden verb', async () => {
+    const sql = stripComments(await readFile(MIGRATION_0034, 'utf8')).replace(/^\s*--.*$/gm, ' ');
     expect(/GRANT[\s\S]{0,200}?\bDELETE\b/i.test(sql)).toBe(false);
     expect(/GRANT[\s\S]{0,200}?\bTRUNCATE\b/i.test(sql)).toBe(false);
-    expect(/govai_conversation_worker/.test(sql)).toBe(false);
-    expect(/govai_evidence_enumerator|govai_audit_sealer/.test(sql)).toBe(false);
-    // It grants to exactly one role.
     const grantees = [...sql.matchAll(/\bTO\s+(govai_[a-z_]+)/gi)].map((m) => m[1]!.toLowerCase());
-    expect([...new Set(grantees)]).toEqual(['govai_app']);
+    expect([...new Set(grantees)]).toEqual(['govai_conversation_worker']);
+    // It touches NEITHER of the two tables P0-D/P0-F own.
+    expect(/ai_conversation_provider_state|ai_conversation_evidence_links/.test(sql)).toBe(false);
   });
+});
 
-  it('the API still constructs no conversation worker and starts no new background loop', async () => {
+describe('P0-C L5 — the request-serving API is STILL not the execution authority', () => {
+  it('server.ts constructs no worker capability and starts no conversation loop', async () => {
     const server = stripComments(
       await readFile(join(ROOT, 'apps', 'api', 'src', 'server.ts'), 'utf8'),
     );
     expect(server).toContain('aiConversationsRoute');
-    // The conversation worker pool is still unreferenced at boot, and the only background
-    // handle the server owns is the pre-existing P0.3-A run-dispatch recovery worker.
-    expect(/createConversationWorkerPool/.test(server)).toBe(false);
-    expect(/startConversation|conversationWorkerPool|conversationRecovery/i.test(server)).toBe(false);
+    // ★ THE LOAD-BEARING ASSERTION OF THIS WHOLE FILE. §9 requires the detached worker to be a
+    // SEPARATE process: if the API built the worker capability or started the sweep loop,
+    // execution would again live and die with whichever process happens to be serving HTTP, and
+    // a browser-facing deploy unit would own provider calls for every tenant.
+    expect(/createConversationWorkerDb|createConversationWorkerPool/.test(server)).toBe(false);
+    expect(/startConversationWorker|runConversationSweepOnce/.test(server)).toBe(false);
+    expect(/conversation-worker|conversationWorker/i.test(server)).toBe(false);
+    // Still exactly ONE pre-existing setTimeout: the bounded owned-pool close in onClose.
     const timers = [...server.matchAll(/set(Interval|Timeout|Immediate)/g)].map((m) => m[0]);
-    // One pre-existing setTimeout: the bounded owned-pool close in the onClose hook.
     expect(timers).toEqual(['setTimeout']);
+  });
+
+  it('the REQUEST-plane conversation modules import no worker or provider machinery', async () => {
+    // The request plane reserves and hydrates; it must not be able to dispatch. Scoped to the
+    // request-plane files — `execution/` is the worker's, and legitimately imports both.
+    const requestPlane = (await shippedConversationSources()).filter(
+      (f) => !f.path.includes(`${join('ai-conversations', 'execution')}`),
+    );
+    expect(requestPlane.length).toBeGreaterThan(8);
+    const banned: Array<[string, RegExp]> = [
+      ['fetch call', /\bfetch\s*\(/],
+      ['provider package', /@govai\/provider-(anthropic|openai|stream-http)/],
+      // ★ NAMED PRECISELY. `withOwnerContext` alone would also match `@govai/core-tenant`'s
+      // REQUEST-plane primitive, which the reservation legitimately uses; what must not appear
+      // here is the WORKER capability.
+      ['worker capability', /ConversationWorkerDb|createConversationWorkerDb|ai-conversation-worker/],
+      ['recovery discovery', /ai_turn_recovery_candidates|discoverRecoveryCandidates/],
+      ['claim mutation', /claim_token|claimToken|claimQueuedHead/],
+      ['dispatch boundary', /dispatch_boundary_committed_at|commitDispatchBoundary/],
+      ['heartbeat', /heartbeat/i],
+      ['provider credential resolution', /provider_credentials|resolveProviderKey/],
+      ['audit bridge', /auditBridge|captureAuditEvent/],
+      ['timer', /setInterval|setTimeout|setImmediate/],
+      ['listen/notify', /\bLISTEN\b|\bNOTIFY\b|pg_notify/],
+    ];
+    for (const { path, code } of requestPlane) {
+      for (const [label, re] of banned) {
+        expect({ path, label, hit: re.test(code) }).toEqual({ path, label, hit: false });
+      }
+    }
+  });
+
+  it('the worker entrypoint is NOT reachable from the API’s import graph', async () => {
+    // A dedicated executable, started and stopped independently — never a side effect of
+    // building the HTTP server.
+    const main = stripComments(
+      await readFile(join(ROOT, 'apps', 'api', 'src', 'conversation-worker', 'main.ts'), 'utf8'),
+    );
+    expect(main).toContain('startConversationWorker');
+    expect(main).toContain('isMainModule');
+    // It never imports the Fastify server, so requiring one can never start the other.
+    expect(/from '\.\.\/server\.js'|buildServer/.test(main)).toBe(false);
+    // And it fails CLOSED without its own credential (no fallback to DATABASE_URL).
+    expect(main).toContain('loadConversationWorkerDbConfig');
   });
 });

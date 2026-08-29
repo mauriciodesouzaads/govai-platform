@@ -32,27 +32,27 @@
       "tests"
     ],
     "api_route_files": 20,
-    "db_migrations": 32
+    "db_migrations": 34
   },
   "tests": {
     "root_unit": {
-      "files": 144,
-      "tests": 1648
+      "files": 148,
+      "tests": 1718
     },
     "root_integration_only": {
-      "files": 89,
-      "tests": 1324
+      "files": 93,
+      "tests": 1453
     },
     "root_full_integration_gate": {
-      "files": 233,
-      "tests": 2972
+      "files": 241,
+      "tests": 3171
     },
     "ui": {
       "files": 33,
       "tests": 753
     },
     "live_gated": {
-      "files": 5,
+      "files": 6,
       "tests": null,
       "reason": "not enumerated: collection would import live-gated modules whose import-time guards read provider environment; files-only by design"
     },

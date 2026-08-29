@@ -103,3 +103,111 @@ export async function decryptConversationTitle(
   });
   return Buffer.from(plaintext).toString('utf8');
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Conversation CONTENT envelope (P0-C; spec §6/§3).
+//
+// The same two purposes as the title group, applied to the `ai_conversation_content` rows that
+// hold a turn's immutable native request config and an attempt's provider-native output. The
+// digest is `Kms.hmacSha256` under `conversation_content_integrity` for exactly the §6 reason
+// restated above: an UNKEYED sha256 beside the ciphertext would let a database dump confirm
+// guesses of low-entropy content without any KMS access.
+//
+// ★ OPERATIONAL KEYED INTEGRITY ≠ FORENSIC EVIDENCE HASH. `content_hmac` is an operational
+// tamper check on the operational store. It is NOT the evidence plane's SHA-256 and must never
+// be substituted for it: the AuditBridge computes its own `native_request_hash` /
+// `payloadHash` over the bytes it forwards, under the audit chain's own key identity. Two
+// planes, two keys, two purposes — the §5 separation.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The persisted encrypted-content group (0031's `ai_conversation_content` columns). */
+export type EncryptedContent = {
+  ciphertext: Buffer;
+  dekWrapped: Buffer;
+  kmsKeyId: string;
+  kmsKeyVersion: number;
+  /** Keyed HMAC-SHA256 of the plaintext — 32 bytes, enforced by CHECK. */
+  contentHmac: Buffer;
+};
+
+/** The columns a content decryption needs, exactly as they come off the row. */
+export type StoredContent = {
+  ciphertext: Buffer;
+  dek_wrapped: Buffer | null;
+  kms_key_id: string;
+  kms_key_version: number;
+};
+
+/** Raised when a content row cannot be decrypted. Carries NO plaintext, NO key material and NO
+ *  ciphertext — only the reason class, so a route can turn it into a bare 500 and a worker can
+ *  classify the attempt without leaking. */
+export class ConversationContentUnreadableError extends Error {
+  readonly code = 'conversation_content_unreadable';
+  constructor(readonly reason: 'crypto_shredded' | 'decrypt_failed') {
+    super(`conversation content is unreadable (${reason})`);
+    this.name = 'ConversationContentUnreadableError';
+  }
+}
+
+export async function encryptConversationContent(
+  kms: Kms,
+  orgId: string,
+  plaintext: Buffer,
+): Promise<EncryptedContent> {
+  const bytes = new Uint8Array(plaintext);
+  const contentHmac = await kms.hmacSha256({
+    purpose: 'conversation_content_integrity',
+    orgId,
+    keyId: AI_CONVERSATION_CONTENT_KEY.keyId,
+    version: AI_CONVERSATION_CONTENT_KEY.keyVersion,
+    message: bytes,
+  });
+  const enc = await kms.envelopeEncrypt({
+    orgId,
+    keyId: AI_CONVERSATION_CONTENT_KEY.keyId,
+    version: AI_CONVERSATION_CONTENT_KEY.keyVersion,
+    plaintext: bytes,
+    purpose: 'conversation_content',
+  });
+  return {
+    ciphertext: Buffer.from(enc.ciphertext),
+    dekWrapped: Buffer.from(enc.dekWrapped),
+    kmsKeyId: AI_CONVERSATION_CONTENT_KEY.keyId,
+    kmsKeyVersion: AI_CONVERSATION_CONTENT_KEY.keyVersion,
+    contentHmac: Buffer.from(contentHmac),
+  };
+}
+
+/**
+ * Decrypt one content row, using the key identity PERSISTED ON THE ROW — never the current
+ * constant — so a future rotation reads old rows under the identity that wrapped them.
+ *
+ * A crypto-shredded row (LAW 12: `dek_wrapped` nulled, ciphertext retained) is reported as such
+ * rather than as a decrypt failure: the two are operationally different — one is a lawful,
+ * intentional destruction of readability, the other is a key/rotation fault that needs an
+ * operator.
+ */
+export async function decryptConversationContent(
+  kms: Kms,
+  orgId: string,
+  row: StoredContent,
+): Promise<Buffer> {
+  if (row.dek_wrapped === null) {
+    throw new ConversationContentUnreadableError('crypto_shredded');
+  }
+  try {
+    const plaintext = await kms.envelopeDecrypt({
+      orgId,
+      keyId: row.kms_key_id,
+      version: row.kms_key_version,
+      ciphertext: new Uint8Array(row.ciphertext),
+      dekWrapped: new Uint8Array(row.dek_wrapped),
+      purpose: 'conversation_content',
+    });
+    return Buffer.from(plaintext);
+  } catch {
+    // The caught error is deliberately NOT chained: KMS failures can carry key identifiers and
+    // provider detail, and this error crosses into HTTP responses and worker logs.
+    throw new ConversationContentUnreadableError('decrypt_failed');
+  }
+}
