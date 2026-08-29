@@ -243,7 +243,7 @@ catalogue entries (Azure programmatically at GA). A conversation whose model bec
 unavailable FAILS TRUTHFULLY; GovAI NEVER silently migrates an existing branch to another
 model (contrast: ChatGPT auto-mapped product conversations to successor models at the
 2026-02-13 retirement — a PRODUCT choice GovAI explicitly rejects for durable branches;
-see LAW NX-35-adjacent rule in §9 case H). *Owner:* P0-E surfaces it; P0-F formalizes the
+see the no-silent-auto-migration rule in §9 case H). *Owner:* P0-E surfaces it; P0-F formalizes the
 evidence of it.
 
 ### LAW NX-15 — Provider continuation is adapter-owned
@@ -444,8 +444,8 @@ FROZEN_TO_EXISTING_USE  no new adoption; existing conversations/branches keep wo
 ```
 
 Rules: tenant availability and individual user entitlement are SEPARATE concepts; policy
-reasons distinguish who/what caused the block and whether approval can change it (§33 UX
-principle); legal/attestation gates (EULA-class, use-case attestation) are their own
+reasons distinguish who/what caused the block and whether approval can change it (§15's
+explanation rule); legal/attestation gates (EULA-class, use-case attestation) are their own
 workflow states, not booleans; policy applies equally to the escape-hatch path (NX-12);
 concealment is an explicit exception policy (NX-9). The two-disjoint-registry finding (V1
 baseline finding F) must be adjudicated to a single source of truth BEFORE any
@@ -492,7 +492,8 @@ is_unlisted_manual_entry
   historically truthful; new dispatch reports unavailability; the user chooses an explicit
   continuation/fork strategy. NO SILENT AUTO-MIGRATION OF AN EXISTING BRANCH TO A
   DIFFERENT MODEL — a new conversation may use a tenant/provider default; an existing
-  branch carries its durable selected identity (§35 of the dispatch, encoded here).
+  branch carries its durable selected identity (LAW NX-14's no-silent-migration rule,
+  restated here as chooser behavior).
 - **I. Provider discovery unavailable** → previously known state may be shown AS STALE
   with its refresh timestamp; the user is told discovery is unavailable; cache is never
   presented as current.
@@ -627,7 +628,7 @@ EXTERNAL_ONLY · PRODUCT_EQUIVALENT_REQUIRED · PROVIDER_NOT_EXPOSED
 ```
 
 HTTP errors are never the only product explanation; every degraded state maps to a
-human-readable fact with optional technical expansion (§33 principle: WHAT is unavailable,
+human-readable fact with optional technical expansion (the explanation rule: WHAT is unavailable,
 WHY, WHO/WHAT policy caused it, whether approval can change it, what allowed alternative
 exists).
 

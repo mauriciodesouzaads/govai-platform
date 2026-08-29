@@ -74,7 +74,7 @@ Row counts at this snapshot: 252 (V1: 248). OPENAI_API 67 (+3) · ANTHROPIC_API 
 CODEX 38 · CLAUDE_CODE 28 · CHATGPT_APP 25 (+1) · CLAUDE_APP 16 · CODEX_APP 7 ·
 CLAUDE_CODE_APP 12.
 Classification totals: FULL 3 · PARTIAL 85 · MISSING 91 · BLOCKED_BY_GOVAI 2 ·
-PROVIDER_NOT_EXPOSED 2 · NOT_APPLICABLE 9 · PRODUCT_ONLY 60.
+PROVIDER_NOT_EXPOSED 3 · NOT_APPLICABLE 8 · PRODUCT_ONLY 60.
 
 - **Added (4):** `OPENAI_API/admin/{admin-api, usage-cost-api, rate-limits-spend-api}` —
   the OpenAI admin/usage/cost/rate-limit surface existed at V1 but was not inventoried,
@@ -85,7 +85,11 @@ PROVIDER_NOT_EXPOSED 2 · NOT_APPLICABLE 9 · PRODUCT_ONLY 60.
   extension architecture will be measured against.
 - **Removed:** none. Retired product features (group chats, Pulse) keep their rows with
   RETIRED notes — they document expectation history, and deleting them would fake a
-  cleaner past. Dead API surfaces remain NOT_APPLICABLE with executed dates.
+  cleaner past. Dying-but-still-served API surfaces remain NOT_APPLICABLE with their
+  sourced `retirement_date`; a surface whose sunset has EXECUTED is reclassified
+  PROVIDER_NOT_EXPOSED (Assistants, executed 2026-08-26 — a retired surface must not be
+  certified `provider_exposed`), which is why the NOT_APPLICABLE/PROVIDER_NOT_EXPOSED
+  totals shift 9→8 / 2→3 vs V1.
 - **GovAI-axis flips (4 rows, P0-C/P0-B evidence):**
   `ANTHROPIC_API/messages-{create,stream}` and `OPENAI_API/responses-{create,stream}` now
   carry `persistence_supported / resume_supported / fork_supported = true` — durable Send,
