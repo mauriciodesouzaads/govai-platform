@@ -1134,6 +1134,45 @@ describe('D-X — transaction boundaries, agnosticism, detachment', () => {
     ]);
   });
 
+  it('D-X8 — a context build LONGER than the lease still dispatches: the heartbeat covers the claimed window', async () => {
+    // Falsification of the round-9 finding: with a short lease and per-decrypt KMS latency
+    // exceeding it in aggregate, a build with boundary-started renewal would lose the boundary
+    // CAS, be rotated, and repeat the same over-lease build forever. With claim-time renewal
+    // it completes on the first drive.
+    const conv = await createConversation({});
+    const t1 = await send(conv.id, conv.branchId, anthropicRequest('HB-u1'));
+    expect(await driveOne(t1.attemptId)).toBe('completed');
+    const t2 = await send(conv.id, conv.branchId, anthropicRequest('HB-u2'));
+
+    const baseKms = new DevKms(stack.seed);
+    const slowKms = new Proxy(baseKms as object, {
+      get(target, prop, receiver): unknown {
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          if (prop === 'envelopeDecrypt') await new Promise((r) => setTimeout(r, 400));
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    }) as unknown as Kms;
+
+    // Lease 1.5s; the build performs 4+ decrypts at ~400ms each (config, credential, history
+    // input, history output) ≈ 1.6s+ — provably past the un-renewed lease. Heartbeat 300ms.
+    const outcome = await driveOne(t2.attemptId, {
+      ...deps,
+      kms: slowKms,
+      leaseMs: 1_500,
+      heartbeatIntervalMs: 300,
+      recoveryGraceMs: 100,
+    });
+    expect(outcome).toBe('completed');
+    expect(postedBodies().at(-1)!['messages']).toEqual([
+      { role: 'user', content: 'HB-u1' },
+      { role: 'assistant', content: [{ type: 'text', text: 'echo: HB-u1' }] },
+      { role: 'user', content: 'HB-u2' },
+    ]);
+  });
+
   it('D-X4 — the hydrate surface still never leaks execution/continuation material', async () => {
     const conv = await createConversation({ provider: 'openai' });
     const t1 = await send(conv.id, conv.branchId, openaiRequest('H-u1'));

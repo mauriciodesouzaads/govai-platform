@@ -306,6 +306,26 @@ async function driveClaimedAttempt(
   attemptId: string,
   claim: ex.ClaimGrant,
 ): Promise<ExecutionOutcome> {
+  // ── The TIMER-DRIVEN heartbeat covers the WHOLE claimed execution (P0-D1) ───────────────
+  // Started at the CLAIM, not at the boundary: context assembly scales with branch history,
+  // and a build outlasting a short lease with no renewal would lose the boundary CAS, be
+  // rotated, and deterministically repeat the same over-lease build. Renewal carries the same
+  // token+unexpired predicates as ever — a crashed holder still expires on schedule.
+  const heartbeat = startHeartbeat(deps, owner, attemptId, claim.claimToken);
+  try {
+    return await driveClaimedAttemptInner(deps, owner, attemptId, claim);
+  } finally {
+    // Awaited: a tick still holding a client must not outlive the candidate that started it.
+    await heartbeat.stop();
+  }
+}
+
+async function driveClaimedAttemptInner(
+  deps: ConversationExecutorDeps,
+  owner: ConversationWorkerOwner,
+  attemptId: string,
+  claim: ex.ClaimGrant,
+): Promise<ExecutionOutcome> {
   // ── STEP 3 (part 1): read everything the dispatch needs, from DURABLE state ─────────────
   // One short transaction; it commits BEFORE any decrypt so no client is held across a KMS
   // round trip (the AWS adapter is real in this repository).
@@ -556,8 +576,8 @@ async function dispatchAndFinalize(
   owner: ConversationWorkerOwner,
   args: DispatchArgs,
 ): Promise<ExecutionOutcome> {
-  // ── §7.7: TIMER-DRIVEN heartbeat, started at the boundary and stopped in `finally` ──────
-  const heartbeat = startHeartbeat(deps, owner, args.attemptId, args.claim.claimToken);
+  // The heartbeat is owned by `driveClaimedAttempt` (started at the CLAIM, stopped in its own
+  // `finally`) — it already covers this whole window.
   let forwardStarted = false;
   let provenanceRejected = false;
 
@@ -735,9 +755,6 @@ async function dispatchAndFinalize(
       'conversation executor: provider fate unprovable after forward started',
     );
     return finalizeAndWake(deps, owner, args.context, args.attemptId, args.claim.claimToken, 'outcome_unknown', null, 'outcome_unknown');
-  } finally {
-    // Awaited: a tick still holding a client must not outlive the dispatch that started it.
-    await heartbeat.stop();
   }
 }
 
@@ -1445,7 +1462,8 @@ export type HeartbeatHandle = {
 };
 
 /**
- * §7.7 — the TIMER-DRIVEN lease renewal, running for the whole post-boundary window.
+ * §7.7 — the TIMER-DRIVEN lease renewal, running for the WHOLE CLAIMED window (P0-D1: from the
+ * claim through context assembly, dispatch and drain to the terminal transition).
  *
  * ★ TIMER, NOT EVENT. A slow non-stream response, or a slow time-to-first-byte, produces NO pump
  * iterations — so an event-driven renewal would let a perfectly healthy runner lose its lease and

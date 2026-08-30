@@ -536,6 +536,16 @@ export type HeartbeatResult = { extended: boolean; stopRequested: boolean; state
  * already-expired claimant must not be able to resurrect its own lease and postpone recovery
  * forever.
  *
+ * ★ AS OF P0-D1 THE RENEWAL WINDOW IS THE WHOLE CLAIMED EXECUTION — `accepted` included
+ * (review finding, exact head 3a25f30). P0-C's pre-boundary work was two decrypts, so starting
+ * the timer at the boundary was sufficient; P0-D1's context assembly scales with the branch
+ * history, and a build that outlasts a short lease with NO renewal path would lose the
+ * boundary CAS, be rotated, and deterministically repeat the same over-lease build — a
+ * livelock, not a recovery. Renewal by the LIVE holder under the same token+unexpired
+ * predicates changes no fencing property: a crashed holder still expires on schedule, a
+ * rotated-out holder still matches zero rows, and UNCLAIMED queued reservations are untouched
+ * (they have no claim to renew — head-of-queue pickup stays deadline-free, §8).
+ *
  * ★ THE SAME TICK READS `stop_requested`. Both lease renewal and stop observation are therefore
  * bounded by the heartbeat interval EVEN WHEN THE PROVIDER PRODUCES NO EVENTS AT ALL — a stalled
  * stream yields no pump iterations, so "check between events" alone would let a Stop pend
@@ -555,7 +565,7 @@ export async function heartbeatClaim(
       WHERE a.id = $1::uuid
         AND a.claim_token = $2::uuid
         AND a.claim_deadline_at > now()
-        AND a.state IN ('dispatching', 'streaming')
+        AND a.state IN ('accepted', 'dispatching', 'streaming')
       RETURNING a.stop_requested, a.state`,
     [input.attemptId, input.claimToken, input.leaseMs / 1000],
   );
