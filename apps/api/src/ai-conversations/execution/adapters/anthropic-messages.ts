@@ -163,22 +163,40 @@ function assistantMessageFromStream(sseText: string): {
         }
         const block = blocks.get(index);
         if (!block) throw new UnreplayableStream('delta_without_block');
+        // ★ KNOWN DELTA TYPES VALIDATE THEIR PAYLOAD FIELD STRICTLY (review finding, exact
+        // head c8cc5bb): coercing a missing/mistyped payload (`String(x ?? '')`) would
+        // silently ALTER content — e.g. an `input_json_delta` without `partial_json`
+        // accumulating as '' and reconstructing as fabricated `{}` tool arguments. A malformed
+        // payload on a known type refuses, exactly like an unknown type.
         switch (delta['type']) {
-          case 'text_delta':
-            block['text'] = `${typeof block['text'] === 'string' ? block['text'] : ''}${String(delta['text'] ?? '')}`;
+          case 'text_delta': {
+            const text = delta['text'];
+            if (typeof text !== 'string') throw new UnreplayableStream('delta_payload_invalid');
+            block['text'] = `${typeof block['text'] === 'string' ? block['text'] : ''}${text}`;
             break;
-          case 'thinking_delta':
-            block['thinking'] = `${typeof block['thinking'] === 'string' ? block['thinking'] : ''}${String(delta['thinking'] ?? '')}`;
+          }
+          case 'thinking_delta': {
+            const thinking = delta['thinking'];
+            if (typeof thinking !== 'string') throw new UnreplayableStream('delta_payload_invalid');
+            block['thinking'] = `${typeof block['thinking'] === 'string' ? block['thinking'] : ''}${thinking}`;
             break;
-          case 'signature_delta':
+          }
+          case 'signature_delta': {
             // Byte-preserved: the signature is stored exactly as the wire delivered it (§18 of
             // the movement dispatch — never synthesize or modify signatures).
-            block['signature'] = delta['signature'];
+            const signature = delta['signature'];
+            if (typeof signature !== 'string') throw new UnreplayableStream('delta_payload_invalid');
+            block['signature'] = signature;
             break;
-          case 'input_json_delta':
-            partialJson.set(index, `${partialJson.get(index) ?? ''}${String(delta['partial_json'] ?? '')}`);
+          }
+          case 'input_json_delta': {
+            const fragment = delta['partial_json'];
+            if (typeof fragment !== 'string') throw new UnreplayableStream('delta_payload_invalid');
+            partialJson.set(index, `${partialJson.get(index) ?? ''}${fragment}`);
             break;
+          }
           case 'citations_delta': {
+            if (!isObject(delta['citation'])) throw new UnreplayableStream('delta_payload_invalid');
             const citations = Array.isArray(block['citations']) ? (block['citations'] as unknown[]) : [];
             citations.push(delta['citation']);
             block['citations'] = citations;

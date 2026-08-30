@@ -416,6 +416,41 @@ describe('anthropic adapter — durable stream reassembly', () => {
     ]);
   });
 
+  it('a KNOWN delta type with a MISSING or mistyped payload refuses: coercion would fabricate content', () => {
+    const cases: Array<Record<string, unknown>> = [
+      { type: 'text_delta' }, // no text
+      { type: 'text_delta', text: 42 },
+      { type: 'thinking_delta' }, // no thinking
+      { type: 'signature_delta' }, // no signature
+      { type: 'input_json_delta' }, // no partial_json — would fabricate {} tool arguments
+      { type: 'input_json_delta', partial_json: null },
+      { type: 'citations_delta' }, // no citation object
+    ];
+    for (const delta of cases) {
+      const result = build(
+        [
+          entry({
+            assistant: streamAssistant(
+              sse([
+                { type: 'message_start', message: { role: 'assistant' } },
+                { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 't', name: 'f', input: {} } },
+                { type: 'content_block_delta', index: 0, delta },
+                { type: 'content_block_stop', index: 0 },
+                { type: 'message_stop' },
+              ]),
+            ),
+          }),
+        ],
+        { model: MODEL, messages: [user('u2')] },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'delta_payload_invalid',
+      });
+    }
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],
