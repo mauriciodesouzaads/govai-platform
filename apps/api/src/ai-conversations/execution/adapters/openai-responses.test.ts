@@ -165,6 +165,41 @@ describe('openai adapter — strategy selection', () => {
     }
   });
 
+  it('background mode is refused explicitly: its polling lifecycle is not implemented', () => {
+    const result = build([], { model: 'gpt-test', input: 'u1', background: true });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'continuation_conflict',
+      detail: 'config_requests_background_mode',
+    });
+  });
+
+  it('a NONTERMINAL stored response body never becomes context: chaining and replay both refuse', () => {
+    // `background: true` answers HTTP 200 with status queued/in_progress; the executor
+    // completes any 2xx attempt, so terminality must be validated at replay time.
+    for (const status of ['queued', 'in_progress']) {
+      const result = build(
+        [entry({ assistant: responseAssistant({ ...RESP_1, status }) })],
+        { model: 'gpt-test', input: 'u2' },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'anchor_response_not_terminal',
+      });
+    }
+    // An explicit terminal status chains exactly like a status-less body.
+    const terminal = build(
+      [entry({ assistant: responseAssistant({ ...RESP_1, status: 'completed' }) })],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(terminal).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_1' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+  });
+
   it('a HISTORICAL entry carrying client-owned continuation poisons the build: refusal, never a stripped replay', () => {
     // The poisoned turn's input was composed relative to external provider state; replaying it
     // without those fields would silently change its meaning. Recovery is an explicit fork

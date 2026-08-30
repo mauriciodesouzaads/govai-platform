@@ -104,11 +104,22 @@ class Unreplayable extends Error {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /** The terminal response object of a completed attempt: the stored body itself, or the
- *  `response.completed` event's `response` from the durable stream bytes. */
+ *  `response.completed` event's `response` from the durable stream bytes.
+ *
+ *  ★ TERMINALITY IS VALIDATED, NOT ASSUMED (review finding, exact head fd06f99): a supported
+ *  native `background: true` request answers HTTP 200 with a response whose `status` is
+ *  `queued`/`in_progress`, and the executor durably completes any 2xx attempt — so a stored
+ *  body is only a lawful context contribution when the provider's own `status` says the
+ *  operation finished. A nonterminal body refuses: chaining its id would continue from an
+ *  unfinished operation, and replaying it statelessly would present a non-answer as history. */
 function terminalResponseOf(entry: AssembledContextEntry): JsonObject {
   const output = entry.assistant!.output;
   if (output.kind === 'response') {
     if (!isObject(output.body)) throw new Unreplayable('response_body_shape_unknown');
+    const status = output.body['status'];
+    if (typeof status === 'string' && status !== 'completed') {
+      throw new Unreplayable('anchor_response_not_terminal');
+    }
     return output.body;
   }
   let terminal: JsonObject | null = null;
@@ -169,6 +180,13 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
       if (field in input.turnConfig) {
         return fail('continuation_conflict', `config_carries_${field}`);
       }
+    }
+    // `background: true` is a provider-side EXECUTION LIFECYCLE (the 200 answers `queued` and
+    // the result must be polled) that this movement does not implement: accepting it would
+    // durably record a nonterminal body as the turn's completed answer. Refused explicitly
+    // until the polling lifecycle exists — never silently stripped (§30).
+    if (input.turnConfig['background'] === true) {
+      return fail('continuation_conflict', 'config_requests_background_mode');
     }
 
     // No eligible history: the turn's own immutable config IS the request, verbatim.
