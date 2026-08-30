@@ -61,6 +61,14 @@ first-party hosts. The V1 validator and its enforcement lane are untouched.
 
 Root additions: `baseline_version: 2` and `predecessor` (lineage to the V1 artifact).
 
+**`state_nature` is ROW-LOCAL, not adapter-exhaustive:** it describes the state
+characteristic of THIS capability row (e.g. the Responses create row carries
+`provider_stored` because `store` defaults true on that surface), and it is NOT an
+exhaustive enumeration of every continuation strategy available to the provider adapter —
+OpenAI's adapter alone spans conversation objects, `previous_response_id` chaining AND
+stateless replay. The authoritative adapter strategy set remains
+`native-experience-contract-v1.md` §18 + `ai-conversation-continuity-v1.md` §11.
+
 **Dynamic tenant state is deliberately NOT representable.** Tenant policy verdicts,
 per-account entitlements and account-scoped catalogue counts are runtime/projection
 concerns (contract §5–§8) and evidence-file observations — never static baseline rows.

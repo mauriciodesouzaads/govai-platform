@@ -194,10 +194,18 @@ ADD surface knowledge where sources support it, not to pretend it exists. *Owner
 Default enterprise UX: a discoverable-but-policy-blocked model is VISIBLE, DISABLED, with
 the REASON shown (tenant policy, user entitlement, provider account access,
 region/data-residency, surface incompatibility, lifecycle, approval requirement).
-*Market adjudication:* all three enterprise references show-then-block at the action
-boundary rather than hiding. Exception: an explicit, named security policy may require
-inventory concealment for a class of models — concealment is then a recorded policy
-decision, never a default. *Owner:* P0-E; policy engine wave supplies reasons.
+*Market adjudication (evidence-scoped):* Microsoft Foundry is the explicit
+show-then-disable UX precedent (the blocked model stays visible in the catalog, deployment
+is denied at the action boundary with an error/reason). AWS Bedrock and Google Model
+Garden independently demonstrate that model discovery/catalogue and action
+eligibility/policy are DISTINCT dimensions (Bedrock's four-axis availability response and
+per-model console access states; Vertex org-policy allow/deny at model/action level) —
+their exact chooser visibility UX is not claimed beyond what first-party documentation
+proves (Vertex console hide-vs-block behavior was recorded UNKNOWN in the source ledger).
+GovAI therefore ADOPTS show-then-explain as its own default enterprise UX — it does not
+merely copy it. Exception: an explicit, named security policy may require inventory
+concealment for a class of models — concealment is then a recorded policy decision, never
+a default. *Owner:* P0-E; policy engine wave supplies reasons.
 
 ### LAW NX-10 — No silent policy clamp
 
@@ -539,7 +547,7 @@ each requirement:
 | Search over own conversations (title-first, honest scope) | P0-E (per continuity §18) |
 | Branch/fork UX (incl. cross-provider fork labeling) | P0-E (mechanics P0-B/P0-D) |
 | Retry / stop / reattach-to-live-stream | P0-E (durable arms exist in P0-C; public Stop terminalization ships with its endpoint) |
-| Turn↔evidence correlation surfaced truthfully | P0-F (triple), P0-E (rendering) |
+| Turn↔evidence correlation surfaced truthfully | P0-F (triple; enables the proven state), P0-E (rendering infrastructure only) |
 | Files/attachments on turns | P1 |
 | Search/citations/hosted-tool rendering | P2 |
 | MCP/connector approvals (`ask` becomes real) | P3 |
@@ -557,6 +565,17 @@ each requirement:
 
 Not everything belongs to P0-E V1 — the table IS the anti-scope-creep instrument: P0-E
 implements the P0-E rows and leaves labeled extension slots for the rest.
+
+**Forward-capability gating rule (normative, preserves the P0-D → P0-E → P0-F order):**
+UI slots may PRECEDE a later backend capability, but an affordance or claim may be
+ENABLED only when the required backend capability is proven. Concretely: P0-E builds the
+lifecycle affordance shell (archive may be enabled where its backend already exists), but
+an ENABLED Delete action MUST NOT ship until P0-F's delete/retention/fencing/
+provider-cleanup protocol (continuity spec §19) is implemented and backend-proven — until
+then the product either omits the action or shows an explicitly unavailable/coming-later
+state, and never pretends deletion is operational. The same rule governs evidence: P0-E
+may build the correlation-rendering infrastructure, but the exact turn↔evidence
+correlation state is enabled only after P0-F proves the triple.
 
 ## 12. Project boundary (future only)
 
@@ -686,8 +705,10 @@ P0-D consumes this contract and MUST deliver, per continuity spec §11 and the l
 P0-E consumes P0-D + this contract and MUST deliver:
 
 1. The workspace shell of §11's P0-E rows (sidebar, history, deep links, rename, archive,
-   delete-with-truth, fork UX, retry/stop, reattach, empty/loading/error states, keyboard
-   accessibility — continuity §15 verbatim).
+   the delete-with-truth AFFORDANCE SHELL — an enabled Delete ships only after P0-F proves
+   the continuity-spec §19 protocol, per §11's forward-capability gating rule — fork UX,
+   retry/stop, reattach, empty/loading/error states, keyboard accessibility — continuity
+   §15 verbatim).
 2. The model chooser per §9 (all ten cases) over the §5 discovery contract and §7
    capability projection, with the §8 policy projection where policy exists — and the
    free-text escape hatch (NX-12) intact.
@@ -707,7 +728,8 @@ P0-E consumes P0-D + this contract and MUST deliver:
    `exact_turn_evidence_correlation` flips only on proof).
 2. Continuity spec §19 delete/retention truth table implemented end-to-end (fencing protocol, provider-side
    cleanup with recorded outcomes, crypto-shred eligibility, `DELETE_ROOT_LOCK_DISCIPLINE`
-   pin honored).
+   pin honored). P0-F OWNS this protocol; once proven, P0-F activates/closes the Delete
+   experience whose affordance shell P0-E reserved (§11's forward-capability gating rule).
 3. `STREAM_OUTCOME_FENCED_EXIT_VOCABULARY` formalized as evidence vocabulary.
 4. Lifecycle evidence: model-retirement-driven failures (§9 case H) leave truthful durable
    records.
