@@ -1439,14 +1439,14 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   P0C_DURABLE_CONVERSATION_EXECUTION   = IMPLEMENTED FOR ANTHROPIC_MESSAGES + OPENAI_RESPONSES
   FULL_NATIVE_EXPERIENCE_PARITY        = NOT COMPLETE
   ```
-- **NEXT:** the program-level architectural movement
+- **NEXT: P0-D provider continuation.** The intervening program-level architectural movement
   `EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01`
   (documentary/normative — formalize the native-experience and model-discovery laws and refresh
-  the current parity baseline WITHOUT rewriting V1 history), then **P0-D provider
-  continuation**. See [development-roadmap.md](./development-roadmap.md).
-  **★ EXECUTED AND MERGED — see the movement's canonical section below.** The movement's
+  the current parity baseline WITHOUT rewriting V1 history) is
+  **★ EXECUTED AND MERGED — see the movement's canonical section below.** Its
   independent architecture review and owner merge are COMPLETE (PR #149, merge
   `f998f55aee405adbc12c762f237854f118b8939c`); P0-D remains NOT_STARTED and is NEXT.
+  See [development-roadmap.md](./development-roadmap.md).
 
 ### EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01 canonical state (this tree)
 

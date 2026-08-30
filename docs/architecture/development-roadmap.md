@@ -312,8 +312,8 @@ below). The P0 wave (conversation continuity) is the only wave in flight; waves 
 started.
 The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; the implementation
 mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated candidate scope in the
-baseline doc §10) is **IN_PROGRESS**, with five movements finished and merged and a
-program-level architectural movement next before P0-D:
+baseline doc §10) is **IN_PROGRESS**, with five movements finished and merged, the
+intervening program-level architectural movement also merged (PR #149), and P0-D next:
 
 ```text
 EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
