@@ -15,9 +15,14 @@
 //     vs auto-strip is the PROVIDER's behavior, not ours to emulate.
 //   * MODEL SWITCH: "When you switch between any two models … strip `thinking` and
 //     `redacted_thinking` blocks from prior assistant turns. Thinking blocks are tied to the
-//     model that produced them." Applied below exactly where a replayed assistant message's
-//     SOURCE branch model differs from the executing branch's model (a §17 same-provider
-//     model-switch fork).
+//     model that produced them." Applied below on the models ACTUALLY IN PLAY (review finding,
+//     exact head 10a6d65): the historical side is the model the PROVIDER says produced the
+//     answer (the response body's / `message_start`'s own `model`, falling back to the request
+//     that produced it, then to branch metadata), and the current side is the dispatching
+//     config's own `model` (falling back to branch metadata). Branch columns are defaults the
+//     send contract deliberately does not force the native body to match, so comparing
+//     metadata alone could both retain foreign signed thinking (provider rejects) and strip
+//     valid thinking (silent quality loss).
 //   * Streaming: content arrives as `content_block_start` / `content_block_delta`
 //     (`text_delta` | `input_json_delta` | `thinking_delta` | `signature_delta` |
 //     `citations_delta`) / `content_block_stop`, with the signature "as a `signature_delta`
@@ -92,10 +97,15 @@ class UnreplayableStream extends Error {
   }
 }
 
-/** Reassemble `{ role, content }` from a completed attempt's durable stream bytes. */
-function assistantMessageFromStream(sseText: string): { role: string; content: unknown[] } {
+/** Reassemble `{ role, content, model }` from a completed attempt's durable stream bytes. */
+function assistantMessageFromStream(sseText: string): {
+  role: string;
+  content: unknown[];
+  model: string | null;
+} {
   const events = parseSseEvents(sseText);
   let role = 'assistant';
+  let model: string | null = null;
   // Sparse by `index`, exactly as the wire addresses blocks.
   const blocks = new Map<number, JsonObject>();
   const partialJson = new Map<number, string>();
@@ -120,6 +130,7 @@ function assistantMessageFromStream(sseText: string): { role: string; content: u
       case 'message_start': {
         const message = raw['message'];
         if (isObject(message) && typeof message['role'] === 'string') role = message['role'];
+        if (isObject(message) && typeof message['model'] === 'string') model = message['model'];
         break;
       }
       case 'content_block_start': {
@@ -198,7 +209,7 @@ function assistantMessageFromStream(sseText: string): { role: string; content: u
   }
   if (order.length === 0) throw new UnreplayableStream('stream_has_no_content_blocks');
   if (openBlocks.size > 0 || !sawMessageStop) throw new UnreplayableStream('stream_truncated');
-  return { role, content: order.map((i) => blocks.get(i)!) };
+  return { role, content: order.map((i) => blocks.get(i)!), model };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -213,13 +224,19 @@ function stripForeignThinking(content: unknown[]): unknown[] {
   );
 }
 
+/** The `model` a native request/response object names, when it names one. */
+function nativeModelOf(value: unknown): string | null {
+  return isObject(value) && typeof value['model'] === 'string' ? value['model'] : null;
+}
+
 function assistantMessageFromEntry(
   entry: AssembledContextEntry,
-  branchModel: string,
+  currentModel: string,
 ): { role: string; content: unknown } {
   const output = entry.assistant!.output;
   let role: string;
   let content: unknown[];
+  let producedBy: string | null;
   if (output.kind === 'response') {
     const body = output.body;
     if (!isObject(body) || !Array.isArray(body['content'])) {
@@ -227,12 +244,19 @@ function assistantMessageFromEntry(
     }
     role = typeof body['role'] === 'string' ? body['role'] : 'assistant';
     content = body['content'] as unknown[];
+    producedBy = nativeModelOf(body);
   } else {
     const message = assistantMessageFromStream(output.sseText);
     role = message.role;
     content = message.content;
+    producedBy = message.model;
   }
-  if (entry.sourceModel !== branchModel) {
+  // The model that produced this answer, from NATIVE truth outward: the provider's own
+  // response `model`, else the request that produced it, else branch metadata (the send
+  // contract does not force the native body to match the branch column, so the column is a
+  // fallback — never the primary comparison).
+  const historicalModel = producedBy ?? nativeModelOf(entry.userNative) ?? entry.sourceModel;
+  if (historicalModel !== currentModel) {
     content = stripForeignThinking(content);
     if (content.length === 0) {
       // An assistant message whose entire content was foreign thinking cannot be replayed as
@@ -264,6 +288,7 @@ export const anthropicMessagesAdapter: ProviderConversationAdapter = {
       return fail('context_unreplayable', 'config_messages_not_array');
     }
 
+    const currentModel = nativeModelOf(input.turnConfig) ?? input.branchModel;
     const history: unknown[] = [];
     try {
       for (const entry of input.entries) {
@@ -280,7 +305,7 @@ export const anthropicMessagesAdapter: ProviderConversationAdapter = {
         }
         history.push(...(native['messages'] as unknown[]));
         if (entry.assistant) {
-          history.push(assistantMessageFromEntry(entry, input.branchModel));
+          history.push(assistantMessageFromEntry(entry, currentModel));
         }
       }
     } catch (err) {

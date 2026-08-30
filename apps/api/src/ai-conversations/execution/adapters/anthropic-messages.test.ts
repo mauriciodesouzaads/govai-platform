@@ -23,12 +23,25 @@ function entry(overrides: Partial<AssembledContextEntry>): AssembledContextEntry
   };
 }
 
-function responseAssistant(content: unknown[], attemptId = 'att-1'): AssembledContextEntry['assistant'] {
+function responseAssistant(
+  content: unknown[],
+  attemptId = 'att-1',
+  bodyModel?: string,
+): AssembledContextEntry['assistant'] {
   return {
     attemptId,
     providerCredentialId: CRED,
     completedAtMs: 1_800_000_000_000,
-    output: { kind: 'response', body: { id: 'msg_1', type: 'message', role: 'assistant', content } },
+    output: {
+      kind: 'response',
+      body: {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        ...(bodyModel === undefined ? {} : { model: bodyModel }),
+        content,
+      },
+    },
   };
 }
 
@@ -176,15 +189,15 @@ describe('anthropic adapter — thinking blocks and the model-switch rule (A9/§
   });
 
   it('a MODEL-SWITCHED entry strips thinking and redacted_thinking (the first-party rule)', () => {
+    // The historical model comes from the provider's OWN response body — native truth.
     const result = build(
       [
         entry({
-          sourceModel: 'claude-other',
-          assistant: responseAssistant([
-            thinking,
-            { type: 'redacted_thinking', data: 'opaque' },
-            { type: 'text', text: 'A1' },
-          ]),
+          assistant: responseAssistant(
+            [thinking, { type: 'redacted_thinking', data: 'opaque' }, { type: 'text', text: 'A1' }],
+            'att-1',
+            'claude-other',
+          ),
         }),
       ],
       { model: MODEL, messages: [user('u2')] },
@@ -194,9 +207,33 @@ describe('anthropic adapter — thinking blocks and the model-switch rule (A9/§
     expect(messages[1]!.content).toEqual([{ type: 'text', text: 'A1' }]);
   });
 
+  it('the comparison uses the models ACTUALLY IN PLAY, not branch metadata (either direction)', () => {
+    // Branch metadata identical on both sides, but the provider says a DIFFERENT model
+    // produced the answer -> strip (retaining a foreign signature would be rejected upstream).
+    const nativeSwitch = build(
+      [entry({ sourceModel: MODEL, assistant: responseAssistant([thinking, { type: 'text', text: 'A1' }], 'att-1', 'claude-other') })],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(nativeSwitch.ok).toBe(true);
+    expect(
+      (nativeSwitch as unknown as { body: { messages: Array<{ content: unknown[] }> } }).body.messages[1]!.content,
+    ).toEqual([{ type: 'text', text: 'A1' }]);
+
+    // Branch metadata DIFFERS (a metadata drift), but the native models match -> valid
+    // thinking is NOT stripped.
+    const metadataDrift = build(
+      [entry({ sourceModel: 'claude-other', assistant: responseAssistant([thinking, { type: 'text', text: 'A1' }], 'att-1', MODEL) })],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(metadataDrift.ok).toBe(true);
+    expect(
+      (metadataDrift as unknown as { body: { messages: Array<{ content: unknown[] }> } }).body.messages[1]!.content,
+    ).toEqual([thinking, { type: 'text', text: 'A1' }]);
+  });
+
   it('refuses when a model switch would leave an EMPTY assistant message', () => {
     const result = build(
-      [entry({ sourceModel: 'claude-other', assistant: responseAssistant([thinking]) })],
+      [entry({ assistant: responseAssistant([thinking], 'att-1', 'claude-other') })],
       { model: MODEL, messages: [user('u2')] },
     );
     expect(result).toEqual({
