@@ -43,6 +43,7 @@ import {
   type ExecutionOutcome,
 } from '../../apps/api/src/ai-conversations/execution/execute-turn.js';
 import { discoverRecoveryCandidates } from '../../apps/api/src/pipeline/ai-conversation-recovery-discovery.js';
+import { loadDurableContextPlan } from '../../apps/api/src/ai-conversations/execution/durable-context.js';
 
 let stack: Stack;
 let org: SeededOrg;
@@ -1038,6 +1039,36 @@ describe('D-X — transaction boundaries, agnosticism, detachment', () => {
     expect(row.state).toBe('rejected');
     expect(row.error_class).toBeNull();
     expect(stack.provider.recordedRequests).toEqual([]); // the provider was never contacted
+  });
+
+  it('D-X6 — the aggregate context budget REFUSES an over-budget build, and never truncates', async () => {
+    const conv = await createConversation({});
+    const t1 = await send(conv.id, conv.branchId, anthropicRequest('B-u1'));
+    expect(await driveOne(t1.attemptId)).toBe('completed');
+    const t2 = await send(conv.id, conv.branchId, anthropicRequest('B-u2'));
+    expect(await driveOne(t2.attemptId)).toBe('completed');
+    const t3 = await send(conv.id, conv.branchId, anthropicRequest('B-u3'));
+
+    // Phase A invoked directly on the REAL worker capability with punitive budgets: each bound
+    // (turns, items, cumulative ciphertext bytes) refuses with the precise reason — an
+    // over-budget branch is an explicit refusal, never a silently shortened history.
+    const owner = { orgId: org.org_id, ownerUserId: org.user_id };
+    const ctx = { conversationId: conv.id, branchId: conv.branchId, turnSeq: '3' };
+    for (const budget of [
+      { maxTurns: 1, maxItems: 4096, maxCiphertextBytes: 32 * 1024 * 1024 },
+      { maxTurns: 512, maxItems: 1, maxCiphertextBytes: 32 * 1024 * 1024 },
+      { maxTurns: 512, maxItems: 4096, maxCiphertextBytes: 8 },
+    ]) {
+      await expect(
+        db.withOwnerContext(owner, (tx) => loadDurableContextPlan(tx, owner, ctx, budget)),
+      ).rejects.toMatchObject({
+        code: 'durable_context_unbuildable',
+        reason: 'context_budget_exceeded',
+      });
+    }
+
+    // The DEFAULT budget admits any realistic conversation: the same turn drives to completion.
+    expect(await driveOne(t3.attemptId)).toBe('completed');
   });
 
   it('D-X4 — the hydrate surface still never leaks execution/continuation material', async () => {

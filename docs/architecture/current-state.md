@@ -58,8 +58,8 @@ is one collected test module.
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
 | Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 152 | 1760 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 95 | 1488 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 247 | 3248 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 95 | 1489 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 247 | 3249 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 
@@ -1613,6 +1613,12 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
                                          required-before-activation), the AI Console does
                                          not use this API (P0-E), so no deployed caller
                                          holds the old contract
+  CONTEXT_AGGREGATE_BUDGET             = ENFORCED IN PHASE A (512 turns / 4096 items / 32 MiB
+                                         cumulative ciphertext, byte bound computed by SQL
+                                         aggregate BEFORE any payload fetch). Over budget =
+                                         explicit `rejected` (`context_budget_exceeded`) —
+                                         REFUSAL, never silent truncation; compaction is a
+                                         §11 adapter capability of a later movement
   MODEL_ID_AGNOSTICISM                 = PRESERVED (no model input anywhere in the adapter
                                          registry; regression-pinned)
   PROVIDER_EXACTLY_ONCE                = NOT_CLAIMED (permanent)

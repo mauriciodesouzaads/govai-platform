@@ -69,6 +69,37 @@ import { decryptConversationContent } from '../crypto.js';
  */
 const MAX_BRANCH_DEPTH = 64;
 
+/**
+ * AGGREGATE CONTEXT BUDGET (review finding, exact head 4918180): a branch has no total-turn
+ * limit and every turn may carry up to `NATIVE_REQUEST_MAX_BYTES` of input, so an unbounded
+ * load would let one tenant's long branch make a shared worker fetch and KMS-decrypt hundreds
+ * of megabytes per dispatch. The budget is enforced IN PHASE A, and the byte bound is computed
+ * by a SQL AGGREGATE over `octet_length(ciphertext)` BEFORE any ciphertext row is fetched — an
+ * over-budget build refuses without ever pulling the payload bytes.
+ *
+ * ★ REFUSAL, NEVER TRUNCATION. Silently dropping oldest history to fit a budget would change
+ * what the model sees behind the user's back (§31's silent-degradation ban, and the standing
+ * no-silent-caps doctrine). An over-budget branch gets an explicit `rejected` attempt with the
+ * `context_budget_exceeded` reason; continuing such a conversation is a product decision
+ * (compaction is a §11 adapter capability of a later movement), not a loader guess.
+ *
+ * Sizing, stated so review can falsify it: every current provider context window is well under
+ * 8 MiB of text, so 32 MiB of cumulative ciphertext (envelope ≈ plaintext + small constant) is
+ * far above any request a provider could accept while bounding worst-case worker memory at
+ * roughly budget × decrypt-concurrency. 512 turns bounds the per-dispatch row walk; 4096 items
+ * bounds the per-dispatch KMS-decrypt count (streams persist many chunk rows per answer).
+ */
+export type DurableContextBudget = {
+  maxTurns: number;
+  maxItems: number;
+  maxCiphertextBytes: number;
+};
+export const DEFAULT_CONTEXT_BUDGET: DurableContextBudget = {
+  maxTurns: 512,
+  maxItems: 4096,
+  maxCiphertextBytes: 32 * 1024 * 1024,
+};
+
 /** The encrypted-content envelope exactly as it comes off the row. Never decrypted in Phase A. */
 export type EncryptedContentRef = {
   ciphertext: Buffer;
@@ -225,6 +256,41 @@ async function readAttemptsByIds(
   return new Map(r.rows.map((row) => [row.id, row]));
 }
 
+/** The BUDGET pre-check: item count + cumulative ciphertext bytes for the exact row set the
+ *  load below would fetch, computed server-side so no payload byte crosses the wire first. */
+async function readContextAggregate(
+  tx: PoolClient,
+  owner: ConversationWorkerOwner,
+  conversationId: string,
+  turnIds: readonly string[],
+  selectedAttemptIds: readonly string[],
+): Promise<{ itemCount: number; ciphertextBytes: number }> {
+  if (turnIds.length === 0) return { itemCount: 0, ciphertextBytes: 0 };
+  const r = await tx.query<{ item_count: string; ciphertext_bytes: string }>(
+    `SELECT count(*)::text AS item_count,
+            COALESCE(sum(octet_length(c.ciphertext)), 0)::text AS ciphertext_bytes
+       FROM govai.ai_conversation_items i
+       JOIN govai.ai_conversation_content c
+         ON  c.org_id          = i.org_id
+         AND c.owner_user_id   = i.owner_user_id
+         AND c.conversation_id = i.conversation_id
+         AND c.id              = i.content_id
+      WHERE i.org_id = $1::uuid AND i.owner_user_id = $2::uuid
+        AND i.conversation_id = $3::uuid
+        AND i.turn_id = ANY($4::uuid[])
+        AND (i.attempt_id IS NULL OR i.attempt_id = ANY($5::uuid[]))`,
+    [
+      owner.orgId,
+      owner.ownerUserId,
+      conversationId,
+      turnIds as string[],
+      selectedAttemptIds as string[],
+    ],
+  );
+  const row = r.rows[0]!;
+  return { itemCount: Number(row.item_count), ciphertextBytes: Number(row.ciphertext_bytes) };
+}
+
 /** Items for the given turns, joined to their content envelopes: TURN-owned input for every
  *  turn, plus ATTEMPT-owned output for exactly the SELECTED attempt ids. */
 async function readItemsWithContent(
@@ -286,6 +352,7 @@ export async function loadDurableContextPlan(
   tx: PoolClient,
   owner: ConversationWorkerOwner,
   input: { conversationId: string; branchId: string; turnSeq: string },
+  budget: DurableContextBudget = DEFAULT_CONTEXT_BUDGET,
 ): Promise<DurableContextPlan> {
   // ── Walk the fork ancestry root-ward, recording each branch's bound ─────────────────────
   type WalkFrame = {
@@ -386,6 +453,23 @@ export async function loadDurableContextPlan(
       eligibleAttemptIds.push(attempt.id);
       eligibility.set(attempt.id, attempt);
     }
+  }
+
+  if (selected.length > budget.maxTurns) {
+    throw new DurableContextUnbuildableError('context_budget_exceeded');
+  }
+  const aggregate = await readContextAggregate(
+    tx,
+    owner,
+    input.conversationId,
+    selected.map((s) => s.turn.id),
+    eligibleAttemptIds,
+  );
+  if (
+    aggregate.itemCount > budget.maxItems ||
+    aggregate.ciphertextBytes > budget.maxCiphertextBytes
+  ) {
+    throw new DurableContextUnbuildableError('context_budget_exceeded');
   }
 
   const items = await readItemsWithContent(
