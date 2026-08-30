@@ -187,6 +187,43 @@ export async function encryptConversationContent(
  * intentional destruction of readability, the other is a key/rotation fault that needs an
  * operator.
  */
+/**
+ * The attempt row's encrypted continuation anchor (P0-D1; spec §11 retry mechanics, §21).
+ *
+ * A provider continuation id (an OpenAI response id today; thread/session identifiers in
+ * P0-D2) is a SENSITIVE operational identifier — it unlocks provider-stored content — so it is
+ * persisted only through the domain envelope, under the same `conversation_content` purpose as
+ * every other conversation secret. The group carries no keyed digest because 0031's
+ * `continuation_parent_*` column group has none: the anchor is an operational pointer whose
+ * integrity failure surfaces as an ordinary decrypt failure, not a silent substitution.
+ */
+export type EncryptedContinuationParent = {
+  ciphertext: Buffer;
+  dekWrapped: Buffer;
+  kmsKeyId: string;
+  kmsKeyVersion: number;
+};
+
+export async function encryptContinuationParent(
+  kms: Kms,
+  orgId: string,
+  parentAnchor: string,
+): Promise<EncryptedContinuationParent> {
+  const enc = await kms.envelopeEncrypt({
+    orgId,
+    keyId: AI_CONVERSATION_CONTENT_KEY.keyId,
+    version: AI_CONVERSATION_CONTENT_KEY.keyVersion,
+    plaintext: new Uint8Array(Buffer.from(parentAnchor, 'utf8')),
+    purpose: 'conversation_content',
+  });
+  return {
+    ciphertext: Buffer.from(enc.ciphertext),
+    dekWrapped: Buffer.from(enc.dekWrapped),
+    kmsKeyId: AI_CONVERSATION_CONTENT_KEY.keyId,
+    kmsKeyVersion: AI_CONVERSATION_CONTENT_KEY.keyVersion,
+  };
+}
+
 export async function decryptConversationContent(
   kms: Kms,
   orgId: string,

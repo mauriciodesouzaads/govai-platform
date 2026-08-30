@@ -25,22 +25,23 @@
 //    unreachable on that path. That is what makes "commit 4 precedes EVERY POST" a proof rather
 //    than a convention, and the whole §7.7 provenance-absent recovery arm rests on it.
 //
-// THE CONTEXT CONTRACT — what P0-C does NOT do, stated before anyone infers otherwise.
+// THE CONTEXT CONTRACT — SERVER-ASSEMBLED DURABLE BRANCH CONTEXT (P0-D1; spec §11, LAW 5).
 //
-// The body this executor POSTs is the turn's OWN stored `native_request`, verbatim. GovAI does
-// NOT assemble conversation history, does NOT replay earlier turns' output into the request, and
-// does NOT carry provider continuation state. For the two P0-C surfaces that is coherent because
-// both are STATELESS provider APIs whose request carries its own history: an Anthropic
-// `/v1/messages` `messages[]` and an OpenAI `/v1/responses` `input` are supplied by the caller,
-// exactly as they are on the direct `/governed/*` routes this executor shares a pipeline with.
+// As of P0-D1 the body this executor POSTs is BUILT BY THE SERVER from durable branch truth:
+// the §11 ProviderConversationAdapter takes the context-eligible projection (durable-context.ts
+// — turns in order, each contributing its immutable user input plus ONLY its current attempt's
+// completed, non-excluded output, with fork/retry boundaries applied) and the turn's OWN
+// immutable native request config, and replaces exactly the CONTEXT-BEARING portion of the
+// request (Anthropic `messages`; OpenAI `input` / `previous_response_id`). Every other
+// provider-native control in the turn's config passes through verbatim. A turn with no
+// eligible history still POSTs its stored config BYTE-IDENTICALLY to P0-C.
 //
-// ★ THE BOUNDED CONSEQUENCE, NOT HIDDEN: a client that PIPELINES — sending turn N+1 before turn
-// N has completed — composes N+1's history without N's answer, and the queue will still dispatch
-// it in order afterwards. Nothing here detects that, and nothing here could: the only mechanism
-// that would is §11's ProviderConversationAdapter building the request from durable branch
-// context, which is P0-D and is deliberately excluded (§23). The honest position is that P0-C
-// executes the request the client asked for, and that server-assembled continuity arrives with
-// P0-D — not to imply continuity that does not exist.
+// ★ THIS CLOSES R1_DURABLE_CONTEXT_P1 FOR THE TWO API SURFACES: a client that PIPELINES —
+// sending turn N+1 before turn N has completed — no longer decides N+1's history. The queue
+// serializes the turns, and when N+1 finally dispatches, its request is built from the durable
+// projection that ALREADY CONTAINS N's completed answer. The browser's guess at history is
+// never posted. The boundary CAS's `causal_version` predicate is what certifies the assembled
+// context is still fresh at the commit that precedes the POST (§7.8 version-first sampling).
 //
 // 3. AMBIGUITY IS REPRESENTED, NEVER GUESSED. `forwardStarted` flips inside `onDispatchStart`,
 //    synchronously, immediately before `fetch`. If it is FALSE, no transmission was attempted
@@ -75,9 +76,21 @@ import {
 } from '@govai/provider-openai';
 import type { ConversationWorkerDb, ConversationWorkerOwner } from '../../pipeline/ai-conversation-worker.js';
 import { requestIdentityAls, type AuditBridgeRequestIdentity } from '../../pipeline/request-identity.js';
-import { decryptConversationContent, encryptConversationContent } from '../crypto.js';
+import {
+  decryptConversationContent,
+  encryptConversationContent,
+  encryptContinuationParent,
+  type EncryptedContinuationParent,
+} from '../crypto.js';
 import { isStreamingNativeRequest, resolveDispatchPlan, type DispatchPlan } from '../dispatch-registry.js';
 import { nativeRequestBytes } from '../send-intent.js';
+import {
+  assembleDurableContext,
+  loadDurableContextPlan,
+  DurableContextUnbuildableError,
+  type DurableContextPlan,
+} from './durable-context.js';
+import { resolveConversationAdapter } from './adapters/registry.js';
 import * as ex from './execution-store.js';
 
 /** Minimal logging surface — the worker runner injects pino; tests inject a recorder. */
@@ -136,6 +149,12 @@ export type ExecutionOutcome =
   | 'credential_unavailable'
   /** The stored native request config could not be read or parsed → `rejected`. */
   | 'config_unreadable'
+  /** The durable branch context could not be faithfully loaded/decrypted/replayed (P0-D1,
+   *  §31 of the movement dispatch: refuse, never degrade silently) → `rejected`. */
+  | 'context_unbuildable'
+  /** The stored config carries client-owned continuation state (`previous_response_id` /
+   *  `conversation`) that server-assembled context cannot honor truthfully → `rejected`. */
+  | 'continuation_conflict'
   /** The §8 commit-3 CAS lost: fenced out, lease-expired, stop-requested, not at head, or
    *  causally stale. The attempt is untouched and ordinarily reclaimable. NO POST HAPPENED. */
   | 'boundary_lost'
@@ -291,6 +310,11 @@ async function driveClaimedAttempt(
   // One short transaction; it commits BEFORE any decrypt so no client is held across a KMS
   // round trip (the AWS adapter is real in this repository).
   const loaded = await deps.db.withOwnerContext(owner, async (tx) => {
+    // ★ VERSION-FIRST (§7.8): this read samples the branch `causal_version` in the FIRST
+    // statement of the transaction; every durable-context projection read below happens AFTER
+    // it. An eligibility-changing commit that lands mid-load can therefore only make the
+    // eventual boundary CAS FAIL (projection newer than the sample) — never let a torn, older
+    // payload pass as fresh.
     const context = await ex.readExecutionContext(tx, attemptId);
     if (!context) return null;
     const tenant = await readTenantFacts(tx, owner);
@@ -303,14 +327,33 @@ async function driveClaimedAttempt(
     const credential = resolution.supported
       ? await ex.readActiveProviderCredential(tx, resolution.plan.provider)
       : null;
-    return { context, tenant, config, resolution, credential };
+    // The durable context plan is loaded in the SAME transaction (encrypted rows only — the
+    // decrypt happens after this commits, holding no client). An unbuildable plan is a
+    // returned FACT, not a thrown transaction abort: every unbuildable throw site fires after
+    // a successful statement, so the transaction stays healthy and commits its reads.
+    let contextPlan: DurableContextPlan | null = null;
+    let contextUnbuildable: string | null = null;
+    if (resolution.supported) {
+      try {
+        contextPlan = await loadDurableContextPlan(tx, owner, {
+          conversationId: context.conversationId,
+          branchId: context.branchId,
+          turnSeq: context.turnSeq,
+        });
+      } catch (err) {
+        if (err instanceof DurableContextUnbuildableError) contextUnbuildable = err.reason;
+        else throw err;
+      }
+    }
+    return { context, tenant, config, resolution, credential, contextPlan, contextUnbuildable };
   });
 
   if (!loaded || !loaded.tenant) {
     deps.log.error({ attempt_id: attemptId }, 'conversation executor: attempt vanished under its owner context');
     return 'no_action';
   }
-  const { context, tenant, config, resolution, credential } = loaded;
+  const { context, tenant, config, resolution, credential, contextPlan, contextUnbuildable } =
+    loaded;
 
   // ── Fail-closed classification, BEFORE the boundary ─────────────────────────────────────
   // Each of these finalizes from `accepted`, so no boundary was crossed, no provenance exists,
@@ -334,6 +377,16 @@ async function driveClaimedAttempt(
     // `completed`. A conversation therefore requires a real tenant credential, and says so
     // through the taxonomy's existing `credential_unavailable`.
     return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'failed', 'credential_unavailable', 'credential_unavailable');
+  }
+  if (contextUnbuildable !== null || contextPlan === null) {
+    // The durable branch context could not be loaded in a shape this movement can faithfully
+    // replay (§31: refuse, never degrade). GovAI-side, pre-boundary, no provider contacted —
+    // `rejected` with no error_class, exactly like the other validation refusals above.
+    deps.log.warn(
+      { attempt_id: attemptId, reason: contextUnbuildable ?? 'context_plan_absent' },
+      'conversation executor: durable context is unbuildable',
+    );
+    return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'rejected', null, 'context_unbuildable');
   }
   const plan = resolution.plan;
 
@@ -373,8 +426,61 @@ async function driveClaimedAttempt(
     return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'failed', 'credential_unavailable', 'credential_unavailable');
   }
 
-  const isStream = isStreamingNativeRequest(nativeRequest);
-  const requestBody = nativeRequestBytes(nativeRequest);
+  // ── STEP 3 (part 3): SERVER-ASSEMBLED DURABLE CONTEXT + the §11 adapter build ───────────
+  // KMS decryption of the context happens HERE — after the load transaction committed and
+  // before any further transaction opens — so no database client is ever held across a KMS
+  // round trip (the §16 rule of the movement dispatch). The adapter itself is pure.
+  let entries;
+  try {
+    entries = await assembleDurableContext(deps.kms, owner.orgId, contextPlan);
+  } catch (err) {
+    if (err instanceof DurableContextUnbuildableError) {
+      deps.log.warn(
+        { attempt_id: attemptId, reason: err.reason },
+        'conversation executor: durable context is unbuildable',
+      );
+      return finalizeAndWake(deps, owner, context, attemptId, claim.claimToken, 'rejected', null, 'context_unbuildable');
+    }
+    throw err;
+  }
+  const adapter = resolveConversationAdapter(plan);
+  const built = adapter.buildRequest({
+    entries,
+    turnConfig: nativeRequest,
+    branchModel: context.model,
+    activeCredentialId: credential.id,
+  });
+  if (!built.ok) {
+    // An explicit truthful refusal (LAW NX-5: never substitute; §31: never degrade silently).
+    // Pre-boundary, provenance-free, provider never contacted.
+    deps.log.warn(
+      { attempt_id: attemptId, reason: built.reason, detail: built.detail },
+      'conversation executor: adapter refused to build the provider request',
+    );
+    return finalizeAndWake(
+      deps,
+      owner,
+      context,
+      attemptId,
+      claim.claimToken,
+      'rejected',
+      null,
+      built.reason === 'continuation_conflict' ? 'continuation_conflict' : 'context_unbuildable',
+    );
+  }
+  const isStream = isStreamingNativeRequest(built.body);
+  const requestBody = nativeRequestBytes(built.body);
+  // The EXACT anchor this build chained from, encrypted BEFORE the boundary transaction opens
+  // (§20-§21 of the movement dispatch: the parent anchor must be durable before the POST path
+  // becomes possible; KMS work never overlaps a checked-out client).
+  let continuationParent: EncryptedContinuationParent | null = null;
+  if (built.continuation.kind === 'response_chain') {
+    continuationParent = await encryptContinuationParent(
+      deps.kms,
+      owner.orgId,
+      built.continuation.parentResponseId,
+    );
+  }
 
   // ── COMMIT 3: THE DISPATCH BOUNDARY ─────────────────────────────────────────────────────
   const candidateRequestId = randomUUID();
@@ -388,6 +494,15 @@ async function driveClaimedAttempt(
       leaseMs: deps.leaseMs,
       causalVersionAtBuild: context.causalVersion,
       candidateRequestId,
+      continuationParent:
+        continuationParent === null
+          ? null
+          : {
+              ciphertext: continuationParent.ciphertext,
+              dekWrapped: continuationParent.dekWrapped,
+              kmsKeyId: continuationParent.kmsKeyId,
+              kmsKeyVersion: continuationParent.kmsKeyVersion,
+            },
     });
   });
   if (!boundary.ok) {
