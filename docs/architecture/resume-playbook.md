@@ -150,9 +150,21 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
                                                                   merged as PR #149, merge
                                                                   f998f55a, reviewed-tree-
                                                                   identical)
-  NEXT      P0-D PROVIDER CONTINUATION                           (not started; consumes
-                                                                  native-experience-contract-v1.md
-                                                                  §18 + continuity spec §11)
+  CURRENT   P0-D PROVIDER CONTINUATION — IN_PROGRESS
+              P0-D1 DURABLE CONTEXT + API PROVIDER CONTINUATION  (IMPLEMENTED IN THIS TREE:
+                                                                  server-assembled durable
+                                                                  context, §11 adapter boundary,
+                                                                  Anthropic stateless replay,
+                                                                  OpenAI previous_response_id
+                                                                  chaining + stateless fallback,
+                                                                  migration 0036;
+                                                                  R1_DURABLE_CONTEXT_P1 CLOSED
+                                                                  for the two API surfaces —
+                                                                  see current-state.md's P0-D1
+                                                                  canonical section)
+  NEXT      P0-D2 CODING HARNESS CONTINUATION                    (not started: Codex threads +
+                                                                  Claude Code Agent SDK sessions
+                                                                  on the same adapter foundation)
   LATER     P0-E · P0-F                                          (not started)
   ```
 
@@ -196,16 +208,20 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   `P0A2-P3-A4=CLOSED_FOR_P0C_ACTIVATION` (the bare `pg.Pool` export replaced by an opaque
   module-private worker DB capability). Do not re-raise them as open gates.
 
-  **★ Honesty boundary, updated by P0-C and still load-bearing:** the durable
-  `Send → durable accepted turn → server-owned execution → hydrate/reload` path now EXISTS at
-  the API level, but ONLY for the two P0-C surfaces (`anthropic_messages` / `openai_responses`,
-  governed and passthrough where implemented, stream and non-stream). What still does NOT
-  exist: provider continuation (P0-D), the persistent AI workspace UI (P0-E — the AI Console
-  transcript remains memory-only by construction, its acceptance test unchanged), public
-  Retry, complete public Stop terminalization, the §19 Delete protocol, reattach-to-live-stream
-  semantics, exact final turn↔evidence correlation (P0-F), full Anthropic/OpenAI API parity —
-  and **provider exactly-once is never claimed**. Never quote `P0_C=COMPLETE` as completion of
-  the conversation-continuity program.
+  **★ Honesty boundary, updated by P0-C and P0-D1 and still load-bearing:** the durable
+  `Send → durable accepted turn → server-owned execution → hydrate/reload` path EXISTS at
+  the API level, ONLY for the two API surfaces (`anthropic_messages` / `openai_responses`,
+  governed and passthrough where implemented, stream and non-stream) — and since P0-D1 the
+  dispatch builds its provider request from SERVER-ASSEMBLED durable branch context (a
+  pipelined turn N+1 dispatches WITH turn N's completed answer; the browser never owns
+  history). What still does NOT exist: Codex / Claude Code continuation (P0-D2), the
+  persistent AI workspace UI (P0-E — the AI Console transcript remains memory-only by
+  construction, its acceptance test unchanged), public Retry, complete public Stop
+  terminalization, the §19 Delete protocol, reattach-to-live-stream semantics, exact final
+  turn↔evidence correlation (P0-F), OpenAI Conversations objects (deferred within P0-D),
+  full Anthropic/OpenAI API parity — and **provider exactly-once is never claimed**. Never
+  quote `P0_C=COMPLETE` or `P0-D1 implemented` as completion of the conversation-continuity
+  program.
 - Untouched documentary follow-ups: `source-spec.md` ADP-canonical declaration (owner gate), ADR-022–027 status-line normalization, `workroom-governance-room.md`/`governance-philosophy.md`/`contracts/*` prepends, two `tests/live/*` comments, legacy `docs/` root artifacts (see stale-docs-register.md, M3 section).
 
 ---
