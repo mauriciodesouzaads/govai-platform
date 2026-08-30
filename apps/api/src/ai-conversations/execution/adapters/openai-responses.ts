@@ -104,20 +104,27 @@ class Unreplayable extends Error {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /** The terminal response object of a completed attempt: the stored body itself, or the
- *  `response.completed` event's `response` from the durable stream bytes.
+ *  terminal event's `response` from the durable stream bytes.
  *
- *  ★ TERMINALITY IS VALIDATED, NOT ASSUMED (review finding, exact head fd06f99): a supported
- *  native `background: true` request answers HTTP 200 with a response whose `status` is
+ *  ★ TERMINALITY IS VALIDATED, NOT ASSUMED (review findings, exact heads fd06f99 + de5d6ac):
+ *  a supported native `background: true` request answers HTTP 200 with `status`
  *  `queued`/`in_progress`, and the executor durably completes any 2xx attempt — so a stored
- *  body is only a lawful context contribution when the provider's own `status` says the
- *  operation finished. A nonterminal body refuses: chaining its id would continue from an
- *  unfinished operation, and replaying it statelessly would present a non-answer as history. */
+ *  body is a lawful context contribution only when the provider's own `status` says the
+ *  operation FINISHED. Both terminal shapes count: `completed`, and `incomplete` — a
+ *  legitimate truncated result (`max_output_tokens`, content filter) whose partial output is
+ *  the real durable answer (the UI adapter classifies `response.incomplete` as terminal
+ *  success for exactly this reason); refusing it would permanently brick the branch behind a
+ *  truncated turn. A genuinely NONTERMINAL body still refuses. Whether an INCOMPLETE response
+ *  may serve as a CHAINING anchor is a separate, stricter question — see the chaining
+ *  condition below. */
+const TERMINAL_RESPONSE_STATUSES = new Set(['completed', 'incomplete']);
+
 function terminalResponseOf(entry: AssembledContextEntry): JsonObject {
   const output = entry.assistant!.output;
   if (output.kind === 'response') {
     if (!isObject(output.body)) throw new Unreplayable('response_body_shape_unknown');
     const status = output.body['status'];
-    if (typeof status === 'string' && status !== 'completed') {
+    if (typeof status === 'string' && !TERMINAL_RESPONSE_STATUSES.has(status)) {
       throw new Unreplayable('anchor_response_not_terminal');
     }
     return output.body;
@@ -133,12 +140,24 @@ function terminalResponseOf(entry: AssembledContextEntry): JsonObject {
     } catch {
       throw new Unreplayable('sse_data_not_json');
     }
-    if (isObject(parsed) && parsed['type'] === 'response.completed' && isObject(parsed['response'])) {
+    if (
+      isObject(parsed) &&
+      (parsed['type'] === 'response.completed' || parsed['type'] === 'response.incomplete') &&
+      isObject(parsed['response'])
+    ) {
       terminal = parsed['response'] as JsonObject;
     }
   }
   if (!terminal) throw new Unreplayable('stream_has_no_terminal_response');
   return terminal;
+}
+
+/** An anchor must be a FULLY completed response: an `incomplete` result is honest terminal
+ *  CONTEXT (its truncated output replays statelessly), but chaining from it would continue a
+ *  generation the provider itself reported as cut short — stateless replay is the safe form. */
+function isChainableTerminal(terminal: JsonObject): boolean {
+  const status = terminal['status'];
+  return status === undefined || status === 'completed';
 }
 
 /** The provider's own id of the terminal response — the chaining anchor candidate. */
@@ -228,6 +247,7 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
         const anchorId = responseIdOf(terminal);
         const chainable =
           anchorId !== null &&
+          isChainableTerminal(terminal) &&
           anchorEntry.assistant!.providerCredentialId === input.activeCredentialId &&
           configStoreAllowsChaining(anchorEntry.userNative) &&
           configStoreAllowsChaining(input.turnConfig) &&

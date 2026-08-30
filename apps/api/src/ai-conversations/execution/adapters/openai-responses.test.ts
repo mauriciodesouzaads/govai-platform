@@ -200,6 +200,50 @@ describe('openai adapter — strategy selection', () => {
     });
   });
 
+  it('an INCOMPLETE response is honest terminal context: replayed statelessly, never a chaining anchor', () => {
+    // A max_output_tokens/content-filter truncation is a legitimate terminal result whose
+    // partial output IS the durable answer; refusing it would brick the branch behind one
+    // truncated turn. Chaining from it is the part that stays off.
+    const incomplete = { ...RESP_1, status: 'incomplete' };
+    const result = build([entry({ assistant: responseAssistant(incomplete) })], {
+      model: 'gpt-test',
+      input: 'u2',
+    });
+    expect(result.ok).toBe(true);
+    const body = (result as unknown as { body: Record<string, unknown> }).body;
+    expect('previous_response_id' in body).toBe(false);
+    expect(body['input']).toEqual([
+      { role: 'user', content: 'u1' },
+      ...RESP_1.output, // the truncated output replays as the turn's real answer
+      { role: 'user', content: 'u2' },
+    ]);
+    expect((result as unknown as { continuation: unknown }).continuation).toEqual({
+      kind: 'stateless_replay',
+    });
+  });
+
+  it('a STREAM ending in response.incomplete carries its terminal response the same way', () => {
+    const sse =
+      `data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_i' } })}\n\n` +
+      `data: ${JSON.stringify({ type: 'response.incomplete', response: { id: 'resp_i', status: 'incomplete', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'trunc' }] }] } })}\n\n`;
+    const result = build(
+      [
+        entry({
+          assistant: { attemptId: 'att-i', providerCredentialId: CRED, completedAtMs: FRESH_MS, output: { kind: 'stream', sseText: sse } },
+        }),
+      ],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result.ok).toBe(true);
+    const body = (result as unknown as { body: Record<string, unknown> }).body;
+    expect('previous_response_id' in body).toBe(false);
+    expect(body['input']).toEqual([
+      { role: 'user', content: 'u1' },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'trunc' }] },
+      { role: 'user', content: 'u2' },
+    ]);
+  });
+
   it('a HISTORICAL entry carrying client-owned continuation poisons the build: refusal, never a stripped replay', () => {
     // The poisoned turn's input was composed relative to external provider state; replaying it
     // without those fields would silently change its meaning. Recovery is an explicit fork
