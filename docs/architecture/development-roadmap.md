@@ -312,8 +312,8 @@ below). The P0 wave (conversation continuity) is the only wave in flight; waves 
 started.
 The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; the implementation
 mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated candidate scope in the
-baseline doc §10) is **IN_PROGRESS**, with five movements finished and merged and a
-program-level architectural movement next before P0-D:
+baseline doc §10) is **IN_PROGRESS**, with five movements finished and merged, the
+intervening program-level architectural movement also merged (PR #149), and P0-D next:
 
 ```text
 EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
@@ -331,15 +331,16 @@ P0_C_DURABLE_SEND_EXECUTION_KERNEL=COMPLETE         (PR #147, merge c1ddfd30,
 
 EP-PROVIDER-NATIVE-PARITY-V1-
 NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01
-    = AUTHORED_IN_THIS_TREE                         (documentary/normative + deterministic
+    = COMPLETE_AND_MERGED                           (documentary/normative + deterministic
                                                      research tooling; contract v1 + parity
                                                      baseline V2 + additive validator; V1
-                                                     baseline byte-preserved; the movement
-                                                     does NOT self-merge — independent
-                                                     architecture review required; see below)
+                                                     baseline byte-preserved; independently
+                                                     reviewed and squash-merged as PR #149,
+                                                     merge f998f55a, reviewed-tree-identical;
+                                                     see below)
 
-P0_D=NOT_STARTED                                    <- first implementation movement AFTER
-                                                       that review/merge
+P0_D=NOT_STARTED                                    <- NEXT: first implementation movement
+                                                       after the merged contract movement
 P0_E=NOT_STARTED
 P0_F=NOT_STARTED
 
@@ -398,8 +399,8 @@ Completions streaming a durable/gated caller. Full canonical detail — surface 
 model-agnosticism proof, carry-forward register, explicit non-claims — is in current-state.md's
 *P0-C canonical state* section.
 
-**EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01 (NEXT — a
-DOCUMENTARY/normative planning movement, not implementation).** The small program-level
+**EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01 (MERGED
+as PR #149 — a DOCUMENTARY/normative planning movement, not implementation).** The small program-level
 architectural movement inserted between P0-C and P0-D. Its purpose: formalize dynamic model
 discovery; formalize surface-aware model compatibility; formalize a first-class OpenAI /
 Anthropic native experience contract; refresh the research/current parity snapshot WITHOUT
@@ -413,8 +414,10 @@ Nothing in it is implemented by this roadmap insertion — it is planning only.
 `native-experience-parity-v2.md` + `generated/native-experience-parity-v2.json` (252 rows,
 `pnpm docs:parity2:check`, additive V2 validator lane; V1 baseline byte-preserved), and the
 carry-forward re-adjudications recorded in `current-state.md`'s canonical section. NO runtime
-change; `P0-D / P0-E / P0-F` remain `NOT_STARTED`; the movement's PR awaits independent
-architecture review — it does not self-merge.
+change; `P0-D / P0-E / P0-F` remain `NOT_STARTED`. The movement was independently reviewed,
+owner-authorized, and squash-merged as PR #149 (merge
+`f998f55aee405adbc12c762f237854f118b8939c`, tree byte-identical to the final independently
+reviewed tree; post-merge main CI run `33288386315` SUCCESS).
 
 **P0-D — provider continuation (not started, AFTER the contract movement).** Server-assembled
 durable branch context via the `ProviderConversationAdapter` (continuity spec §11), provider

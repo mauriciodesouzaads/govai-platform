@@ -987,7 +987,10 @@ after: `native-experience-parity-v1.md` `496476ba…`, `generated/native-experie
 `8b38b737…`). Base: main `79bd71407830ef2ef244fba6c53ac57cdebd11a3` (tree `c73d1ff4`); research
 snapshot **2026-08-29** (first-party pass; external sealed source ledger + read-only live
 model-metadata observations). `P0-C = COMPLETE` (untouched); `P0-D / P0-E / P0-F =
-NOT_STARTED`. The movement's PR is NOT self-merged — independent architecture review required.
+NOT_STARTED`. The movement's PR (#149) was NOT self-merged: it received independent
+architecture review and owner authorization, and was squash-merged as
+`f998f55aee405adbc12c762f237854f118b8939c` (reviewed-tree-identical; see the post-merge
+status reconciliation subsection below).
 
 | Document | Was (stale at `79bd7140`) | Now |
 |---|---|---|
@@ -1024,3 +1027,32 @@ cannot diverge), and honest row deltas (+3 OpenAI admin rows, +1 ChatGPT plugins
 P0-C conversation-axis flips, ~40 provider-fact note refreshes; no removals — retired
 features keep annotated rows). A future refresh is again a NEW version, never an edit of
 V2 history once it seals.
+
+### Post-merge status reconciliation — `PR149-POST-MERGE-DOC-STATUS-01` (CLOSED)
+
+PR #149 was independently reviewed, owner-authorized, and squash-merged as
+`f998f55aee405adbc12c762f237854f118b8939c` (tree
+`86093763952a4fb5dbb38ee6c7ef736f21f9c870` — byte-identical to the final independently
+reviewed tree; post-merge main CI run `33288386315` SUCCESS). Because the exact reviewed
+tree was deliberately merged unchanged, a small set of pre-merge procedural status
+sentences ("awaits independent architecture review", "does not self-merge",
+`AWAITING_INDEPENDENT_ARCHITECTURE_REVIEW`) remained inside the merged tree as CURRENT-status
+claims. The post-merge audit classified this as `PR149-POST-MERGE-DOC-STATUS-01`
+(P3 documentary status precision; no runtime/security/architecture/merge/tree-identity
+defect; no P0-C reopen).
+
+| Document | Was (stale at `f998f55a`) | Now |
+|---|---|---|
+| `native-experience-contract-v1.md` header | `NORMATIVE_CONTRACT_DRAFTED — AWAITING_INDEPENDENT_ARCHITECTURE_REVIEW` | `CURRENT_NORMATIVE_CONTRACT — MERGED AS PR #149` + merge anchor; explicit non-claim that merging the contract implements no runtime target |
+| `current-state.md` | summary bullet + canonical section said the PR "awaits independent architecture review"; P0-D gate phrased as pending; the P0-C section's **NEXT** pointer still named the movement as the next task | merged-fact wording (PR #149 anchor, tree identity, CI run); movement `COMPLETE_AND_MERGED`; the NEXT pointer now names P0-D; P0-D `NOT_STARTED / NEXT` |
+| `development-roadmap.md` | status block `AUTHORED_IN_THIS_TREE … independent architecture review required`; planning header `(NEXT …)`; ★ EXECUTED record ended "awaits independent architecture review"; wave-plan sentence said the movement was "next before P0-D" | status block `COMPLETE_AND_MERGED` + PR #149 anchor; header `(MERGED as PR #149 …)`; delivery record carries the merged fact; wave-plan sentence records the movement merged and P0-D next |
+| `resume-playbook.md` §4 lane block | `NEXT = …CONTRACT…-01 (… PR awaits INDEPENDENT ARCHITECTURE REVIEW — no self-merge)` | movement listed `MERGED` with PR #149 anchor; `NEXT = P0-D PROVIDER CONTINUATION` (not started) |
+| this register (movement section above) | "The movement's PR is NOT self-merged — independent architecture review required." | merged-fact wording + this disposition subsection |
+
+`PR149-POST-MERGE-DOC-STATUS-01 = RECONCILED / CLOSED BY THIS PR`. Historical records are
+NOT rewritten: the movement genuinely returned `READY_FOR_INDEPENDENT_ARCHITECTURE_REVIEW`,
+its PR genuinely prohibited self-merge, and owner merge authorization genuinely arrived only
+later — the "Was/Now" rows of the movement section above remain that movement's authoring-time
+record. This reconciliation closes NO implementation gap: `P0-D / P0-E / P0-F` remain
+`NOT_STARTED`, no parity classification changed, both parity baselines and the V1/V2
+validators are byte-untouched, and no runtime source changed.
