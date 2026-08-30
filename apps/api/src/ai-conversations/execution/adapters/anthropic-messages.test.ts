@@ -451,6 +451,26 @@ describe('anthropic adapter — durable stream reassembly', () => {
     }
   });
 
+  it('a REUSED content-block index refuses: a duplicated frame must not overwrite and double-replay', () => {
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'first' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'dup' } },
+              { type: 'content_block_stop', index: 0 },
+              { type: 'message_stop' },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'block_index_reused' });
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],

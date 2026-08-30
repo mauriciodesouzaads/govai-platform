@@ -150,6 +150,10 @@ function assistantMessageFromStream(sseText: string): {
         if (typeof index !== 'number' || !isObject(block)) {
           throw new UnreplayableStream('content_block_start_shape_unknown');
         }
+        // Indexes are unique within one message: a REUSED start (a duplicated frame, a corrupt
+        // capture) would overwrite the first block and double-replay the replacement (review
+        // finding, exact head 7f8dc89). Refuse rather than corrupt.
+        if (blocks.has(index)) throw new UnreplayableStream('block_index_reused');
         blocks.set(index, { ...block });
         order.push(index);
         openBlocks.add(index);
