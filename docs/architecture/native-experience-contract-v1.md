@@ -1,6 +1,10 @@
 # Native Experience Contract V1
 
-STATUS: `NORMATIVE_CONTRACT_DRAFTED — AWAITING_INDEPENDENT_ARCHITECTURE_REVIEW`
+STATUS: `CURRENT_NORMATIVE_CONTRACT — MERGED AS PR #149`
+MERGED: PR #149 / `f998f55aee405adbc12c762f237854f118b8939c` (tree `86093763…`, byte-identical
+to the final independently reviewed tree; post-merge main CI run 33288386315 SUCCESS). The
+contract is normative — its merge does NOT implement its runtime targets (P0-D / P0-E / P0-F
+remain NOT_STARTED).
 MISSION: EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01
 SOURCE ANCHOR: main `79bd71407830ef2ef244fba6c53ac57cdebd11a3` (tree `c73d1ff4`)
 RESEARCH SNAPSHOT: 2026-08-29 (first-party provider/product/market facts verified on this

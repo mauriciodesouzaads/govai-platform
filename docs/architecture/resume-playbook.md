@@ -141,15 +141,16 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   ```text
   PROGRAM   EP-AI-CONVERSATION-CONTINUITY-V1-01
   COMPLETE  P0-A1 · T1 · P0-A2 · P0-B · P0-C
-  NEXT      EP-PROVIDER-NATIVE-PARITY-V1-
-            NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01   (AUTHORED IN THIS TREE:
-                                                                  contract v1 + parity
-                                                                  baseline V2 + additive
-                                                                  validator, docs-only; PR
-                                                                  awaits INDEPENDENT
-                                                                  ARCHITECTURE REVIEW —
-                                                                  no self-merge)
-  THEN      P0-D PROVIDER CONTINUATION                           (not started; consumes
+  MERGED    EP-PROVIDER-NATIVE-PARITY-V1-
+            NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01   (docs-only: contract v1 +
+                                                                  parity baseline V2 +
+                                                                  additive validator;
+                                                                  independently reviewed,
+                                                                  owner-authorized, squash-
+                                                                  merged as PR #149, merge
+                                                                  f998f55a, reviewed-tree-
+                                                                  identical)
+  NEXT      P0-D PROVIDER CONTINUATION                           (not started; consumes
                                                                   native-experience-contract-v1.md
                                                                   §18 + continuity spec §11)
   LATER     P0-E · P0-F                                          (not started)
