@@ -81,6 +81,11 @@ export type EncryptedContentRef = {
 /** One context-eligible turn, still encrypted (Phase A output / Phase B input). */
 export type ContextPlanEntry = {
   turnId: string;
+  /** The provider recorded on the branch this turn EXECUTED under. A §17 cross-provider fork
+   *  makes ancestor entries carry a DIFFERENT provider than the executing branch; the adapters
+   *  refuse those with a precise reason (the portable projection is a later P0-D arc), never
+   *  by tripping over the foreign request shape. */
+  sourceProvider: string;
   /** The model recorded on the branch this turn EXECUTED under — the Anthropic model-switch
    *  rule needs the SOURCE model of every replayed assistant message. */
   sourceModel: string;
@@ -116,6 +121,7 @@ export class DurableContextUnbuildableError extends Error {
 
 type BranchRow = {
   id: string;
+  provider: string;
   model: string;
   parent_branch_id: string | null;
   forked_from_turn_id: string | null;
@@ -156,7 +162,7 @@ async function readBranch(
   branchId: string,
 ): Promise<BranchRow | null> {
   const r = await tx.query<BranchRow>(
-    `SELECT id, model, parent_branch_id, forked_from_turn_id, forked_from_attempt_id,
+    `SELECT id, provider, model, parent_branch_id, forked_from_turn_id, forked_from_attempt_id,
             boundary_mode
        FROM govai.ai_conversation_branches
       WHERE org_id = $1::uuid AND owner_user_id = $2::uuid
@@ -258,6 +264,7 @@ async function readItemsWithContent(
 /** One context turn as selected by the walk, before item resolution. */
 type SelectedTurn = {
   turn: TurnRow;
+  branchProvider: string;
   branchModel: string;
   /** The attempt whose output MAY contribute (the turn's current attempt, or the fork pin). */
   selectedAttemptId: string | null;
@@ -338,6 +345,7 @@ export async function loadDurableContextPlan(
     for (const turn of turns) {
       selected.push({
         turn,
+        branchProvider: frame.branch.provider,
         branchModel: frame.branch.model,
         selectedAttemptId: turn.current_attempt_id,
         pinExempt: false,
@@ -346,6 +354,7 @@ export async function loadDurableContextPlan(
     if (frame.pin) {
       selected.push({
         turn: frame.pin.turn,
+        branchProvider: frame.branch.provider,
         branchModel: frame.branch.model,
         selectedAttemptId: frame.pin.attemptId,
         pinExempt: true,
@@ -430,7 +439,13 @@ export async function loadDurableContextPlan(
         throw new DurableContextUnbuildableError('output_item_shape_unsupported');
       }
     }
-    entries.push({ turnId: s.turn.id, sourceModel: s.branchModel, userContent, output });
+    entries.push({
+      turnId: s.turn.id,
+      sourceProvider: s.branchProvider,
+      sourceModel: s.branchModel,
+      userContent,
+      output,
+    });
   }
   return { entries };
 }
@@ -452,6 +467,7 @@ function toRef(item: ItemRow): EncryptedContentRef {
 /** One decrypted, provider-native context entry (Phase B output / adapter input). */
 export type AssembledContextEntry = {
   turnId: string;
+  sourceProvider: string;
   sourceModel: string;
   /** The turn's immutable provider-native request, parsed. */
   userNative: unknown;
@@ -585,6 +601,12 @@ export async function assembleDurableContext(
         };
       }
     }
-    return { turnId: entry.turnId, sourceModel: entry.sourceModel, userNative, assistant };
+    return {
+      turnId: entry.turnId,
+      sourceProvider: entry.sourceProvider,
+      sourceModel: entry.sourceModel,
+      userNative,
+      assistant,
+    };
   });
 }

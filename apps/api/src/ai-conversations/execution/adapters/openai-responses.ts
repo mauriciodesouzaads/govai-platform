@@ -162,6 +162,14 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
     }
 
     try {
+      for (const entry of input.entries) {
+        if (entry.sourceProvider !== 'openai') {
+          // §17 cross-provider fork ancestor — same refusal as the Anthropic adapter: the
+          // portable projection is a later P0-D arc, and an incidental shape error would
+          // misreport a known, precise condition.
+          return fail('context_unreplayable', 'cross_provider_replay_not_implemented');
+        }
+      }
       // ── Anchor scan: the LAST eligible completed output, walked from the end ────────────
       let anchorIndex = -1;
       for (let i = input.entries.length - 1; i >= 0; i -= 1) {

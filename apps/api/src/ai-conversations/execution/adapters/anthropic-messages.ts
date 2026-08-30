@@ -100,6 +100,16 @@ function assistantMessageFromStream(sseText: string): { role: string; content: u
   const blocks = new Map<number, JsonObject>();
   const partialJson = new Map<number, string>();
   const order: number[] = [];
+  // ★ TERMINAL-GRAMMAR VALIDATION (review finding, exact head e08465fd): the EXECUTOR marks a
+  // 2xx stream `completed` on byte-stream EOF — it does not know the provider's event grammar.
+  // A cleanly truncated stream (a proxy closing after a partial `text_delta`, a block that
+  // never stopped) therefore CAN be durably `completed`, and replaying its partial answer as a
+  // finished assistant message would silently put words in the model's mouth on every later
+  // turn. So the REASSEMBLER owns the grammar check: every started block must have stopped and
+  // the terminal `message_stop` must have been observed, else the replay refuses (§31) — the
+  // same posture as the OpenAI adapter's `response.completed` requirement.
+  const openBlocks = new Set<number>();
+  let sawMessageStop = false;
 
   for (const raw of events) {
     if (!isObject(raw) || typeof raw['type'] !== 'string') {
@@ -120,6 +130,7 @@ function assistantMessageFromStream(sseText: string): { role: string; content: u
         }
         blocks.set(index, { ...block });
         order.push(index);
+        openBlocks.add(index);
         break;
       }
       case 'content_block_delta': {
@@ -172,10 +183,13 @@ function assistantMessageFromStream(sseText: string): { role: string; content: u
           }
           partialJson.delete(index);
         }
+        openBlocks.delete(index);
         break;
       }
-      case 'message_delta': // stop_reason/usage — carries no content to reassemble.
       case 'message_stop':
+        sawMessageStop = true;
+        break;
+      case 'message_delta': // stop_reason/usage — carries no content to reassemble.
       case 'ping':
         break;
       default:
@@ -183,6 +197,7 @@ function assistantMessageFromStream(sseText: string): { role: string; content: u
     }
   }
   if (order.length === 0) throw new UnreplayableStream('stream_has_no_content_blocks');
+  if (openBlocks.size > 0 || !sawMessageStop) throw new UnreplayableStream('stream_truncated');
   return { role, content: order.map((i) => blocks.get(i)!) };
 }
 
@@ -252,6 +267,13 @@ export const anthropicMessagesAdapter: ProviderConversationAdapter = {
     const history: unknown[] = [];
     try {
       for (const entry of input.entries) {
+        if (entry.sourceProvider !== 'anthropic') {
+          // A §17 cross-provider fork ancestor. The portable projection (normalized text +
+          // declared tool outcomes, DLP re-scanned, quality loss labeled — LAW NX-16) is a
+          // later P0-D arc; until it exists the only honest dispatch is a PRECISE refusal —
+          // never a silent flatten and never an incidental shape error.
+          return fail('context_unreplayable', 'cross_provider_replay_not_implemented');
+        }
         const native = entry.userNative;
         if (!isObject(native) || !Array.isArray(native['messages'])) {
           return fail('context_unreplayable', 'history_input_shape_unknown');

@@ -20,6 +20,19 @@
 //                   fragment"; §12 forbids inventing a generic schema. GovAI validates only
 //                   that it is a JSON OBJECT (the provider owns every field's validity) and
 //                   bounds its size.
+//                   ★ P0-D1 CONTRACT — THE FRAGMENT IS TURN-LOCAL. Since server-assembled
+//                   durable context (spec §7.6/§11, LAW 5; NX contract §18.2 "the adapter,
+//                   not the client, owns context assembly"), the context-bearing field of
+//                   this fragment (Anthropic `messages`; OpenAI `input`) carries THIS TURN'S
+//                   OWN new content only — the server rebuilds the conversation history from
+//                   durable truth at dispatch. A caller that embeds its own copy of prior
+//                   history will see that copy REPLAYED AS PART OF THE TURN'S INPUT after the
+//                   server-assembled history (the server never diffs or dedups client bytes —
+//                   guessing which client messages "are" history would silently rewrite the
+//                   user's input, which §12/§30 forbid). A first turn is unaffected: with no
+//                   eligible history the stored fragment is POSTed verbatim. Client-owned
+//                   continuation fields (`previous_response_id`, `conversation`) are refused
+//                   at dispatch (`continuation_conflict`), never honored and never stripped.
 //   ★ NOT accepted: any GovAI-shaped `messages`/`prompt`/`text` field (that IS the
 //     lowest-common-denominator schema §12 forbids); `model`/`provider`/`surface` (durable on
 //     the branch — accepting them here would let one send silently execute against a different

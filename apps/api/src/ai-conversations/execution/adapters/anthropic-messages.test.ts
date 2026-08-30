@@ -15,6 +15,7 @@ const user = (text: string) => ({ role: 'user', content: text });
 function entry(overrides: Partial<AssembledContextEntry>): AssembledContextEntry {
   return {
     turnId: 'turn-1',
+    sourceProvider: 'anthropic',
     sourceModel: MODEL,
     userNative: { model: MODEL, max_tokens: 64, messages: [user('u1')] },
     assistant: null,
@@ -131,6 +132,25 @@ describe('anthropic adapter — history assembly', () => {
       ok: false,
       reason: 'context_unreplayable',
       detail: 'config_messages_not_array',
+    });
+  });
+});
+
+describe('anthropic adapter — cross-provider ancestry (§17 / LAW NX-16)', () => {
+  it('a cross-provider fork ancestor refuses with the PRECISE reason, never a shape error', () => {
+    const result = build(
+      [
+        entry({
+          sourceProvider: 'openai',
+          userNative: { model: 'gpt-test', input: 'from-the-openai-parent' },
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'cross_provider_replay_not_implemented',
     });
   });
 });
@@ -288,6 +308,45 @@ describe('anthropic adapter — durable stream reassembly', () => {
       { model: MODEL, messages: [user('u2')] },
     );
     expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'delta_type_unknown' });
+  });
+
+  it('a TRUNCATED stream — no message_stop — refuses: a partial answer is never replayed as final', () => {
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial ans' } },
+              { type: 'content_block_stop', index: 0 },
+              // stream ends here: EOF without message_stop (a clean proxy truncation)
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'stream_truncated' });
+  });
+
+  it('a stream whose block never STOPPED refuses too', () => {
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'cut mid-blo' } },
+              { type: 'message_stop' },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'stream_truncated' });
   });
 
   it('an UNKNOWN event type refuses too', () => {

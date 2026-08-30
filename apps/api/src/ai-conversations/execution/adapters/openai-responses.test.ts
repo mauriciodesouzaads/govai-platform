@@ -10,6 +10,7 @@ const CRED = 'cred-active';
 function entry(overrides: Partial<AssembledContextEntry>): AssembledContextEntry {
   return {
     turnId: 'turn-1',
+    sourceProvider: 'openai',
     sourceModel: 'gpt-test',
     userNative: { model: 'gpt-test', input: 'u1' },
     assistant: null,
@@ -124,6 +125,25 @@ describe('openai adapter — strategy selection', () => {
         detail: `config_carries_${field}`,
       });
     }
+  });
+});
+
+describe('openai adapter — cross-provider ancestry (§17 / LAW NX-16)', () => {
+  it('a cross-provider fork ancestor refuses with the PRECISE reason, never a shape error', () => {
+    const result = build(
+      [
+        entry({
+          sourceProvider: 'anthropic',
+          userNative: { model: 'claude-test', messages: [{ role: 'user', content: 'from-parent' }] },
+        }),
+      ],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'cross_provider_replay_not_implemented',
+    });
   });
 });
 

@@ -1008,6 +1008,38 @@ describe('D-X — transaction boundaries, agnosticism, detachment', () => {
     }
   });
 
+  it('D-X5 — a §17 CROSS-PROVIDER fork stays a valid durable branch but dispatches a PRECISE refusal', async () => {
+    // The portable projection (normalized text + declared tool outcomes, DLP re-scanned,
+    // quality loss labeled — spec §17 / LAW NX-16) is a later P0-D arc. Until it exists, the
+    // honest dispatch for a cross-provider child is an explicit refusal — never a silent
+    // flatten, and never an incidental shape error. The fork itself remains a perfectly valid
+    // durable branch (the P0-C unsupported-surface posture, one stage further along).
+    const conv = await createConversation({});
+    const t1 = await send(conv.id, conv.branchId, anthropicRequest('XP-u1'));
+    expect(await driveOne(t1.attemptId)).toBe('completed');
+
+    const res = await inject(stack, 'POST', `/v1/ai/conversations/${conv.id}/branches`, org.api_key, {
+      client_fork_id: randomUUID(),
+      parent_branch_id: conv.branchId,
+      forked_from_turn_id: t1.turnId,
+      forked_from_attempt_id: t1.attemptId,
+      boundary_mode: 'after_attempt',
+      provider: 'openai',
+      surface: 'openai_responses',
+      model: 'gpt-test',
+    });
+    expect(res.statusCode).toBe(201);
+    const childBranchId = (res.body as { id: string }).id;
+
+    stack.provider.clearRecordedRequests();
+    const c1 = await send(conv.id, childBranchId, openaiRequest('XP-c1'));
+    expect(await driveOne(c1.attemptId)).toBe('context_unbuildable');
+    const row = await attemptRow(c1.attemptId);
+    expect(row.state).toBe('rejected');
+    expect(row.error_class).toBeNull();
+    expect(stack.provider.recordedRequests).toEqual([]); // the provider was never contacted
+  });
+
   it('D-X4 — the hydrate surface still never leaks execution/continuation material', async () => {
     const conv = await createConversation({ provider: 'openai' });
     const t1 = await send(conv.id, conv.branchId, openaiRequest('H-u1'));

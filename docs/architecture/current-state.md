@@ -57,9 +57,9 @@ is one collected test module.
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 152 | 1756 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 95 | 1487 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 247 | 3243 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 152 | 1760 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 95 | 1488 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 247 | 3248 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 
@@ -1592,6 +1592,27 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
                                          invented)
   PROVIDER_STATE_ROWS_CREATED_BY_P0D1  = NONE (anchors derive from the durable projection —
                                          LAW 17: no second continuation store to diverge)
+  CROSS_PROVIDER_PORTABLE_PROJECTION   = NOT_IMPLEMENTED / LATER P0-D ARC (spec §17 / LAW
+                                         NX-16: normalized portable projection + §21 DLP
+                                         re-scan + labeled quality loss). A cross-provider
+                                         fork remains a valid durable branch (the P0-C
+                                         unsupported-surface posture); its dispatch refuses
+                                         with the PRECISE reason
+                                         `cross_provider_replay_not_implemented` — never a
+                                         silent flatten, never an incidental shape error
+  SEND_CONTRACT_P0D1                   = TURN-LOCAL FRAGMENT (deliberate contract change —
+                                         the R1 remedy itself): a turn's native_request
+                                         context field (Anthropic `messages` / OpenAI
+                                         `input`) carries the TURN'S OWN new content; the
+                                         server owns history. The server never diffs/dedups
+                                         client-embedded history (§12/§30 forbid rewriting
+                                         the user's input); a P0-C-style full-history send
+                                         would replay its embedded copy after the assembled
+                                         history. Bounded exposure: NO production activation
+                                         exists (WORKER_DEPLOYABLE_BUNDLE_DOCKER is still
+                                         required-before-activation), the AI Console does
+                                         not use this API (P0-E), so no deployed caller
+                                         holds the old contract
   MODEL_ID_AGNOSTICISM                 = PRESERVED (no model input anywhere in the adapter
                                          registry; regression-pinned)
   PROVIDER_EXACTLY_ONCE                = NOT_CLAIMED (permanent)
