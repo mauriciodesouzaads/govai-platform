@@ -393,6 +393,29 @@ describe('anthropic adapter — durable stream reassembly', () => {
     expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'stream_truncated' });
   });
 
+  it('a stream carrying the provider ERROR verdict projects as INPUT-ONLY context', () => {
+    // The provider itself said this request failed: the turn's question stays context, the
+    // non-answer never does, and the branch is not blocked behind a provider failure.
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result.ok).toBe(true);
+    expect((result as unknown as { body: { messages: unknown[] } }).body.messages).toEqual([
+      user('u1'),
+      user('u2'),
+    ]);
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],

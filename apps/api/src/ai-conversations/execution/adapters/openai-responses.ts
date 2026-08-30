@@ -118,18 +118,32 @@ class Unreplayable extends Error {
  *  may serve as a CHAINING anchor is a separate, stricter question — see the chaining
  *  condition below. */
 const TERMINAL_RESPONSE_STATUSES = new Set(['completed', 'incomplete']);
+/** Provider-declared TERMINAL FAILURE shapes: the provider's own verdict that this request
+ *  produced NO answer (review finding, exact head 14746af — a 2xx stream can end in
+ *  `response.failed`, and the executor durably completes any 2xx attempt from the HTTP status
+ *  alone). Such a turn projects as INPUT-ONLY context — exactly how a `failed` attempt
+ *  projects — rather than refusing and blocking the branch behind a provider failure. This is
+ *  distinct from TRUNCATION (no terminal event at all), which stays a refusal: a missing
+ *  verdict is ambiguity, a failure verdict is truth. */
+const FAILED_RESPONSE_STATUSES = new Set(['failed', 'cancelled']);
 
-function terminalResponseOf(entry: AssembledContextEntry): JsonObject {
+type TerminalResolution = { kind: 'terminal'; body: JsonObject } | { kind: 'provider_failed' };
+
+function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
   const output = entry.assistant!.output;
   if (output.kind === 'response') {
     if (!isObject(output.body)) throw new Unreplayable('response_body_shape_unknown');
     const status = output.body['status'];
+    if (typeof status === 'string' && FAILED_RESPONSE_STATUSES.has(status)) {
+      return { kind: 'provider_failed' };
+    }
     if (typeof status === 'string' && !TERMINAL_RESPONSE_STATUSES.has(status)) {
       throw new Unreplayable('anchor_response_not_terminal');
     }
-    return output.body;
+    return { kind: 'terminal', body: output.body };
   }
   let terminal: JsonObject | null = null;
+  let failed = false;
   for (const line of output.sseText.split(/\r?\n/)) {
     if (!line.startsWith('data:')) continue;
     const payload = line.slice(5).trim();
@@ -140,16 +154,20 @@ function terminalResponseOf(entry: AssembledContextEntry): JsonObject {
     } catch {
       throw new Unreplayable('sse_data_not_json');
     }
+    if (!isObject(parsed)) continue;
+    if (parsed['type'] === 'response.failed' || parsed['type'] === 'error') {
+      failed = true;
+    }
     if (
-      isObject(parsed) &&
       (parsed['type'] === 'response.completed' || parsed['type'] === 'response.incomplete') &&
       isObject(parsed['response'])
     ) {
       terminal = parsed['response'] as JsonObject;
     }
   }
+  if (failed && terminal === null) return { kind: 'provider_failed' };
   if (!terminal) throw new Unreplayable('stream_has_no_terminal_response');
-  return terminal;
+  return { kind: 'terminal', body: terminal };
 }
 
 /** An anchor must be a FULLY completed response: an `incomplete` result is honest terminal
@@ -232,18 +250,23 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
           }
         }
       }
-      // ── Anchor scan: the LAST eligible completed output, walked from the end ────────────
+      // ── Anchor scan: the LAST eligible completed output with a provider-terminal BODY,
+      //    walked from the end (a provider-declared failure contributes no output at all) ────
       let anchorIndex = -1;
+      let anchorTerminal: JsonObject | null = null;
       for (let i = input.entries.length - 1; i >= 0; i -= 1) {
-        if (input.entries[i]!.assistant !== null) {
-          anchorIndex = i;
-          break;
-        }
+        const candidate = input.entries[i]!;
+        if (candidate.assistant === null) continue;
+        const resolution = terminalResponseOf(candidate);
+        if (resolution.kind === 'provider_failed') continue; // input-only turn — keep walking
+        anchorIndex = i;
+        anchorTerminal = resolution.body;
+        break;
       }
 
-      if (anchorIndex >= 0) {
+      if (anchorIndex >= 0 && anchorTerminal !== null) {
         const anchorEntry = input.entries[anchorIndex]!;
-        const terminal = terminalResponseOf(anchorEntry);
+        const terminal = anchorTerminal;
         const anchorId = responseIdOf(terminal);
         const chainable =
           anchorId !== null &&
@@ -283,7 +306,11 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
       for (const entry of input.entries) {
         assembled.push(...inputItemsOf(entry.userNative));
         if (entry.assistant) {
-          assembled.push(...outputItemsOf(terminalResponseOf(entry)));
+          const resolution = terminalResponseOf(entry);
+          if (resolution.kind === 'terminal') {
+            assembled.push(...outputItemsOf(resolution.body));
+          }
+          // provider_failed: the turn's question stays context; its non-answer never does.
         }
       }
       assembled.push(...inputItemsOf(input.turnConfig));

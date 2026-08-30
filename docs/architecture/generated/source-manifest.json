@@ -37,15 +37,15 @@
   "tests": {
     "root_unit": {
       "files": 152,
-      "tests": 1768
+      "tests": 1770
     },
     "root_integration_only": {
       "files": 95,
-      "tests": 1489
+      "tests": 1490
     },
     "root_full_integration_gate": {
       "files": 247,
-      "tests": 3257
+      "tests": 3260
     },
     "ui": {
       "files": 33,

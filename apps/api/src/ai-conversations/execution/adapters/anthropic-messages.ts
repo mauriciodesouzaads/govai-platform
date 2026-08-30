@@ -97,6 +97,17 @@ class UnreplayableStream extends Error {
   }
 }
 
+/** The provider's own terminal FAILURE verdict (an `error` SSE event): the turn produced no
+ *  answer, so it projects as INPUT-ONLY context — mirroring how a `failed` attempt projects —
+ *  never as a refusal that would block the branch behind a provider failure (review finding,
+ *  exact head 14746af; the executor durably completes any 2xx stream from HTTP status alone). */
+class ProviderFailedStream extends Error {
+  constructor() {
+    super('provider reported a terminal failure for this stream');
+    this.name = 'ProviderFailedStream';
+  }
+}
+
 /** Reassemble `{ role, content, model }` from a completed attempt's durable stream bytes. */
 function assistantMessageFromStream(sseText: string): {
   role: string;
@@ -203,6 +214,9 @@ function assistantMessageFromStream(sseText: string): {
       case 'message_delta': // stop_reason/usage — carries no content to reassemble.
       case 'ping':
         break;
+      case 'error':
+        // The provider's own failure verdict: this stream carries no answer to replay.
+        throw new ProviderFailedStream();
       default:
         throw new UnreplayableStream('event_type_unknown');
     }
@@ -305,7 +319,12 @@ export const anthropicMessagesAdapter: ProviderConversationAdapter = {
         }
         history.push(...(native['messages'] as unknown[]));
         if (entry.assistant) {
-          history.push(assistantMessageFromEntry(entry, currentModel));
+          try {
+            history.push(assistantMessageFromEntry(entry, currentModel));
+          } catch (err) {
+            if (!(err instanceof ProviderFailedStream)) throw err;
+            // Input-only projection: the question stays context; the non-answer never does.
+          }
         }
       }
     } catch (err) {

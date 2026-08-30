@@ -1079,6 +1079,61 @@ describe('D-X — transaction boundaries, agnosticism, detachment', () => {
     expect(await driveOne(t3.attemptId)).toBe('completed');
   });
 
+  it('D-X7 — a 2xx stream ending in a provider FAILURE verdict never blocks the branch: input-only context', async () => {
+    // The executor durably completes any 2xx stream from HTTP status alone (the P0-C
+    // classification); the CONTEXT layer projects the provider's own failure verdict as an
+    // input-only turn, so the branch continues honestly. Both providers, at the wire.
+    const oconv = await createConversation({ provider: 'openai' });
+    const ot1 = await send(oconv.id, oconv.branchId, openaiRequest('PF-u1', { stream: true }));
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'x-request-id': randomUUID() });
+          res.end(
+            `data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_pf' } })}\n\n` +
+              `data: ${JSON.stringify({ type: 'response.failed', response: { id: 'resp_pf', status: 'failed' } })}\n\n`,
+          );
+        });
+      },
+      async () => {
+        expect(await driveOne(ot1.attemptId)).toBe('completed'); // the P0-C 2xx classification
+      },
+    );
+    const ot2 = await send(oconv.id, oconv.branchId, openaiRequest('PF-u2'));
+    expect(await driveOne(ot2.attemptId)).toBe('completed');
+    const obody = postedBodies().at(-1)!;
+    expect('previous_response_id' in obody).toBe(false);
+    expect(obody['input']).toEqual([
+      { role: 'user', content: 'PF-u1' },
+      { role: 'user', content: 'PF-u2' },
+    ]);
+
+    const aconv = await createConversation({});
+    const at1 = await send(aconv.id, aconv.branchId, anthropicRequest('PA-u1', { stream: true }));
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'request-id': randomUUID() });
+          res.end(
+            `data: ${JSON.stringify({ type: 'message_start', message: { role: 'assistant' } })}\n\n` +
+              `data: ${JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } })}\n\n`,
+          );
+        });
+      },
+      async () => {
+        expect(await driveOne(at1.attemptId)).toBe('completed');
+      },
+    );
+    const at2 = await send(aconv.id, aconv.branchId, anthropicRequest('PA-u2'));
+    expect(await driveOne(at2.attemptId)).toBe('completed');
+    expect(postedBodies().at(-1)!['messages']).toEqual([
+      { role: 'user', content: 'PA-u1' },
+      { role: 'user', content: 'PA-u2' },
+    ]);
+  });
+
   it('D-X4 — the hydrate surface still never leaks execution/continuation material', async () => {
     const conv = await createConversation({ provider: 'openai' });
     const t1 = await send(conv.id, conv.branchId, openaiRequest('H-u1'));
