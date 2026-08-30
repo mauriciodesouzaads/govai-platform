@@ -381,9 +381,18 @@ export async function loadDurableContextPlan(
   let bound = input.turnSeq;
   let pin: WalkFrame['pin'] = null;
 
+  // ★ THE ONLY LAWFUL EXIT IS PUSHING A ROOT FRAME (review finding, exact head 7daa362): an
+  // exhausted loop whose last pushed frame still has a parent MUST refuse — the earlier
+  // post-loop test (`frames.length === MAX && branch.parent_branch_id !== null`) passed when
+  // the walk had just MOVED to an unrecorded root, silently omitting the root's turns from
+  // context: exactly the truncated-history dispatch this cap exists to prevent.
+  let rooted = false;
   for (let depth = 0; depth < MAX_BRANCH_DEPTH; depth += 1) {
     frames.push({ branch, beforeTurnSeq: bound, pin });
-    if (branch.parent_branch_id === null) break;
+    if (branch.parent_branch_id === null) {
+      rooted = true;
+      break;
+    }
     // A fork edge: resolve the source turn on the PARENT branch to bound the parent's range.
     if (branch.forked_from_turn_id === null || branch.forked_from_attempt_id === null) {
       // 0031's fork-shape CHECK makes this unrepresentable; fail closed rather than guess.
@@ -406,9 +415,7 @@ export async function loadDurableContextPlan(
     bound = forkTurn.turn_seq;
     branch = parent;
   }
-  if (frames.length === MAX_BRANCH_DEPTH && branch.parent_branch_id !== null) {
-    throw new DurableContextUnbuildableError('branch_depth_exceeded');
-  }
+  if (!rooted) throw new DurableContextUnbuildableError('branch_depth_exceeded');
 
   // ── Emit selected turns OLDEST → NEWEST: root branch first, executing branch last ───────
   const selected: SelectedTurn[] = [];

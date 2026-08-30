@@ -44,6 +44,11 @@ import {
 } from '../../apps/api/src/ai-conversations/execution/execute-turn.js';
 import { discoverRecoveryCandidates } from '../../apps/api/src/pipeline/ai-conversation-recovery-discovery.js';
 import { loadDurableContextPlan } from '../../apps/api/src/ai-conversations/execution/durable-context.js';
+import {
+  seedTurn,
+  seedAttempt,
+  advanceSeededAttempt,
+} from './helpers/ai-conversation-seed.js';
 
 let stack: Stack;
 let org: SeededOrg;
@@ -1171,6 +1176,91 @@ describe('D-X — transaction boundaries, agnosticism, detachment', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'echo: HB-u1' }] },
       { role: 'user', content: 'HB-u2' },
     ]);
+  });
+
+  it('D-X9 — an ancestry PAST the depth cap refuses; one AT the cap resolves with its root intact', async () => {
+    // Falsification of the round-10 finding: with the old exit condition, a 65-frame walk
+    // pushed 64 frames, moved to the unrecorded root, saw it had no parent, and PASSED —
+    // silently omitting the root's turns from context. The only lawful exit is pushing a
+    // root frame. Phase A never decrypts, so the chain is seeded structurally (legal
+    // transitions only; random envelope bytes are fine for the plan reads).
+    const ids = { orgId: org.org_id, ownerUserId: org.user_id };
+    const admin = stack.db.adminPool;
+    const conv = await admin.query<{ id: string }>(
+      `INSERT INTO govai.ai_conversations (org_id, owner_user_id, mode, provider, surface, model)
+       VALUES ($1::uuid, $2::uuid, 'passthrough', 'anthropic', 'anthropic_messages', 'claude-test')
+       RETURNING id`,
+      [ids.orgId, ids.ownerUserId],
+    );
+    const conversationId = conv.rows[0]!.id;
+    const root = await admin.query<{ id: string }>(
+      `INSERT INTO govai.ai_conversation_branches
+         (org_id, owner_user_id, conversation_id, provider, surface, model)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'anthropic', 'anthropic_messages', 'claude-test')
+       RETURNING id`,
+      [ids.orgId, ids.ownerUserId, conversationId],
+    );
+    const branches: string[] = [root.rows[0]!.id];
+
+    // Build a 65-branch chain: root + 64 after_attempt forks, each pinned to a COMPLETED
+    // attempt (reached through the legal transition path) with one output item.
+    for (let level = 0; level < 64; level += 1) {
+      const parent = branches[branches.length - 1]!;
+      const { turnId, configContentId } = await seedTurn(admin, ids, conversationId, parent, 1);
+      await admin.query(
+        `INSERT INTO govai.ai_conversation_items
+           (org_id, owner_user_id, conversation_id, branch_id, turn_id, item_seq, item_type, content_id)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, 1, 'native_request', $6::uuid)`,
+        [ids.orgId, ids.ownerUserId, conversationId, parent, turnId, configContentId],
+      );
+      const attemptId = await seedAttempt(admin, ids, conversationId, parent, turnId);
+      await admin.query(
+        `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
+        [attemptId, turnId],
+      );
+      await advanceSeededAttempt(admin, ids, attemptId, { state: 'completed' });
+      await admin.query(
+        `INSERT INTO govai.ai_conversation_items
+           (org_id, owner_user_id, conversation_id, branch_id, turn_id, attempt_id, item_seq, item_type, content_id)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6::uuid, 1, 'native_response', $7::uuid)`,
+        [ids.orgId, ids.ownerUserId, conversationId, parent, turnId, attemptId, configContentId],
+      );
+      const child = await admin.query<{ id: string }>(
+        `INSERT INTO govai.ai_conversation_branches
+           (org_id, owner_user_id, conversation_id, provider, surface, model,
+            parent_branch_id, forked_from_turn_id, forked_from_attempt_id, boundary_mode)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'anthropic', 'anthropic_messages', 'claude-test',
+                 $4::uuid, $5::uuid, $6::uuid, 'after_attempt')
+         RETURNING id`,
+        [ids.orgId, ids.ownerUserId, conversationId, parent, turnId, attemptId],
+      );
+      branches.push(child.rows[0]!.id);
+    }
+
+    const owner = { orgId: ids.orgId, ownerUserId: ids.ownerUserId };
+    // AT the cap (64 frames: branches[63] → root): resolves, and the ROOT's pin is present —
+    // nothing silently omitted.
+    const atCap = await db.withOwnerContext(owner, (tx) =>
+      loadDurableContextPlan(tx, owner, {
+        conversationId,
+        branchId: branches[63]!,
+        turnSeq: '1',
+      }),
+    );
+    expect(atCap.entries).toHaveLength(63); // one pin per ancestor edge, root's included
+    // PAST the cap (65 frames needed): refuses with the precise reason.
+    await expect(
+      db.withOwnerContext(owner, (tx) =>
+        loadDurableContextPlan(tx, owner, {
+          conversationId,
+          branchId: branches[64]!,
+          turnSeq: '1',
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'durable_context_unbuildable',
+      reason: 'branch_depth_exceeded',
+    });
   });
 
   it('D-X4 — the hydrate surface still never leaks execution/continuation material', async () => {
