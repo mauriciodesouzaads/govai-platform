@@ -128,6 +128,10 @@ export type ContextPlanEntry = {
     /** §8 commit-4 provenance of the POST that produced this output — the credential-anchor
      *  reconciliation input (§11): provider continuation objects are account-scoped. */
     providerCredentialId: string | null;
+    /** The attempt's durable `terminal_at`, epoch ms — the anchor-age input: a provider-stored
+     *  response is retained for a bounded window, so a chaining strategy must know how old its
+     *  candidate anchor is (review finding, exact head 20e7b67). */
+    completedAtMs: number;
     kind: 'response' | 'stream';
     /** One `native_response` envelope, or the ordered `native_stream_chunk` envelopes. */
     contents: EncryptedContentRef[];
@@ -172,6 +176,7 @@ type AttemptRow = {
   state: string;
   context_excluded: boolean;
   provider_credential_id: string | null;
+  terminal_at: Date | null;
 };
 
 type ItemRow = {
@@ -209,6 +214,11 @@ async function readTurnsBefore(
   conversationId: string,
   branchId: string,
   beforeTurnSeq: string,
+  /** Fetch bound (review finding, exact head 20e7b67): the turn budget is enforced WHILE
+   *  reading — the query can never return more than the caller's remaining budget + 1 rows,
+   *  so an over-budget branch is detected from a BOUNDED fetch, never by materializing the
+   *  whole history first. */
+  limit: number,
 ): Promise<TurnRow[]> {
   const r = await tx.query<TurnRow>(
     `SELECT id, turn_seq::text AS turn_seq, current_attempt_id
@@ -216,8 +226,9 @@ async function readTurnsBefore(
       WHERE org_id = $1::uuid AND owner_user_id = $2::uuid
         AND conversation_id = $3::uuid AND branch_id = $4::uuid
         AND turn_seq < $5::bigint
-      ORDER BY turn_seq ASC`,
-    [owner.orgId, owner.ownerUserId, conversationId, branchId, beforeTurnSeq],
+      ORDER BY turn_seq ASC
+      LIMIT $6::integer`,
+    [owner.orgId, owner.ownerUserId, conversationId, branchId, beforeTurnSeq, limit],
   );
   return r.rows;
 }
@@ -247,7 +258,8 @@ async function readAttemptsByIds(
 ): Promise<Map<string, AttemptRow>> {
   if (attemptIds.length === 0) return new Map();
   const r = await tx.query<AttemptRow>(
-    `SELECT id, turn_id, state, context_excluded, provider_credential_id::text AS provider_credential_id
+    `SELECT id, turn_id, state, context_excluded, provider_credential_id::text AS provider_credential_id,
+            terminal_at
        FROM govai.ai_conversation_attempts
       WHERE org_id = $1::uuid AND owner_user_id = $2::uuid
         AND conversation_id = $3::uuid AND id = ANY($4::uuid[])`,
@@ -402,13 +414,20 @@ export async function loadDurableContextPlan(
   const selected: SelectedTurn[] = [];
   for (let i = frames.length - 1; i >= 0; i -= 1) {
     const frame = frames[i]!;
+    // Remaining turn budget + 1: one extra row is enough to PROVE the branch is over budget
+    // without fetching it all; the throw below fires before any attempt row is read.
+    const remaining = budget.maxTurns + 1 - selected.length;
     const turns = await readTurnsBefore(
       tx,
       owner,
       input.conversationId,
       frame.branch.id,
       frame.beforeTurnSeq,
+      remaining,
     );
+    if (selected.length + turns.length > budget.maxTurns) {
+      throw new DurableContextUnbuildableError('context_budget_exceeded');
+    }
     for (const turn of turns) {
       selected.push({
         turn,
@@ -426,6 +445,11 @@ export async function loadDurableContextPlan(
         selectedAttemptId: frame.pin.attemptId,
         pinExempt: true,
       });
+    }
+    // Pins count against the same budget: the invariant leaving every frame is
+    // selected.length <= maxTurns, which also keeps the next frame's fetch bound >= 1.
+    if (selected.length > budget.maxTurns) {
+      throw new DurableContextUnbuildableError('context_budget_exceeded');
     }
   }
   if (selected.length === 0) return { entries: [] };
@@ -455,9 +479,6 @@ export async function loadDurableContextPlan(
     }
   }
 
-  if (selected.length > budget.maxTurns) {
-    throw new DurableContextUnbuildableError('context_budget_exceeded');
-  }
   const aggregate = await readContextAggregate(
     tx,
     owner,
@@ -505,10 +526,17 @@ export async function loadDurableContextPlan(
         throw new DurableContextUnbuildableError('completed_output_missing');
       }
       const types = new Set(outputItems.map((i) => i.item_type));
+      if (attempt.terminal_at === null) {
+        // A completed attempt always carries its ratchet stamp (0031 CHECK); its absence is
+        // durable state this replay cannot trust.
+        throw new DurableContextUnbuildableError('completed_terminal_stamp_missing');
+      }
+      const completedAtMs = attempt.terminal_at.getTime();
       if (types.size === 1 && types.has('native_response') && outputItems.length === 1) {
         output = {
           attemptId: attempt.id,
           providerCredentialId: attempt.provider_credential_id,
+          completedAtMs,
           kind: 'response',
           contents: [toRef(outputItems[0]!)],
         };
@@ -516,6 +544,7 @@ export async function loadDurableContextPlan(
         output = {
           attemptId: attempt.id,
           providerCredentialId: attempt.provider_credential_id,
+          completedAtMs,
           kind: 'stream',
           contents: outputItems.map(toRef),
         };
@@ -558,6 +587,8 @@ export type AssembledContextEntry = {
   assistant: {
     attemptId: string;
     providerCredentialId: string | null;
+    /** Epoch ms of the attempt's durable terminal stamp — the anchor-age input. */
+    completedAtMs: number;
     output:
       | { kind: 'response'; body: unknown }
       | { kind: 'stream'; sseText: string };
@@ -639,33 +670,57 @@ function parseJson(text: string, reason: string): unknown {
 }
 
 /**
- * PHASE B — decrypt the plan into provider-native entries. Decryption is bounded-concurrent;
- * stream chunks are concatenated in `item_seq` order, reproducing the provider's byte stream
- * (the P0-C fidelity invariant this module consumes rather than re-proves).
+ * PHASE B — decrypt the plan into provider-native entries. Stream chunks are concatenated in
+ * `item_seq` order, reproducing the provider's byte stream (the P0-C fidelity invariant this
+ * module consumes rather than re-proves).
+ *
+ * ★ ONE SHARED LIMITER (review finding, exact head 20e7b67): a nested per-entry limiter
+ * MULTIPLIES — 8 concurrent entries each running an 8-way chunk decrypt would admit 64
+ * concurrent KMS calls, bursting a remote KMS far beyond the declared bound. Every decrypt
+ * this assembly performs — user content and output chunks alike — is therefore flattened into
+ * ONE task list bounded by a single limiter: the per-dispatch KMS concurrency is
+ * `CONTEXT_KMS_DECRYPT_CONCURRENCY`, full stop. Parsing/decoding happens after the decrypts
+ * settle and is CPU-only.
  */
 export async function assembleDurableContext(
   kms: Kms,
   orgId: string,
   plan: DurableContextPlan,
 ): Promise<AssembledContextEntry[]> {
-  return mapBounded(plan.entries, CONTEXT_KMS_DECRYPT_CONCURRENCY, async (entry) => {
-    const userBytes = await decryptRef(kms, orgId, entry.userContent);
+  const refs: EncryptedContentRef[] = [];
+  const userTaskIndex: number[] = [];
+  const outputTaskIndexes: number[][] = [];
+  for (const entry of plan.entries) {
+    userTaskIndex.push(refs.length);
+    refs.push(entry.userContent);
+    const parts: number[] = [];
+    if (entry.output) {
+      for (const ref of entry.output.contents) {
+        parts.push(refs.length);
+        refs.push(ref);
+      }
+    }
+    outputTaskIndexes.push(parts);
+  }
+
+  const decrypted = await mapBounded(refs, CONTEXT_KMS_DECRYPT_CONCURRENCY, (ref) =>
+    decryptRef(kms, orgId, ref),
+  );
+
+  return plan.entries.map((entry, i) => {
     const userNative = parseJson(
-      decodeUtf8Strict(userBytes, 'context_input_not_utf8'),
+      decodeUtf8Strict(decrypted[userTaskIndex[i]!]!, 'context_input_not_utf8'),
       'context_input_not_json',
     );
 
     let assistant: AssembledContextEntry['assistant'] = null;
     if (entry.output) {
-      const parts = await mapBounded(
-        entry.output.contents,
-        CONTEXT_KMS_DECRYPT_CONCURRENCY,
-        (ref) => decryptRef(kms, orgId, ref),
-      );
+      const parts = outputTaskIndexes[i]!.map((t) => decrypted[t]!);
       if (entry.output.kind === 'response') {
         assistant = {
           attemptId: entry.output.attemptId,
           providerCredentialId: entry.output.providerCredentialId,
+          completedAtMs: entry.output.completedAtMs,
           output: {
             kind: 'response',
             body: parseJson(
@@ -678,6 +733,7 @@ export async function assembleDurableContext(
         assistant = {
           attemptId: entry.output.attemptId,
           providerCredentialId: entry.output.providerCredentialId,
+          completedAtMs: entry.output.completedAtMs,
           output: {
             kind: 'stream',
             sseText: decodeUtf8Strict(Buffer.concat(parts), 'context_output_not_utf8'),

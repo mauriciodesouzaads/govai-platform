@@ -449,6 +449,7 @@ async function driveClaimedAttempt(
     turnConfig: nativeRequest,
     branchModel: context.model,
     activeCredentialId: credential.id,
+    nowMs: Date.now(),
   });
   if (!built.ok) {
     // An explicit truthful refusal (LAW NX-5: never substitute; §31: never degrade silently).

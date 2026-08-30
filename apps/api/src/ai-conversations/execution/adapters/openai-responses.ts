@@ -50,7 +50,14 @@
 //   4. THIS turn's config does not set `store: false` — chaining a response that will itself
 //      be unstored would strand the NEXT turn; an explicit `store: false` is honored by
 //      replaying statelessly instead (never silently flipped to true — §20 of the movement
-//      dispatch).
+//      dispatch);
+//   5. the anchor is YOUNG enough to still be retrievable (review finding, exact head
+//      20e7b67): stored responses are retained ~30 days, so a conversation resumed after the
+//      window would chain an EXPIRED id — and, because the anchor derivation is deterministic,
+//      would re-select the same dead parent on every later dispatch. The age gate uses the
+//      anchor attempt's durable `terminal_at` against a deliberately conservative bound
+//      (14 days, half the documented window) and falls back to stateless replay — which needs
+//      no provider-held state at all — the honest degradation for an aged conversation.
 //
 // ★ CLIENT-OWNED CONTINUATION FIELDS ARE A CONFLICT, NOT AN INPUT. A stored config carrying
 // `previous_response_id` or `conversation` asserts continuation state the durable store cannot
@@ -76,6 +83,9 @@ const fail = (
   reason: 'continuation_conflict' | 'context_unreplayable',
   detail: string,
 ): BuildRequestResult => ({ ok: false, reason, detail });
+
+/** Chaining condition 5: half the provider's documented ~30-day stored-response retention. */
+const ANCHOR_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 class Unreplayable extends Error {
   constructor(readonly detail: string) {
@@ -187,7 +197,8 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
           anchorId !== null &&
           anchorEntry.assistant!.providerCredentialId === input.activeCredentialId &&
           configStoreAllowsChaining(anchorEntry.userNative) &&
-          configStoreAllowsChaining(input.turnConfig);
+          configStoreAllowsChaining(input.turnConfig) &&
+          input.nowMs - anchorEntry.assistant!.completedAtMs < ANCHOR_MAX_AGE_MS;
 
         if (chainable) {
           // Turns after the anchor contributed user input only (had any contributed output,

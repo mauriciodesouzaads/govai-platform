@@ -56,6 +56,11 @@ export type BuildRequestInput = {
   /** The row id of the ACTIVE credential that will authenticate the POST (§8 commit 4's
    *  resolution, already performed by the executor's step 3). */
   activeCredentialId: string;
+  /** The executor's clock at build time, epoch ms. Supplied as an INPUT so adapters stay pure
+   *  and deterministic under test; used for coarse anchor-age judgments (a provider-stored
+   *  response has a bounded retention window), never for lease/fencing decisions — those stay
+   *  on database time (the 0029 rule). */
+  nowMs: number;
 };
 
 /** How the built request continues the conversation — reported truthfully so the executor can

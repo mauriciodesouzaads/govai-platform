@@ -6,6 +6,8 @@ import { openaiResponsesAdapter } from './openai-responses.js';
 import type { AssembledContextEntry } from '../durable-context.js';
 
 const CRED = 'cred-active';
+const NOW_MS = 1_800_000_000_000;
+const FRESH_MS = NOW_MS - 60_000;
 
 function entry(overrides: Partial<AssembledContextEntry>): AssembledContextEntry {
   return {
@@ -21,8 +23,14 @@ function entry(overrides: Partial<AssembledContextEntry>): AssembledContextEntry
 function responseAssistant(
   body: Record<string, unknown>,
   credentialId: string = CRED,
+  completedAtMs: number = FRESH_MS,
 ): AssembledContextEntry['assistant'] {
-  return { attemptId: 'att-1', providerCredentialId: credentialId, output: { kind: 'response', body } };
+  return {
+    attemptId: 'att-1',
+    providerCredentialId: credentialId,
+    completedAtMs,
+    output: { kind: 'response', body },
+  };
 }
 
 const RESP_1 = {
@@ -37,6 +45,7 @@ function build(entries: AssembledContextEntry[], turnConfig: unknown) {
     turnConfig,
     branchModel: 'gpt-test',
     activeCredentialId: CRED,
+    nowMs: NOW_MS,
   });
 }
 
@@ -116,6 +125,35 @@ describe('openai adapter — strategy selection', () => {
     expect('previous_response_id' in body).toBe(false);
   });
 
+  it('an EXPIRED anchor is never chained: a conversation resumed after the retention window replays statelessly', () => {
+    const fifteenDaysAgo = NOW_MS - 15 * 24 * 60 * 60 * 1000;
+    const result = build(
+      [entry({ assistant: responseAssistant(RESP_1, CRED, fifteenDaysAgo) })],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result.ok).toBe(true);
+    const body = (result as unknown as { body: Record<string, unknown> }).body;
+    expect('previous_response_id' in body).toBe(false); // the dead parent is never selected
+    expect(body['input']).toEqual([
+      { role: 'user', content: 'u1' },
+      ...RESP_1.output,
+      { role: 'user', content: 'u2' },
+    ]);
+  });
+
+  it('an anchor INSIDE the age bound still chains', () => {
+    const thirteenDaysAgo = NOW_MS - 13 * 24 * 60 * 60 * 1000;
+    const result = build(
+      [entry({ assistant: responseAssistant(RESP_1, CRED, thirteenDaysAgo) })],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_1' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+  });
+
   it('O15 — a config carrying client-owned continuation is a CONFLICT on every turn, first included', () => {
     for (const field of ['previous_response_id', 'conversation']) {
       const result = build([], { model: 'gpt-test', input: 'u1', [field]: 'client-owned' });
@@ -184,7 +222,7 @@ describe('openai adapter — stateless replay assembly', () => {
     const result = build(
       [
         entry({
-          assistant: { attemptId: 'att-s', providerCredentialId: CRED, output: { kind: 'stream', sseText: sse } },
+          assistant: { attemptId: 'att-s', providerCredentialId: CRED, completedAtMs: FRESH_MS, output: { kind: 'stream', sseText: sse } },
         }),
       ],
       { model: 'gpt-test', input: 'u2' },
@@ -201,7 +239,7 @@ describe('openai adapter — stateless replay assembly', () => {
     const result = build(
       [
         entry({
-          assistant: { attemptId: 'att-s', providerCredentialId: CRED, output: { kind: 'stream', sseText: sse } },
+          assistant: { attemptId: 'att-s', providerCredentialId: CRED, completedAtMs: FRESH_MS, output: { kind: 'stream', sseText: sse } },
         }),
       ],
       { model: 'gpt-test', input: 'u2' },

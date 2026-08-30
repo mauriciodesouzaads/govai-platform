@@ -27,6 +27,7 @@ function responseAssistant(content: unknown[], attemptId = 'att-1'): AssembledCo
   return {
     attemptId,
     providerCredentialId: CRED,
+    completedAtMs: 1_800_000_000_000,
     output: { kind: 'response', body: { id: 'msg_1', type: 'message', role: 'assistant', content } },
   };
 }
@@ -37,6 +38,7 @@ function build(entries: AssembledContextEntry[], turnConfig: unknown) {
     turnConfig,
     branchModel: MODEL,
     activeCredentialId: CRED,
+    nowMs: 1_800_000_060_000,
   });
 }
 
@@ -207,7 +209,12 @@ describe('anthropic adapter — thinking blocks and the model-switch rule (A9/§
 
 describe('anthropic adapter — durable stream reassembly', () => {
   function streamAssistant(sseText: string): AssembledContextEntry['assistant'] {
-    return { attemptId: 'att-s', providerCredentialId: CRED, output: { kind: 'stream', sseText } };
+    return {
+      attemptId: 'att-s',
+      providerCredentialId: CRED,
+      completedAtMs: 1_800_000_000_000,
+      output: { kind: 'stream', sseText },
+    };
   }
 
   it('reassembles text blocks from deltas, in wire order', () => {
