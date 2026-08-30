@@ -12,6 +12,7 @@
 - **The `UI_UX_V1_FOUNDATION` product lane has STARTED, and its first milestone — U1, the evidence cockpit — is implemented in this tree** (`apps/ui`, EP-UIUX-V1-U1). It is a read-only static SPA over the three existing read surfaces (`/v1/evidence/*`, `/v1/audit-events`, `/v1/capabilities`); it changes NO backend behaviour (the Foundation V1 runtime anchor is unchanged) and it makes no capability claim the runtime does not support. See §1 *Interface layer*. **EP-UIUX-V1-B2 (this tree) adds the one backend surface U1 was missing: `GET /v1/me`** — a read-only projection of the identity `authenticateApiKey` already resolves — and wires it into the session, so the shell now shows the server-supplied operational mode, principal type and roles instead of correctly showing none. Production human auth/session/API-key lifecycle is still absent (residual R14) — `principal_type` is the literal `api_key` precisely so nothing presents a controlled-pilot org credential as a human login. **EP-UIUX-V1-U1.5 (this tree) adds the AI Console at `/ai`** — a provider-native conversational surface over the six already-registered direct provider routes (OpenAI Responses / Chat Completions and Anthropic Messages, each in Native/Audited and Governed mode). It adds **no route, no migration and no event schema**, and it changes no governance semantics. U2 (Workroom) is not started, and there is no governance-settings, Phase-5-enforcement, Workroom, regulatory or admin UI. **The two backend findings the AI Console's live acceptance produced were owner-adjudicated and are FIXED in this tree** (`EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02`): `AI-CONSOLE-ORIGIN-RELAY-01` — the direct routes relayed the browser's `Origin` header upstream and Anthropic answered 401, making the Anthropic surface unusable from a browser; the server→provider hop now strips it class-wide (both providers, Native/Audited and Governed, streaming and non-streaming) — and `AI-CONSOLE-RESPONSES-DLP-GAP-01` — the governed Responses DLP pre-scan skipped role-shaped `input[]` items; all five accepted message spellings now extract identically. These are the only backend runtime changes this milestone makes, and both are live/wire-proven. Two residuals are OPEN and deliberately unfixed, both `packages/provider-*` route behaviour that the owner adjudicates per finding: `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01` (`referer` / `cookie` describe the inbound hop by the same reasoning as `origin`, and only `origin` is in `STRIP_INBOUND_BROWSER_HOP` — so the server-side outbound header builders **would relay an inbound `cookie`**, and `referer` **is** relayed today. Stated precisely: the official console's `ApiClient` issues every request with `credentials: 'omit'`, so the browser attaches **no** cookie to GovAI calls and none reaches the builders to relay — the measured 6 cookies / 229 bytes on the acceptance origin quantify what a `credentials: 'include'` caller, or any future cookie-based human auth (R14), would hand upstream; that risk is MATERIAL and the residual stays OPEN) and `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01` (the non-stream forward calls `forwardRaw` with no `signal` and awaits an unbounded `res.arrayBuffer()`; pre-existing, made routinely reachable by the console's model discovery, streaming forward unaffected). See [stale-docs-register.md](./stale-docs-register.md).
 - **The Native Experience Parity V1 BASELINE is complete in this tree** (EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01, research snapshot 2026-08-21): parity vocabulary + four provider-surface baselines + product-UX reference + the 248-row machine manifest (`pnpm docs:parity:check`), and the **AI Conversation Continuity V1 DESIGN spec** — documentation, manifest and validator tooling ONLY. At that movement's anchor `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`; no provider capability was implemented; no runtime behaviour changed. **★ The baseline remains a versioned historical/research snapshot (2026-08-21); the persistence verdict it recorded is superseded by the P0-C bullet below, and post-baseline implementation does not retroactively rewrite its rows** — a refreshed current parity baseline requires a separate deliberate movement/version. See §*EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01 canonical state* at the end of this document.
 - **AI Conversation Continuity V1 runtime has progressed through P0-C** (EP-AI-CONVERSATION-CONTINUITY-V1-01): `P0-A1 COMPLETE · T1 COMPLETE · P0-A2 COMPLETE · P0-B COMPLETE · P0-C COMPLETE`; `P0-D / P0-E / P0-F NOT_STARTED`. P0-C (PR #147, squash-merged as `c1ddfd30c811e453fc042b81f3500795b22a6837`, tree `92ffaa7df74635f0a9caa68a0b5373f85084e5d9` — byte-identical to the independently audited head `13392bbd`; post-merge main CI run `33226802442` SUCCESS) is the **durable Send / execution kernel**: durable Send reservation, immutable provider-native request/config persistence, server-owned execution after durable acceptance, a detached conversation worker with claim/lease/heartbeat/fencing, credential provenance durable before any provider POST, Anthropic Messages + OpenAI Responses execution (governed and passthrough where implemented, stream and non-stream), durable provider output and streaming chunks, honest `outcome_unknown` semantics, recovery/ratchet, and hydrate after process/request loss. **Surface-limited by design** (`anthropic_messages` → `/v1/messages`; `openai_responses` → `/v1/responses`); this is NOT a model allowlist — the model vocabulary remains provider-owned and is not gated by P0-C's dispatch registry. Provider continuation (P0-D), the persistent AI workspace UI (P0-E — the AI Console transcript remains memory-only) and the lifecycle/evidence closeout (P0-F) do NOT exist; no provider exactly-once is claimed. See §*EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-C canonical state* at the end of this document.
+- **The Native Experience Contract V1 and the CURRENT parity baseline V2 are authored in this tree** (EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01, research snapshot 2026-08-29 — documentary/normative + deterministic research tooling ONLY, no runtime change): `native-experience-contract-v1.md` (LAWs NX-1…NX-26 + explicit P0-D/P0-E/P0-F obligations), `native-experience-parity-v2.md` + `generated/native-experience-parity-v2.json` (252 rows, `pnpm docs:parity2:check`, new fields retirement_date/capability_source/state_nature/next_wave; FULL remains 3, all `ANTHROPIC_API`), and the ADDITIVE V2 validator lane. **The 2026-08-21 V1 baseline is byte-preserved** (hashes recorded in the movement's canonical section). Model-discovery/chooser carry-forwards re-adjudicated to precise vocabulary (`NATIVE_PROVIDER_MODEL_DISCOVERY=PARTIAL`, `USER_MODEL_CHOOSER=PARTIAL`, capability/policy-aware chooser `NOT_IMPLEMENTED`). `P0-D / P0-E / P0-F` remain `NOT_STARTED`; the movement's own PR is NOT self-merged — it awaits independent architecture review. See §*EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01 canonical state* at the end of this document.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
 
@@ -44,7 +45,7 @@ is one collected test module.
 
 | Structure | Source pattern | Count |
 |---|---|---|
-| Architecture docs | `docs/architecture/**/*.md` | 106 |
+| Architecture docs | `docs/architecture/**/*.md` | 108 |
 | Regulatory docs | `docs/architecture/regulatory/*.md` | 20 |
 | ADR decision records | `docs/architecture/adr/ADR-[0-9][0-9][0-9]-*.md` (excludes `ADR-INDEX.md`) | 31 |
 | Workspace apps | `apps/*` | 3 — `apps/api`, `apps/audit-sealer`, `apps/ui` |
@@ -55,9 +56,9 @@ is one collected test module.
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 148 | 1718 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 150 | 1730 |
 | Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 93 | 1453 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 241 | 3171 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 243 | 3183 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 
@@ -1362,6 +1363,12 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   | `NATIVE_PROVIDER_FULL_PARITY` | OPEN | the V1 baseline exists (3/248 FULL, OpenAI 0 FULL at the 2026-08-21 snapshot); implementation remains partial — see the FULL-interpretation note below |
   | `USER_MODEL_CHOOSER` | OPEN | the API model token exists; a dynamic product chooser/UI does not |
 
+  **★ UPDATED BY EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01
+  (this tree):** the last three rows (`NATIVE_PROVIDER_MODEL_DISCOVERY`,
+  `NATIVE_PROVIDER_FULL_PARITY`, `USER_MODEL_CHOOSER`) are re-adjudicated with precise
+  source-derived status vocabulary in that movement's canonical section at the end of this
+  document — the historical wording above is preserved, not rewritten.
+
 - **`P3-1-CHAT-COMPLETIONS-STREAM-GATE-ASYMMETRY` — pinned, non-blocking.** Current source
   fact: `packages/provider-openai/src/governed/handle-chat-completions.ts` threads
   `beforeDispatch`/`onDispatchStart` into its NON-stream `forwardRaw` only; the stream branch's
@@ -1437,3 +1444,70 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   (documentary/normative — formalize the native-experience and model-discovery laws and refresh
   the current parity baseline WITHOUT rewriting V1 history), then **P0-D provider
   continuation**. See [development-roadmap.md](./development-roadmap.md).
+  **★ EXECUTED — see the movement's canonical section below.** P0-D remains NOT_STARTED and
+  begins only after that movement's independent architecture review and owner merge.
+
+### EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01 canonical state (this tree)
+
+- **`NATIVE_EXPERIENCE_CONTRACT_AND_CURRENT_BASELINE=AUTHORED_IN_THIS_TREE` — documentary/
+  normative + deterministic research tooling ONLY.** Base: main
+  `79bd71407830ef2ef244fba6c53ac57cdebd11a3` (tree `c73d1ff4`). Research snapshot 2026-08-29
+  (fresh first-party pass over OpenAI API/product, Codex, Anthropic API/product, Claude
+  Code/Agent SDK/Managed Agents, and enterprise market references; evidence sealed in the
+  mission's external source ledger + live read-only model-metadata observations). NO runtime
+  source, NO migration, NO product UI, NO provider package, NO CI-behavior change outside
+  documentation validation. Merge of the movement's PR is NOT authorized by the movement
+  itself — it awaits independent architecture review.
+- **Deliverables (this tree):**
+  - `docs/architecture/native-experience-contract-v1.md` — the NORMATIVE native-experience
+    contract (LAWs NX-1…NX-26; discovery/compatibility/capability/policy/chooser/controls/
+    workspace/Projects/agentic/exit/degradation/performance/security contracts; explicit
+    P0-D / P0-E / P0-F obligations). P0-D and P0-E MUST consume it.
+  - `docs/architecture/native-experience-parity-v2.md` +
+    `docs/architecture/generated/native-experience-parity-v2.json` — the CURRENT parity
+    baseline: `BASELINE_VERSION=2`, 252 rows, `research_snapshot_date=2026-08-29`, new
+    fields `retirement_date` / `capability_source` / `state_nature` / `next_wave`;
+    FULL remains 3 rows, all `ANTHROPIC_API` (no classification upgraded); the four P0-C
+    conversational rows now carry `persistence/resume/fork = true` with their exact bounds
+    stated (API level; UI memory-only; reattach/public Retry absent; correlation false).
+  - Additive V2 validator: `scripts/lib/parity-v2-core.ts` (+ fixtures test),
+    `scripts/native-experience-parity-v2-manifest.ts` (+ tracked-artifact enforcement
+    test), `pnpm docs:parity2:check` / `pnpm docs:parity2:format`. The V1 validator, its
+    tests and both V1 baseline artifacts are BYTE-UNTOUCHED
+    (`native-experience-parity-v1.md` sha256 `496476ba…`, `…-v1.json` sha256 `8b38b737…`,
+    verified before and after authoring).
+- **Carry-forward re-adjudication (supersedes the OPEN wording in the P0-C register above
+  with precise vocabulary; nothing is cosmetically closed):**
+  ```
+  NATIVE_PROVIDER_MODEL_DISCOVERY = PARTIAL   (account-scoped live listing through the
+                                               audited native route EXISTS and the AI
+                                               Console consumes it — paginated, free-text-
+                                               preserving, failure-truthful; a productized
+                                               capability-aware/policy-aware catalogue does
+                                               NOT exist)
+  USER_MODEL_CHOOSER              = PARTIAL   (free-text + provider suggestions EXIST in
+                                               the legacy AI Console; the contract §9
+                                               product chooser does NOT exist)
+  CAPABILITY_AWARE_CATALOGUE      = NOT_IMPLEMENTED
+  POLICY_AWARE_MODEL_CHOOSER      = NOT_IMPLEMENTED
+  NATIVE_PROVIDER_FULL_PARITY     = OPEN — IMPLEMENTATION_PARTIAL (3/252 FULL at the
+                                               2026-08-29 snapshot, OpenAI 0 FULL; an axis
+                                               statement, not "OpenAI does not work")
+  MODEL_ID_AGNOSTICISM            = PROVEN (unchanged; zero model allowlists repo-wide)
+  ```
+- **Key provider-truth deltas absorbed by the V2 baseline (2026-08-29):** OpenAI Models API
+  now serves machine-readable per-model `shutdown_date` (no capability descriptor);
+  Anthropic Models API serves a documented structured per-model `capabilities` descriptor
+  (+ max input/output limits; lifecycle remains docs-sourced) — the NX-6 provider asymmetry
+  is live-confirmed; Assistants sunset EXECUTED 2026-08-26; OpenAI's GA computer-use tool
+  type is now the string `computer` (finding T / taxonomy drift unchanged as a P7
+  precondition); Codex app-server remains verbatim-experimental (CLI 0.151.0 stable);
+  Claude Code checkpoint/rewind went UNKNOWN→documented; Managed Agents memory stores moved
+  to a separate beta header.
+- **Explicit non-claims:** no runtime capability became implemented because its contract
+  now exists; `P0_D_PROVIDER_CONTINUATION=NOT_STARTED`,
+  `P0_E_PERSISTENT_AI_WORKSPACE_UI=NOT_STARTED`, `P0_F_LIFECYCLE_EVIDENCE_CLOSEOUT=NOT_STARTED`;
+  `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED` (permanent); `UNIVERSAL_PROVIDER_PARITY=NOT_CLAIMED`.
+- **NEXT IMPLEMENTATION MOVEMENT: `P0-D — PROVIDER CONTINUATION`** — after this movement's
+  independent architecture review and owner merge; P0-D consumes
+  `native-experience-contract-v1.md` §18 and the continuity spec §11.

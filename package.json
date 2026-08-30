@@ -22,7 +22,9 @@
     "docs:manifest:write": "tsx scripts/canonical-source-manifest.ts write",
     "docs:manifest:check": "tsx scripts/canonical-source-manifest.ts check",
     "docs:parity:check": "tsx scripts/native-experience-parity-manifest.ts check",
-    "docs:parity:format": "tsx scripts/native-experience-parity-manifest.ts format"
+    "docs:parity:format": "tsx scripts/native-experience-parity-manifest.ts format",
+    "docs:parity2:check": "tsx scripts/native-experience-parity-v2-manifest.ts check",
+    "docs:parity2:format": "tsx scripts/native-experience-parity-v2-manifest.ts format"
   },
   "devDependencies": {
     "@types/node": "24.10.0",

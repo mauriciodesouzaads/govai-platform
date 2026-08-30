@@ -976,3 +976,51 @@ Unchanged from the settled owner disposition above: `MAIN_BRANCH_PROTECTION =
 INTENTIONALLY_DISABLED_BY_OWNER`, `REPOSITORY_RULESETS = INTENTIONALLY_NONE_BY_OWNER`,
 `STATUS = BY_DESIGN / NOT_A_FINDING`. This movement inspected no repository setting for change,
 modified none, raises no branch-protection finding, and creates no action item.
+
+## Native experience contract + current baseline V2 (EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01)
+
+Documentation + deterministic documentation-validation tooling only. No runtime source, no
+test outside the new docs-validator lane, no migration, no grant/RLS, no event schema, no CI
+behavior outside documentation validation, no `.env*`, and **zero bytes of either V1 parity
+baseline artifact** changed in this movement (`PARITY_V1_BYTES_CHANGED=NO`; sha256 before ==
+after: `native-experience-parity-v1.md` `496476ba…`, `generated/native-experience-parity-v1.json`
+`8b38b737…`). Base: main `79bd71407830ef2ef244fba6c53ac57cdebd11a3` (tree `c73d1ff4`); research
+snapshot **2026-08-29** (first-party pass; external sealed source ledger + read-only live
+model-metadata observations). `P0-C = COMPLETE` (untouched); `P0-D / P0-E / P0-F =
+NOT_STARTED`. The movement's PR is NOT self-merged — independent architecture review required.
+
+| Document | Was (stale at `79bd7140`) | Now |
+|---|---|---|
+| *(new)* `native-experience-contract-v1.md` | did not exist — the native-experience/model-discovery laws lived only as dispatch intent | NORMATIVE contract: LAWs NX-1…NX-26, discovery/compatibility/capability/policy/chooser/controls/workspace/Projects/agentic/exit/degradation/performance/security contracts, explicit P0-D/P0-E/P0-F obligations |
+| *(new)* `native-experience-parity-v2.md` + `generated/native-experience-parity-v2.json` | the only parity baseline was the byte-preserved 2026-08-21 V1 snapshot, stale as a CURRENT view (P0-C flips; provider movements incl. executed Assistants sunset, `computer` tool type, Models-API capability/lifecycle fields) | CURRENT baseline: `BASELINE_VERSION=2`, 252 rows, snapshot 2026-08-29, new fields `retirement_date`/`capability_source`/`state_nature`/`next_wave`; FULL remains 3 (all `ANTHROPIC_API`); validated by `pnpm docs:parity2:check` + unit lane; V1 history untouched |
+| `current-state.md` | status bullets ended at P0-C; the P0-C register carried `NATIVE_PROVIDER_MODEL_DISCOVERY / NATIVE_PROVIDER_FULL_PARITY / USER_MODEL_CHOOSER = OPEN` with coarse wording; the NEXT bullet still pointed at an unexecuted movement | new status bullet + full movement canonical section; ★ UPDATED BY annotation on the P0-C register rows; carry-forwards re-adjudicated (`…MODEL_DISCOVERY=PARTIAL`, `USER_MODEL_CHOOSER=PARTIAL`, capability/policy-aware chooser `NOT_IMPLEMENTED`, `NATIVE_PROVIDER_FULL_PARITY=OPEN — IMPLEMENTATION_PARTIAL` at 3/252); NEXT bullet marked ★ EXECUTED |
+| `development-roadmap.md` | status block still `NEXT: …CONTRACT…-01 (see below)`; planning paragraph unexecuted | status block records `AUTHORED_IN_THIS_TREE` + review-gated P0-D; planning paragraph carries the ★ EXECUTED delivery record |
+| `resume-playbook.md` §4 | lane block: contract movement "not started" | `AUTHORED IN THIS TREE … PR awaits INDEPENDENT ARCHITECTURE REVIEW — no self-merge`; `THEN P0-D` now names its consumed contracts |
+| `stale-docs-register.md` | no section for this movement | this section |
+
+### Carry-forwards — resolved aspects vs preserved entries
+
+```text
+NATIVE_PROVIDER_MODEL_DISCOVERY = re-adjudicated PARTIAL (wording precision; the gap —
+                                  capability/policy-aware catalogue — remains OPEN for P0-E)
+USER_MODEL_CHOOSER              = re-adjudicated PARTIAL (product chooser remains P0-E)
+NATIVE_PROVIDER_FULL_PARITY     = OPEN — IMPLEMENTATION_PARTIAL (3/252 FULL @ 2026-08-29)
+R6 (beta-policy snapshot staleness)      = UNCHANGED, still material (registry still models
+                                           files-api beta; pinned snapshots predate 2026 GAs)
+TOOL-TAXONOMY-DRIFT-2026-08 (finding T)  = UNCHANGED P7 precondition; V2 adds the fact that
+                                           OpenAI's GA computer-use tool type is now the
+                                           string `computer`
+All other P0-C register entries          = UNCHANGED (this movement closes nothing else)
+```
+
+### Versioned parity baselines — V1 preserved, V2 is the current view
+
+`native-experience-parity-v1.md` + `generated/native-experience-parity-v1.json` remain the
+byte-preserved 2026-08-21 historical snapshot (validated unchanged by the untouched V1
+lane). `native-experience-parity-v2.*` is the CURRENT view with its own deliberate
+`RESEARCH_SNAPSHOT_DATE=2026-08-29`, additive validator (`pnpm docs:parity2:check` /
+`:format`, `scripts/lib/parity-v2-core.ts` importing V1's vocabulary so the validators
+cannot diverge), and honest row deltas (+3 OpenAI admin rows, +1 ChatGPT plugins row, 4
+P0-C conversation-axis flips, ~40 provider-fact note refreshes; no removals — retired
+features keep annotated rows). A future refresh is again a NEW version, never an edit of
+V2 history once it seals.
