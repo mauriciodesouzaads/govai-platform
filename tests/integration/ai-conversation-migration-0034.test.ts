@@ -81,6 +81,10 @@ async function hasTablePriv(table: string, priv: string): Promise<boolean> {
 describe('0034 — the worker privilege matrix is EXACT', () => {
   it('M1 — the execution write surface is column-scoped to the five-commit protocol', async () => {
     // Every column here is written by a named commit; nothing is "while we are at it".
+    // ★ The four `continuation_parent_*` columns entered this set via MIGRATION 0036 (P0-D1's
+    // continuation anchor, stamped at the boundary commit) — 0034 itself withheld them, and
+    // their justification lives in the 0036 contract suite. This suite asserts the CUMULATIVE
+    // catalog state, because `migrate()` replays every migration.
     expect(await columnPrivs('ai_conversation_attempts', 'UPDATE')).toEqual([
       'capture_id',
       'causal_version_at_build',
@@ -88,6 +92,10 @@ describe('0034 — the worker privilege matrix is EXACT', () => {
       'claim_token',
       'claimant',
       'context_excluded',
+      'continuation_parent_ciphertext',
+      'continuation_parent_dek_wrapped',
+      'continuation_parent_kms_key_id',
+      'continuation_parent_kms_key_version',
       'dispatch_boundary_committed_at',
       'error_class',
       'govai_request_id',
@@ -110,10 +118,6 @@ describe('0034 — the worker privilege matrix is EXACT', () => {
       'turn_id',
       'attempt_seq',
       'created_at',
-      'continuation_parent_ciphertext',
-      'continuation_parent_dek_wrapped',
-      'continuation_parent_kms_key_id',
-      'continuation_parent_kms_key_version',
     ]) {
       const r = await db.adminPool.query<{ ok: boolean }>(
         `SELECT has_column_privilege($1, 'govai.ai_conversation_attempts', $2, 'UPDATE') AS ok`,
@@ -123,7 +127,7 @@ describe('0034 — the worker privilege matrix is EXACT', () => {
     }
   });
 
-  it('M2 — the §11 continuation anchor stays UNREADABLE (P0-D is not pre-granted)', async () => {
+  it('M2 — the §11 continuation anchor stays UNREADABLE (0036 made it WRITE-ONLY, never readable)', async () => {
     const selectable = await columnPrivs('ai_conversation_attempts', 'SELECT');
     for (const col of [
       'continuation_parent_ciphertext',

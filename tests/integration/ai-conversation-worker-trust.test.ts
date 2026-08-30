@@ -691,7 +691,8 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
       for (const sql of [
         `SELECT id, mode, status FROM govai.ai_conversations`,
         `SELECT id, native_request_config_content_id FROM govai.ai_conversation_turns`,
-        `SELECT id, provider, surface, model, causal_version FROM govai.ai_conversation_branches`,
+        `SELECT id, provider, surface, model, causal_version, forked_from_turn_id,
+                forked_from_attempt_id, boundary_mode FROM govai.ai_conversation_branches`,
         `SELECT id, provider, status FROM govai.provider_credentials`,
         `SELECT id, tier, operational_mode FROM govai.orgs`,
       ]) {
@@ -699,11 +700,14 @@ describe('P0-A2 — detached conversation worker trust boundary', () => {
         expect({ sql, rows: r.rowCount }).toEqual({ sql, rows: 0 });
       }
       // ★ `SELECT *` is STILL denied wherever any column remains withheld — attempts (the four
-      // continuation-anchor columns), branches (the fork pins), credentials (the key
-      // fingerprint and revocation metadata) and orgs (everything but the tenant-facts pair).
+      // continuation-anchor columns — 0036 made them WRITABLE at the boundary but never
+      // readable), credentials (the key fingerprint and revocation metadata) and orgs
+      // (everything but the tenant-facts pair). Branches LEFT this list with 0036: the fork
+      // pins and boundary_mode became readable (the P0-D1 context walk needs them), which
+      // completes the column set — `SELECT *` on branches now lawfully succeeds and is covered
+      // by the zero-rows read above plus the 0036 contract suite.
       for (const t of [
         'govai.ai_conversation_attempts',
-        'govai.ai_conversation_branches',
         'govai.provider_credentials',
         'govai.orgs',
       ]) {

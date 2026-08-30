@@ -1115,6 +1115,7 @@ describe('F — claim, lease and fencing', () => {
         leaseMs: LEASE_MS,
         causalVersionAtBuild: '0', // ← built against the OLD version
         candidateRequestId: randomUUID(),
+        continuationParent: null,
       });
     });
     expect(boundary.ok).toBe(false);
@@ -1137,6 +1138,7 @@ describe('F — claim, lease and fencing', () => {
         leaseMs: LEASE_MS,
         causalVersionAtBuild: (await branchVersion(conv.branchId)),
         candidateRequestId: randomUUID(),
+        continuationParent: null,
       });
     });
     // A credential id that is NOT the org's active one for this provider must be refused —
@@ -1177,6 +1179,7 @@ describe('F — claim, lease and fencing', () => {
         leaseMs: LEASE_MS,
         causalVersionAtBuild: await branchVersion(conv.branchId),
         candidateRequestId: randomUUID(),
+        continuationParent: null,
       });
     });
     // `credentialId` is the ANTHROPIC row; the predicate names the provider, so it matches zero.
@@ -1518,6 +1521,7 @@ describe('RM — findings from the exact-head review', () => {
         leaseMs: LEASE_MS,
         causalVersionAtBuild: await branchVersion(conv.branchId),
         candidateRequestId: randomUUID(),
+        continuationParent: null,
       });
     });
 
