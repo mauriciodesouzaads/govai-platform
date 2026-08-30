@@ -862,6 +862,14 @@ describe('D-O — OpenAI Responses durable continuation', () => {
     expect(row.state).toBe('rejected');
     expect(row.error_class).toBeNull();
     expect(stack.provider.recordedRequests).toEqual([]);
+
+    // And the poisoned turn's input POISONS later context too: a clean next turn refuses
+    // rather than replaying input that was bound to external provider state with its
+    // continuation fields silently discarded. Recovery is an explicit fork from before it.
+    const t2 = await send(conv.id, conv.branchId, openaiRequest('C-u2'));
+    expect(await driveOne(t2.attemptId)).toBe('continuation_conflict');
+    expect((await attemptRow(t2.attemptId)).state).toBe('rejected');
+    expect(stack.provider.recordedRequests).toEqual([]);
   });
 
   it('D-O16 — a DIFFERENT worker process chains from the same durable anchor (§36 detachment)', async () => {

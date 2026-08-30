@@ -164,6 +164,30 @@ describe('openai adapter — strategy selection', () => {
       });
     }
   });
+
+  it('a HISTORICAL entry carrying client-owned continuation poisons the build: refusal, never a stripped replay', () => {
+    // The poisoned turn's input was composed relative to external provider state; replaying it
+    // without those fields would silently change its meaning. Recovery is an explicit fork
+    // from before it.
+    for (const field of ['previous_response_id', 'conversation']) {
+      const result = build(
+        [
+          entry({ assistant: responseAssistant(RESP_1) }),
+          entry({
+            turnId: 'turn-poisoned',
+            userNative: { model: 'gpt-test', input: 'u2', [field]: 'client-owned' },
+            assistant: null,
+          }),
+        ],
+        { model: 'gpt-test', input: 'u3' },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'continuation_conflict',
+        detail: 'history_carries_client_continuation',
+      });
+    }
+  });
 });
 
 describe('openai adapter — cross-provider ancestry (§17 / LAW NX-16)', () => {

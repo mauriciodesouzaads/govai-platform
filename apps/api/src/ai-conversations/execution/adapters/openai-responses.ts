@@ -59,12 +59,17 @@
 //      (14 days, half the documented window) and falls back to stateless replay — which needs
 //      no provider-held state at all — the honest degradation for an aged conversation.
 //
-// ★ CLIENT-OWNED CONTINUATION FIELDS ARE A CONFLICT, NOT AN INPUT. A stored config carrying
-// `previous_response_id` or `conversation` asserts continuation state the durable store cannot
-// see: honoring it would build every LATER turn's context from history GovAI never persisted,
-// and stripping it would silently rewrite a provider-native control (§30). The dispatch
-// refuses truthfully (`continuation_conflict`) — on every turn, first included, so no hidden
-// provider-side context can enter a durable conversation.
+// ★ CLIENT-OWNED CONTINUATION FIELDS ARE A CONFLICT, NOT AN INPUT — ON EVERY TURN THE BUILD
+// TOUCHES. A stored config carrying `previous_response_id` or `conversation` asserts
+// continuation state the durable store cannot see: honoring it would build every LATER turn's
+// context from history GovAI never persisted, and stripping it would silently rewrite a
+// provider-native control (§30). The dispatch refuses truthfully (`continuation_conflict`) for
+// the CURRENT turn's config AND for every HISTORICAL entry (review finding, exact head
+// 210c561): a rejected turn's user input remains context-eligible (LAW 2), but replaying an
+// input that was composed RELATIVE TO external provider state while discarding its continuation
+// fields would silently change its meaning. Recovery from such a poisoned turn is an explicit
+// `before_attempt_output` fork from before it — the architecture's regeneration boundary —
+// never a silent reinterpretation.
 
 import type {
   BuildRequestInput,
@@ -178,6 +183,16 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
           // portable projection is a later P0-D arc, and an incidental shape error would
           // misreport a known, precise condition.
           return fail('context_unreplayable', 'cross_provider_replay_not_implemented');
+        }
+        if (isObject(entry.userNative)) {
+          for (const field of ['previous_response_id', 'conversation'] as const) {
+            if (field in entry.userNative) {
+              // A historical turn whose stored input is bound to client-owned provider state:
+              // replaying it stripped would reinterpret it silently. Refuse; the lawful
+              // recovery is a regeneration fork from BEFORE the poisoned turn.
+              return fail('continuation_conflict', 'history_carries_client_continuation');
+            }
+          }
         }
       }
       // ── Anchor scan: the LAST eligible completed output, walked from the end ────────────
