@@ -297,11 +297,18 @@ function assistantMessageFromStream(sseText: string): {
         }
         const acc = partialJson.get(index);
         if (acc !== undefined) {
+          let parsedInput: unknown;
           try {
-            block['input'] = acc === '' ? {} : JSON.parse(acc);
+            parsedInput = acc === '' ? {} : JSON.parse(acc);
           } catch {
             throw new UnreplayableStream('tool_input_json_invalid');
           }
+          // The accumulated value must satisfy the SAME object check as the block-start
+          // `input` (review finding, exact head 9fe03ad): valid-but-non-object JSON ("[]",
+          // "null", a primitive) would overwrite the validated object with a shape the
+          // provider rejects on replay.
+          if (!isObject(parsedInput)) throw new UnreplayableStream('tool_input_json_invalid');
+          block['input'] = parsedInput;
           partialJson.delete(index);
         }
         openBlocks.delete(index);

@@ -697,6 +697,32 @@ describe('anthropic adapter — durable stream reassembly', () => {
     }
   });
 
+  it('accumulated tool input that parses to a NON-OBJECT refuses', () => {
+    for (const fragment of ['[]', 'null', '42', '"str"']) {
+      const result = build(
+        [
+          entry({
+            assistant: streamAssistant(
+              sse([
+                { type: 'message_start', message: { role: 'assistant' } },
+                { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 't', name: 'f', input: {} } },
+                { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: fragment } },
+                { type: 'content_block_stop', index: 0 },
+                { type: 'message_stop' },
+              ]),
+            ),
+          }),
+        ],
+        { model: MODEL, messages: [user('u2')] },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'tool_input_json_invalid',
+      });
+    }
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],
