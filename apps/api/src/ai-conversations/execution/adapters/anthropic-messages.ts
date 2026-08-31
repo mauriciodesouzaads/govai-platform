@@ -182,6 +182,23 @@ function assistantMessageFromStream(sseText: string): {
         if (blocks.has(index)) throw new UnreplayableStream('block_index_reused');
         if (index !== nextBlockIndex) throw new UnreplayableStream('block_index_not_contiguous');
         nextBlockIndex += 1;
+        // KNOWN block types validate their required start fields (review finding, exact head
+        // fafbff6): a text block whose `text` is not a string would silently drop the start
+        // value on the first delta append, and a tool_use missing id/name/input would replay a
+        // shape the provider rejects. Unknown block types still pass through verbatim — the
+        // forward-compatible §31 posture — and are protected by the delta-compat map.
+        {
+          const blockType = block['type'];
+          const startInvalid =
+            (blockType === 'text' && typeof block['text'] !== 'string') ||
+            (blockType === 'thinking' && typeof block['thinking'] !== 'string') ||
+            (blockType === 'redacted_thinking' && typeof block['data'] !== 'string') ||
+            ((blockType === 'tool_use' || blockType === 'server_tool_use' || blockType === 'mcp_tool_use') &&
+              (typeof block['id'] !== 'string' ||
+                typeof block['name'] !== 'string' ||
+                !isObject(block['input'])));
+          if (startInvalid) throw new UnreplayableStream('block_start_payload_invalid');
+        }
         blocks.set(index, { ...block });
         order.push(index);
         openBlocks.add(index);

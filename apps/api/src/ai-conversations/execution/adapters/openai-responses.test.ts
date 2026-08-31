@@ -381,6 +381,34 @@ describe('openai adapter — strategy selection', () => {
     expect((localOnly as unknown as { body: Record<string, unknown> }).body['previous_response_id']).toBe('resp_1');
   });
 
+  it('a PAYLOAD-level provider failure after the anchor demotes too (durably-completed response.failed)', () => {
+    // A 2xx capture ending in response.failed is durably COMPLETED, so the state-derived flag
+    // cannot see it — but the scan walks past it, and it must demote exactly like a durable
+    // failure: re-chaining the older anchor could repeat a payload-reported deletion forever.
+    const failedStream =
+      `data: ${JSON.stringify({ type: 'response.failed', response: { id: 'resp_pf', status: 'failed' } })}\n\n`;
+    const result = build(
+      [
+        entry({ assistant: responseAssistant(RESP_1) }),
+        entry({
+          turnId: 'turn-payload-failed',
+          userNative: { model: 'gpt-test', input: 'u2-pf' },
+          assistant: { attemptId: 'att-pf', providerCredentialId: CRED, completedAtMs: FRESH_MS, output: { kind: 'stream', sseText: failedStream } },
+        }),
+      ],
+      { model: 'gpt-test', input: 'u3' },
+    );
+    expect(result.ok).toBe(true);
+    const body = (result as unknown as { body: Record<string, unknown> }).body;
+    expect('previous_response_id' in body).toBe(false);
+    expect(body['input']).toEqual([
+      { role: 'user', content: 'u1' },
+      ...RESP_1.output,
+      { role: 'user', content: 'u2-pf' },
+      { role: 'user', content: 'u3' },
+    ]);
+  });
+
   it('a HISTORICAL entry carrying client-owned continuation poisons the build: refusal, never a stripped replay', () => {
     // The poisoned turn's input was composed relative to external provider state; replaying it
     // without those fields would silently change its meaning. Recovery is an explicit fork

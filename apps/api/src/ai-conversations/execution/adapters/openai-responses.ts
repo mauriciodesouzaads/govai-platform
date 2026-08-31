@@ -273,11 +273,19 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
       //    walked from the end (a provider-declared failure contributes no output at all) ────
       let anchorIndex = -1;
       let anchorTerminal: JsonObject | null = null;
+      // PAYLOAD-level provider failures after the anchor (review finding, exact head fafbff6):
+      // a 2xx capture ending in `response.failed` is durably COMPLETED, so the durable
+      // state-derived flag alone cannot see it — but a failure the scan walks past sits AFTER
+      // the eventual anchor by construction, and it must demote exactly like a durable one.
+      let payloadFailureAfterAnchor = false;
       for (let i = input.entries.length - 1; i >= 0; i -= 1) {
         const candidate = input.entries[i]!;
         if (candidate.assistant === null) continue;
         const resolution = terminalResponseOf(candidate);
-        if (resolution.kind === 'provider_failed') continue; // input-only turn — keep walking
+        if (resolution.kind === 'provider_failed') {
+          payloadFailureAfterAnchor = true; // input-only turn — keep walking
+          continue;
+        }
         anchorIndex = i;
         anchorTerminal = resolution.body;
         break;
@@ -294,9 +302,9 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
         // FAILURE on any turn AFTER the anchor therefore demotes this build to stateless
         // replay — which does not need the anchor at all, succeeds, and its own response
         // becomes the NEXT anchor: the branch self-heals without probing or anchor state.
-        const providerFailedAfterAnchor = input.entries
-          .slice(anchorIndex + 1)
-          .some((e) => e.selectedAttemptProviderFailed);
+        const providerFailedAfterAnchor =
+          payloadFailureAfterAnchor ||
+          input.entries.slice(anchorIndex + 1).some((e) => e.selectedAttemptProviderFailed);
         const chainable =
           anchorId !== null &&
           !providerFailedAfterAnchor &&

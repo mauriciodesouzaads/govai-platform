@@ -663,6 +663,40 @@ describe('anthropic adapter — durable stream reassembly', () => {
     }
   });
 
+  it('a KNOWN block start with malformed required fields refuses', () => {
+    const cases: Array<Record<string, unknown>> = [
+      { type: 'text', text: 42 },
+      { type: 'text' },
+      { type: 'thinking' },
+      { type: 'tool_use', name: 'f', input: {} }, // missing id
+      { type: 'tool_use', id: 't', input: {} }, // missing name
+      { type: 'tool_use', id: 't', name: 'f' }, // missing input
+      { type: 'redacted_thinking' }, // missing data
+    ];
+    for (const block of cases) {
+      const result = build(
+        [
+          entry({
+            assistant: streamAssistant(
+              sse([
+                { type: 'message_start', message: { role: 'assistant' } },
+                { type: 'content_block_start', index: 0, content_block: block },
+                { type: 'content_block_stop', index: 0 },
+                { type: 'message_stop' },
+              ]),
+            ),
+          }),
+        ],
+        { model: MODEL, messages: [user('u2')] },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'block_start_payload_invalid',
+      });
+    }
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],
