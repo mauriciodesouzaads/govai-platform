@@ -274,10 +274,16 @@ async function readContextAggregate(
   tx: PoolClient,
   owner: ConversationWorkerOwner,
   conversationId: string,
+  branchIds: readonly string[],
   turnIds: readonly string[],
   selectedAttemptIds: readonly string[],
 ): Promise<{ itemCount: number; ciphertextBytes: number }> {
   if (turnIds.length === 0) return { itemCount: 0, ciphertextBytes: 0 };
+  // ★ (branch_id, turn_id) TUPLE lookup (review finding, exact head 7cc5c5b): the item
+  // indexes are ordered (org, owner, conversation, BRANCH, TURN, …), so a turn-only predicate
+  // cannot bound the index range and a conversation with many unrelated branches would make
+  // every dispatch re-scan them. The parallel-unnest pair set keeps each lookup
+  // index-bounded; no new DDL is required.
   const r = await tx.query<{ item_count: string; ciphertext_bytes: string }>(
     `SELECT count(*)::text AS item_count,
             COALESCE(sum(octet_length(c.ciphertext)), 0)::text AS ciphertext_bytes
@@ -289,12 +295,13 @@ async function readContextAggregate(
          AND c.id              = i.content_id
       WHERE i.org_id = $1::uuid AND i.owner_user_id = $2::uuid
         AND i.conversation_id = $3::uuid
-        AND i.turn_id = ANY($4::uuid[])
-        AND (i.attempt_id IS NULL OR i.attempt_id = ANY($5::uuid[]))`,
+        AND (i.branch_id, i.turn_id) IN (SELECT * FROM unnest($4::uuid[], $5::uuid[]))
+        AND (i.attempt_id IS NULL OR i.attempt_id = ANY($6::uuid[]))`,
     [
       owner.orgId,
       owner.ownerUserId,
       conversationId,
+      branchIds as string[],
       turnIds as string[],
       selectedAttemptIds as string[],
     ],
@@ -309,6 +316,7 @@ async function readItemsWithContent(
   tx: PoolClient,
   owner: ConversationWorkerOwner,
   conversationId: string,
+  branchIds: readonly string[],
   turnIds: readonly string[],
   selectedAttemptIds: readonly string[],
 ): Promise<ItemRow[]> {
@@ -325,13 +333,14 @@ async function readItemsWithContent(
          AND c.id              = i.content_id
       WHERE i.org_id = $1::uuid AND i.owner_user_id = $2::uuid
         AND i.conversation_id = $3::uuid
-        AND i.turn_id = ANY($4::uuid[])
-        AND (i.attempt_id IS NULL OR i.attempt_id = ANY($5::uuid[]))
+        AND (i.branch_id, i.turn_id) IN (SELECT * FROM unnest($4::uuid[], $5::uuid[]))
+        AND (i.attempt_id IS NULL OR i.attempt_id = ANY($6::uuid[]))
       ORDER BY i.turn_id, i.attempt_id NULLS FIRST, i.item_seq ASC`,
     [
       owner.orgId,
       owner.ownerUserId,
       conversationId,
+      branchIds as string[],
       turnIds as string[],
       selectedAttemptIds as string[],
     ],
@@ -342,6 +351,7 @@ async function readItemsWithContent(
 /** One context turn as selected by the walk, before item resolution. */
 type SelectedTurn = {
   turn: TurnRow;
+  branchId: string;
   branchProvider: string;
   branchModel: string;
   /** The attempt whose output MAY contribute (the turn's current attempt, or the fork pin). */
@@ -438,6 +448,7 @@ export async function loadDurableContextPlan(
     for (const turn of turns) {
       selected.push({
         turn,
+        branchId: frame.branch.id,
         branchProvider: frame.branch.provider,
         branchModel: frame.branch.model,
         selectedAttemptId: turn.current_attempt_id,
@@ -447,6 +458,7 @@ export async function loadDurableContextPlan(
     if (frame.pin) {
       selected.push({
         turn: frame.pin.turn,
+        branchId: frame.branch.id,
         branchProvider: frame.branch.provider,
         branchModel: frame.branch.model,
         selectedAttemptId: frame.pin.attemptId,
@@ -490,6 +502,7 @@ export async function loadDurableContextPlan(
     tx,
     owner,
     input.conversationId,
+    selected.map((s) => s.branchId),
     selected.map((s) => s.turn.id),
     eligibleAttemptIds,
   );
@@ -504,6 +517,7 @@ export async function loadDurableContextPlan(
     tx,
     owner,
     input.conversationId,
+    selected.map((s) => s.branchId),
     selected.map((s) => s.turn.id),
     eligibleAttemptIds,
   );
