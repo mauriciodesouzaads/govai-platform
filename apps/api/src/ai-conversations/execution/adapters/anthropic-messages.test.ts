@@ -17,6 +17,7 @@ function entry(overrides: Partial<AssembledContextEntry>): AssembledContextEntry
     turnId: 'turn-1',
     sourceProvider: 'anthropic',
     sourceModel: MODEL,
+    selectedAttemptProviderFailed: false,
     userNative: { model: MODEL, max_tokens: 64, messages: [user('u1')] },
     assistant: null,
     ...overrides,
@@ -640,6 +641,26 @@ describe('anthropic adapter — durable stream reassembly', () => {
       { model: MODEL, messages: [user('u2')] },
     );
     expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'thinking_block_unsigned' });
+  });
+
+  it('NON-CONTIGUOUS block indexes refuse: positions must arrive as 0,1,2,…', () => {
+    for (const startIndexes of [[1], [0, 2], [1, 0]]) {
+      const events: unknown[] = [{ type: 'message_start', message: { role: 'assistant' } }];
+      for (const i of startIndexes) {
+        events.push({ type: 'content_block_start', index: i, content_block: { type: 'text', text: 'x' } });
+        events.push({ type: 'content_block_stop', index: i });
+      }
+      events.push({ type: 'message_stop' });
+      const result = build(
+        [entry({ assistant: streamAssistant(sse(events)) })],
+        { model: MODEL, messages: [user('u2')] },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'block_index_not_contiguous',
+      });
+    }
   });
 
   it('an UNKNOWN event type refuses too', () => {

@@ -14,6 +14,7 @@ function entry(overrides: Partial<AssembledContextEntry>): AssembledContextEntry
     turnId: 'turn-1',
     sourceProvider: 'openai',
     sourceModel: 'gpt-test',
+    selectedAttemptProviderFailed: false,
     userNative: { model: 'gpt-test', input: 'u1' },
     assistant: null,
     ...overrides,
@@ -336,6 +337,48 @@ describe('openai adapter — strategy selection', () => {
         detail: 'terminal_status_mismatch',
       });
     }
+  });
+
+  it('a PROVIDER failure after the anchor demotes to stateless replay: the deleted-anchor loop self-heals', () => {
+    // Turn 2 chained from R1 and FAILED provider-side (e.g. the stored parent was deleted).
+    // Re-selecting R1 would fail forever; the demotion replays statelessly instead, whose own
+    // response becomes the next anchor.
+    const result = build(
+      [
+        entry({ assistant: responseAssistant(RESP_1) }),
+        entry({
+          turnId: 'turn-failed',
+          userNative: { model: 'gpt-test', input: 'u2-failed' },
+          assistant: null,
+          selectedAttemptProviderFailed: true,
+        }),
+      ],
+      { model: 'gpt-test', input: 'u3' },
+    );
+    expect(result.ok).toBe(true);
+    const body = (result as unknown as { body: Record<string, unknown> }).body;
+    expect('previous_response_id' in body).toBe(false);
+    expect(body['input']).toEqual([
+      { role: 'user', content: 'u1' },
+      ...RESP_1.output,
+      { role: 'user', content: 'u2-failed' },
+      { role: 'user', content: 'u3' },
+    ]);
+    // A LOCAL failure (provider never involved) does NOT demote — the anchor is not implicated.
+    const localOnly = build(
+      [
+        entry({ assistant: responseAssistant(RESP_1) }),
+        entry({
+          turnId: 'turn-local',
+          userNative: { model: 'gpt-test', input: 'u2-local' },
+          assistant: null,
+          selectedAttemptProviderFailed: false,
+        }),
+      ],
+      { model: 'gpt-test', input: 'u3' },
+    );
+    expect(localOnly.ok).toBe(true);
+    expect((localOnly as unknown as { body: Record<string, unknown> }).body['previous_response_id']).toBe('resp_1');
   });
 
   it('a HISTORICAL entry carrying client-owned continuation poisons the build: refusal, never a stripped replay', () => {

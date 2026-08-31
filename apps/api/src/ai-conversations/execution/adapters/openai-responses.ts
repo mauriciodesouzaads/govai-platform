@@ -287,8 +287,19 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
         const anchorEntry = input.entries[anchorIndex]!;
         const terminal = anchorTerminal;
         const anchorId = responseIdOf(terminal);
+        // Condition 6 — FAILURE-AWARE DEMOTION (review finding, exact head 65150e9): a stored
+        // response can be DELETED through the provider's supported deletion API while every
+        // static condition still holds; the chained POST then fails, and a purely static
+        // anchor selection would re-select the same dead parent forever. A provider-observed
+        // FAILURE on any turn AFTER the anchor therefore demotes this build to stateless
+        // replay — which does not need the anchor at all, succeeds, and its own response
+        // becomes the NEXT anchor: the branch self-heals without probing or anchor state.
+        const providerFailedAfterAnchor = input.entries
+          .slice(anchorIndex + 1)
+          .some((e) => e.selectedAttemptProviderFailed);
         const chainable =
           anchorId !== null &&
+          !providerFailedAfterAnchor &&
           isChainableTerminal(terminal) &&
           anchorEntry.assistant!.providerCredentialId === input.activeCredentialId &&
           configStoreAllowsChaining(anchorEntry.userNative) &&

@@ -136,6 +136,10 @@ function assistantMessageFromStream(sseText: string): {
   const signedBlocks = new Set<number>();
   let sawMessageStart = false;
   let sawMessageStop = false;
+  /** Indexes name POSITIONS in the final content array, so starts must arrive contiguously
+   *  from 0 (review finding, exact head 65150e9): a gap means an unknown block was lost, and
+   *  out-of-order starts would reorder assistant content. */
+  let nextBlockIndex = 0;
 
   for (const raw of events) {
     if (!isObject(raw) || typeof raw['type'] !== 'string') {
@@ -176,6 +180,8 @@ function assistantMessageFromStream(sseText: string): {
         // capture) would overwrite the first block and double-replay the replacement (review
         // finding, exact head 7f8dc89). Refuse rather than corrupt.
         if (blocks.has(index)) throw new UnreplayableStream('block_index_reused');
+        if (index !== nextBlockIndex) throw new UnreplayableStream('block_index_not_contiguous');
+        nextBlockIndex += 1;
         blocks.set(index, { ...block });
         order.push(index);
         openBlocks.add(index);

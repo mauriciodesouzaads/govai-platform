@@ -120,6 +120,11 @@ export type ContextPlanEntry = {
   /** The model recorded on the branch this turn EXECUTED under — the Anthropic model-switch
    *  rule needs the SOURCE model of every replayed assistant message. */
   sourceModel: string;
+  /** True when the turn's selected attempt FAILED with a provider-observed error (a class the
+   *  provider itself produced — never local_error/credential_unavailable, which prove no
+   *  provider interaction/verdict). The OpenAI adapter uses this as the deleted-anchor healing
+   *  signal: a provider failure AFTER the anchor demotes the next build to stateless replay. */
+  selectedAttemptProviderFailed: boolean;
   /** The turn's single TURN-OWNED input item (LAW 2). */
   userContent: EncryptedContentRef;
   /** The eligible completed output, or null when this turn contributes no output. */
@@ -177,6 +182,7 @@ type AttemptRow = {
   context_excluded: boolean;
   provider_credential_id: string | null;
   terminal_at: Date | null;
+  error_class: string | null;
 };
 
 type ItemRow = {
@@ -259,7 +265,7 @@ async function readAttemptsByIds(
   if (attemptIds.length === 0) return new Map();
   const r = await tx.query<AttemptRow>(
     `SELECT id, turn_id, state, context_excluded, provider_credential_id::text AS provider_credential_id,
-            terminal_at
+            terminal_at, error_class
        FROM govai.ai_conversation_attempts
       WHERE org_id = $1::uuid AND owner_user_id = $2::uuid
         AND conversation_id = $3::uuid AND id = ANY($4::uuid[])`,
@@ -481,6 +487,7 @@ export async function loadDurableContextPlan(
 
   const eligibleAttemptIds: string[] = [];
   const eligibility = new Map<string, AttemptRow>();
+  const attemptByTurn = new Map<string, AttemptRow>();
   for (const s of selected) {
     if (s.selectedAttemptId === null) {
       // A reserved turn is never attempt-less (§7.1b, deferred-FK enforced). Unproven is
@@ -491,6 +498,7 @@ export async function loadDurableContextPlan(
     if (!attempt || attempt.turn_id !== s.turn.id) {
       throw new DurableContextUnbuildableError('selected_attempt_unreadable');
     }
+    attemptByTurn.set(s.turn.id, attempt);
     const excluded = s.pinExempt ? false : attempt.context_excluded;
     if (attempt.state === 'completed' && !excluded) {
       eligibleAttemptIds.push(attempt.id);
@@ -535,6 +543,7 @@ export async function loadDurableContextPlan(
     const userContent = toRef(turnOwned[0]!);
 
     let output: ContextPlanEntry['output'] = null;
+    const attemptRowOf = attemptByTurn.get(s.turn.id);
     const attempt =
       s.selectedAttemptId !== null ? eligibility.get(s.selectedAttemptId) : undefined;
     if (attempt) {
@@ -573,10 +582,17 @@ export async function loadDurableContextPlan(
         throw new DurableContextUnbuildableError('output_item_shape_unsupported');
       }
     }
+    const providerFailed =
+      attemptRowOf !== undefined &&
+      attemptRowOf.state === 'failed' &&
+      attemptRowOf.error_class !== null &&
+      attemptRowOf.error_class !== 'local_error' &&
+      attemptRowOf.error_class !== 'credential_unavailable';
     entries.push({
       turnId: s.turn.id,
       sourceProvider: s.branchProvider,
       sourceModel: s.branchModel,
+      selectedAttemptProviderFailed: providerFailed,
       userContent,
       output,
     });
@@ -603,6 +619,8 @@ export type AssembledContextEntry = {
   turnId: string;
   sourceProvider: string;
   sourceModel: string;
+  /** See ContextPlanEntry.selectedAttemptProviderFailed. */
+  selectedAttemptProviderFailed: boolean;
   /** The turn's immutable provider-native request, parsed. */
   userNative: unknown;
   assistant: {
@@ -766,6 +784,7 @@ export async function assembleDurableContext(
       turnId: entry.turnId,
       sourceProvider: entry.sourceProvider,
       sourceModel: entry.sourceModel,
+      selectedAttemptProviderFailed: entry.selectedAttemptProviderFailed,
       userNative,
       assistant,
     };

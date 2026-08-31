@@ -877,6 +877,48 @@ describe('D-O — OpenAI Responses durable continuation', () => {
     expect(stack.provider.recordedRequests).toEqual([]);
   });
 
+  it('D-O18 — a DELETED anchor self-heals at the wire: fail once, replay statelessly, re-anchor', async () => {
+    const conv = await createConversation({ provider: 'openai' });
+    const t1 = await send(conv.id, conv.branchId, openaiRequest('DA-u1'));
+    expect(await driveOne(t1.attemptId)).toBe('completed');
+    const r1 = stack.provider.recordedRequests[0]!.provider_request_id!;
+
+    // Turn 2 chains from R1, but the provider says the parent no longer exists (deleted via
+    // the supported response-storage API): a definite provider failure.
+    const t2 = await send(conv.id, conv.branchId, openaiRequest('DA-u2'));
+    await withProviderBehaviour(
+      (req, res) => {
+        req.on('data', () => undefined);
+        req.on('end', () => {
+          res.writeHead(400, { 'content-type': 'application/json', 'x-request-id': randomUUID() });
+          res.end(JSON.stringify({ error: { message: 'Previous response not found', type: 'invalid_request_error' } }));
+        });
+      },
+      async () => {
+        expect(await driveOne(t2.attemptId)).toBe('failed');
+      },
+    );
+
+    // Turn 3 DEMOTES to stateless replay (no dead anchor re-selected), succeeds…
+    const t3 = await send(conv.id, conv.branchId, openaiRequest('DA-u3'));
+    expect(await driveOne(t3.attemptId)).toBe('completed');
+    const body3 = postedBodies().at(-1)!;
+    expect('previous_response_id' in body3).toBe(false);
+    expect(JSON.stringify(body3)).not.toContain(r1);
+    expect(body3['input']).toEqual([
+      { role: 'user', content: 'DA-u1' },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'echo: DA-u1' }] },
+      { role: 'user', content: 'DA-u2' },
+      { role: 'user', content: 'DA-u3' },
+    ]);
+    const r3 = stack.provider.recordedRequests.at(-1)!.provider_request_id!;
+
+    // …and its own response becomes the NEXT anchor: chaining resumes.
+    const t4 = await send(conv.id, conv.branchId, openaiRequest('DA-u4'));
+    expect(await driveOne(t4.attemptId)).toBe('completed');
+    expect(postedBodies().at(-1)!['previous_response_id']).toBe(r3);
+  });
+
   it('D-O16 — a DIFFERENT worker process chains from the same durable anchor (§36 detachment)', async () => {
     const conv = await createConversation({ provider: 'openai' });
     const t1 = await send(conv.id, conv.branchId, openaiRequest('O16-u1'));
