@@ -747,6 +747,27 @@ describe('anthropic adapter — durable stream reassembly', () => {
     }
   });
 
+  it('a success sequence AFTER an error verdict refuses: conflicted captures never pick a side', () => {
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } },
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ghost' } },
+              { type: 'content_block_stop', index: 0 },
+              { type: 'message_stop' },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'frame_after_error' });
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],

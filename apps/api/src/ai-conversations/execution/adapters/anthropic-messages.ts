@@ -136,6 +136,11 @@ function assistantMessageFromStream(sseText: string): {
   const signedBlocks = new Set<number>();
   let sawMessageStart = false;
   let sawMessageStop = false;
+  /** The provider's failure verdict, RECORDED rather than thrown (review finding, exact head
+   *  7c8e21e): throwing at the `error` frame would stop inspection, letting a conflicting
+   *  success sequence AFTER it silently degrade to input-only — a conflicted capture must
+   *  REFUSE, exactly like the OpenAI conflicting-verdict rule. */
+  let sawError = false;
   /** Indexes name POSITIONS in the final content array, so starts must arrive contiguously
    *  from 0 (review finding, exact head 65150e9): a gap means an unknown block was lost, and
    *  out-of-order starts would reorder assistant content. */
@@ -150,6 +155,9 @@ function assistantMessageFromStream(sseText: string): {
     // duplicated or out-of-order capture, and processing it would replay post-terminal content
     // that the terminal validation could no longer catch.
     if (sawMessageStop) throw new UnreplayableStream('frame_after_message_stop');
+    // The `error` verdict is terminal too: a success-shaped continuation after it is a
+    // CONFLICTED capture and refuses — never a silent choice between the two verdicts.
+    if (sawError) throw new UnreplayableStream('frame_after_error');
     switch (type) {
       case 'message_start': {
         // Exactly ONE message_start, and it must open the stream's message (review finding,
@@ -321,12 +329,18 @@ function assistantMessageFromStream(sseText: string): {
       case 'ping':
         break;
       case 'error':
-        // The provider's own failure verdict: this stream carries no answer to replay.
-        throw new ProviderFailedStream();
+        // The provider's own failure verdict — recorded; the end-of-stream resolution below
+        // projects input-only, and any FOLLOWING frame refuses as a conflicted capture.
+        sawError = true;
+        break;
       default:
         throw new UnreplayableStream('event_type_unknown');
     }
   }
+  // A pure failure verdict (nothing followed it): the turn projects as input-only. The
+  // truncation/content checks deliberately do not apply to a stream the provider itself
+  // declared failed.
+  if (sawError) throw new ProviderFailedStream();
   if (order.length === 0) throw new UnreplayableStream('stream_has_no_content_blocks');
   if (openBlocks.size > 0 || !sawMessageStop) throw new UnreplayableStream('stream_truncated');
   return { role, content: order.map((i) => blocks.get(i)!), model };
