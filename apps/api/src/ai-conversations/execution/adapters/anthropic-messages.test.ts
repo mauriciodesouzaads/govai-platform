@@ -558,6 +558,28 @@ describe('anthropic adapter — durable stream reassembly', () => {
     }
   });
 
+  it('a thinking delta AFTER the signature refuses: the signature signs final content', () => {
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'signed' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'SIG==' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: ' tampered' } },
+              { type: 'content_block_stop', index: 0 },
+              { type: 'message_stop' },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'delta_after_signature' });
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],

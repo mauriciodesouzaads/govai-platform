@@ -315,6 +315,29 @@ describe('openai adapter — strategy selection', () => {
     });
   });
 
+  it('a streamed terminal whose nested status CONTRADICTS the event type refuses', () => {
+    for (const [eventType, badStatus] of [
+      ['response.completed', 'in_progress'],
+      ['response.completed', 'incomplete'],
+      ['response.incomplete', 'completed'],
+    ] as const) {
+      const sse = `data: ${JSON.stringify({ type: eventType, response: { id: 'resp_m', status: badStatus, output: [] } })}\n\n`;
+      const result = build(
+        [
+          entry({
+            assistant: { attemptId: 'att-m', providerCredentialId: CRED, completedAtMs: FRESH_MS, output: { kind: 'stream', sseText: sse } },
+          }),
+        ],
+        { model: 'gpt-test', input: 'u2' },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'terminal_status_mismatch',
+      });
+    }
+  });
+
   it('a HISTORICAL entry carrying client-owned continuation poisons the build: refusal, never a stripped replay', () => {
     // The poisoned turn's input was composed relative to external provider state; replaying it
     // without those fields would silently change its meaning. Recovery is an explicit fork

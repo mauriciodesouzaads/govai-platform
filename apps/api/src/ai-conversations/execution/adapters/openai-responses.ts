@@ -166,7 +166,17 @@ function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
       // different bodies) is an ambiguous capture — silently keeping either body would replay
       // or chain content the grammar cannot vouch for (review finding, exact head 6d526c2).
       if (terminal !== null) throw new Unreplayable('duplicate_terminal_verdicts');
-      terminal = parsed['response'] as JsonObject;
+      const nested = parsed['response'] as JsonObject;
+      // The nested body's own status must AGREE with the event type when present (review
+      // finding, exact head cf65d0c): a `response.completed` carrying `in_progress` (or an
+      // `incomplete` carrying `completed`) is a contradictory capture — refusing here applies
+      // the same terminality validation the non-streaming path performs.
+      const nestedStatus = nested['status'];
+      const expected = parsed['type'] === 'response.completed' ? 'completed' : 'incomplete';
+      if (typeof nestedStatus === 'string' && nestedStatus !== expected) {
+        throw new Unreplayable('terminal_status_mismatch');
+      }
+      terminal = nested;
     }
   }
   // CONFLICTING verdicts (review finding, exact head 4a95cb2): a stream carrying BOTH a

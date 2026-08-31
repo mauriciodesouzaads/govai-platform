@@ -130,6 +130,10 @@ function assistantMessageFromStream(sseText: string): {
   // the terminal `message_stop` must have been observed, else the replay refuses (§31) — the
   // same posture as the OpenAI adapter's `response.completed` requirement.
   const openBlocks = new Set<number>();
+  /** Blocks whose signature_delta was seen: the signature SIGNS the accumulated thinking, so
+   *  it must be the FINAL delta of its block — any later delta would mutate signed content
+   *  (review finding, exact head cf65d0c). */
+  const signedBlocks = new Set<number>();
   let sawMessageStop = false;
 
   for (const raw of events) {
@@ -175,6 +179,7 @@ function assistantMessageFromStream(sseText: string): {
         // retained content while still passing the terminal checks (review finding, exact head
         // ca5bfe2): deltas require the block to be OPEN.
         if (!openBlocks.has(index)) throw new UnreplayableStream('delta_after_stop');
+        if (signedBlocks.has(index)) throw new UnreplayableStream('delta_after_signature');
         // Deltas must MATCH their block's type (review finding, exact head 4a95cb2): an
         // `input_json_delta` mutating a `text` block (or a `text_delta` mutating `tool_use`)
         // fabricates content the event grammar never expressed. Scoped to KNOWN delta types —
@@ -218,6 +223,7 @@ function assistantMessageFromStream(sseText: string): {
             const signature = delta['signature'];
             if (typeof signature !== 'string') throw new UnreplayableStream('delta_payload_invalid');
             block['signature'] = signature;
+            signedBlocks.add(index);
             break;
           }
           case 'input_json_delta': {
