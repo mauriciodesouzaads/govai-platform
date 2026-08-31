@@ -362,6 +362,11 @@ function assistantMessageFromEntry(
     if (!isObject(body) || !Array.isArray(body['content'])) {
       throw new UnreplayableStream('response_body_shape_unknown');
     }
+    // Same assistant-role validation as the stream path (review finding, exact head 50d55d6):
+    // a corrupted body carrying another role would replay provider output as an instruction.
+    if (typeof body['role'] === 'string' && body['role'] !== 'assistant') {
+      throw new UnreplayableStream('message_role_not_assistant');
+    }
     role = typeof body['role'] === 'string' ? body['role'] : 'assistant';
     content = body['content'] as unknown[];
     producedBy = nativeModelOf(body);

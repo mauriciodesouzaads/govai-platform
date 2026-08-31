@@ -130,6 +130,30 @@ describe('anthropic adapter — history assembly', () => {
     });
   });
 
+  it('a stored response body with a NON-ASSISTANT role refuses, matching the stream rule', () => {
+    const result = build(
+      [
+        entry({
+          assistant: {
+            attemptId: 'att-r',
+            providerCredentialId: CRED,
+            completedAtMs: 1_800_000_000_000,
+            output: {
+              kind: 'response',
+              body: { id: 'msg_r', type: 'message', role: 'user', content: [{ type: 'text', text: 'A1' }] },
+            },
+          },
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'message_role_not_assistant',
+    });
+  });
+
   it('fails CLOSED when a history input is not message-shaped', () => {
     const result = build([entry({ userNative: { model: MODEL, prompt: 'not-messages' } })], {
       model: MODEL,
