@@ -137,6 +137,10 @@ function assistantMessageFromStream(sseText: string): {
       throw new UnreplayableStream('sse_event_shape_unknown');
     }
     const type = raw['type'];
+    // `message_stop` is TERMINAL (review finding, exact head 4a95cb2): any frame after it is a
+    // duplicated or out-of-order capture, and processing it would replay post-terminal content
+    // that the terminal validation could no longer catch.
+    if (sawMessageStop) throw new UnreplayableStream('frame_after_message_stop');
     switch (type) {
       case 'message_start': {
         const message = raw['message'];
@@ -171,6 +175,25 @@ function assistantMessageFromStream(sseText: string): {
         // retained content while still passing the terminal checks (review finding, exact head
         // ca5bfe2): deltas require the block to be OPEN.
         if (!openBlocks.has(index)) throw new UnreplayableStream('delta_after_stop');
+        // Deltas must MATCH their block's type (review finding, exact head 4a95cb2): an
+        // `input_json_delta` mutating a `text` block (or a `text_delta` mutating `tool_use`)
+        // fabricates content the event grammar never expressed. Scoped to KNOWN delta types —
+        // an unknown type still gets the more precise `delta_type_unknown` from the switch.
+        {
+          const blockType = block['type'];
+          const deltaType = delta['type'];
+          const expectation: Record<string, readonly string[]> = {
+            text_delta: ['text'],
+            citations_delta: ['text'],
+            thinking_delta: ['thinking'],
+            signature_delta: ['thinking'],
+            input_json_delta: ['tool_use', 'server_tool_use', 'mcp_tool_use'],
+          };
+          const allowed = expectation[deltaType];
+          if (allowed && (typeof blockType !== 'string' || !allowed.includes(blockType))) {
+            throw new UnreplayableStream('delta_block_type_mismatch');
+          }
+        }
         // ★ KNOWN DELTA TYPES VALIDATE THEIR PAYLOAD FIELD STRICTLY (review finding, exact
         // head c8cc5bb): coercing a missing/mistyped payload (`String(x ?? '')`) would
         // silently ALTER content — e.g. an `input_json_delta` without `partial_json`

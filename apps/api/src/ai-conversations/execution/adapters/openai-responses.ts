@@ -165,7 +165,12 @@ function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
       terminal = parsed['response'] as JsonObject;
     }
   }
-  if (failed && terminal === null) return { kind: 'provider_failed' };
+  // CONFLICTING verdicts (review finding, exact head 4a95cb2): a stream carrying BOTH a
+  // failure verdict and a success-shaped terminal (duplicated / out-of-order frames) is a
+  // capture whose truth cannot be decided — preferring the success body would replay or chain
+  // content the provider also declared failed. Refuse.
+  if (failed && terminal !== null) throw new Unreplayable('conflicting_terminal_verdicts');
+  if (failed) return { kind: 'provider_failed' };
   if (!terminal) throw new Unreplayable('stream_has_no_terminal_response');
   return { kind: 'terminal', body: terminal };
 }

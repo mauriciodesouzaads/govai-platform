@@ -417,24 +417,26 @@ describe('anthropic adapter — durable stream reassembly', () => {
   });
 
   it('a KNOWN delta type with a MISSING or mistyped payload refuses: coercion would fabricate content', () => {
-    const cases: Array<Record<string, unknown>> = [
-      { type: 'text_delta' }, // no text
-      { type: 'text_delta', text: 42 },
-      { type: 'thinking_delta' }, // no thinking
-      { type: 'signature_delta' }, // no signature
-      { type: 'input_json_delta' }, // no partial_json — would fabricate {} tool arguments
-      { type: 'input_json_delta', partial_json: null },
-      { type: 'citations_delta' }, // no citation object
+    // Each malformed delta is paired with a block of its COMPATIBLE type, so the refusal
+    // exercised is the payload validation itself (type mismatches have their own proof).
+    const cases: Array<{ block: Record<string, unknown>; delta: Record<string, unknown> }> = [
+      { block: { type: 'text', text: '' }, delta: { type: 'text_delta' } },
+      { block: { type: 'text', text: '' }, delta: { type: 'text_delta', text: 42 } },
+      { block: { type: 'thinking', thinking: '' }, delta: { type: 'thinking_delta' } },
+      { block: { type: 'thinking', thinking: '' }, delta: { type: 'signature_delta' } },
+      { block: { type: 'tool_use', id: 't', name: 'f', input: {} }, delta: { type: 'input_json_delta' } },
+      { block: { type: 'tool_use', id: 't', name: 'f', input: {} }, delta: { type: 'input_json_delta', partial_json: null } },
+      { block: { type: 'text', text: '' }, delta: { type: 'citations_delta' } },
     ];
-    for (const delta of cases) {
+    for (const c of cases) {
       const result = build(
         [
           entry({
             assistant: streamAssistant(
               sse([
                 { type: 'message_start', message: { role: 'assistant' } },
-                { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 't', name: 'f', input: {} } },
-                { type: 'content_block_delta', index: 0, delta },
+                { type: 'content_block_start', index: 0, content_block: c.block },
+                { type: 'content_block_delta', index: 0, delta: c.delta },
                 { type: 'content_block_stop', index: 0 },
                 { type: 'message_stop' },
               ]),
@@ -501,6 +503,59 @@ describe('anthropic adapter — durable stream reassembly', () => {
       { model: MODEL, messages: [user('u2')] },
     );
     expect(doubleStop).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'block_already_stopped' });
+  });
+
+  it('a frame AFTER message_stop refuses: the terminal event is terminal', () => {
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'A' } },
+              { type: 'content_block_stop', index: 0 },
+              { type: 'message_stop' },
+              { type: 'content_block_start', index: 1, content_block: { type: 'text', text: 'post-terminal' } },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'frame_after_message_stop' });
+  });
+
+  it('a delta targeting the WRONG block type refuses: cross-type mutation is fabrication', () => {
+    const cases: Array<{ block: Record<string, unknown>; delta: Record<string, unknown> }> = [
+      { block: { type: 'text', text: '' }, delta: { type: 'input_json_delta', partial_json: '{}' } },
+      { block: { type: 'tool_use', id: 't', name: 'f', input: {} }, delta: { type: 'text_delta', text: 'x' } },
+      { block: { type: 'text', text: '' }, delta: { type: 'thinking_delta', thinking: 'x' } },
+      { block: { type: 'thinking', thinking: '' }, delta: { type: 'text_delta', text: 'x' } },
+    ];
+    for (const c of cases) {
+      const result = build(
+        [
+          entry({
+            assistant: streamAssistant(
+              sse([
+                { type: 'message_start', message: { role: 'assistant' } },
+                { type: 'content_block_start', index: 0, content_block: c.block },
+                { type: 'content_block_delta', index: 0, delta: c.delta },
+                { type: 'content_block_stop', index: 0 },
+                { type: 'message_stop' },
+              ]),
+            ),
+          }),
+        ],
+        { model: MODEL, messages: [user('u2')] },
+      );
+      expect(result).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'delta_block_type_mismatch',
+      });
+    }
   });
 
   it('an UNKNOWN event type refuses too', () => {
