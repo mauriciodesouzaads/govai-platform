@@ -296,6 +296,25 @@ describe('openai adapter — strategy selection', () => {
     });
   });
 
+  it('DUPLICATE success terminals refuse: a twice-completed capture is ambiguous', () => {
+    const sse =
+      `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_1', status: 'completed', output: [] } })}\n\n` +
+      `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_2', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'second' }] }] } })}\n\n`;
+    const result = build(
+      [
+        entry({
+          assistant: { attemptId: 'att-d', providerCredentialId: CRED, completedAtMs: FRESH_MS, output: { kind: 'stream', sseText: sse } },
+        }),
+      ],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'duplicate_terminal_verdicts',
+    });
+  });
+
   it('a HISTORICAL entry carrying client-owned continuation poisons the build: refusal, never a stripped replay', () => {
     // The poisoned turn's input was composed relative to external provider state; replaying it
     // without those fields would silently change its meaning. Recovery is an explicit fork

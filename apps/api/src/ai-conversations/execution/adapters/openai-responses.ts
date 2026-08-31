@@ -162,6 +162,10 @@ function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
       (parsed['type'] === 'response.completed' || parsed['type'] === 'response.incomplete') &&
       isObject(parsed['response'])
     ) {
+      // A SECOND success-shaped terminal (duplicated / out-of-order frames, possibly with
+      // different bodies) is an ambiguous capture — silently keeping either body would replay
+      // or chain content the grammar cannot vouch for (review finding, exact head 6d526c2).
+      if (terminal !== null) throw new Unreplayable('duplicate_terminal_verdicts');
       terminal = parsed['response'] as JsonObject;
     }
   }
