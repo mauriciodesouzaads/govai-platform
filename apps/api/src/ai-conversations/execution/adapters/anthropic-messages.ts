@@ -134,6 +134,7 @@ function assistantMessageFromStream(sseText: string): {
    *  it must be the FINAL delta of its block — any later delta would mutate signed content
    *  (review finding, exact head cf65d0c). */
   const signedBlocks = new Set<number>();
+  let sawMessageStart = false;
   let sawMessageStop = false;
 
   for (const raw of events) {
@@ -147,12 +148,25 @@ function assistantMessageFromStream(sseText: string): {
     if (sawMessageStop) throw new UnreplayableStream('frame_after_message_stop');
     switch (type) {
       case 'message_start': {
+        // Exactly ONE message_start, and it must open the stream's message (review finding,
+        // exact head bf7e1a8): a duplicate could silently swap the role/model metadata the
+        // replay depends on, and a non-assistant role would replay provider output as another
+        // speaker. Role is validated strictly WHEN PRESENT; a role-less skeleton keeps the
+        // assistant default (the only role a Messages response can carry).
+        if (sawMessageStart) throw new UnreplayableStream('duplicate_message_start');
+        sawMessageStart = true;
         const message = raw['message'];
-        if (isObject(message) && typeof message['role'] === 'string') role = message['role'];
+        if (isObject(message) && typeof message['role'] === 'string') {
+          if (message['role'] !== 'assistant') {
+            throw new UnreplayableStream('message_role_not_assistant');
+          }
+          role = message['role'];
+        }
         if (isObject(message) && typeof message['model'] === 'string') model = message['model'];
         break;
       }
       case 'content_block_start': {
+        if (!sawMessageStart) throw new UnreplayableStream('content_before_message_start');
         const index = raw['index'];
         const block = raw['content_block'];
         if (typeof index !== 'number' || !isObject(block)) {
@@ -252,6 +266,12 @@ function assistantMessageFromStream(sseText: string): {
         const block = blocks.get(index);
         if (!block) throw new UnreplayableStream('stop_without_block');
         if (!openBlocks.has(index)) throw new UnreplayableStream('block_already_stopped');
+        // A `thinking` block must carry its signature before it may close (review finding,
+        // exact head bf7e1a8): the pass-back contract requires signed thinking, and replaying
+        // an unsigned block would make the provider reject every later turn.
+        if (blocks.get(index)!['type'] === 'thinking' && !signedBlocks.has(index)) {
+          throw new UnreplayableStream('thinking_block_unsigned');
+        }
         const acc = partialJson.get(index);
         if (acc !== undefined) {
           try {

@@ -580,6 +580,68 @@ describe('anthropic adapter — durable stream reassembly', () => {
     expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'delta_after_signature' });
   });
 
+  it('message_start is required first, unique, and assistant-role (strict when present)', () => {
+    const textBlock = [
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'A' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_stop' },
+    ];
+    const missing = build(
+      [entry({ assistant: streamAssistant(sse(textBlock)) })],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(missing).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'content_before_message_start' });
+
+    const duplicate = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'message_start', message: { role: 'assistant', model: 'other' } },
+              ...textBlock,
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(duplicate).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'duplicate_message_start' });
+
+    const wrongRole = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([{ type: 'message_start', message: { role: 'user' } }, ...textBlock]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(wrongRole).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'message_role_not_assistant' });
+  });
+
+  it('a thinking block that never received its signature refuses to close', () => {
+    const result = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([
+              { type: 'message_start', message: { role: 'assistant' } },
+              { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+              { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'unsigned' } },
+              { type: 'content_block_stop', index: 0 },
+              { type: 'message_stop' },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'thinking_block_unsigned' });
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],

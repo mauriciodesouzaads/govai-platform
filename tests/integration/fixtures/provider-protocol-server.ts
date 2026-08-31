@@ -270,7 +270,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       if (body.stream) {
         reply.header('content-type', 'text/event-stream');
         reply.header('cache-control', 'no-cache');
-        const stream = sseChunk({ type: 'message_start', message: { id: requestId, model: body.model ?? 'unknown' } })
+        const stream = sseChunk({ type: 'message_start', message: { id: requestId, role: 'assistant', model: body.model ?? 'unknown' } })
           + sseChunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
           + sseChunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: responseText } })
           + sseChunk({ type: 'content_block_stop', index: 0 })
