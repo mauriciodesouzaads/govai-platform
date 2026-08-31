@@ -471,6 +471,38 @@ describe('anthropic adapter — durable stream reassembly', () => {
     expect(result).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'block_index_reused' });
   });
 
+  it('a delta or stop AFTER the block already stopped refuses: post-stop frames must not mutate replay', () => {
+    const base = [
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'real' } },
+      { type: 'content_block_stop', index: 0 },
+    ];
+    const lateDelta = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([...base, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: ' injected' } }, { type: 'message_stop' }]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(lateDelta).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'delta_after_stop' });
+
+    const doubleStop = build(
+      [
+        entry({
+          assistant: streamAssistant(
+            sse([...base, { type: 'content_block_stop', index: 0 }, { type: 'message_stop' }]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(doubleStop).toEqual({ ok: false, reason: 'context_unreplayable', detail: 'block_already_stopped' });
+  });
+
   it('an UNKNOWN event type refuses too', () => {
     const result = build(
       [entry({ assistant: streamAssistant(sse([{ type: 'future_event' }])) })],

@@ -167,6 +167,10 @@ function assistantMessageFromStream(sseText: string): {
         }
         const block = blocks.get(index);
         if (!block) throw new UnreplayableStream('delta_without_block');
+        // A delta after the block's own stop (a duplicated or out-of-order frame) would mutate
+        // retained content while still passing the terminal checks (review finding, exact head
+        // ca5bfe2): deltas require the block to be OPEN.
+        if (!openBlocks.has(index)) throw new UnreplayableStream('delta_after_stop');
         // ★ KNOWN DELTA TYPES VALIDATE THEIR PAYLOAD FIELD STRICTLY (review finding, exact
         // head c8cc5bb): coercing a missing/mistyped payload (`String(x ?? '')`) would
         // silently ALTER content — e.g. an `input_json_delta` without `partial_json`
@@ -218,6 +222,7 @@ function assistantMessageFromStream(sseText: string): {
         if (typeof index !== 'number') throw new UnreplayableStream('content_block_stop_shape_unknown');
         const block = blocks.get(index);
         if (!block) throw new UnreplayableStream('stop_without_block');
+        if (!openBlocks.has(index)) throw new UnreplayableStream('block_already_stopped');
         const acc = partialJson.get(index);
         if (acc !== undefined) {
           try {
