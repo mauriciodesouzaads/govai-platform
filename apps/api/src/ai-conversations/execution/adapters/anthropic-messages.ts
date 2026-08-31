@@ -410,6 +410,13 @@ function assistantMessageFromStream(sseText: string): {
         break;
       }
       case 'message_stop':
+        // ★ THE TERMINAL PROVES A MESSAGE THAT ACTUALLY BEGAN (review finding on fd2df776).
+        // `message_stop` is step 4 of a flow whose step 1 is `message_start`, and since a
+        // COMPLETE zero-block stream is now read as the provider's own non-answer, an
+        // unanchored `message_stop` (alone, or after only pings) would be laundered from a
+        // malformed capture into a silent input-only projection. The start flag is what
+        // separates a real refusal from a capture that never carried a message at all.
+        if (!sawMessageStart) throw new UnreplayableStream('message_stop_before_message_start');
         sawMessageStop = true;
         break;
       case 'message_delta': {
@@ -452,6 +459,10 @@ function assistantMessageFromStream(sseText: string): {
   // the PROVIDER's answer, not a broken capture, so it projects input-only rather than
   // bricking every later turn of the branch. (Superseded `stream_has_no_content_blocks`,
   // which conflated this with truncation — the truncation guard above is the real proof.)
+  // Reaching here REQUIRES both terminal proofs — the message provably began
+  // (`message_stop_before_message_start`) and provably ended (`stream_truncated`) — so the
+  // only zero-block stream that projects input-only is `message_start` [`message_delta`]
+  // `message_stop`, which is exactly the documented refusal shape.
   if (order.length === 0) throw new ProviderFailedStream();
   return { role, content: order.map((i) => blocks.get(i)!), model };
 }

@@ -1097,3 +1097,87 @@ describe('anthropic adapter — ONE replay law, both transports (stream / non-st
     ]);
   });
 });
+
+describe('anthropic adapter — no zero-block stream completes without a message that began', () => {
+  // The sibling family of the fd2df776 review finding: once a COMPLETE zero-block stream is
+  // read as the provider's own non-answer, EVERY path that can reach that verdict must first
+  // prove the message actually began — otherwise a malformed capture is laundered into a
+  // silent input-only projection.
+
+  it('★ a bare message_stop refuses: an unanchored terminal is not a refusal', () => {
+    expect(grammar([{ type: 'message_stop' }])).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'message_stop_before_message_start',
+    });
+  });
+
+  it('pings before an unanchored message_stop do not make it legal', () => {
+    expect(grammar([{ type: 'ping' }, { type: 'ping' }, { type: 'message_stop' }])).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'message_stop_before_message_start',
+    });
+  });
+
+  it('a stream of pings alone is TRUNCATED, not a non-answer', () => {
+    expect(grammar([{ type: 'ping' }])).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'stream_truncated',
+    });
+  });
+
+  it('an EMPTY capture is truncated too', () => {
+    expect(grammar([])).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'stream_truncated',
+    });
+  });
+
+  it('★ but a bare provider ERROR verdict STILL projects input-only: it may precede message_start', () => {
+    // First-party: the API "may occasionally send errors in the event stream", e.g. an
+    // overloaded_error before the message begins. That is a real provider verdict, not a
+    // malformed capture, so the start-flag requirement must NOT be extended to it.
+    const result = build(
+      [
+        entry({
+          userNative: { model: MODEL, messages: [user('u1')] },
+          assistant: streamed(
+            sse([{ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result.ok).toBe(true);
+    expect((result as unknown as { body: Record<string, unknown> }).body['messages']).toEqual([
+      user('u1'),
+      user('u2'),
+    ]);
+  });
+
+  it('the documented refusal shape is the ONLY zero-block stream that projects input-only', () => {
+    const result = build(
+      [
+        entry({
+          userNative: { model: MODEL, messages: [user('u1')] },
+          assistant: streamed(
+            sse([
+              { type: 'message_start', message: { role: 'assistant', model: MODEL } },
+              { type: 'message_delta', delta: { stop_reason: 'refusal' }, usage: { output_tokens: 0 } },
+              { type: 'message_stop' },
+            ]),
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    expect(result.ok).toBe(true);
+    expect((result as unknown as { body: Record<string, unknown> }).body['messages']).toEqual([
+      user('u1'),
+      user('u2'),
+    ]);
+  });
+});
