@@ -531,3 +531,100 @@ describe('openai adapter — stateless replay assembly', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// PROTOCOL-GRAMMAR CLOSURE SWEEP — bounded OpenAI sibling audit of the SAME families the
+// Anthropic sweep closed (terminal cardinality/ordering, post-terminal frames, stream vs
+// non-stream verdict parity). First-party (reverified 2026-08-31): the documented terminal
+// stream events are `response.completed`, `response.incomplete`, `response.failed` and `error`
+// — there is NO `response.cancelled` STREAM event, though `cancelled` IS a Response STATUS,
+// which the non-streaming door already projects as a provider failure.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const sseOf = (events: unknown[]): string =>
+  events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
+
+function streamed(sseText: string): AssembledContextEntry['assistant'] {
+  return { attemptId: 'att-g', providerCredentialId: CRED, completedAtMs: FRESH_MS, output: { kind: 'stream', sseText } };
+}
+
+const COMPLETED = {
+  type: 'response.completed',
+  response: {
+    id: 'resp_t',
+    status: 'completed',
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'A' }] }],
+  },
+};
+
+describe('openai adapter — terminal grammar closure', () => {
+  it('★ NON-TERMINAL frames AFTER the terminal event cannot inject content: reassembly is not incremental', () => {
+    // Unlike the Anthropic reassembler, the terminal event carries the WHOLE response object,
+    // so trailing frames contribute nothing by construction. This proves the asymmetry is safe
+    // rather than merely unaudited.
+    const result = build(
+      [
+        entry({
+          assistant: streamed(
+            sseOf([
+              { type: 'response.created', response: { id: 'resp_t' } },
+              COMPLETED,
+              { type: 'response.output_text.delta', delta: 'INJECTED' },
+              { type: 'response.output_item.added', item: { type: 'message', content: 'INJECTED' } },
+            ]),
+          ),
+        }),
+      ],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_t' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_t' },
+    });
+  });
+
+  it('a terminal event whose `response` is not an object never becomes a terminal verdict', () => {
+    const result = build(
+      [entry({ assistant: streamed(sseOf([{ type: 'response.completed', response: 'garbage' }])) })],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'stream_has_no_terminal_response',
+    });
+  });
+
+  it('a bare `error` event is a provider failure verdict, exactly like response.failed', () => {
+    const result = build(
+      [
+        entry({ userNative: { model: 'gpt-test', input: 'u1' }, assistant: streamed(sseOf([{ type: 'error', code: 'server_error' }])) }),
+      ],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    // Input-only projection: the question stays context, the non-answer never does.
+    expect(result).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: [{ role: 'user', content: 'u1' }, { role: 'user', content: 'u2' }] },
+      continuation: { kind: 'stateless_replay' },
+    });
+  });
+
+  it('a REPEATED failure verdict is still just a failure — duplication is not a conflict', () => {
+    const result = build(
+      [
+        entry({
+          userNative: { model: 'gpt-test', input: 'u1' },
+          assistant: streamed(sseOf([{ type: 'response.failed', response: { id: 'r' } }, { type: 'error', code: 'e' }])),
+        }),
+      ],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: [{ role: 'user', content: 'u1' }, { role: 'user', content: 'u2' }] },
+      continuation: { kind: 'stateless_replay' },
+    });
+  });
+});

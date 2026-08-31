@@ -27,6 +27,18 @@
 //     (`text_delta` | `input_json_delta` | `thinking_delta` | `signature_delta` |
 //     `citations_delta`) / `content_block_stop`, with the signature "as a `signature_delta`
 //     … just before the `content_block_stop`".
+//   * STREAM EVENT FLOW (reverified 2026-08-31, verbatim): "1. `message_start` … 2. A series of
+//     content blocks … 3. One or more `message_delta` events … 4. A final `message_stop`
+//     event." — the message-level delta CLOSES the content phase, but it is explicitly NOT
+//     unique, so this adapter enforces its ORDERING and refuses to enforce a cardinality the
+//     provider does not promise. `ping`: "Event streams may also include any number of `ping`
+//     events" — stated with no positional constraint, so ping is legal wherever a frame is.
+//   * REFUSALS ARE 2xx NON-ANSWERS: a classifier refusal is "a normal response, not an error"
+//     with `"content": []`, `stop_reason: "refusal"` and `output_tokens: 0`. An empty assistant
+//     message is therefore a PROVIDER NON-ANSWER (input-only projection), never a corruption to
+//     refuse — refusing it would brick every later turn of a branch that contains one.
+//   * A completed `thinking` block ALWAYS carries a string `signature` (both the summarized and
+//     the `display: "omitted"` response shapes show one); `redacted_thinking` carries `data`.
 //
 // ★ THE CONTEXT-BEARING FIELD IS `messages`, AND ONLY `messages`. The build spreads the turn's
 // immutable config and replaces `messages` with [assembled history … the turn's OWN messages].
@@ -108,6 +120,65 @@ class ProviderFailedStream extends Error {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE REPLAY LAW — ONE SET OF INVARIANTS, BOTH TRANSPORTS
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** ★ THE KNOWN-BLOCK PAYLOAD LAW, SHARED BY BOTH DOORS (closure sweep). A provider-produced
+ *  Anthropic assistant message is replayable only if its blocks satisfy the SAME invariants,
+ *  whether they arrived as a JSON response body or were reassembled from SSE — duplicating the
+ *  rules is what let the two paths drift apart.
+ *
+ *  `phase` distinguishes the two LAWFUL moments of a streamed `thinking` block: at
+ *  `content_block_start` its signature has not arrived yet (first-party: the block opens as
+ *  `{"type":"thinking","thinking":"","signature":""}` and the real value is delivered "as a
+ *  `signature_delta` … just before the `content_block_stop`"), while the FINAL block must carry
+ *  it — every documented completed `thinking` block does. UNKNOWN block types are deliberately
+ *  unconstrained: the forward-compatible §31 posture passes them through verbatim (a
+ *  server-side-fallback `fallback` block, which "stays where it appeared", is exactly this
+ *  case). */
+function blockPayloadInvalid(block: JsonObject, phase: 'start' | 'final'): boolean {
+  const type = block['type'];
+  return (
+    (type === 'text' && typeof block['text'] !== 'string') ||
+    (type === 'thinking' &&
+      (typeof block['thinking'] !== 'string' ||
+        (phase === 'final' && typeof block['signature'] !== 'string'))) ||
+    (type === 'redacted_thinking' && typeof block['data'] !== 'string') ||
+    ((type === 'tool_use' || type === 'server_tool_use' || type === 'mcp_tool_use') &&
+      (typeof block['id'] !== 'string' ||
+        typeof block['name'] !== 'string' ||
+        !isObject(block['input'])))
+  );
+}
+
+/** ★ THE FINAL REPLAY VALIDATION, APPLIED TO WHICHEVER DOOR PRODUCED THE MESSAGE (closure
+ *  sweep, post-pause review finding). Stored non-streaming bodies were admitted with NO
+ *  per-block validation at all while the reassembler enforced the full stream grammar — so an
+ *  unsigned `thinking` block (which the provider ALWAYS signs) could enter same-model replay
+ *  through the non-streaming door and make Anthropic reject every later turn of the branch. */
+function validateReplayableContent(content: unknown[]): void {
+  // ★ AN EMPTY CONTENT ARRAY IS A PROVIDER NON-ANSWER, NEVER A CORRUPTION (closure sweep,
+  // first-party fact reverified 2026-08-31). A classifier refusal is "a normal response, not an
+  // error": HTTP 2xx, `"content": []`, `stop_reason: "refusal"`, `output_tokens: 0`. Refusing
+  // it would be the worst possible outcome — a refused turn sits in the branch's history
+  // forever, so EVERY later turn would refuse too and the branch would be permanently bricked.
+  // It projects INPUT-ONLY instead, exactly as the `error` stream verdict and the OpenAI
+  // `failed`/`cancelled` statuses do: the question stays context, the non-answer never does.
+  if (content.length === 0) throw new ProviderFailedStream();
+  for (const block of content) {
+    if (!isObject(block)) throw new UnreplayableStream('content_block_not_object');
+    // Every documented Anthropic content block carries a `type` discriminator. Requiring it is
+    // STRUCTURAL, not a version lock — unknown type VALUES still pass through verbatim.
+    if (typeof block['type'] !== 'string') {
+      throw new UnreplayableStream('content_block_type_invalid');
+    }
+    if (blockPayloadInvalid(block, 'final')) {
+      throw new UnreplayableStream('content_block_payload_invalid');
+    }
+  }
+}
+
 /** Reassemble `{ role, content, model }` from a completed attempt's durable stream bytes. */
 function assistantMessageFromStream(sseText: string): {
   role: string;
@@ -141,6 +212,11 @@ function assistantMessageFromStream(sseText: string): {
    *  success sequence AFTER it silently degrade to input-only — a conflicted capture must
    *  REFUSE, exactly like the OpenAI conflicting-verdict rule. */
   let sawError = false;
+  /** The message-level delta CLOSES the content phase (post-pause review finding). NOTE THE
+   *  CARDINALITY: first-party says "One or more `message_delta` events", so a REPEATED message
+   *  delta is LEGAL — enforcing uniqueness here would refuse legitimate provider output, which
+   *  is its own defect. Only the ORDERING is a grammar violation. */
+  let sawMessageDelta = false;
   /** Indexes name POSITIONS in the final content array, so starts must arrive contiguously
    *  from 0 (review finding, exact head 65150e9): a gap means an unknown block was lost, and
    *  out-of-order starts would reorder assistant content. */
@@ -158,6 +234,19 @@ function assistantMessageFromStream(sseText: string): {
     // The `error` verdict is terminal too: a success-shaped continuation after it is a
     // CONFLICTED capture and refuses — never a silent choice between the two verdicts.
     if (sawError) throw new UnreplayableStream('frame_after_error');
+    // ★ CONTENT AFTER THE MESSAGE-LEVEL DELTA IS OUT OF GRAMMAR (post-pause review finding).
+    // The first-party event flow is: `message_start` → "A series of content blocks" → "One or
+    // more `message_delta` events" → "A final `message_stop` event". A content-block frame
+    // after the message delta is therefore a duplicated or out-of-order capture, and admitting
+    // it would splice post-content text into every later prompt on the branch.
+    if (
+      sawMessageDelta &&
+      (type === 'content_block_start' ||
+        type === 'content_block_delta' ||
+        type === 'content_block_stop')
+    ) {
+      throw new UnreplayableStream('content_after_message_delta');
+    }
     switch (type) {
       case 'message_start': {
         // Exactly ONE message_start, and it must open the stream's message (review finding,
@@ -167,14 +256,17 @@ function assistantMessageFromStream(sseText: string): {
         // assistant default (the only role a Messages response can carry).
         if (sawMessageStart) throw new UnreplayableStream('duplicate_message_start');
         sawMessageStart = true;
+        // First-party: `message_start` "contains a `Message` object with empty `content`" — a
+        // frame without one carries none of the role/model metadata the replay reads.
         const message = raw['message'];
-        if (isObject(message) && typeof message['role'] === 'string') {
+        if (!isObject(message)) throw new UnreplayableStream('message_start_shape_unknown');
+        if (typeof message['role'] === 'string') {
           if (message['role'] !== 'assistant') {
             throw new UnreplayableStream('message_role_not_assistant');
           }
           role = message['role'];
         }
-        if (isObject(message) && typeof message['model'] === 'string') model = message['model'];
+        if (typeof message['model'] === 'string') model = message['model'];
         break;
       }
       case 'content_block_start': {
@@ -191,21 +283,16 @@ function assistantMessageFromStream(sseText: string): {
         if (index !== nextBlockIndex) throw new UnreplayableStream('block_index_not_contiguous');
         nextBlockIndex += 1;
         // KNOWN block types validate their required start fields (review finding, exact head
-        // fafbff6): a text block whose `text` is not a string would silently drop the start
-        // value on the first delta append, and a tool_use missing id/name/input would replay a
-        // shape the provider rejects. Unknown block types still pass through verbatim — the
-        // forward-compatible §31 posture — and are protected by the delta-compat map.
-        {
-          const blockType = block['type'];
-          const startInvalid =
-            (blockType === 'text' && typeof block['text'] !== 'string') ||
-            (blockType === 'thinking' && typeof block['thinking'] !== 'string') ||
-            (blockType === 'redacted_thinking' && typeof block['data'] !== 'string') ||
-            ((blockType === 'tool_use' || blockType === 'server_tool_use' || blockType === 'mcp_tool_use') &&
-              (typeof block['id'] !== 'string' ||
-                typeof block['name'] !== 'string' ||
-                !isObject(block['input'])));
-          if (startInvalid) throw new UnreplayableStream('block_start_payload_invalid');
+        // fafbff6) through the SHARED payload law, so the stored-response door cannot drift
+        // from this one: a text block whose `text` is not a string would silently drop the
+        // start value on the first delta append, and a tool_use missing id/name/input would
+        // replay a shape the provider rejects. Unknown block types still pass through verbatim
+        // — the forward-compatible §31 posture — and are protected by the delta-compat map.
+        // The `type` DISCRIMINATOR itself is required (closure sweep): a typeless block replays
+        // as a shape the provider rejects, and the delta-compat map can only catch it if a
+        // delta happens to arrive.
+        if (typeof block['type'] !== 'string' || blockPayloadInvalid(block, 'start')) {
+          throw new UnreplayableStream('block_start_payload_invalid');
         }
         blocks.set(index, { ...block });
         order.push(index);
@@ -325,8 +412,22 @@ function assistantMessageFromStream(sseText: string): {
       case 'message_stop':
         sawMessageStop = true;
         break;
-      case 'message_delta': // stop_reason/usage — carries no content to reassemble.
+      case 'message_delta': {
+        // Top-level changes to the final Message (stop_reason / stop_sequence / usage). Its
+        // PAYLOAD is deliberately not validated: nothing in the replayed `{role, content,
+        // model}` message depends on it, so a shape rule here would harden a field the
+        // replay never reads. Its POSITION, however, IS grammar — and is enforced.
+        if (!sawMessageStart) throw new UnreplayableStream('message_delta_before_message_start');
+        // Step 3 of the flow follows step 2 IN FULL: an open block here means the capture
+        // interleaved the message-level delta into the content phase.
+        if (openBlocks.size > 0) throw new UnreplayableStream('message_delta_before_block_stop');
+        sawMessageDelta = true;
+        break;
+      }
       case 'ping':
+        // First-party: "Event streams may also include any number of `ping` events" — stated
+        // with NO positional constraint, so a ping stays legal anywhere a frame is legal at
+        // all (the terminal guards above already bound that). Adjudicated, not assumed.
         break;
       case 'error':
         // The provider's own failure verdict — recorded; the end-of-stream resolution below
@@ -341,8 +442,17 @@ function assistantMessageFromStream(sseText: string): {
   // truncation/content checks deliberately do not apply to a stream the provider itself
   // declared failed.
   if (sawError) throw new ProviderFailedStream();
-  if (order.length === 0) throw new UnreplayableStream('stream_has_no_content_blocks');
+  // TRUNCATION IS ADJUDICATED FIRST (closure sweep): an incomplete capture is ambiguous
+  // whatever it contains, and a missing terminal is exactly what distinguishes it from the
+  // case below. A byte stream truncates at the TAIL, so a capture that reached `message_stop`
+  // with every block closed did observe the whole message.
   if (openBlocks.size > 0 || !sawMessageStop) throw new UnreplayableStream('stream_truncated');
+  // A COMPLETE stream carrying no content blocks is the streamed form of the same 2xx
+  // non-answer the non-streaming door sees as `"content": []` — a classifier refusal. It is
+  // the PROVIDER's answer, not a broken capture, so it projects input-only rather than
+  // bricking every later turn of the branch. (Superseded `stream_has_no_content_blocks`,
+  // which conflated this with truncation — the truncation guard above is the real proof.)
+  if (order.length === 0) throw new ProviderFailedStream();
   return { role, content: order.map((i) => blocks.get(i)!), model };
 }
 
@@ -390,6 +500,11 @@ function assistantMessageFromEntry(
     content = message.content;
     producedBy = message.model;
   }
+  // ★ ONE REPLAY LAW FOR BOTH TRANSPORTS (closure sweep). Whichever door produced the message,
+  // it must satisfy the same invariants before it may join a prompt — applied BEFORE the
+  // model-switch projection, which is a lawful transformation OF A VALID message, never a way
+  // to launder an invalid one.
+  validateReplayableContent(content);
   // The model that produced this answer, from NATIVE truth outward: the provider's own
   // response `model`, else the request that produced it, else branch metadata (the send
   // contract does not force the native body to match the branch column, so the column is a
