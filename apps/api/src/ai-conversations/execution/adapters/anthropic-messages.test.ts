@@ -1633,7 +1633,15 @@ describe('anthropic adapter — RF-3 sibling: citations are never silently disca
       expect(citationStream(citations, true), JSON.stringify(citations)).toEqual({
         ok: false,
         reason: 'context_unreplayable',
-        detail: 'block_citations_invalid',
+        // RF-4 MOVED THE REFUSAL POINT EARLIER, AND DELIBERATELY. The RF-3 guarantee asserted
+        // here — a malformed container is never discarded and replaced by a fabricated array — is
+        // unchanged and now holds on ALL THREE paths rather than only this one. What changed is
+        // WHERE it is caught: the container rule moved into the shared block law, which runs at
+        // `content_block_start`, so the stream refuses before the delta is ever applied and names
+        // the block-start site instead of the accumulator. The delta-site guard still exists as a
+        // second enforcement point of the same predicate; it is simply no longer the first one
+        // reached. See the RF-4 section at the end of this file for the three-path proof.
+        detail: 'block_start_payload_invalid',
       });
     }
   });
@@ -1653,5 +1661,159 @@ describe('anthropic adapter — RF-3 sibling: citations are never silently disca
     expect(contentOf(citationStream([existing], true))).toEqual([
       { type: 'text', text: '', citations: [existing, CITATION] },
     ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-4 — ONE CONTAINER LAW FOR A FINALIZED `text` BLOCK, WHATEVER PATH DELIVERED IT.
+//
+// The RF-3 sibling above stopped `citations` from being LAUNDERED into a fabricated array, but it
+// placed the container rule at the `citations_delta` ACCUMULATION SITE rather than in the shared
+// block law. So the rule only fired when a delta happened to arrive: one raw value, three paths,
+// two different verdicts. These tests are the falsification of that asymmetry — they run the SAME
+// raw `citations` value down all three and demand ONE verdict.
+//
+// First-party (`@anthropic-ai/sdk`, reverified): response `TextBlock.citations` is
+// `Array<TextCitation> | null`, and request `TextBlockParam.citations` is OPTIONAL and
+// `Array<TextCitationParam> | null`. Absent, `null` and array are therefore ALL lawful containers
+// on the wire GovAI replays onto; a PRESENT non-array has no representation on either side.
+//
+// The ELEMENT union is deliberately NOT validated: `TextCitation` is provider-evolving (it has
+// already grown `web_search_result_location` and `search_result_location`), so a closed element
+// check would refuse FUTURE legitimate provider output — the §31 forward-compatible posture.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** PRESENT values with no lawful first-party representation — neither array nor `null`. */
+const MALFORMED_CITATIONS: Array<readonly [string, unknown]> = [
+  ['a number', 42],
+  ['an object', {}],
+  ['a string', 'x'],
+  ['a boolean', true],
+];
+
+/** Deliberately opaque elements. They are NOT claimed to be current citation variants — that is
+ *  the point: they stand in for whatever Anthropic adds next, and they must survive verbatim. */
+const OPAQUE_ELEMENT = { type: 'future_location_kind', cited_text: 'c', unknown_field: 1 };
+
+/** PATH A — the stored non-streaming body. */
+const citationsStored = (citations: unknown, present: boolean) =>
+  storedBody({
+    role: 'assistant',
+    model: MODEL,
+    content: [{ type: 'text', text: 'A', ...(present ? { citations } : {}) }],
+  });
+
+const citationsBlockStart = (citations: unknown, present: boolean) => ({
+  type: 'content_block_start',
+  index: 0,
+  content_block: { type: 'text', text: '', ...(present ? { citations } : {}) },
+});
+const TEXT_DELTA_A = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'A' } };
+
+/** PATH B — a streamed text block that never receives a `citations_delta`. */
+const citationsStreamNoDelta = (citations: unknown, present: boolean) =>
+  grammar([
+    START,
+    citationsBlockStart(citations, present),
+    TEXT_DELTA_A,
+    { type: 'content_block_stop', index: 0 },
+    DELTA,
+    { type: 'message_stop' },
+  ]);
+
+/** PATH C — a streamed text block that DOES receive a `citations_delta`. */
+const citationsStreamWithDelta = (citations: unknown, present: boolean) =>
+  grammar([
+    START,
+    citationsBlockStart(citations, present),
+    TEXT_DELTA_A,
+    { type: 'content_block_delta', index: 0, delta: { type: 'citations_delta', citation: CITATION } },
+    { type: 'content_block_stop', index: 0 },
+    DELTA,
+    { type: 'message_stop' },
+  ]);
+
+const CITATION_PATHS = [
+  ['stored', citationsStored],
+  ['stream without citations_delta', citationsStreamNoDelta],
+  ['stream WITH citations_delta', citationsStreamWithDelta],
+] as const;
+
+/** The SEMANTIC verdict — accept, or refuse-as-unreplayable. Deliberately NOT the `detail`: the
+ *  parity law is about the verdict, and each path may name its own (earlier or later) refusal
+ *  point without the verdict differing. */
+const verdictOf = (r: ReturnType<typeof build>) => {
+  const v = r as unknown as { ok: boolean; reason?: string };
+  return v.ok ? 'ACCEPT' : `REFUSE(${v.reason})`;
+};
+const detailOf = (r: ReturnType<typeof build>) => (r as unknown as { detail?: string }).detail;
+const replayedBlocks = (r: ReturnType<typeof build>) =>
+  (r as unknown as { body: { messages: Array<{ content: unknown[] }> } }).body.messages[1]!.content;
+
+describe('anthropic adapter — RF-4: the citations CONTAINER law is shared by every path', () => {
+  it('★ RF-4 — a MALFORMED container refuses on ALL THREE paths, not only where a delta arrived', () => {
+    for (const [valueLabel, citations] of MALFORMED_CITATIONS) {
+      for (const [pathLabel, run] of CITATION_PATHS) {
+        expect(verdictOf(run(citations, true)), `${valueLabel} via ${pathLabel}`).toBe(
+          'REFUSE(context_unreplayable)',
+        );
+      }
+    }
+  });
+
+  it('★ RF-4 — the three paths agree on EVERY value: one raw value, one semantic verdict', () => {
+    const cases: Array<readonly [string, unknown, boolean]> = [
+      ['absent', undefined, false],
+      ['null', null, true],
+      ['empty array', [], true],
+      ['array of opaque elements', [OPAQUE_ELEMENT], true],
+      ['array of an opaque STRING', ['future-opaque-value'], true],
+      ...MALFORMED_CITATIONS.map(([l, v]) => [l, v, true] as const),
+    ];
+    for (const [label, citations, present] of cases) {
+      const verdicts = CITATION_PATHS.map(([, run]) => verdictOf(run(citations, present)));
+      expect(new Set(verdicts).size, `${label} → ${JSON.stringify(verdicts)}`).toBe(1);
+    }
+  });
+
+  it('names the refusal point each path reaches first (precision, not a verdict difference)', () => {
+    // The stored door has no wire grammar, so the shared law refuses it at FINAL validation.
+    expect(detailOf(citationsStored(42, true))).toBe('content_block_payload_invalid');
+    // Both stream paths carry the malformed container on `content_block_start`, so the SAME shared
+    // predicate refuses there — before any delta is even considered.
+    expect(detailOf(citationsStreamNoDelta(42, true))).toBe('block_start_payload_invalid');
+    expect(detailOf(citationsStreamWithDelta(42, true))).toBe('block_start_payload_invalid');
+  });
+
+  it('ANTI-OVER-HARDENING — absent, null, [] and opaque arrays all replay, byte-for-byte', () => {
+    for (const [label, citations, present] of [
+      ['absent', undefined, false],
+      ['null', null, true],
+      ['empty array', [], true],
+      ['array of opaque elements', [OPAQUE_ELEMENT], true],
+      ['array of an opaque STRING', ['future-opaque-value'], true],
+    ] as Array<readonly [string, unknown, boolean]>) {
+      const expected = [{ type: 'text', text: 'A', ...(present ? { citations } : {}) }];
+      // The stored door replays the capture verbatim …
+      expect(replayedBlocks(citationsStored(citations, present)), `${label} stored`).toEqual(expected);
+      // … and the stream door REASSEMBLES to the identical message. Same law, same result.
+      expect(replayedBlocks(citationsStreamNoDelta(citations, present)), `${label} stream`).toEqual(
+        expected,
+      );
+    }
+  });
+
+  it('ANTI-OVER-HARDENING — a valid citations_delta still accumulates onto every lawful container', () => {
+    for (const [label, citations, present, expected] of [
+      ['absent', undefined, false, [CITATION]],
+      ['null', null, true, [CITATION]],
+      ['empty array', [], true, [CITATION]],
+      // The opaque element is APPENDED TO, never inspected — proof the union is not version-locked.
+      ['opaque array', [OPAQUE_ELEMENT], true, [OPAQUE_ELEMENT, CITATION]],
+    ] as Array<readonly [string, unknown, boolean, unknown[]]>) {
+      expect(replayedBlocks(citationsStreamWithDelta(citations, present)), label).toEqual([
+        { type: 'text', text: 'A', citations: expected },
+      ]);
+    }
   });
 });

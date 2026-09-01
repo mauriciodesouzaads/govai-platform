@@ -172,6 +172,26 @@ function providerModelOf(message: JsonObject): string | null {
   return model;
 }
 
+/** ★ RF-4 — THE `citations` CONTAINER LAW, EXPRESSED EXACTLY ONCE (review finding 3900679017).
+ *  First-party: the RESPONSE `TextBlock.citations` is `Array<TextCitation> | null`, and the
+ *  REQUEST `TextBlockParam.citations` is OPTIONAL and `Array<TextCitationParam> | null`. So
+ *  ABSENT, `null` and ARRAY are all lawful — on the wire GovAI reads AND on the wire it replays
+ *  onto — while a PRESENT non-array has no representation on either side. Refusing one therefore
+ *  cannot refuse legitimate provider output, and the justification is the one that already
+ *  justifies `thinking_block_unsigned`: a malformed block sits in the branch's history forever,
+ *  so an opaque provider 400 would repeat on EVERY later turn, whereas `context_unreplayable`
+ *  fails once, precisely, and names the reason.
+ *
+ *  ★ THE ELEMENTS ARE DELIBERATELY NOT VALIDATED. `TextCitation` is an OPEN, provider-evolving
+ *  union — it has already grown `web_search_result_location` and `search_result_location` beyond
+ *  the original three location kinds — so enforcing a closed element list would version-lock this
+ *  adapter and refuse FUTURE legitimate provider output. That is the §31 forward-compatible
+ *  posture already kept for unknown block types and unknown fields. CONTAINER SHAPE: STRICT.
+ *  ARRAY ELEMENT UNION: FORWARD COMPATIBLE. */
+function citationsContainerInvalid(citations: unknown): boolean {
+  return citations !== undefined && citations !== null && !Array.isArray(citations);
+}
+
 /** ★ THE KNOWN-BLOCK PAYLOAD LAW, SHARED BY BOTH DOORS (closure sweep). A provider-produced
  *  Anthropic assistant message is replayable only if its blocks satisfy the SAME invariants,
  *  whether they arrived as a JSON response body or were reassembled from SSE — duplicating the
@@ -184,11 +204,22 @@ function providerModelOf(message: JsonObject): string | null {
  *  it — every documented completed `thinking` block does. UNKNOWN block types are deliberately
  *  unconstrained: the forward-compatible §31 posture passes them through verbatim (a
  *  server-side-fallback `fallback` block, which "stays where it appeared", is exactly this
- *  case). */
+ *  case).
+ *
+ *  ★ RF-4 — A KNOWN BLOCK'S SEMANTIC FIELDS ARE ADJUDICATED HERE, NOT AT A TRANSPORT SITE. The
+ *  `citations` container rule joined this law because it had been placed at the `citations_delta`
+ *  ACCUMULATION SITE instead, so it fired only when a delta happened to arrive: one raw value
+ *  produced TWO verdicts — refused on the delta path, replayed verbatim through the stored door
+ *  and through a stream whose text block carried no delta. This function is the one point BOTH
+ *  doors run, at BOTH phases, so expressing the rule here is what makes the verdict identical
+ *  however the block arrived. The container law is phase-independent and safe at `start`:
+ *  first-party types the streamed `content_block_start.content_block` for a text block as the
+ *  SAME `TextBlock`, so a lawful opening shape (`citations` absent or `null`) still passes. */
 function blockPayloadInvalid(block: JsonObject, phase: 'start' | 'final'): boolean {
   const type = block['type'];
   return (
-    (type === 'text' && typeof block['text'] !== 'string') ||
+    (type === 'text' &&
+      (typeof block['text'] !== 'string' || citationsContainerInvalid(block['citations']))) ||
     (type === 'thinking' &&
       (typeof block['thinking'] !== 'string' ||
         (phase === 'final' && typeof block['signature'] !== 'string'))) ||
@@ -451,10 +482,23 @@ function assistantMessageFromStream(sseText: string): {
             // malformed value is neither: the old `Array.isArray(…) ? … : []` threw it away and
             // replaced it with a fabricated array, silently altering the content GovAI claims to
             // replay. Refuse instead — same law as the role and model fields.
+            //
+            // ★ RF-4 — ONE RULE, TWO ENFORCEMENT POINTS (never two rules). RF-3 expressed that
+            // container rule HERE and only here, which is why it decided the verdict on this path
+            // alone. It now lives in `citationsContainerInvalid`, which `blockPayloadInvalid` runs
+            // for every `text` block at `content_block_start` — so a malformed container has
+            // ALREADY refused before any delta reaches this line, and this call is unreachable
+            // through the public API. It is kept, calling the SAME predicate rather than restating
+            // it, for the reason the assistant-role law is enforced twice: the accumulator must
+            // never be the place the law is weaker, because the failure it guards is silent
+            // fabrication rather than a visible error.
             const existing = block['citations'];
-            if (existing !== undefined && existing !== null && !Array.isArray(existing)) {
+            if (citationsContainerInvalid(existing)) {
               throw new UnreplayableStream('block_citations_invalid');
             }
+            // Absent and `null` both mean "no citations yet" and start a fresh array; an existing
+            // array is appended to. Provider evidence is never discarded — the shared law above
+            // has already proven `existing` is one of exactly those three lawful shapes.
             const citations = Array.isArray(existing) ? (existing as unknown[]) : [];
             citations.push(delta['citation']);
             block['citations'] = citations;
