@@ -877,3 +877,131 @@ describe('openai adapter — the dispatching turn is not durable history', () =>
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-3 BOUNDED CROSS-CHECK — the same raw-evidence law, applied to the OpenAI terminal.
+//
+// FIRST-PARTY, REVERIFIED (OpenAI Node SDK `Response`):
+//     id: string;                          // required
+//     status?: ResponseStatus;             // OPTIONAL, and NOT nullable
+//     output: Array<ResponseOutputItem>;   // required
+//
+// `status` being OPTIONAL is load-bearing and is deliberately NOT hardened: an ABSENT status must
+// stay terminal AND chainable, or GovAI would refuse lawful captures. But "optional" is a
+// statement about ABSENCE, not about corruption — a PRESENT non-string status has no first-party
+// form, and reading it as "the provider did not tell us" is the same laundering RF-3 named on the
+// Anthropic role: it can silently promote a provider-declared FAILURE into a replayed terminal.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const MALFORMED_PRESENT_STATUSES: Array<readonly [string, unknown]> = [
+  ['JSON null', null],
+  ['a number', 42],
+  ['a boolean', true],
+  ['an object', {}],
+  ['an array', []],
+  ['an array WRAPPING a real status', ['completed']],
+];
+
+describe('openai adapter — RF-3 cross-check: malformed presence is not absence', () => {
+  it('★ a PRESENT non-string `status` refuses instead of being read as "no status"', () => {
+    for (const [label, status] of MALFORMED_PRESENT_STATUSES) {
+      expect(
+        build([entry({ assistant: responseAssistant({ ...RESP_1, status }) })], {
+          model: 'gpt-test',
+          input: 'u2',
+        }),
+        label,
+      ).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'response_status_shape_unknown',
+      });
+    }
+  });
+
+  it('★ the same law on the STREAMED terminal body: a malformed nested status refuses', () => {
+    for (const [label, status] of MALFORMED_PRESENT_STATUSES) {
+      const sseText = `data: ${JSON.stringify({
+        type: 'response.completed',
+        response: { ...RESP_1, status },
+      })}\n\n`;
+      expect(
+        build(
+          [
+            entry({
+              assistant: {
+                attemptId: 'att-s',
+                providerCredentialId: CRED,
+                completedAtMs: FRESH_MS,
+                output: { kind: 'stream', sseText },
+              },
+            }),
+          ],
+          { model: 'gpt-test', input: 'u2' },
+        ),
+        label,
+      ).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'response_status_shape_unknown',
+      });
+    }
+  });
+
+  it('ANTI-OVER-HARDENING — an ABSENT status stays terminal AND chainable (it is OPTIONAL)', () => {
+    // RESP_1 carries no `status` at all. First-party leaves it optional, so this capture is
+    // lawful and must keep chaining — hardening absence here would refuse ordinary captures.
+    expect(build([entry({ assistant: responseAssistant(RESP_1) })], {
+      model: 'gpt-test',
+      input: 'u2',
+    })).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_1' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+  });
+
+  it('ANTI-OVER-HARDENING — `completed` chains and a provider FAILURE still projects input-only', () => {
+    expect(
+      build([entry({ assistant: responseAssistant({ ...RESP_1, status: 'completed' }) })], {
+        model: 'gpt-test',
+        input: 'u2',
+      }),
+    ).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_1' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+    const failed = build(
+      [entry({ assistant: responseAssistant({ ...RESP_1, status: 'failed' }) })],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(failed).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: [{ role: 'user', content: 'u1' }, { role: 'user', content: 'u2' }] },
+      continuation: { kind: 'stateless_replay' },
+    });
+  });
+
+  it('ANTI-OVER-HARDENING — an invalid/absent anchor `id` still DEGRADES to stateless replay', () => {
+    // §14 of the closure dispatch, explicitly: safe degradation must NOT be converted into
+    // fail-close for symmetry. Chainability is a strategy choice; replayability is the law, and
+    // this capture is still fully replayable.
+    for (const id of [undefined, '', 42, null]) {
+      const body: Record<string, unknown> = { ...RESP_1 };
+      if (id === undefined) delete body['id'];
+      else body['id'] = id;
+      expect(
+        build([entry({ assistant: responseAssistant(body) })], { model: 'gpt-test', input: 'u2' }),
+        JSON.stringify(id),
+      ).toEqual({
+        ok: true,
+        body: {
+          model: 'gpt-test',
+          input: [{ role: 'user', content: 'u1' }, ...RESP_1.output, { role: 'user', content: 'u2' }],
+        },
+        continuation: { kind: 'stateless_replay' },
+      });
+    }
+  });
+});

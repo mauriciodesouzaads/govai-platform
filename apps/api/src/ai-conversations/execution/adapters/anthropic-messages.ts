@@ -124,18 +124,52 @@ class ProviderFailedStream extends Error {
 // THE REPLAY LAW — ONE SET OF INVARIANTS, BOTH TRANSPORTS
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/** ★ THE ASSISTANT-ROLE LAW, SHARED BY BOTH DOORS (independent validator audit). A
+/** The ONLY role a `/v1/messages` response can carry. First-party `Message.role` is typed as the
+ *  literal `'assistant'` and documented "This will always be `\"assistant\"`." */
+const ASSISTANT_ROLE = 'assistant';
+
+/** ★ THE ASSISTANT-ROLE LAW, SHARED BY BOTH DOORS (independent validator audit; RF-3). A
  *  `/v1/messages` response IS an assistant message; replaying one under any other role would feed
- *  provider output back into the next prompt as an instruction. The role is validated STRICTLY
- *  WHEN PRESENT and defaults to `assistant` when absent — the only role a Messages response can
- *  carry, and the shape every documented `message_start` example uses.
+ *  provider output back into the next prompt as an instruction.
  *
  *  IT IS EXPRESSED ONCE BECAUSE IT ALREADY DRIFTED ONCE: review finding 3891516882 (exact head
  *  50d55d6) was this exact law present on the stream door and missing on the stored-response
- *  door. Two independent copies of one truth is the defect shape this audit exists to remove, so
- *  the copies are now two ENFORCEMENT POINTS of a single predicate rather than two rules. */
+ *  door. Two independent copies of one truth is the defect shape that audit removed, so the
+ *  copies are two ENFORCEMENT POINTS of a single predicate rather than two rules.
+ *
+ *  ★ RF-3 — MALFORMED PRESENCE IS NOT ABSENCE (review finding 3899816809). The predicate used to
+ *  read `typeof role === 'string' && role !== 'assistant'`, so a PRESENT non-string role (`42`,
+ *  `null`, `{}`, `true`, `["assistant"]`) was not "invalid" — it was silently laundered into the
+ *  assistant default and replayed under a role the provider never recorded. First-party requires
+ *  `role` and admits exactly one value, so a present non-`assistant` role has NO legitimate
+ *  representation and refusing it cannot refuse real provider output.
+ *
+ *  ABSENCE, and ONLY absence, still defaults: the field's one lawful value is a CONSTANT, so
+ *  reconstructing it returns the provider's own value and cannot alter the replayed message —
+ *  whereas refusing it would brick a branch forever for zero fidelity gain. That asymmetry is the
+ *  whole law: defaulting is allowed only after the raw value is proven legitimately absent, never
+ *  as a way to make corrupt evidence look valid. */
 function roleInvalid(role: unknown): boolean {
-  return typeof role === 'string' && role !== 'assistant';
+  return role !== undefined && role !== ASSISTANT_ROLE;
+}
+
+/** ★ THE PROVIDER-MODEL LAW — RF-3's CLOSEST SIBLING, AND THE SAME SHAPE (RF-3 sibling audit).
+ *  `model` is REQUIRED on `Message`, and GovAI SEMANTICALLY CONSUMES it: it is the historical side
+ *  of the model-switch comparison that decides whether signed `thinking` is passed back or
+ *  stripped. Read through the old `typeof … === 'string' ? … : null` coercion, a PRESENT malformed
+ *  model collapsed into `null` — indistinguishable from "the provider did not name a model" — and
+ *  the fallback chain then answered with the REQUEST's model. Corrupt provenance became a
+ *  confident same-model verdict, which PRESERVES signed thinking under a provenance the capture
+ *  itself contradicts.
+ *
+ *  So: absent → `null`, and the documented fallback chain (request → branch metadata) applies,
+ *  exactly as before. Present but not a string → REFUSE. Model IDENTITY is never inspected: GovAI
+ *  is model-agnostic by architecture, and any string is provider truth. */
+function providerModelOf(message: JsonObject): string | null {
+  const model = message['model'];
+  if (model === undefined) return null;
+  if (typeof model !== 'string') throw new UnreplayableStream('message_model_not_string');
+  return model;
 }
 
 /** ★ THE KNOWN-BLOCK PAYLOAD LAW, SHARED BY BOTH DOORS (closure sweep). A provider-produced
@@ -204,14 +238,16 @@ function validateReplayableMessage(role: unknown, content: unknown[]): void {
   }
 }
 
-/** Reassemble `{ role, content, model }` from a completed attempt's durable stream bytes. */
+/** Reassemble `{ role, content, model }` from a completed attempt's durable stream bytes.
+ *  `role` is returned as RAW provider evidence (`unknown`, `undefined` when the start message
+ *  carried none) so the shared semantic law sees exactly what the wire said — RF-3. */
 function assistantMessageFromStream(sseText: string): {
-  role: string;
+  role: unknown;
   content: unknown[];
   model: string | null;
 } {
   const events = parseSseEvents(sseText);
-  let role = 'assistant';
+  let role: unknown;
   let model: string | null = null;
   // Sparse by `index`, exactly as the wire addresses blocks.
   const blocks = new Map<number, JsonObject>();
@@ -285,9 +321,13 @@ function assistantMessageFromStream(sseText: string): {
         // frame without one carries none of the role/model metadata the replay reads.
         const message = raw['message'];
         if (!isObject(message)) throw new UnreplayableStream('message_start_shape_unknown');
-        const startRole = message['role'];
-        if (roleInvalid(startRole)) throw new UnreplayableStream('message_role_not_assistant');
-        if (typeof startRole === 'string') role = startRole;
+        // ★ THE RAW ROLE IS CARRIED FORWARD UNNORMALIZED (RF-3). The law is enforced here for
+        // an early, precise refusal AND again at `validateReplayableMessage` — but on the RAW
+        // value both times, so this door and the stored door feed the shared predicate the same
+        // evidence. Normalizing here (the stored door's old sin) would make the two doors
+        // disagree about `{role: 42}` while still "sharing" one predicate.
+        role = message['role'];
+        if (roleInvalid(role)) throw new UnreplayableStream('message_role_not_assistant');
         // ★ THE START MESSAGE CARRIES NO CONTENT (review finding RF-2, exact head d6cddf33).
         // First-party, verbatim: "`message_start`: contains a `Message` object with empty
         // `content`" — every documented example is `"content": []`. The reassembler builds the
@@ -305,7 +345,7 @@ function assistantMessageFromStream(sseText: string): {
         ) {
           throw new UnreplayableStream('message_start_content_not_empty');
         }
-        if (typeof message['model'] === 'string') model = message['model'];
+        model = providerModelOf(message);
         break;
       }
       case 'content_block_start': {
@@ -405,7 +445,17 @@ function assistantMessageFromStream(sseText: string): {
           }
           case 'citations_delta': {
             if (!isObject(delta['citation'])) throw new UnreplayableStream('delta_payload_invalid');
-            const citations = Array.isArray(block['citations']) ? (block['citations'] as unknown[]) : [];
+            // ★ RF-3 SIBLING — THE EXISTING `citations` IS PROVIDER EVIDENCE, NOT SCRATCH SPACE.
+            // First-party `TextBlock.citations` is `Array<TextCitation> | null`, so `null` (and an
+            // absent key) legitimately mean "none yet" and start a fresh array. A PRESENT
+            // malformed value is neither: the old `Array.isArray(…) ? … : []` threw it away and
+            // replaced it with a fabricated array, silently altering the content GovAI claims to
+            // replay. Refuse instead — same law as the role and model fields.
+            const existing = block['citations'];
+            if (existing !== undefined && existing !== null && !Array.isArray(existing)) {
+              throw new UnreplayableStream('block_citations_invalid');
+            }
+            const citations = Array.isArray(existing) ? (existing as unknown[]) : [];
             citations.push(delta['citation']);
             block['citations'] = citations;
             break;
@@ -518,7 +568,11 @@ function stripForeignThinking(content: unknown[]): unknown[] {
   );
 }
 
-/** The `model` a native request/response object names, when it names one. */
+/** The `model` a native REQUEST object names, when it names one. Requests are GovAI/client-owned
+ *  inputs the provider validates on dispatch — they are NOT captured provider evidence, so the
+ *  RF-3 raw-evidence law does not apply to them and a shape that cannot be read simply falls
+ *  through to the next link of the documented chain. Provider RESPONSES go through
+ *  `providerModelOf`, which refuses malformed presence. */
 function nativeModelOf(value: unknown): string | null {
   return isObject(value) && typeof value['model'] === 'string' ? value['model'] : null;
 }
@@ -528,7 +582,13 @@ function assistantMessageFromEntry(
   currentModel: string,
 ): { role: string; content: unknown } {
   const output = entry.assistant!.output;
-  let role: string;
+  // ★ RAW PROVIDER EVIDENCE, CARRIED TO ITS LAW UNTRANSFORMED (RF-3). Whichever door produced it,
+  // what reaches `validateReplayableMessage` is what the provider actually recorded — not a value
+  // this function repaired on the way. The stored door used to normalize first
+  // (`typeof body['role'] === 'string' ? body['role'] : 'assistant'`) and hand the shared
+  // predicate a synthetic `'assistant'`, so ONE law was being fed TWO different inputs: the
+  // consolidated predicate could not drift, but the evidence underneath it already had.
+  let rawRole: unknown;
   let content: unknown[];
   let producedBy: string | null;
   if (output.kind === 'response') {
@@ -536,16 +596,12 @@ function assistantMessageFromEntry(
     if (!isObject(body) || !Array.isArray(body['content'])) {
       throw new UnreplayableStream('response_body_shape_unknown');
     }
-    // The assistant-role rule is NOT restated here (review finding, exact head 50d55d6, then
-    // consolidated by the independent validator audit): both doors now converge on the single
-    // `roleInvalid` predicate inside the shared message law below, so they cannot drift apart
-    // again the way they did when only the stream path enforced it.
-    role = typeof body['role'] === 'string' ? body['role'] : 'assistant';
+    rawRole = body['role'];
     content = body['content'] as unknown[];
-    producedBy = nativeModelOf(body);
+    producedBy = providerModelOf(body);
   } else {
     const message = assistantMessageFromStream(output.sseText);
-    role = message.role;
+    rawRole = message.role;
     content = message.content;
     producedBy = message.model;
   }
@@ -553,7 +609,12 @@ function assistantMessageFromEntry(
   // it must satisfy the same invariants before it may join a prompt — applied BEFORE the
   // model-switch projection, which is a lawful transformation OF A VALID message, never a way
   // to launder an invalid one.
-  validateReplayableMessage(role, content);
+  validateReplayableMessage(rawRole, content);
+  // ★ THE DEFAULT IS APPLIED ONLY NOW, AFTER THE LAW HAS PROVEN THE RAW VALUE LEGITIMATE (RF-3):
+  // it is either absent or exactly `assistant`, and both resolve to the one role a Messages
+  // response can carry. Defaulting BEFORE this point is what turned corrupt captures into
+  // valid-looking assistant messages.
+  const role = ASSISTANT_ROLE;
   // The model that produced this answer, from NATIVE truth outward: the provider's own
   // response `model`, else the request that produced it, else branch metadata (the send
   // contract does not force the native body to match the branch column, so the column is a

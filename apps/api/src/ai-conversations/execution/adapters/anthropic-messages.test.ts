@@ -1394,3 +1394,264 @@ describe('anthropic adapter — one semantic message law, two transports (§22 c
     expect(contentOf(streamedIn)).toEqual(contentOf(stored));
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-3 — RAW PROVIDER EVIDENCE REACHES ITS LAW UNNORMALIZED
+// (prevalidation-normalization closure; review finding 3899816809 "Reject non-string Anthropic
+// roles", plus the sibling family the finding's SHAPE exposes).
+//
+// FIRST-PARTY, REVERIFIED (Anthropic TypeScript SDK `Message`, the authoritative schema for both
+// doors — `RawMessageStartEvent.message` IS a `Message`):
+//     role: 'assistant';   // required, NOT optional, single literal value
+//     model: Model;        // required
+//     content: Array<ContentBlock>;
+// and, verbatim JSDoc on `role`: "Conversational role of the generated message. This will always
+// be `\"assistant\"`." All four documented `message_start` examples carry `"role": "assistant"`.
+// A PRESENT non-`assistant` role therefore has NO first-party representation at all, so refusing
+// one cannot refuse legitimate provider output.
+//
+// ★ THE INVARIANT THESE TESTS PIN — and why a predicate-only repair was not enough:
+//     MALFORMED PRESENT VALUE  ≠  ABSENT VALUE.
+// Absence may default (the value is a constant, so the default reconstructs the provider's own
+// value and loses nothing). A malformed PRESENT value is contradictory evidence, and turning it
+// into a valid synthetic one makes GovAI replay a message the provider never sent. Defaulting is
+// therefore only ever allowed AFTER the raw value has been proven legitimately absent.
+//
+// The stored door used to NORMALIZE before the law (`typeof role === 'string' ? role : 'assistant'`)
+// while the stream door passed the RAW value, so tightening the shared predicate ALONE would have
+// made the two doors disagree again — exactly the drift finding 3891516882 was. Every matrix
+// below is asserted on BOTH doors from ONE table, so that drift cannot hide.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+type Json = Record<string, unknown>;
+
+/** A stored non-streaming capture with a caller-chosen raw body. */
+const storedBody = (body: Json) =>
+  build(
+    [
+      entry({
+        assistant: {
+          attemptId: 'att-1',
+          providerCredentialId: CRED,
+          completedAtMs: 1_800_000_000_000,
+          output: { kind: 'response', body },
+        },
+      }),
+    ],
+    { model: MODEL, messages: [user('u2')] },
+  );
+
+/** The same capture arriving through the stream door: the caller chooses the raw `message`. */
+const streamedStart = (message: Json) =>
+  grammar([{ type: 'message_start', message }, ...TEXT_BLOCK, DELTA, { type: 'message_stop' }]);
+
+const TEXT_A = [{ type: 'text', text: 'A' }];
+const REFUSED_ROLE = {
+  ok: false,
+  reason: 'context_unreplayable',
+  detail: 'message_role_not_assistant',
+};
+
+/** Every PRESENT value that is not the literal `"assistant"`. `null` is PRESENT (JSON null), which
+ *  is exactly why `undefined` — a key that is not there at all — is the only absence. */
+const MALFORMED_PRESENT_ROLES: Array<readonly [string, unknown]> = [
+  ['a different speaker', 'user'],
+  ['the empty string', ''],
+  ['JSON null', null],
+  ['a number', 42],
+  ['a boolean', true],
+  ['an object', {}],
+  ['an empty array', []],
+  ['an array WRAPPING the right value', ['assistant']],
+  ['a case variant', 'Assistant'],
+];
+
+describe('anthropic adapter — RF-3 role law: malformed presence is not absence', () => {
+  it('★ RF-3 — a PRESENT non-assistant role refuses on the STORED door, whatever its type', () => {
+    for (const [label, role] of MALFORMED_PRESENT_ROLES) {
+      expect(storedBody({ id: 'msg_r', type: 'message', role, content: TEXT_A }), label).toEqual(
+        REFUSED_ROLE,
+      );
+    }
+  });
+
+  it('★ RF-3 — a PRESENT non-assistant role refuses on the STREAM door, whatever its type', () => {
+    for (const [label, role] of MALFORMED_PRESENT_ROLES) {
+      expect(streamedStart({ role, model: MODEL }), label).toEqual(REFUSED_ROLE);
+    }
+  });
+
+  it('★ RF-3 TRANSPORT PARITY — the SAME raw role value gets the SAME verdict through both doors', () => {
+    // This is the test that makes drift visible in ONE place. It compares the two doors against
+    // EACH OTHER, so it fails if either one is tightened or loosened alone — which is precisely
+    // how the stored door lost this law once before (finding 3891516882) and how a predicate-only
+    // RF-3 repair would have lost it again in the opposite direction.
+    for (const [label, role] of MALFORMED_PRESENT_ROLES) {
+      const stored = storedBody({ role, content: TEXT_A });
+      const streamedIn = streamedStart({ role });
+      expect(stored, `stored: ${label}`).toEqual(REFUSED_ROLE);
+      expect(streamedIn, `streamed: ${label}`).toEqual(stored);
+    }
+  });
+
+  it('ANTI-OVER-HARDENING — `assistant` and an ABSENT role BOTH replay, identically on both doors', () => {
+    // The documented value, and the one legitimate absence. Absence keeps its default because the
+    // field's ONLY lawful value is a constant: reconstructing it cannot alter the replayed
+    // message, whereas refusing it would brick a branch forever for zero fidelity gain.
+    const expected = { role: 'assistant', content: TEXT_A };
+    const messagesOf = (r: ReturnType<typeof build>) =>
+      (r as unknown as { body: { messages: unknown[] } }).body.messages[1];
+
+    expect(messagesOf(storedBody({ role: 'assistant', content: TEXT_A }))).toEqual(expected);
+    expect(messagesOf(streamedStart({ role: 'assistant', model: MODEL }))).toEqual(expected);
+    expect(messagesOf(storedBody({ content: TEXT_A }))).toEqual(expected);
+    expect(messagesOf(streamedStart({ model: MODEL }))).toEqual(expected);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-3 SIBLING — PROVIDER MODEL PROVENANCE (the closest sibling of the role field).
+//
+// `model` is REQUIRED on `Message` too, and GovAI SEMANTICALLY CONSUMES it: it is the historical
+// side of the model-switch comparison that decides whether signed `thinking` is passed back or
+// stripped. A malformed PRESENT model used to collapse into `null` — indistinguishable from "the
+// provider did not tell us" — and the fallback chain then answered with the REQUEST's model. That
+// is the RF-3 shape exactly: corrupt provenance laundered into a confident same-model verdict,
+// which PRESERVES signed thinking under provenance the capture itself contradicts.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const SIG = 'EqQBCgIYAhIM1gbcDa9GJwZA2b3h';
+const SIGNED_THINKING = [
+  { type: 'thinking', thinking: 'reasoned', signature: SIG },
+  { type: 'text', text: 'A' },
+];
+const REFUSED_MODEL = {
+  ok: false,
+  reason: 'context_unreplayable',
+  detail: 'message_model_not_string',
+};
+const MALFORMED_PRESENT_MODELS: Array<readonly [string, unknown]> = [
+  ['JSON null', null],
+  ['a number', 42],
+  ['a boolean', true],
+  ['an object', {}],
+  ['an array', []],
+  ['an array WRAPPING a model id', [MODEL]],
+];
+
+describe('anthropic adapter — RF-3 sibling: provider model provenance', () => {
+  it('★ a PRESENT non-string `model` refuses on the STORED door instead of degrading to "unknown"', () => {
+    for (const [label, model] of MALFORMED_PRESENT_MODELS) {
+      expect(storedBody({ role: 'assistant', model, content: TEXT_A }), label).toEqual(
+        REFUSED_MODEL,
+      );
+    }
+  });
+
+  it('★ a PRESENT non-string `model` refuses on the STREAM door, with the same verdict', () => {
+    for (const [label, model] of MALFORMED_PRESENT_MODELS) {
+      expect(streamedStart({ role: 'assistant', model }), label).toEqual(REFUSED_MODEL);
+    }
+  });
+
+  it('★ THE LAUNDERING PROOF — corrupt provenance must NOT justify preserving signed thinking', () => {
+    // The capture's own `model` is corrupt, but the REQUEST that produced it names the model the
+    // branch is still on. Before RF-3 the corrupt value collapsed to `null`, the fallback chain
+    // answered with the request model, the comparison said "same model", and the signed thinking
+    // was passed back as if its provenance were known. It is not known: the one field that would
+    // have told us is the field that is corrupt.
+    expect(
+      storedBody({ role: 'assistant', model: 42, content: SIGNED_THINKING }),
+    ).toEqual(REFUSED_MODEL);
+  });
+
+  it('ANTI-OVER-HARDENING — an ABSENT `model` keeps the documented fallback chain', () => {
+    // Absence is the case the fallback chain exists FOR (response model → the request that
+    // produced it → branch metadata). Hardening it would refuse ordinary captures and would also
+    // strip lawful thinking, which is a silent quality loss in the other direction.
+    const stored = storedBody({ role: 'assistant', content: SIGNED_THINKING });
+    expect(stored.ok).toBe(true);
+    expect(
+      (stored as unknown as { body: { messages: Array<{ content: unknown }> } }).body.messages[1]!
+        .content,
+    ).toEqual(SIGNED_THINKING);
+    expect(streamedStart({ role: 'assistant' }).ok).toBe(true);
+  });
+
+  it('ANTI-OVER-HARDENING — model-ID AGNOSTICISM: any string model id is accepted, no allowlist', () => {
+    // GovAI must never gate on model identity. A model id it has never seen is provider truth,
+    // not a validation failure — it simply compares unequal and strips foreign thinking.
+    const stored = storedBody({
+      role: 'assistant',
+      model: 'a-model-that-does-not-exist-yet-2099',
+      content: SIGNED_THINKING,
+    });
+    expect(stored.ok).toBe(true);
+    expect(
+      (stored as unknown as { body: { messages: Array<{ content: unknown }> } }).body.messages[1]!
+        .content,
+    ).toEqual([{ type: 'text', text: 'A' }]); // foreign thinking stripped, text kept
+  });
+
+  it('ANTI-OVER-HARDENING — a VALID matching provider model still preserves signed thinking', () => {
+    const stored = storedBody({ role: 'assistant', model: MODEL, content: SIGNED_THINKING });
+    expect(stored.ok).toBe(true);
+    expect(
+      (stored as unknown as { body: { messages: Array<{ content: unknown }> } }).body.messages[1]!
+        .content,
+    ).toEqual(SIGNED_THINKING);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-3 SIBLING — `citations` MUST NOT BE DISCARDED TO MAKE ROOM FOR A DELTA.
+//
+// First-party: `TextBlock.citations` is `Array<TextCitation> | null` — `null` is a LAWFUL value.
+// The accumulator used `Array.isArray(block.citations) ? block.citations : []`, which treats a
+// lawful `null` and a MALFORMED value identically: the malformed one was silently thrown away and
+// replaced with a fabricated array. That alters the content GovAI claims to replay.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const CITATION = { type: 'char_location', cited_text: 'c', document_index: 0 };
+const citationStream = (citations: unknown, present: boolean) =>
+  grammar([
+    START,
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '', ...(present ? { citations } : {}) },
+    },
+    { type: 'content_block_delta', index: 0, delta: { type: 'citations_delta', citation: CITATION } },
+    { type: 'content_block_stop', index: 0 },
+    DELTA,
+    { type: 'message_stop' },
+  ]);
+
+describe('anthropic adapter — RF-3 sibling: citations are never silently discarded', () => {
+  it('★ a MALFORMED present `citations` refuses instead of being replaced by a fabricated array', () => {
+    for (const citations of [42, 'cited', {}, true]) {
+      expect(citationStream(citations, true), JSON.stringify(citations)).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'block_citations_invalid',
+      });
+    }
+  });
+
+  it('ANTI-OVER-HARDENING — the LAWFUL `null`, an absent key, and an existing array all accumulate', () => {
+    const contentOf = (r: ReturnType<typeof build>) =>
+      (r as unknown as { body: { messages: Array<{ content: unknown[] }> } }).body.messages[1]!
+        .content;
+    // `citations: null` is first-party-lawful and must behave exactly like "no citations yet".
+    expect(contentOf(citationStream(null, true))).toEqual([
+      { type: 'text', text: '', citations: [CITATION] },
+    ]);
+    expect(contentOf(citationStream(undefined, false))).toEqual([
+      { type: 'text', text: '', citations: [CITATION] },
+    ]);
+    const existing = { type: 'char_location', cited_text: 'first', document_index: 0 };
+    expect(contentOf(citationStream([existing], true))).toEqual([
+      { type: 'text', text: '', citations: [existing, CITATION] },
+    ]);
+  });
+});

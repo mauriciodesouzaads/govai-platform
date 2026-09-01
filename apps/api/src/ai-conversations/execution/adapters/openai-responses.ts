@@ -164,16 +164,31 @@ function terminalOf(body: JsonObject): TerminalResolution {
   return { kind: 'terminal', body, output };
 }
 
+/** ★ THE STATUS LAW — RF-3's RAW-EVIDENCE RULE, APPLIED TO THE OPENAI TERMINAL (bounded
+ *  cross-check). First-party `Response.status` is OPTIONAL and NOT nullable, so ABSENCE is lawful
+ *  and stays terminal-and-chainable — hardening that would refuse ordinary captures, and it is
+ *  deliberately preserved. But "optional" describes ABSENCE, not corruption: the guards used to
+ *  read `typeof status === 'string' && …` twice, so a PRESENT non-string status matched NEITHER
+ *  and fell through as if the provider had said nothing — which can silently promote a
+ *  provider-declared FAILURE into a replayed terminal. Same laundering RF-3 named on the
+ *  Anthropic role, same remedy: absence defaults, malformed presence refuses. */
+function statusOf(body: JsonObject): string | undefined {
+  const status = body['status'];
+  if (status === undefined) return undefined;
+  if (typeof status !== 'string') throw new Unreplayable('response_status_shape_unknown');
+  return status;
+}
+
 function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
   const output = entry.assistant!.output;
   if (output.kind === 'response') {
     if (!isObject(output.body)) throw new Unreplayable('response_body_shape_unknown');
-    const status = output.body['status'];
-    if (typeof status === 'string' && FAILED_RESPONSE_STATUSES.has(status)) {
-      return { kind: 'provider_failed' };
-    }
-    if (typeof status === 'string' && !TERMINAL_RESPONSE_STATUSES.has(status)) {
-      throw new Unreplayable('anchor_response_not_terminal');
+    const status = statusOf(output.body);
+    if (status !== undefined) {
+      if (FAILED_RESPONSE_STATUSES.has(status)) return { kind: 'provider_failed' };
+      if (!TERMINAL_RESPONSE_STATUSES.has(status)) {
+        throw new Unreplayable('anchor_response_not_terminal');
+      }
     }
     return terminalOf(output.body);
   }
@@ -206,9 +221,12 @@ function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
       // finding, exact head cf65d0c): a `response.completed` carrying `in_progress` (or an
       // `incomplete` carrying `completed`) is a contradictory capture — refusing here applies
       // the same terminality validation the non-streaming path performs.
-      const nestedStatus = nested['status'];
+      // The SAME status law as the non-streaming door (RF-3 cross-check): a malformed nested
+      // status used to skip the agreement check entirely, so a corrupt terminal body was
+      // admitted as though its status simply had not been sent.
+      const nestedStatus = statusOf(nested);
       const expected = parsed['type'] === 'response.completed' ? 'completed' : 'incomplete';
-      if (typeof nestedStatus === 'string' && nestedStatus !== expected) {
+      if (nestedStatus !== undefined && nestedStatus !== expected) {
         throw new Unreplayable('terminal_status_mismatch');
       }
       terminal = nested;
