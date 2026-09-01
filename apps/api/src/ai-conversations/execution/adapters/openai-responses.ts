@@ -157,10 +157,41 @@ type TerminalResolution =
  *  stateless pattern; adjacency preserved, nothing filtered, nothing reshaped).
  *
  *  First-party: `output` is a REQUIRED property of the Response object and is typed `array`, so a
- *  terminal body without one is out of grammar — not a shape GovAI may guess at. */
+ *  terminal body without one is out of grammar — not a shape GovAI may guess at.
+ *
+ *  ★ RF-5 — THE ELEMENTS ANSWER TO THE LAW TOO, NOT ONLY THE CONTAINER (review finding
+ *  3901193182). RF-1 consolidated the CONTAINER question here and stopped there, so a capture
+ *  whose `output` was `[null]` — or any other primitive — satisfied every chaining condition and
+ *  became a `previous_response_id` anchor, while the SAME capture on any stateless fallback
+ *  injected that primitive straight into the next Responses `input`, leaving every later turn of
+ *  the branch failing against an opaque provider rejection. One durable truth, two behaviours,
+ *  and neither of them looked at what was actually in the array.
+ *
+ *  First-party (`openai@6.35.0`, the installed generated client): `Response.output` is
+ *  `Array<ResponseOutputItem>`, and every one of that union's 25 members is an `interface` — an
+ *  object type. There is no primitive, string-literal or array member, so a primitive element has
+ *  NO representation in the provider's own contract and refusing one cannot refuse legitimate
+ *  provider output.
+ *
+ *  ★ STRUCTURAL STRICTNESS IS NOT A CLOSED TYPE ENUMERATION. The union is provider-EVOLVING
+ *  (compaction, tool-search and apply-patch items are recent arrivals), so listing known `type`
+ *  values would version-lock this adapter and refuse FUTURE legitimate output — the same §31
+ *  posture that keeps unknown Anthropic block types passing through verbatim. The rule is object
+ *  SHAPE only: an unknown object item is accepted and replayed byte-preserved; a primitive is
+ *  refused precisely. It is the exact sibling of the Anthropic door's `content_block_not_object`,
+ *  which this door was missing.
+ *
+ *  Placing it HERE is what makes it unconditional: `terminalOf` is the ONLY constructor of a
+ *  `TerminalResolution`, and both doors — the stored body and the streamed terminal event, which
+ *  first-party types as the SAME `Response` object — run through it. So "a terminal resolution
+ *  exists" continues to mean "this output is structurally replayable", for every strategy, by
+ *  construction rather than by agreement between two lists of checks. */
 function terminalOf(body: JsonObject): TerminalResolution {
   const output = body['output'];
   if (!Array.isArray(output)) throw new Unreplayable('response_output_shape_unknown');
+  for (const item of output) {
+    if (!isObject(item)) throw new Unreplayable('response_output_item_not_object');
+  }
   return { kind: 'terminal', body, output };
 }
 

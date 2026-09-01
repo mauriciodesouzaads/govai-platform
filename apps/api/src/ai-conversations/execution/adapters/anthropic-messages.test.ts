@@ -1767,6 +1767,8 @@ describe('anthropic adapter — RF-4: the citations CONTAINER law is shared by e
       ['null', null, true],
       ['empty array', [], true],
       ['array of opaque elements', [OPAQUE_ELEMENT], true],
+      // RF-5 moved this value's verdict from ACCEPT to REFUSE (see the RF-5 block below). The
+      // PARITY assertion this test makes is unchanged and still holds: all three paths agree.
       ['array of an opaque STRING', ['future-opaque-value'], true],
       ...MALFORMED_CITATIONS.map(([l, v]) => [l, v, true] as const),
     ];
@@ -1785,13 +1787,22 @@ describe('anthropic adapter — RF-4: the citations CONTAINER law is shared by e
     expect(detailOf(citationsStreamWithDelta(42, true))).toBe('block_start_payload_invalid');
   });
 
-  it('ANTI-OVER-HARDENING — absent, null, [] and opaque arrays all replay, byte-for-byte', () => {
+  it('ANTI-OVER-HARDENING — absent, null, [] and opaque OBJECT arrays all replay, byte-for-byte', () => {
+    // ★ CHANGED BY RF-5, WITH THE REASON RECORDED RATHER THAN THE EXPECTATION SWAPPED. This list
+    // used to include `['future-opaque-value']` — an opaque STRING element — as a value that
+    // replays. RF-5 refuses it, and the RF-4 guarantee is unchanged and strengthened rather than
+    // reversed: RF-4's boundary was that the element TYPE UNION must not be version-locked, and
+    // it is not — the opaque OBJECT below is still never inspected, on any path. What RF-5 adds
+    // is that an element must be an OBJECT at all, which first-party requires on both wires (all
+    // five `TextCitation` and all five `TextCitationParam` members are object types) and which
+    // the `citations_delta` site had ALREADY been enforcing since c8cc5bb — so the old ACCEPT
+    // here was one half of a two-verdict disagreement, not a forward-compatibility guarantee.
+    // The string case is retained as a REFUSAL proof in the RF-5 block below.
     for (const [label, citations, present] of [
       ['absent', undefined, false],
       ['null', null, true],
       ['empty array', [], true],
       ['array of opaque elements', [OPAQUE_ELEMENT], true],
-      ['array of an opaque STRING', ['future-opaque-value'], true],
     ] as Array<readonly [string, unknown, boolean]>) {
       const expected = [{ type: 'text', text: 'A', ...(present ? { citations } : {}) }];
       // The stored door replays the capture verbatim …
@@ -1814,6 +1825,278 @@ describe('anthropic adapter — RF-4: the citations CONTAINER law is shared by e
       expect(replayedBlocks(citationsStreamWithDelta(citations, present)), label).toEqual([
         { type: 'text', text: 'A', citations: expected },
       ]);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-5 — EVIDENCE PRESERVATION DURING ACCUMULATION (review finding 3901193188 + its signature
+// sibling, found by the same sweep).
+//
+// RF-3 and RF-4 asked VERDICT-PARITY questions: can one raw value receive two verdicts? This
+// family asks a different one — when both paths ACCEPT, is the REPLAYED CONTENT still what was
+// captured? A parity-shaped lens cannot see a fidelity loss that is symmetric across transports,
+// which is exactly why the RF-4 sibling audit did not surface this.
+//
+// Of the five fields the reassembler mutates, three ACCUMULATE (`text`, `thinking`, `citations`)
+// and two REPLACE (`signature`, tool `input`). Only the replacing pair can destroy evidence, and
+// first-party defines that replacement against a documented EMPTY opening:
+//
+//   content_block_start  tool_use / server_tool_use   →  "input": {}
+//   content_block_start  thinking                     →  "thinking": "", "signature": ""
+//   input_json_delta     "the deltas are partial JSON strings, whereas the final
+//                         tool_use.input is always an object" — accumulate, then parse at
+//                         content_block_stop. The accumulated value is the COMPLETE input.
+//
+// So the accumulated value REPLACES the seed rather than extending it, and that is lossless only
+// while the seed is the documented placeholder. No merge semantics exist first-party, so an
+// out-of-grammar capture gets a precise refusal instead of an invented reconstruction.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** A streamed tool-use-family block: chosen seed, then an `input_json_delta` accumulation. */
+const toolStream = (type: string, input: unknown, fragments: string[]) =>
+  grammar([
+    START,
+    { type: 'content_block_start', index: 0, content_block: { type, id: 'tu_1', name: 'get_weather', input } },
+    ...fragments.map((partial_json) => ({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'input_json_delta', partial_json },
+    })),
+    { type: 'content_block_stop', index: 0 },
+    DELTA,
+    { type: 'message_stop' },
+  ]);
+
+/** A streamed thinking block: chosen signature seed, then the real value as a `signature_delta`. */
+const thinkingStream = (signature: unknown, present: boolean) =>
+  grammar([
+    START,
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'thinking', thinking: '', ...(present ? { signature } : {}) },
+    },
+    { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'T' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'REAL' } },
+    { type: 'content_block_stop', index: 0 },
+    DELTA,
+    { type: 'message_stop' },
+  ]);
+
+/** The three block types this adapter treats as the tool-use family (its `input_json_delta`
+ *  compatibility map). `mcp_tool_use` is included because the map already routes deltas to it. */
+const TOOL_FAMILY = ['tool_use', 'server_tool_use', 'mcp_tool_use'] as const;
+
+describe('anthropic adapter — RF-5: a replacing delta may not discard the seed it replaces', () => {
+  it('★ ANTHROPIC-B1 — a NON-EMPTY seeded tool input + a later delta REFUSES, never silently drops', () => {
+    // The finding verbatim: start `{a: 1}`, delta `{"b":2}`. Before RF-5 this replayed as
+    // `{b: 2}` — the durable assistant tool call differed from the stream it claims to reproduce,
+    // with no refusal anywhere. Proven for EVERY member of the family the delta map routes to.
+    for (const type of TOOL_FAMILY) {
+      expect(detailOf(toolStream(type, { a: 1 }, ['{"b":2}'])), type).toBe(
+        'tool_input_seed_not_empty',
+      );
+      expect(verdictOf(toolStream(type, { a: 1 }, ['{"b":2}'])), type).toBe(
+        'REFUSE(context_unreplayable)',
+      );
+    }
+  });
+
+  it('★ ANTHROPIC-B1 — an EMPTY-FRAGMENT accumulation cannot fabricate `{}` over a seed either', () => {
+    // The same defect with the opposite payload: `partial_json: ""` reconstructs `{}`, which
+    // before RF-5 REPLACED `{a: 1}` with a fabricated empty object. Same law, same refusal.
+    expect(detailOf(toolStream('tool_use', { a: 1 }, ['']))).toBe('tool_input_seed_not_empty');
+  });
+
+  it('★ ANTHROPIC-B2 — the EXACT documented start shape + chunked deltas reconstructs correctly', () => {
+    // First-party's own example stream, fragment for fragment: `"input": {}` opened, then
+    // `""`, `{"location":`, ` "San`, ` Francisc`, `o,`, ` CA"}`.
+    const result = toolStream('tool_use', {}, ['', '{"location":', ' "San', ' Francisc', 'o,', ' CA"}']);
+    expect(replayedBlocks(result)).toEqual([
+      { type: 'tool_use', id: 'tu_1', name: 'get_weather', input: { location: 'San Francisco, CA' } },
+    ]);
+  });
+
+  it('★ ANTHROPIC-B3 — a STORED final tool block with a populated input stays lawful', () => {
+    // The rule must NOT leak from the wire onto the final message. First-party documents the
+    // final `mcp_tool_use` block with a populated `input` — refusing that would brick every
+    // branch that ever called a tool.
+    for (const type of TOOL_FAMILY) {
+      const block = { type, id: 'tu_1', name: 'echo', input: { param1: 'value1' } };
+      expect(
+        replayedBlocks(storedBody({ role: 'assistant', model: MODEL, content: [block] })),
+        type,
+      ).toEqual([block]);
+    }
+  });
+
+  it('★ ANTHROPIC-B4 — stream and stored differ ONLY where the wire grammar differs', () => {
+    // A populated tool input is REFUSED as a streamed seed that a delta will overwrite, and
+    // ACCEPTED as a final message — not an inconsistency but the two grammars first-party
+    // actually publishes. The proof that it is scoped to the overwrite and not to the transport:
+    // the SAME populated seed on a stream with NO delta replays verbatim.
+    const seeded = { type: 'tool_use', id: 'tu_1', name: 'get_weather', input: { a: 1 } };
+    expect(verdictOf(toolStream('tool_use', { a: 1 }, ['{"b":2}']))).toBe(
+      'REFUSE(context_unreplayable)',
+    );
+    expect(
+      replayedBlocks(storedBody({ role: 'assistant', model: MODEL, content: [seeded] })),
+    ).toEqual([seeded]);
+    expect(replayedBlocks(toolStream('tool_use', { a: 1 }, []))).toEqual([seeded]);
+  });
+
+  it('★ ANTHROPIC-B5 — a `text` start value is PRESERVED across text_delta (append, not replace)', () => {
+    const result = grammar([
+      START,
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'SEED' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '-tail' } },
+      { type: 'content_block_stop', index: 0 },
+      DELTA,
+      { type: 'message_stop' },
+    ]);
+    expect(replayedBlocks(result)).toEqual([{ type: 'text', text: 'SEED-tail' }]);
+  });
+
+  it('★ ANTHROPIC-B6 — a `thinking` start value is PRESERVED across thinking_delta', () => {
+    const result = grammar([
+      START,
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: 'SEED', signature: '' },
+      },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '-tail' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'S' } },
+      { type: 'content_block_stop', index: 0 },
+      DELTA,
+      { type: 'message_stop' },
+    ]);
+    expect(replayedBlocks(result)).toEqual([
+      { type: 'thinking', thinking: 'SEED-tail', signature: 'S' },
+    ]);
+  });
+
+  it('★ ANTHROPIC-B7 — the SIGNATURE sibling: replacement is lawful only over the empty placeholder', () => {
+    // Found by this sweep, not by the review: `signature` is the OTHER replacing delta, and it
+    // carries the more sensitive evidence — §18 forbids synthesizing or modifying signatures, and
+    // overwriting a captured one IS a modification. First-party opens the block with
+    // `"signature": ""`, so that placeholder (and a lawful absence) may be replaced, and nothing
+    // else may. Before RF-5, `"FORGED"` was silently overwritten by `"REAL"`.
+    expect(detailOf(thinkingStream('FORGED', true))).toBe('thinking_signature_seed_not_empty');
+    for (const seed of [42, null, [], {}]) {
+      expect(detailOf(thinkingStream(seed, true)), JSON.stringify(seed)).toBe(
+        'thinking_signature_seed_not_empty',
+      );
+    }
+    // ANTI-OVER-HARDENING: the documented placeholder and a lawful absence both still replace.
+    for (const [label, signature, present] of [
+      ['documented ""', '', true],
+      ['absent', undefined, false],
+    ] as Array<readonly [string, unknown, boolean]>) {
+      expect(replayedBlocks(thinkingStream(signature, present)), label).toEqual([
+        { type: 'thinking', thinking: 'T', signature: 'REAL' },
+      ]);
+    }
+  });
+
+  it('★ ANTHROPIC-B8 — existing `citations` are still PRESERVED across citations_delta', () => {
+    // RF-3/RF-4 unchanged: the accumulator appends, and the opaque element it appends to is never
+    // inspected. Re-pinned here because RF-5 touched the citations predicate.
+    expect(replayedBlocks(citationsStreamWithDelta([OPAQUE_ELEMENT], true))).toEqual([
+      { type: 'text', text: 'A', citations: [OPAQUE_ELEMENT, CITATION] },
+    ]);
+  });
+
+  it('★ ANTHROPIC-B9 — a reconstructed tool input must still be an OBJECT', () => {
+    // Unchanged by RF-5 and re-pinned: valid-but-non-object accumulated JSON refuses rather than
+    // overwriting the block with a shape the provider rejects on replay.
+    for (const fragment of ['[]', 'null', '7', '"s"', 'true']) {
+      expect(detailOf(toolStream('tool_use', {}, [fragment])), fragment).toBe(
+        'tool_input_json_invalid',
+      );
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-5 — STRUCTURAL ADMISSIBILITY OF CAPTURED `citations` ELEMENTS.
+//
+// The Anthropic sibling of the OpenAI `output`-element finding, and the one that made the two
+// paths already disagree: `citations_delta` has required `isObject(delta['citation'])` since
+// c8cc5bb, so `citations: ['x']` REFUSED when the element arrived as a delta and was ACCEPTED
+// when the identical element arrived inside the container. One raw value, two verdicts.
+//
+// First-party: all five members of `TextCitation` (response) and all five of `TextCitationParam`
+// (request) are object types. A primitive element has no representation on either wire.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const PRIMITIVE_CITATION_ELEMENTS: Array<readonly [string, unknown]> = [
+  ['null', null],
+  ['string', 'future-opaque-value'],
+  ['number', 7],
+  ['boolean', true],
+  ['nested array', ['x']],
+];
+
+describe('anthropic adapter — RF-5: a captured citation ELEMENT must be object-shaped', () => {
+  it('★ a primitive element refuses on ALL THREE paths — the delta path no longer stands alone', () => {
+    for (const [label, element] of PRIMITIVE_CITATION_ELEMENTS) {
+      for (const [pathLabel, run] of CITATION_PATHS) {
+        expect(verdictOf(run([element], true)), `${label} via ${pathLabel}`).toBe(
+          'REFUSE(context_unreplayable)',
+        );
+      }
+    }
+  });
+
+  it('★ the SAME element refuses whether it arrives in the container or as a delta', () => {
+    // The asymmetry this closes, stated as an executable claim.
+    for (const [label, element] of PRIMITIVE_CITATION_ELEMENTS) {
+      const viaContainer = verdictOf(citationsStreamNoDelta([element], true));
+      const viaDelta = verdictOf(
+        grammar([
+          START,
+          citationsBlockStart([], true),
+          TEXT_DELTA_A,
+          { type: 'content_block_delta', index: 0, delta: { type: 'citations_delta', citation: element } },
+          { type: 'content_block_stop', index: 0 },
+          DELTA,
+          { type: 'message_stop' },
+        ]),
+      );
+      expect(viaDelta, `${label} delta`).toBe('REFUSE(context_unreplayable)');
+      expect(viaContainer, `${label} container`).toBe(viaDelta);
+    }
+  });
+
+  it('★ ANTI-OVER-HARDENING — the element TYPE UNION is still not version-locked', () => {
+    // The boundary RF-4 drew and RF-5 keeps: an OBJECT element of a kind this adapter has never
+    // heard of passes through every path, is replayed verbatim, and is appended to without ever
+    // being inspected. Only the SHAPE is judged; the `type` value never is.
+    const expected = [{ type: 'text', text: 'A', citations: [OPAQUE_ELEMENT] }];
+    expect(replayedBlocks(citationsStored([OPAQUE_ELEMENT], true))).toEqual(expected);
+    expect(replayedBlocks(citationsStreamNoDelta([OPAQUE_ELEMENT], true))).toEqual(expected);
+    expect(replayedBlocks(citationsStreamWithDelta([OPAQUE_ELEMENT], true))).toEqual([
+      { type: 'text', text: 'A', citations: [OPAQUE_ELEMENT, CITATION] },
+    ]);
+    // …and an element that is an object with NO recognisable fields at all still passes.
+    expect(replayedBlocks(citationsStreamNoDelta([{}], true))).toEqual([
+      { type: 'text', text: 'A', citations: [{}] },
+    ]);
+  });
+
+  it('★ ANTI-OVER-HARDENING — absent, null and [] remain lawful containers', () => {
+    for (const [label, citations, present] of [
+      ['absent', undefined, false],
+      ['null', null, true],
+      ['empty array', [], true],
+    ] as Array<readonly [string, unknown, boolean]>) {
+      const expected = [{ type: 'text', text: 'A', ...(present ? { citations } : {}) }];
+      expect(replayedBlocks(citationsStored(citations, present)), `${label} stored`).toEqual(expected);
+      expect(replayedBlocks(citationsStreamNoDelta(citations, present)), `${label} stream`).toEqual(
+        expected,
+      );
     }
   });
 });

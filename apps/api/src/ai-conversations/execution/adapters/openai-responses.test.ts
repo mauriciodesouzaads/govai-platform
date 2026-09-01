@@ -1005,3 +1005,207 @@ describe('openai adapter — RF-3 cross-check: malformed presence is not absence
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// RF-5 — STRUCTURAL ADMISSIBILITY OF CAPTURED OUTPUT ELEMENTS (review finding 3901193182).
+//
+// RF-1 closed the CONTAINER question — `output` must be an array, decided once, for every
+// strategy. It did not ask the ELEMENT question, so `output: [null]` still satisfied the whole
+// chaining predicate: a response GovAI cannot replay became a chain anchor, and the same capture
+// on any stateless fallback injected the primitive straight into the next Responses `input`.
+//
+// FIRST-PARTY BASIS (openai@6.35.0, the installed generated client — machine-readable, not
+// remembered): `Response.output` is `Array<ResponseOutputItem>`, and EVERY ONE of the 25 members
+// of that union is an `interface` — an object type. There is no primitive, string-literal or
+// array member. A primitive element therefore has NO representation in the provider's own
+// contract, so refusing one cannot refuse legitimate provider output.
+//
+// ★ STRUCTURAL STRICTNESS != CLOSED TYPE ENUMERATION. The union is provider-EVOLVING (compaction,
+// tool-search and apply-patch items are recent additions), so enumerating known `type` values
+// would version-lock this adapter. The law is object-SHAPE only; unknown object types pass
+// through verbatim, exactly as the Anthropic door's `content_block_not_object` rule does.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Every primitive JSON shape an `output` element could carry. None is a lawful ResponseOutputItem. */
+const PRIMITIVE_OUTPUT_ITEMS: Array<readonly [string, unknown]> = [
+  ['null', null],
+  ['number', 42],
+  ['string', 'x'],
+  ['boolean', true],
+  // An ARRAY is not an object either: no union member is an array, and `isObject` excludes them.
+  ['array', ['nested']],
+];
+
+/** A future provider item type this adapter has never heard of. Object-shaped, so it MUST pass. */
+const FUTURE_OUTPUT_ITEM = { type: 'future_provider_item', id: 'fut_1', opaque: 'preserve me' };
+
+const storedOutput = (output: unknown) =>
+  build([entry({ assistant: responseAssistant({ id: 'resp_1', status: 'completed', output }) })], {
+    model: 'gpt-test',
+    input: 'u2',
+  });
+
+const streamedOutput = (output: unknown) =>
+  build(
+    [
+      entry({
+        assistant: streamed(
+          sseOf([{ type: 'response.completed', response: { id: 'resp_t', status: 'completed', output } }]),
+        ),
+      }),
+    ],
+    { model: 'gpt-test', input: 'u2' },
+  );
+
+const OUTPUT_DOORS = [
+  ['stored response body', storedOutput],
+  ['streamed terminal event', streamedOutput],
+] as const;
+
+describe('openai adapter — RF-5: a captured output ELEMENT must be object-shaped', () => {
+  it('★ RF-5 — OPENAI-A1/A2/A3 — a primitive output element refuses on BOTH doors', () => {
+    // OPENAI-A1 is the `[null]` case the finding names; A2 widens it to every primitive; A3 is
+    // the same matrix through the streamed terminal.
+    for (const [label, item] of PRIMITIVE_OUTPUT_ITEMS) {
+      for (const [door, run] of OUTPUT_DOORS) {
+        expect(run([item]), `${label} via ${door}`).toEqual({
+          ok: false,
+          reason: 'context_unreplayable',
+          detail: 'response_output_item_not_object',
+        });
+      }
+    }
+  });
+
+  it('★ OPENAI-A4 — stored and streamed give the SAME verdict for the same raw output', () => {
+    // First-party makes this a REQUIREMENT, not a nicety: `ResponseCompletedEvent.response` and
+    // `ResponseIncompleteEvent.response` are typed as the SAME `Response` object the stored door
+    // holds. One grammar, one verdict — the transport cannot change the answer.
+    const values: Array<readonly [string, unknown]> = [
+      ...PRIMITIVE_OUTPUT_ITEMS.map(([l, v]) => [l, [v]] as const),
+      ['empty array', []],
+      ['known object item', [{ type: 'message', role: 'assistant', content: [] }]],
+      ['future object item', [FUTURE_OUTPUT_ITEM]],
+      ['a primitive AFTER a valid item', [{ type: 'message', role: 'assistant', content: [] }, 7]],
+    ];
+    for (const [label, output] of values) {
+      const verdicts = OUTPUT_DOORS.map(([, run]) => {
+        const r = run(output);
+        return r.ok ? 'ACCEPT' : `REFUSE(${(r as unknown as { detail: string }).detail})`;
+      });
+      expect(new Set(verdicts).size, `${label} → ${JSON.stringify(verdicts)}`).toBe(1);
+    }
+  });
+
+  it('★ OPENAI-A5 — an UNKNOWN object item is accepted and replayed BYTE-PRESERVED', () => {
+    // The forward-compatibility boundary. The rule enumerates no `type`, so a provider item this
+    // adapter has never seen rides through the STATELESS projection untouched — the path that
+    // actually re-sends the captured output, and therefore the one where any reshaping would show.
+    const statelessState = STRATEGY_STATES.find((s) => s.name === 'this turn sets store:false')!;
+    const result = underState(statelessState, {
+      id: 'resp_1',
+      status: 'completed',
+      output: [FUTURE_OUTPUT_ITEM],
+    });
+    expect(result).toEqual({
+      ok: true,
+      body: {
+        model: 'gpt-test',
+        store: false,
+        input: [
+          { role: 'user', content: 'u1' },
+          FUTURE_OUTPUT_ITEM,
+          { role: 'user', content: 'u2' },
+        ],
+      },
+      continuation: { kind: 'stateless_replay' },
+    });
+    // Identity, not just deep equality: the element is the SAME object, never a reconstruction.
+    const replayed = (result as unknown as { body: { input: unknown[] } }).body.input[1];
+    expect(replayed).toBe(FUTURE_OUTPUT_ITEM);
+  });
+
+  it('★ OPENAI-A6 — an EMPTY output array stays lawful (first-party permits it)', () => {
+    // `output` is `Array<ResponseOutputItem>`; the empty array is a valid array. A response that
+    // produced no items is honest terminal context, and it still chains.
+    expect(storedOutput([])).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_1' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+  });
+
+  it('★ OPENAI-A7 — a valid known object output is unchanged by the new rule', () => {
+    expect(build([entry({ assistant: responseAssistant(RESP_1) })], {
+      model: 'gpt-test',
+      input: 'u2',
+    })).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_1' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+  });
+
+  it('★ OPENAI-A8 — the malformed capture is unreplayable in EVERY strategy state', () => {
+    // The temporal form, exactly as RF-1 pinned it: a replayability law must not depend on which
+    // continuation strategy happens to be selected. Chaining must not admit what the stateless
+    // fallback would refuse — that is how `chainable ⇒ replayable` is kept true by construction.
+    for (const state of STRATEGY_STATES) {
+      expect(
+        underState(state, { id: 'resp_1', status: 'completed', output: [null] }),
+        state.name,
+      ).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'response_output_item_not_object',
+      });
+    }
+  });
+
+  it('★ OPENAI-A8 (mirror) — a capture with an UNKNOWN object item still succeeds in every state', () => {
+    // Without this, "refuse more often" would be indistinguishable from the fix.
+    for (const state of STRATEGY_STATES) {
+      const result = underState(state, {
+        id: 'resp_1',
+        status: 'completed',
+        output: [FUTURE_OUTPUT_ITEM],
+      });
+      expect(result.ok, state.name).toBe(true);
+    }
+  });
+
+  it('★ OPENAI-A9 — a PROVIDER-FAILED capture never has its output structurally judged', () => {
+    // Ordering guard. A response the provider itself declared failed contributes NO output to the
+    // context, so its output shape is irrelevant — validating it would brick a branch behind a
+    // provider failure. Both failure doors: the stored `status`, and the streamed `response.failed`.
+    const expected = {
+      ok: true,
+      body: {
+        model: 'gpt-test',
+        input: [{ role: 'user', content: 'u1' }, { role: 'user', content: 'u2' }],
+      },
+      continuation: { kind: 'stateless_replay' },
+    };
+    for (const status of ['failed', 'cancelled']) {
+      expect(
+        build(
+          [entry({ assistant: responseAssistant({ id: 'resp_f', status, output: [null, 42] }) })],
+          { model: 'gpt-test', input: 'u2' },
+        ),
+        status,
+      ).toEqual(expected);
+    }
+    expect(
+      build(
+        [
+          entry({
+            assistant: streamed(
+              sseOf([{ type: 'response.failed', response: { id: 'resp_f', output: [null] } }]),
+            ),
+          }),
+        ],
+        { model: 'gpt-test', input: 'u2' },
+      ),
+    ).toEqual(expected);
+  });
+});

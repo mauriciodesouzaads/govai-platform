@@ -172,7 +172,7 @@ function providerModelOf(message: JsonObject): string | null {
   return model;
 }
 
-/** ★ RF-4 — THE `citations` CONTAINER LAW, EXPRESSED EXACTLY ONCE (review finding 3900679017).
+/** ★ RF-4 — THE `citations` LAW, EXPRESSED EXACTLY ONCE (review finding 3900679017).
  *  First-party: the RESPONSE `TextBlock.citations` is `Array<TextCitation> | null`, and the
  *  REQUEST `TextBlockParam.citations` is OPTIONAL and `Array<TextCitationParam> | null`. So
  *  ABSENT, `null` and ARRAY are all lawful — on the wire GovAI reads AND on the wire it replays
@@ -182,14 +182,78 @@ function providerModelOf(message: JsonObject): string | null {
  *  so an opaque provider 400 would repeat on EVERY later turn, whereas `context_unreplayable`
  *  fails once, precisely, and names the reason.
  *
- *  ★ THE ELEMENTS ARE DELIBERATELY NOT VALIDATED. `TextCitation` is an OPEN, provider-evolving
- *  union — it has already grown `web_search_result_location` and `search_result_location` beyond
- *  the original three location kinds — so enforcing a closed element list would version-lock this
- *  adapter and refuse FUTURE legitimate provider output. That is the §31 forward-compatible
- *  posture already kept for unknown block types and unknown fields. CONTAINER SHAPE: STRICT.
- *  ARRAY ELEMENT UNION: FORWARD COMPATIBLE. */
-function citationsContainerInvalid(citations: unknown): boolean {
-  return citations !== undefined && citations !== null && !Array.isArray(citations);
+ *  ★ RF-5 — THE ELEMENTS MUST BE OBJECT-SHAPED, AND THAT IS NOT A CLOSED ELEMENT LIST. RF-4
+ *  declined to validate elements at all, for a reason that remains correct: `TextCitation` is an
+ *  OPEN, provider-evolving union — it has already grown `web_search_result_location` and
+ *  `search_result_location` beyond the original three location kinds — so enforcing a closed
+ *  list of `type` VALUES would version-lock this adapter and refuse FUTURE legitimate provider
+ *  output. Object SHAPE is a different question, and first-party answers it flatly: all five
+ *  members of `TextCitation`, and all five of `TextCitationParam`, are object types. A primitive
+ *  element has no representation on either wire.
+ *
+ *  What made this NECESSARY rather than merely defensible is that the two paths already
+ *  DISAGREED about it. The `citations_delta` site has required `isObject(delta['citation'])`
+ *  since the delta-payload finding on c8cc5bb, so `citations: ['x']` REFUSED when the element
+ *  arrived as a delta and was ACCEPTED when the identical element arrived inside the container —
+ *  one raw semantic value, two verdicts, which is precisely the shape RF-4 removed one level up.
+ *  Tightening the container is the only direction that closes it: loosening the delta would undo
+ *  a prior finding and let a malformed citation be fabricated into the block.
+ *
+ *  CONTAINER SHAPE: STRICT. ELEMENT SHAPE: STRICT. ELEMENT TYPE UNION: FORWARD COMPATIBLE — an
+ *  opaque object element this adapter has never seen still passes through, and is still appended
+ *  to, without ever being inspected. */
+function citationsInvalid(citations: unknown): boolean {
+  if (citations === undefined || citations === null) return false;
+  if (!Array.isArray(citations)) return true;
+  return citations.some((citation) => !isObject(citation));
+}
+
+/** ★ RF-5 — THE REPLACED-SEED LAW: A DELTA MAY ONLY OVERWRITE A PLACEHOLDER THAT CARRIES NO
+ *  EVIDENCE (review finding 3901193188, and its signature sibling found by the same sweep).
+ *
+ *  Of the five fields the reassembler mutates, three ACCUMULATE — `text` and `thinking` append to
+ *  what the start block carried, and `citations` appends to the existing array — so a start value
+ *  survives whatever follows it. Two REPLACE: `signature` and a tool `input`. First-party defines
+ *  that replacement, and defines it against an EMPTY opening:
+ *
+ *    * a streamed tool-use block opens `"input": {}`, and the deltas "are partial JSON strings,
+ *      whereas the final `tool_use.input` is always an object" — you "accumulate the string
+ *      deltas and parse the JSON once you receive a `content_block_stop` event". The accumulated
+ *      value is therefore the COMPLETE input, not a fragment to be merged into a seed;
+ *    * a streamed thinking block opens `{"type":"thinking","thinking":"","signature":""}`, and
+ *      the real signature arrives "as a `signature_delta` … just before the `content_block_stop`".
+ *
+ *  So replacement loses nothing WHEN THE SEED IS THE DOCUMENTED PLACEHOLDER — and silently
+ *  discards captured provider evidence when it is not. The old code replaced unconditionally, so
+ *  a block whose start carried `input: {a: 1}` and then received `{"b":2}` replayed as `{b: 2}`:
+ *  the durable assistant tool call differed from the capture it claims to reproduce, with no
+ *  refusal anywhere. The signature case is the same shape on more sensitive evidence — §18 of the
+ *  movement dispatch forbids synthesizing or modifying signatures, and overwriting a captured one
+ *  is a modification.
+ *
+ *  ★ NO MERGE SEMANTICS ARE INVENTED, DELIBERATELY. First-party defines no merge for either
+ *  field — no deep merge, no shallow merge, no last-write-wins — so a capture outside the
+ *  documented grammar gets a PRECISE REFUSAL rather than a reconstruction GovAI made up. That is
+ *  the same choice `delta_type_unknown` already makes one level up.
+ *
+ *  ★ THE RULE IS SCOPED TO EXACTLY WHAT REPLAY FIDELITY DEPENDS ON (the RF-2 precedent). It asks
+ *  about the seed ONLY at the moment a delta is about to replace it, so it makes NO claim about
+ *  the opening shape of a block that never accumulates — which matters for `mcp_tool_use`, whose
+ *  final block first-party documents with a populated `input` and whose STREAMED opening shape it
+ *  does not document at all. A block with no delta keeps its start value verbatim and is never
+ *  consulted here. ABSENCE is lawful for the same reason: there is nothing to lose.
+ *
+ *  `opening` names WHICH documented placeholder this field opens with — the two replacing fields
+ *  do not share one — exactly as `blockPayloadInvalid`'s `phase` names which of two lawful
+ *  moments a block is being judged at. One law, parameterized by the field's own grammar, rather
+ *  than a looser predicate that would accept either placeholder for either field and let a
+ *  `signature` open as `{}`. */
+function replacedSeedCarriesEvidence(seed: unknown, opening: '' | 'empty_object'): boolean {
+  if (seed === undefined) return false;
+  // Anything that is not EXACTLY the field's documented opening is evidence this reassembly
+  // would destroy — including a present value of the wrong kind entirely.
+  if (opening === '') return seed !== '';
+  return !isObject(seed) || Object.keys(seed).length > 0;
 }
 
 /** ★ THE KNOWN-BLOCK PAYLOAD LAW, SHARED BY BOTH DOORS (closure sweep). A provider-produced
@@ -219,7 +283,7 @@ function blockPayloadInvalid(block: JsonObject, phase: 'start' | 'final'): boole
   const type = block['type'];
   return (
     (type === 'text' &&
-      (typeof block['text'] !== 'string' || citationsContainerInvalid(block['citations']))) ||
+      (typeof block['text'] !== 'string' || citationsInvalid(block['citations']))) ||
     (type === 'thinking' &&
       (typeof block['thinking'] !== 'string' ||
         (phase === 'final' && typeof block['signature'] !== 'string'))) ||
@@ -464,6 +528,12 @@ function assistantMessageFromStream(sseText: string): {
             // the movement dispatch — never synthesize or modify signatures).
             const signature = delta['signature'];
             if (typeof signature !== 'string') throw new UnreplayableStream('delta_payload_invalid');
+            // ★ RF-5 — this assignment REPLACES; the shared law above says what it may replace.
+            // First-party opens the block with `"signature": ""`, so overwriting anything else
+            // would discard a captured signature — the one field §18 says must never be modified.
+            if (replacedSeedCarriesEvidence(block['signature'], '')) {
+              throw new UnreplayableStream('thinking_signature_seed_not_empty');
+            }
             block['signature'] = signature;
             signedBlocks.add(index);
             break;
@@ -485,15 +555,15 @@ function assistantMessageFromStream(sseText: string): {
             //
             // ★ RF-4 — ONE RULE, TWO ENFORCEMENT POINTS (never two rules). RF-3 expressed that
             // container rule HERE and only here, which is why it decided the verdict on this path
-            // alone. It now lives in `citationsContainerInvalid`, which `blockPayloadInvalid` runs
-            // for every `text` block at `content_block_start` — so a malformed container has
-            // ALREADY refused before any delta reaches this line, and this call is unreachable
-            // through the public API. It is kept, calling the SAME predicate rather than restating
+            // alone. It now lives in `citationsInvalid`, which `blockPayloadInvalid` runs for
+            // every `text` block at `content_block_start` — so a malformed container has ALREADY
+            // refused before any delta reaches this line, and this call is unreachable through
+            // the public API. It is kept, calling the SAME predicate rather than restating
             // it, for the reason the assistant-role law is enforced twice: the accumulator must
             // never be the place the law is weaker, because the failure it guards is silent
             // fabrication rather than a visible error.
             const existing = block['citations'];
-            if (citationsContainerInvalid(existing)) {
+            if (citationsInvalid(existing)) {
               throw new UnreplayableStream('block_citations_invalid');
             }
             // Absent and `null` both mean "no citations yet" and start a fresh array; an existing
@@ -536,6 +606,14 @@ function assistantMessageFromStream(sseText: string): {
           // "null", a primitive) would overwrite the validated object with a shape the
           // provider rejects on replay.
           if (!isObject(parsedInput)) throw new UnreplayableStream('tool_input_json_invalid');
+          // ★ RF-5 — and it may only overwrite the documented empty seed. The accumulated
+          // `partial_json` IS the complete final input, so a non-empty start value is not
+          // extended by it, it is DELETED by it. Note this also disposes of the `acc === ''`
+          // case: with an empty seed proven, reconstructing `{}` from an empty accumulation
+          // reproduces the seed rather than fabricating over a populated one.
+          if (replacedSeedCarriesEvidence(block['input'], 'empty_object')) {
+            throw new UnreplayableStream('tool_input_seed_not_empty');
+          }
           block['input'] = parsedInput;
           partialJson.delete(index);
         }
