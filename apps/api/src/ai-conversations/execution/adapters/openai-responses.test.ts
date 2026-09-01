@@ -628,3 +628,252 @@ describe('openai adapter — terminal grammar closure', () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// INDEPENDENT VALIDATOR AUDIT — ONE SEMANTIC REPLAYABILITY LAW, EVERY STRATEGY.
+//
+// The invariant these proofs defend is `chainable(r) ⇒ replayable(r)`, never the reverse. A
+// response may legitimately be replayable and NOT chainable (aged anchor, rotated credential,
+// `store: false`, `incomplete`, a provider failure that demotes the chain). It may NEVER be
+// chainable without being replayable — that would be GovAI leaning on provider-held history to
+// make a durable capture it cannot itself replay look usable.
+//
+// First-party (openai/openai-openapi, reverified 2026-08-31): `output` is a REQUIRED property of
+// the Response object and is typed `array`, so a terminal body without one is out of grammar.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+const AGED_MS = NOW_MS - 15 * 24 * 60 * 60 * 1000;
+/** Every static chaining condition satisfied — id, terminal status, credential, age, store — and
+ *  the ONE thing the chainable predicate never looked at is missing. */
+const NO_OUTPUT = { id: 'resp_1', object: 'response', status: 'completed' };
+
+/** The five reachable strategy states for ONE durable capture: chaining available, and the four
+ *  documented demotions that fall back to stateless replay. */
+const STRATEGY_STATES: Array<{
+  name: string;
+  assistant: (body: Record<string, unknown>) => AssembledContextEntry['assistant'];
+  userNative?: Record<string, unknown>;
+  turnConfig: Record<string, unknown>;
+}> = [
+  {
+    name: 'chaining available',
+    assistant: (b) => responseAssistant(b),
+    turnConfig: { model: 'gpt-test', input: 'u2' },
+  },
+  {
+    name: 'anchor aged out of the retention window',
+    assistant: (b) => responseAssistant(b, CRED, AGED_MS),
+    turnConfig: { model: 'gpt-test', input: 'u2' },
+  },
+  {
+    name: 'credential rotated since the anchor',
+    assistant: (b) => responseAssistant(b, 'cred-rotated'),
+    turnConfig: { model: 'gpt-test', input: 'u2' },
+  },
+  {
+    name: 'anchor was created with store:false',
+    assistant: (b) => responseAssistant(b),
+    userNative: { model: 'gpt-test', input: 'u1', store: false },
+    turnConfig: { model: 'gpt-test', input: 'u2' },
+  },
+  {
+    name: 'this turn sets store:false',
+    assistant: (b) => responseAssistant(b),
+    turnConfig: { model: 'gpt-test', input: 'u2', store: false },
+  },
+];
+
+const underState = (state: (typeof STRATEGY_STATES)[number], body: Record<string, unknown>) =>
+  build(
+    [
+      entry({
+        ...(state.userNative === undefined ? {} : { userNative: state.userNative }),
+        assistant: state.assistant(body),
+      }),
+    ],
+    state.turnConfig,
+  );
+
+describe('openai adapter — chainable ⇒ replayable (RF-1 and its family)', () => {
+  it('★ RF-1 — a terminal with NO `output` is NEVER a chaining anchor, however fresh and well-credentialed', () => {
+    // Falsifies the defect exactly: on the pre-audit tree this capture satisfied every chaining
+    // condition (valid id, `completed`, matching credential, fresh, store permitted) and was
+    // POSTed as `previous_response_id` — while the IDENTICAL capture refused the moment any
+    // demotion pushed it onto the stateless path. Two strategies, one durable truth, one answer.
+    const result = build([entry({ assistant: responseAssistant(NO_OUTPUT) })], {
+      model: 'gpt-test',
+      input: 'u2',
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'response_output_shape_unknown',
+    });
+  });
+
+  it('★ a NON-ARRAY `output` is refused the same way — no strategy may guess the shape', () => {
+    for (const output of [{}, 'text', null, 42, true]) {
+      expect(
+        build([entry({ assistant: responseAssistant({ ...NO_OUTPUT, output }) })], {
+          model: 'gpt-test',
+          input: 'u2',
+        }),
+      ).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'response_output_shape_unknown',
+      });
+    }
+  });
+
+  it('★ the verdict on ONE capture is IDENTICAL in every strategy state (the temporal form of RF-1)', () => {
+    // A capture accepted while chaining is available must not turn out to have been unreplayable
+    // all along once the anchor ages out, the credential rotates or `store:false` applies. The
+    // system must never discover at fallback time what it could have known at build time.
+    for (const state of STRATEGY_STATES) {
+      expect(underState(state, NO_OUTPUT), state.name).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'response_output_shape_unknown',
+      });
+    }
+  });
+
+  it('★ and a REPLAYABLE capture still succeeds in every one of those states — strictness has a boundary', () => {
+    // The mirror proof. `replayable ∧ ¬chainable` is a legitimate, common state: it must degrade
+    // to stateless replay, never to a refusal. Without this guard the fix above would be
+    // indistinguishable from simply refusing more often.
+    for (const state of STRATEGY_STATES) {
+      const result = underState(state, RESP_1);
+      expect(result.ok, state.name).toBe(true);
+      const chained =
+        (result as unknown as { continuation: { kind: string } }).continuation.kind ===
+        'response_chain';
+      expect(chained, state.name).toBe(state.name === 'chaining available');
+    }
+  });
+
+  it('a STREAMED terminal answers to the same law as a stored body (transport parity)', () => {
+    const noOutput = sseOf([{ type: 'response.completed', response: NO_OUTPUT }]);
+    expect(
+      build([entry({ assistant: streamed(noOutput) })], { model: 'gpt-test', input: 'u2' }),
+    ).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'response_output_shape_unknown',
+    });
+    // The equivalent VALID stream still chains — the parity is in the law, not in a blanket refusal.
+    expect(build([entry({ assistant: streamed(sseOf([COMPLETED])) })], {
+      model: 'gpt-test',
+      input: 'u2',
+    })).toEqual({
+      ok: true,
+      body: { model: 'gpt-test', input: 'u2', previous_response_id: 'resp_t' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_t' },
+    });
+  });
+
+  it('a PROVIDER-FAILED capture is still input-only even with a malformed `output` — the verdict comes first', () => {
+    // Ordering guard: a response the provider itself declared failed contributes no output at
+    // all, so its output shape is irrelevant. Validating it there would brick a branch behind a
+    // provider failure — the exact regression the closure sweep fixed for the Anthropic door.
+    const result = build(
+      [
+        entry({
+          userNative: { model: 'gpt-test', input: 'u1' },
+          assistant: responseAssistant({ id: 'resp_f', status: 'failed', output: 'garbage' }),
+        }),
+      ],
+      { model: 'gpt-test', input: 'u2' },
+    );
+    expect(result).toEqual({
+      ok: true,
+      body: {
+        model: 'gpt-test',
+        input: [{ role: 'user', content: 'u1' }, { role: 'user', content: 'u2' }],
+      },
+      continuation: { kind: 'stateless_replay' },
+    });
+  });
+});
+
+describe('openai adapter — the dispatching turn is not durable history', () => {
+  // First-party: `input` is OPTIONAL on the create request (a `prompt` template can supply the
+  // content server-side), and GovAI's send contract validates only that the native request is a
+  // JSON object. The turn's own config is POSTed as-is and GovAI reconstructs nothing from it, so
+  // an absent `input` must not refuse — and must not refuse on ONE strategy while passing on
+  // another, which is what the pre-audit tree did.
+
+  const PROMPT_TURN = { model: 'gpt-test', prompt: { id: 'pmpt_1', version: '3' } };
+
+  it('★ a config with NO `input` builds on EVERY strategy, not just the ones that never read it', () => {
+    // chain, no trailing input: the config passes through verbatim (this already worked)
+    expect(build([entry({ assistant: responseAssistant(RESP_1) })], PROMPT_TURN)).toEqual({
+      ok: true,
+      body: { ...PROMPT_TURN, previous_response_id: 'resp_1' },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+    // chain WITH trailing input: the merge no longer demands an `input` of its own
+    expect(
+      build(
+        [
+          entry({ assistant: responseAssistant(RESP_1) }),
+          entry({ turnId: 'turn-2', userNative: { model: 'gpt-test', input: 'u2-lost' } }),
+        ],
+        PROMPT_TURN,
+      ),
+    ).toEqual({
+      ok: true,
+      body: {
+        ...PROMPT_TURN,
+        input: [{ role: 'user', content: 'u2-lost' }],
+        previous_response_id: 'resp_1',
+      },
+      continuation: { kind: 'response_chain', parentResponseId: 'resp_1' },
+    });
+    // stateless replay: the durable history becomes the whole `input`
+    expect(
+      build([entry({ assistant: responseAssistant(RESP_1, 'cred-rotated') })], PROMPT_TURN),
+    ).toEqual({
+      ok: true,
+      body: {
+        ...PROMPT_TURN,
+        input: [{ role: 'user', content: 'u1' }, ...RESP_1.output],
+      },
+      continuation: { kind: 'stateless_replay' },
+    });
+  });
+
+  it('a PRESENT but malformed `input` on this turn still refuses, and says whose it is', () => {
+    for (const badInput of [42, null, { role: 'user' }]) {
+      expect(
+        build([entry({ assistant: responseAssistant(RESP_1, 'cred-rotated') })], {
+          model: 'gpt-test',
+          input: badInput,
+        }),
+      ).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'config_input_shape_unknown',
+      });
+    }
+  });
+
+  it('a HISTORY entry with no `input` still refuses — replaying an ANSWER without its QUESTION is not fidelity', () => {
+    // The deliberate asymmetry, pinned: GovAI cannot reconstruct a turn whose content came from a
+    // server-side prompt template, and emitting its assistant output with no user turn in front
+    // of it would silently change the context. The refusal names HISTORY, not the config.
+    expect(
+      build(
+        [
+          entry({ userNative: { model: 'gpt-test', prompt: { id: 'pmpt_1' } }, assistant: responseAssistant(RESP_1, 'cred-rotated') }),
+        ],
+        { model: 'gpt-test', input: 'u2' },
+      ),
+    ).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'history_input_shape_unknown',
+    });
+  });
+});

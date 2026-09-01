@@ -124,6 +124,20 @@ class ProviderFailedStream extends Error {
 // THE REPLAY LAW — ONE SET OF INVARIANTS, BOTH TRANSPORTS
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
+/** ★ THE ASSISTANT-ROLE LAW, SHARED BY BOTH DOORS (independent validator audit). A
+ *  `/v1/messages` response IS an assistant message; replaying one under any other role would feed
+ *  provider output back into the next prompt as an instruction. The role is validated STRICTLY
+ *  WHEN PRESENT and defaults to `assistant` when absent — the only role a Messages response can
+ *  carry, and the shape every documented `message_start` example uses.
+ *
+ *  IT IS EXPRESSED ONCE BECAUSE IT ALREADY DRIFTED ONCE: review finding 3891516882 (exact head
+ *  50d55d6) was this exact law present on the stream door and missing on the stored-response
+ *  door. Two independent copies of one truth is the defect shape this audit exists to remove, so
+ *  the copies are now two ENFORCEMENT POINTS of a single predicate rather than two rules. */
+function roleInvalid(role: unknown): boolean {
+  return typeof role === 'string' && role !== 'assistant';
+}
+
 /** ★ THE KNOWN-BLOCK PAYLOAD LAW, SHARED BY BOTH DOORS (closure sweep). A provider-produced
  *  Anthropic assistant message is replayable only if its blocks satisfy the SAME invariants,
  *  whether they arrived as a JSON response body or were reassembled from SSE — duplicating the
@@ -153,11 +167,22 @@ function blockPayloadInvalid(block: JsonObject, phase: 'start' | 'final'): boole
 }
 
 /** ★ THE FINAL REPLAY VALIDATION, APPLIED TO WHICHEVER DOOR PRODUCED THE MESSAGE (closure
- *  sweep, post-pause review finding). Stored non-streaming bodies were admitted with NO
- *  per-block validation at all while the reassembler enforced the full stream grammar — so an
- *  unsigned `thinking` block (which the provider ALWAYS signs) could enter same-model replay
- *  through the non-streaming door and make Anthropic reject every later turn of the branch. */
-function validateReplayableContent(content: unknown[]): void {
+ *  sweep, post-pause review finding; the role law folded in by the independent validator audit).
+ *  Stored non-streaming bodies were admitted with NO per-block validation at all while the
+ *  reassembler enforced the full stream grammar — so an unsigned `thinking` block (which the
+ *  provider ALWAYS signs) could enter same-model replay through the non-streaming door and make
+ *  Anthropic reject every later turn of the branch.
+ *
+ *  THIS IS THE SEMANTIC LAW, not a transport one: it is the single point BOTH the stored JSON
+ *  body and the reassembled SSE message must pass before either may join a prompt, and it runs
+ *  BEFORE the model-switch projection — a lawful transformation OF A VALID message, never a way
+ *  to launder an invalid one. Transport-only grammar (`message_start` discipline, block
+ *  lifecycle, delta compatibility, terminal proof) stays in the reassembler where it belongs. */
+function validateReplayableMessage(role: unknown, content: unknown[]): void {
+  // THE ROLE LAW RUNS FIRST, AND DELIBERATELY SO: a message captured under the wrong role is a
+  // corrupt capture whatever it contains, and an empty one must not be reclassified as a lawful
+  // provider non-answer on the way past.
+  if (roleInvalid(role)) throw new UnreplayableStream('message_role_not_assistant');
   // ★ AN EMPTY CONTENT ARRAY IS A PROVIDER NON-ANSWER, NEVER A CORRUPTION (closure sweep,
   // first-party fact reverified 2026-08-31). A classifier refusal is "a normal response, not an
   // error": HTTP 2xx, `"content": []`, `stop_reason: "refusal"`, `output_tokens: 0`. Refusing
@@ -260,11 +285,25 @@ function assistantMessageFromStream(sseText: string): {
         // frame without one carries none of the role/model metadata the replay reads.
         const message = raw['message'];
         if (!isObject(message)) throw new UnreplayableStream('message_start_shape_unknown');
-        if (typeof message['role'] === 'string') {
-          if (message['role'] !== 'assistant') {
-            throw new UnreplayableStream('message_role_not_assistant');
-          }
-          role = message['role'];
+        const startRole = message['role'];
+        if (roleInvalid(startRole)) throw new UnreplayableStream('message_role_not_assistant');
+        if (typeof startRole === 'string') role = startRole;
+        // ★ THE START MESSAGE CARRIES NO CONTENT (review finding RF-2, exact head d6cddf33).
+        // First-party, verbatim: "`message_start`: contains a `Message` object with empty
+        // `content`" — every documented example is `"content": []`. The reassembler builds the
+        // final content from the content-block events ALONE, so start content would be SILENTLY
+        // DROPPED and the message GovAI replays would differ from the message the provider sent.
+        // This is WIRE GRAMMAR, not a final-message law (§15): a stored non-streaming body has
+        // no `message_start` and must not inherit it. It is scoped to exactly what replay
+        // fidelity depends on — content that is PRESENT must be an empty array; an ABSENT
+        // `content` can lose nothing, so requiring its presence would be a version lock with no
+        // consumer (§21).
+        const startContent = message['content'];
+        if (
+          startContent !== undefined &&
+          !(Array.isArray(startContent) && startContent.length === 0)
+        ) {
+          throw new UnreplayableStream('message_start_content_not_empty');
         }
         if (typeof message['model'] === 'string') model = message['model'];
         break;
@@ -497,11 +536,10 @@ function assistantMessageFromEntry(
     if (!isObject(body) || !Array.isArray(body['content'])) {
       throw new UnreplayableStream('response_body_shape_unknown');
     }
-    // Same assistant-role validation as the stream path (review finding, exact head 50d55d6):
-    // a corrupted body carrying another role would replay provider output as an instruction.
-    if (typeof body['role'] === 'string' && body['role'] !== 'assistant') {
-      throw new UnreplayableStream('message_role_not_assistant');
-    }
+    // The assistant-role rule is NOT restated here (review finding, exact head 50d55d6, then
+    // consolidated by the independent validator audit): both doors now converge on the single
+    // `roleInvalid` predicate inside the shared message law below, so they cannot drift apart
+    // again the way they did when only the stream path enforced it.
     role = typeof body['role'] === 'string' ? body['role'] : 'assistant';
     content = body['content'] as unknown[];
     producedBy = nativeModelOf(body);
@@ -515,7 +553,7 @@ function assistantMessageFromEntry(
   // it must satisfy the same invariants before it may join a prompt — applied BEFORE the
   // model-switch projection, which is a lawful transformation OF A VALID message, never a way
   // to launder an invalid one.
-  validateReplayableContent(content);
+  validateReplayableMessage(role, content);
   // The model that produced this answer, from NATIVE truth outward: the provider's own
   // response `model`, else the request that produced it, else branch metadata (the send
   // contract does not force the native body to match the branch column, so the column is a

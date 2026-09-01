@@ -39,6 +39,15 @@
 // durable truth (LAW 17). Turns AFTER the anchor that contributed only user input (a failed
 // or unknown-outcome sibling) ride along in `input`, so nothing eligible is lost.
 //
+// ★ CHAINING IS A STRICT SUBSET OF REPLAYABILITY — `chainable(r) ⇒ replayable(r)`, never the
+// reverse. A response may be replayable but not chainable (an aged anchor, a rotated credential,
+// `store: false`, an `incomplete` result, a provider failure that demotes the chain); it may NEVER
+// be chainable without being replayable, because GovAI would then be leaning on provider-held
+// history to make a durable capture it cannot itself replay look usable. Condition 0 is therefore
+// structural rather than a predicate: the anchor is only ever read out of a `TerminalResolution`,
+// which cannot exist without a validated terminal `output`. The conditions below are the
+// STRATEGY-SPECIFIC ones layered on top of that semantic validity.
+//
 // ★ CHAINING CONDITIONS — every one must hold, else stateless replay (no partial credit):
 //   1. an anchor exists (some eligible completed output precedes this turn);
 //   2. CREDENTIAL-ANCHOR RECONCILIATION (§11/§23 of the movement dispatch): the anchor
@@ -127,7 +136,33 @@ const TERMINAL_RESPONSE_STATUSES = new Set(['completed', 'incomplete']);
  *  verdict is ambiguity, a failure verdict is truth. */
 const FAILED_RESPONSE_STATUSES = new Set(['failed', 'cancelled']);
 
-type TerminalResolution = { kind: 'terminal'; body: JsonObject } | { kind: 'provider_failed' };
+/** ★ ONE SEMANTIC TERMINAL-RESPONSE LAW, EVERY STRATEGY (independent validator audit; review
+ *  finding RF-1 on head d6cddf33). A `terminal` resolution CANNOT BE CONSTRUCTED without a
+ *  validated `output` array, so no caller — chaining anchor selection, stateless replay, or any
+ *  future strategy — can obtain a terminal response whose replayability was never decided. This
+ *  is the type-level form of the invariant `chainable(r) ⇒ replayable(r)`: chaining picks its
+ *  anchor from a TerminalResolution, and a TerminalResolution is by construction replayable.
+ *
+ *  BEFORE this consolidation the output law lived on ONE branch — `outputItemsOf()` was called
+ *  only from the stateless path — so a capture with a valid `id` and a `completed` status but a
+ *  missing / non-array `output` was admitted as a chaining anchor while the IDENTICAL capture
+ *  refused `response_output_shape_unknown` the moment the age gate, a credential rotation or
+ *  `store: false` disabled chaining. Two strategies disagreed about the same durable truth, and
+ *  only one of them looked. */
+type TerminalResolution =
+  | { kind: 'terminal'; body: JsonObject; output: readonly unknown[] }
+  | { kind: 'provider_failed' };
+
+/** The complete output array, replayed VERBATIM (reasoning items included — the documented
+ *  stateless pattern; adjacency preserved, nothing filtered, nothing reshaped).
+ *
+ *  First-party: `output` is a REQUIRED property of the Response object and is typed `array`, so a
+ *  terminal body without one is out of grammar — not a shape GovAI may guess at. */
+function terminalOf(body: JsonObject): TerminalResolution {
+  const output = body['output'];
+  if (!Array.isArray(output)) throw new Unreplayable('response_output_shape_unknown');
+  return { kind: 'terminal', body, output };
+}
 
 function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
   const output = entry.assistant!.output;
@@ -140,7 +175,7 @@ function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
     if (typeof status === 'string' && !TERMINAL_RESPONSE_STATUSES.has(status)) {
       throw new Unreplayable('anchor_response_not_terminal');
     }
-    return { kind: 'terminal', body: output.body };
+    return terminalOf(output.body);
   }
   let terminal: JsonObject | null = null;
   let failed = false;
@@ -186,7 +221,7 @@ function terminalResponseOf(entry: AssembledContextEntry): TerminalResolution {
   if (failed && terminal !== null) throw new Unreplayable('conflicting_terminal_verdicts');
   if (failed) return { kind: 'provider_failed' };
   if (!terminal) throw new Unreplayable('stream_has_no_terminal_response');
-  return { kind: 'terminal', body: terminal };
+  return terminalOf(terminal);
 }
 
 /** An anchor must be a FULLY completed response: an `incomplete` result is honest terminal
@@ -203,22 +238,29 @@ function responseIdOf(terminal: JsonObject): string | null {
   return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
-/** The complete output array, replayed VERBATIM (reasoning items included — the documented
- *  stateless pattern; adjacency preserved, nothing filtered, nothing reshaped). */
-function outputItemsOf(terminal: JsonObject): unknown[] {
-  const output = terminal['output'];
-  if (!Array.isArray(output)) throw new Unreplayable('response_output_shape_unknown');
-  return output;
-}
-
 /** A turn's own input, normalized to items only when it must merge into an array — using the
- *  provider's documented string ≡ user-message equivalence. */
-function inputItemsOf(native: unknown): unknown[] {
-  if (!isObject(native)) throw new Unreplayable('history_input_shape_unknown');
+ *  provider's documented string ≡ user-message equivalence.
+ *
+ *  ★ `origin` NAMES THE TWO GENUINELY DIFFERENT OBJECTS THIS READS (independent validator audit).
+ *  A `history` entry is a durable capture GovAI is RECONSTRUCTING: a turn whose stored request
+ *  carries no `input` at all (a first-party `prompt` template supplied its content server-side)
+ *  cannot be reproduced, and replaying its ANSWER without its QUESTION would silently change the
+ *  context — so it refuses. The `own_turn` config is NOT history: it is dispatched as-is, the
+ *  provider resolves its own `prompt`, and GovAI reconstructs nothing from it. First-party leaves
+ *  `input` OPTIONAL on the create request, and GovAI's own send contract validates only that the
+ *  native request is a JSON object — so requiring one here refused a lawful request, and refused
+ *  it INCONSISTENTLY: the same config passed through verbatim on a first turn and on a chain with
+ *  no trailing input, and refused on stateless replay. An absent `input` on the dispatching turn
+ *  therefore contributes NOTHING; a PRESENT one that is neither string nor array still refuses. */
+function inputItemsOf(native: unknown, origin: 'history' | 'own_turn'): unknown[] {
+  const shapeUnknown =
+    origin === 'history' ? 'history_input_shape_unknown' : 'config_input_shape_unknown';
+  if (!isObject(native)) throw new Unreplayable(shapeUnknown);
   const input = native['input'];
   if (typeof input === 'string') return [{ role: 'user', content: input }];
   if (Array.isArray(input)) return [...(input as unknown[])];
-  throw new Unreplayable('history_input_shape_unknown');
+  if (input === undefined && origin === 'own_turn') return [];
+  throw new Unreplayable(shapeUnknown);
 }
 
 function configStoreAllowsChaining(native: unknown): boolean {
@@ -305,6 +347,10 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
         const providerFailedAfterAnchor =
           payloadFailureAfterAnchor ||
           input.entries.slice(anchorIndex + 1).some((e) => e.selectedAttemptProviderFailed);
+        // Every condition here is STRATEGY-SPECIFIC. Semantic replayability is NOT among them: it
+        // was already decided when `terminalResponseOf` produced this resolution, which is what
+        // makes `chainable ⇒ replayable` true by construction rather than by agreement between
+        // two lists of checks that must be kept in sync.
         const chainable =
           anchorId !== null &&
           !providerFailedAfterAnchor &&
@@ -319,7 +365,7 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
           // IT would be the anchor) — their input rides along ahead of this turn's own.
           const trailing: unknown[] = [];
           for (const entry of input.entries.slice(anchorIndex + 1)) {
-            trailing.push(...inputItemsOf(entry.userNative));
+            trailing.push(...inputItemsOf(entry.userNative, 'history'));
           }
           // With nothing to merge, the turn's own `input` passes through VERBATIM (string or
           // array); only a genuine merge normalizes it into item form.
@@ -328,7 +374,7 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
               ? { ...input.turnConfig, previous_response_id: anchorId }
               : {
                   ...input.turnConfig,
-                  input: [...trailing, ...inputItemsOf(input.turnConfig)],
+                  input: [...trailing, ...inputItemsOf(input.turnConfig, 'own_turn')],
                   previous_response_id: anchorId,
                 };
           return {
@@ -342,16 +388,16 @@ export const openaiResponsesAdapter: ProviderConversationAdapter = {
       // ── Stateless replay: full durable projection, provider-native, in order ────────────
       const assembled: unknown[] = [];
       for (const entry of input.entries) {
-        assembled.push(...inputItemsOf(entry.userNative));
+        assembled.push(...inputItemsOf(entry.userNative, 'history'));
         if (entry.assistant) {
           const resolution = terminalResponseOf(entry);
           if (resolution.kind === 'terminal') {
-            assembled.push(...outputItemsOf(resolution.body));
+            assembled.push(...resolution.output);
           }
           // provider_failed: the turn's question stays context; its non-answer never does.
         }
       }
-      assembled.push(...inputItemsOf(input.turnConfig));
+      assembled.push(...inputItemsOf(input.turnConfig, 'own_turn'));
       return {
         ok: true,
         body: { ...input.turnConfig, input: assembled },

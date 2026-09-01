@@ -1181,3 +1181,216 @@ describe('anthropic adapter — no zero-block stream completes without a message
     ]);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// INDEPENDENT VALIDATOR AUDIT — `message_start` CARRIES NO CONTENT (RF-2), and the two doors
+// converge on ONE semantic message law while keeping their own transport grammars.
+//
+// First-party, verbatim (reverified 2026-08-31): "1. `message_start`: contains a `Message` object
+// with empty `content`." Every documented example is `"content": []`. The reassembler builds the
+// final content from the content-block events alone, so anything sitting in the start message
+// would be silently dropped — and GovAI would replay a message the provider never sent.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('anthropic adapter — message_start carries no content (RF-2)', () => {
+  it('★ RF-2 — a message_start whose `content` is NONEMPTY refuses instead of silently dropping it', () => {
+    const result = grammar([
+      {
+        type: 'message_start',
+        message: { role: 'assistant', model: MODEL, content: [{ type: 'text', text: 'dropped' }] },
+      },
+      ...TEXT_BLOCK,
+      DELTA,
+      { type: 'message_stop' },
+    ]);
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'message_start_content_not_empty',
+    });
+  });
+
+  it('★ the wire law runs BEFORE the non-answer classification: start content is never laundered', () => {
+    // The documented refusal shape (message_start → message_delta → message_stop, zero blocks)
+    // projects INPUT-ONLY. A start message carrying content is not that shape: it is a malformed
+    // capture, and admitting it as a "provider non-answer" would drop real content in silence —
+    // the same laundering the closure sweep had to close for the unanchored `message_stop`.
+    const result = grammar([
+      {
+        type: 'message_start',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'dropped' }] },
+      },
+      { type: 'message_delta', delta: { stop_reason: 'refusal' }, usage: { output_tokens: 0 } },
+      { type: 'message_stop' },
+    ]);
+    expect(result).toEqual({
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'message_start_content_not_empty',
+    });
+  });
+
+  it('a `content` that is present but NOT an array refuses — it could carry anything', () => {
+    for (const content of ['text', 42, {}, true]) {
+      expect(
+        grammar([
+          { type: 'message_start', message: { role: 'assistant', content } },
+          ...TEXT_BLOCK,
+          { type: 'message_stop' },
+        ]),
+      ).toEqual({
+        ok: false,
+        reason: 'context_unreplayable',
+        detail: 'message_start_content_not_empty',
+      });
+    }
+  });
+
+  it('the DOCUMENTED shape replays normally: `content: []` is what every example sends', () => {
+    const result = grammar([
+      { type: 'message_start', message: { role: 'assistant', model: MODEL, content: [] } },
+      ...TEXT_BLOCK,
+      DELTA,
+      { type: 'message_stop' },
+    ]);
+    expect(result.ok).toBe(true);
+    const messages = (result as unknown as { body: { messages: Array<{ content: unknown[] }> } }).body.messages;
+    expect(messages[1]!.content).toEqual([{ type: 'text', text: 'A' }]);
+  });
+
+  it('an ABSENT `content` is NOT hardened into a version lock: nothing can be lost, so nothing refuses', () => {
+    // §21 — validate what replay correctness actually depends on. A start message with no
+    // `content` key drops nothing, so requiring its presence would refuse captures for a reason
+    // that has no consumer. START itself is this shape, which is why the whole suite uses it.
+    const result = grammar([START, ...TEXT_BLOCK, DELTA, { type: 'message_stop' }]);
+    expect(result.ok).toBe(true);
+  });
+
+  it('★ the rule is WIRE GRAMMAR ONLY: a stored body with NONEMPTY content is the normal case', () => {
+    // §15 — a stored non-streaming response HAS no `message_start`, and its `content` is the
+    // FINAL message, not an initial state. Forcing the transport fact onto it would refuse every
+    // ordinary non-streaming answer in the product.
+    const result = build([entry({ assistant: responseAssistant([{ type: 'text', text: 'A1' }]) })], {
+      model: MODEL,
+      messages: [user('u2')],
+    });
+    expect(result.ok).toBe(true);
+    const messages = (result as unknown as { body: { messages: unknown[] } }).body.messages;
+    expect(messages[1]).toEqual({ role: 'assistant', content: [{ type: 'text', text: 'A1' }] });
+  });
+});
+
+describe('anthropic adapter — one semantic message law, two transports (§22 convergence)', () => {
+  const contentOf = (result: ReturnType<typeof build>) =>
+    (result as unknown as { body: { messages: Array<{ role: string; content: unknown }> } }).body
+      .messages[1];
+
+  it('★ equivalent valid representations produce the SAME durable assistant message', () => {
+    const stored = build(
+      [entry({ assistant: responseAssistant([{ type: 'text', text: 'Hello' }], 'att-1', MODEL) })],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    const streamedIn = grammar([
+      { type: 'message_start', message: { role: 'assistant', model: MODEL, content: [] } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hel' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'lo' } },
+      { type: 'content_block_stop', index: 0 },
+      DELTA,
+      { type: 'message_stop' },
+    ]);
+    expect(stored.ok).toBe(true);
+    expect(streamedIn.ok).toBe(true);
+    expect(contentOf(stored)).toEqual({ role: 'assistant', content: [{ type: 'text', text: 'Hello' }] });
+    expect(contentOf(streamedIn)).toEqual(contentOf(stored));
+  });
+
+  it('★ signed thinking converges identically through both doors, byte-preserved', () => {
+    const SIG = 'EqQBCgIYAhIM1gbcDa9GJwZA2b3h';
+    const stored = build(
+      [
+        entry({
+          assistant: responseAssistant(
+            [{ type: 'thinking', thinking: 'reasoned', signature: SIG }, { type: 'text', text: 'A' }],
+            'att-1',
+            MODEL,
+          ),
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    const streamedIn = grammar([
+      { type: 'message_start', message: { role: 'assistant', model: MODEL, content: [] } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'reasoned' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: SIG } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'A' } },
+      { type: 'content_block_stop', index: 1 },
+      DELTA,
+      { type: 'message_stop' },
+    ]);
+    expect(contentOf(stored)).toEqual({
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: 'reasoned', signature: SIG }, { type: 'text', text: 'A' }],
+    });
+    expect(contentOf(streamedIn)).toEqual(contentOf(stored));
+  });
+
+  it('★ the ROLE law is ONE law with two enforcement points, not two rules that must agree', () => {
+    // Pinned because it already drifted once: review finding 3891516882 was this exact rule
+    // present on the stream door and missing on the stored-response door. Both doors now call
+    // the same predicate, so the two answers below cannot diverge again.
+    const storedWrongRole = build(
+      [
+        entry({
+          assistant: {
+            attemptId: 'att-1',
+            providerCredentialId: CRED,
+            completedAtMs: 1_800_000_000_000,
+            output: { kind: 'response', body: { role: 'user', content: [{ type: 'text', text: 'A' }] } },
+          },
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    const streamedWrongRole = grammar([
+      { type: 'message_start', message: { role: 'user' } },
+      ...TEXT_BLOCK,
+      { type: 'message_stop' },
+    ]);
+    const refusal = {
+      ok: false,
+      reason: 'context_unreplayable',
+      detail: 'message_role_not_assistant',
+    };
+    expect(storedWrongRole).toEqual(refusal);
+    expect(streamedWrongRole).toEqual(refusal);
+  });
+
+  it('an ABSENT role still defaults to assistant on BOTH doors — leniency is shared too', () => {
+    // The predicate is `strict when present`, so the two doors must be equally lenient as well as
+    // equally strict; a one-sided default would be the same drift in the other direction.
+    const stored = build(
+      [
+        entry({
+          assistant: {
+            attemptId: 'att-1',
+            providerCredentialId: CRED,
+            completedAtMs: 1_800_000_000_000,
+            output: { kind: 'response', body: { content: [{ type: 'text', text: 'A' }] } },
+          },
+        }),
+      ],
+      { model: MODEL, messages: [user('u2')] },
+    );
+    const streamedIn = grammar([
+      { type: 'message_start', message: { model: MODEL } },
+      ...TEXT_BLOCK,
+      { type: 'message_stop' },
+    ]);
+    expect(contentOf(stored)).toEqual({ role: 'assistant', content: [{ type: 'text', text: 'A' }] });
+    expect(contentOf(streamedIn)).toEqual(contentOf(stored));
+  });
+});
