@@ -1080,3 +1080,57 @@ P0-C ANCHOR and is quoted as history; the P0-C lane-wall suite was retargeted (t
 lawfully implements — `previous_response_id`, the encrypted continuation-anchor write — were
 retired WITH the movement; the wall now guards P0-D2/P0-E/P0-F constructs and additionally
 scans the new adapters directory). `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED` is permanent.
+
+### Post-merge status reconciliation — `PR151-POST-MERGE-DOC-STATUS-01` (CLOSED)
+
+P0-D1 was independently reviewed, owner-authorized, and squash-merged as PR **#151** →
+`700aad9631f91d0655bd98aa113fbc59d74f88b0` (parent `bf78bb0bbc8298466831664958cd91514d42261a`,
+tree `ff99c89e3e427c95a4b2634fb3859f088ecf5891` — byte-identical to the final exact-head-reviewed
+head `63221f0d3290fc02d3a99f15e3b14592f596c92f`; exact-head PR CI `33546836184` SUCCESS;
+post-merge main CI run `33580661031` SUCCESS).
+
+**Unlike `PR149-POST-MERGE-DOC-STATUS-01`, the merge falsified nothing.** A post-merge sweep of
+all four canonical documents for pre-merge posture wording (`awaits`, `awaiting`, `self-merge`,
+`review-gated`, `NOT_MERGED`, `not yet merged`, `pending merge`, `PRESENT_IN_MAIN`) returned
+**zero P0-D1-related hits** — the P0-D1 documentation was authored tree-relatively and
+deliberately declined to declare its own merge lifecycle, exactly as this repository's
+tree-stable doctrine requires, and `TREE(main) == ff99c89e… ==` the P0-D1 tree keeps every
+`IMPLEMENTED_IN_THIS_TREE` / "this tree" token literally true. What was missing was the
+merge-evidence anchor this repository grants every merged movement, and which only an external
+post-merge proof is entitled to supply. This reconciliation is therefore **additive, not
+corrective** (P3 documentary completeness; no runtime/security/architecture/merge/tree-identity
+defect; no P0-D1 reopen).
+
+| Document | Was (at `700aad96`, the merged tree) | Now |
+|---|---|---|
+| `current-state.md` summary bullet | P0-D1 "is IMPLEMENTED IN THIS TREE" with no merge-evidence parenthetical, unlike its sibling P0-C and Contract-V1 bullets | "IMPLEMENTED IN THIS TREE AND MERGED" + the sibling-form anchor (PR #151, merge, tree, byte-identity to head `63221f0d`, post-merge main CI `33580661031`) |
+| `current-state.md` P0-D1 canonical section | `P0_D1_…=IMPLEMENTED_IN_THIS_TREE`; anchors stopped at "Base: main `bf78bb0b…`" | `P0_D1_…=COMPLETE` in the P0-C form (written only on the strength of the external post-merge proof, never on the executor's own authority) + the base fact EXTENDED with frozen head / frozen tree / squash SHA, and a new immutable **Completion evidence** block (`TECHNICAL_PR` … `POST_MERGE_MAIN_CI`) pointing at the sealed external records |
+| `development-roadmap.md` | wave-plan sentence and status block token `P0_D1_…=IMPLEMENTED_IN_THIS_TREE`; ★ delivery record headed "P0-D1 EXECUTED" with no merged fact | wave-plan sentence names the merge; status block `= COMPLETE` with the P0-C sibling anchor form (PR #151, merge `700aad96`, tree `ff99c89e` == reviewed head `63221f0d`, post-merge CI `33580661031`); ★ record now "EXECUTED AND MERGED" and carries the merged fact |
+| `resume-playbook.md` §4 | resume guard listed five finished-and-merged movements; lane block showed P0-D1 "(IMPLEMENTED IN THIS TREE: …)"; no P0-D1 closeout-anchor paragraph beside the P0-C/P0-B ones | guard lists six and names P0-D1; lane block shows `COMPLETE` with the merged anchor; a **P0-D1 frozen closeout anchors** paragraph joins the existing P0-C/P0-B ones, ending "do not re-implement P0-D1" and stating that R1 remaining OPEN for `codex`/`claude_code` is P0-D2's work, not a P0-D1 gap |
+| this register (P0-D1 section above) | branch-time "Was/Now (this tree)" delta table | **PRESERVED AS WRITTEN** + this disposition subsection appended, per the `PR149-POST-MERGE-DOC-STATUS-01` precedent |
+| `ai-conversation-continuity-v1.md`, `native-experience-contract-v1.md`, `native-experience-parity-v1/v2` + generated manifests | normative / research documents | **UNTOUCHED** — `NORMATIVE_CONTRACT_CHANGE=NO`, `CONTINUITY_SPEC_CHANGE=NO`, `PARITY_BASELINE_CHANGE=NO` |
+
+`PR151-POST-MERGE-DOC-STATUS-01 = RECONCILED / CLOSED BY THIS PR`. Historical records are NOT
+rewritten: the P0-D1 branch-time delta table above remains that movement's authoring-time
+record, the P0-C bullet's ★-annotated `P0-D / P0-E / P0-F NOT_STARTED` sentence stays as the
+P0-C anchor's history, and every other `IN_THIS_TREE` token elsewhere in these documents is
+tree-stable by design and was not touched.
+
+This reconciliation closes NO implementation gap and weakens no non-claim. **`P0-D` is
+`IN_PROGRESS`, not complete** — `P0_D2_CODING_HARNESS_CONTINUATION` (Codex app-server threads +
+Claude Code Agent SDK sessions) is `NOT_STARTED` and is the remaining half; `P0-E` / `P0-F`
+remain `NOT_STARTED`. `R1_DURABLE_CONTEXT_P1` stays CLOSED only for `anthropic_messages` +
+`openai_responses` and OPEN for `codex`/`claude_code`; `OPENAI_CONVERSATION_OBJECTS` stays
+`DEFERRED_WITHIN_P0D` (no tenant policy signal exists in executable source);
+`CROSS_PROVIDER_PORTABLE_PROJECTION` stays `NOT_IMPLEMENTED` with its fail-closed refusal;
+`PROVIDER_EXACTLY_ONCE=NOT_CLAIMED` is permanent. Every carry-forward keeps its prior
+disposition, including the two pre-worker-activation gates `P0A2-P3-A1` / `P0A2-P3-A4`. No
+runtime, test, migration, schema, workflow or generated-manifest source changed.
+
+The external sealed proof is
+`/Users/Shared/govai-handoff/audits/ai-conversation-continuity-v1/p0-d1-provider-continuation/PR151-P0-D1-FROZEN-TREE-MERGE-REPORT-RECOVERY-01.md`
+(SHA-256 `cd97a8757e4176d1533d5bb88670263c904678520a5de67663a6a3badafb3866`). It is a **recovery**
+artifact: the merge session completed every gate G0–G15 but was interrupted by host sleep during
+final report assembly, so the intended merge report was never materialized; the recovery
+re-adjudicated every material claim against live GitHub and repository evidence and preserved the
+interrupted assembly fragments verbatim alongside it.
