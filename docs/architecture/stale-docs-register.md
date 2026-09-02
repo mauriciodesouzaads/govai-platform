@@ -1056,3 +1056,27 @@ later — the "Was/Now" rows of the movement section above remain that movement'
 record. This reconciliation closes NO implementation gap: `P0-D / P0-E / P0-F` remain
 `NOT_STARTED`, no parity classification changed, both parity baselines and the V1/V2
 validators are byte-untouched, and no runtime source changed.
+
+## EP-AI-CONVERSATION-CONTINUITY-V1 — P0-D1 (DURABLE CONTEXT + API PROVIDER CONTINUATION) — documentary deltas (this tree)
+
+P0-D1 implements server-assembled durable branch context and the §11
+`ProviderConversationAdapter` for `anthropic_messages` + `openai_responses`
+(EP-AI-CONVERSATION-CONTINUITY-V1-P0-D1-DURABLE-CONTEXT-API-PROVIDER-CONTINUATION-01; base
+main `bf78bb0b`, tree `1ab1ed10`). The canonical state docs were updated IN THE SAME TREE, so
+no post-merge tense reconciliation should be needed; the rows below record what moved and
+which historical statements deliberately did NOT move.
+
+| Document | Was (true at `bf78bb0b`) | Now (this tree) |
+|---|---|---|
+| `current-state.md` | `P0-D / P0-E / P0-F NOT_STARTED`; the P0-C bullet's tail claimed "Provider continuation (P0-D) … do NOT exist"; carry-forward rows `R1_DURABLE_CONTEXT_P1 = P0-D_CARRY_FORWARD` and `BOUNDARY_CAUSAL_VERSION_SNAPSHOT = RE-EXAMINE in P0-D` | new P0-D1 summary bullet + canonical section; the P0-C tail carries a ★ superseded note (historical wording preserved); a ★ P0-D1 note under the carry-forward register re-dispositions the two rows (`R1…` CLOSED for the two API surfaces / OPEN for codex+claude_code; `BOUNDARY_CAUSAL_VERSION_SNAPSHOT` re-examined and closed for the D1 surfaces); `P0-D = IN_PROGRESS`, `P0-D1 = IMPLEMENTED_IN_THIS_TREE`, `P0-D2 = NOT_STARTED` |
+| `development-roadmap.md` | status block `P0_D=NOT_STARTED <- NEXT`; P0-D paragraph "(not started, AFTER the contract movement)" | status block `P0_D=IN_PROGRESS` with the D1/D2 split; the P0-D paragraph carries a ★ P0-D1 EXECUTED record; P0-D2 named as the remaining half |
+| `resume-playbook.md` §4 lane block | `NEXT = P0-D PROVIDER CONTINUATION (not started …)` | `CURRENT = P0-D IN_PROGRESS` with the D1 anchor line; `NEXT = P0-D2`; the honesty boundary re-scoped (server-assembled context exists for the two API surfaces; Codex/Claude Code continuation, Conversations objects, Retry/Stop/Delete/links still absent) |
+| `ai-conversation-continuity-v1.md` | 2026-08-21 versioned design snapshot | UNTOUCHED (historical anchor; the implementation consumes it, never rewrites it) |
+| `native-experience-contract-v1.md`, `native-experience-parity-v1/v2` + generated manifests | current contract / baselines | UNTOUCHED (no parity classification changed by implementation; a refreshed baseline remains a deliberate future version) |
+
+Deliberately-preserved historical statements (NOT stale, do not "fix"): every P0-C-era
+sentence describing P0-C as posting the client's stored request verbatim remains TRUE OF THE
+P0-C ANCHOR and is quoted as history; the P0-C lane-wall suite was retargeted (the bans P0-D1
+lawfully implements — `previous_response_id`, the encrypted continuation-anchor write — were
+retired WITH the movement; the wall now guards P0-D2/P0-E/P0-F constructs and additionally
+scans the new adapters directory). `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED` is permanent.

@@ -1,24 +1,27 @@
-// EP-AI-CONVERSATION-CONTINUITY-V1 — THE P0-D / P0-E / P0-F NEGATIVE BOUNDARY.
+// EP-AI-CONVERSATION-CONTINUITY-V1 — THE P0-D2 / P0-E / P0-F NEGATIVE BOUNDARY.
 //
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// WHY THIS FILE CHANGED, AND WHY IT WAS NOT DELETED
+// WHY THIS FILE CHANGED AGAIN, AND WHY IT WAS NOT DELETED
 //
-// At P0-B this suite proved "no execution was implemented" from four directions. P0-C IMPLEMENTS
-// execution, so those assertions are no longer true — and, more importantly, the CLAIM they
-// guarded is no longer being made. Deleting the file would have removed the discipline along
-// with the obsolete claim; keeping it unchanged would have made it a false test.
-//
-// So it is RETARGETED to the boundary P0-C actually asserts. The structure is deliberately the
-// same, one stage further along:
+// At P0-B this suite proved "no execution was implemented"; P0-C implemented execution and the
+// suite was retargeted to the P0-D wall. P0-D1 now IMPLEMENTS the first slice of provider
+// continuation — server-assembled durable context, Anthropic stateless replay and OpenAI
+// `previous_response_id` chaining with the encrypted continuation-anchor write — so THOSE bans
+// are no longer the wall. The wall moves one stage further along, and the discipline stays:
 //
 //   L1 ROUTE SURFACE   — retry / stop / delete / stream re-attach still do not exist
 //   L2 PROVIDER        — the request plane still performs ZERO provider work
-//   L3 DURABLE STATE   — no provider continuation state or evidence link is ever written
-//   L4 SOURCE          — no P0-D continuation construct entered the tree
+//   L3 DURABLE STATE   — the REQUEST plane writes no continuation state and no evidence link
+//   L4 SOURCE          — no P0-D2/P0-E/P0-F construct entered the tree: no OpenAI conversation
+//                        OBJECT, no Codex thread, no Claude Code session, no provider_state
+//                        writer, no taint/rotation, no compaction, no retry mint, no delete,
+//                        no shred, no disposal ledger, no evidence-link materialization
 //   L5 API PROCESS     — the request-serving API is STILL not the execution authority
 //
 // L4 scans CODE, not prose: comments are stripped first, so a file that DISCUSSES the boundary
-// (as these files do, at length) cannot accidentally satisfy — or violate — the scan.
+// (as these files do, at length) cannot accidentally satisfy — or violate — the scan. The scan
+// now covers the P0-D1 adapters directory too — new worker-plane code does not get a quieter
+// wall than old worker-plane code.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -40,6 +43,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
 const AI_DIR = join(ROOT, 'apps', 'api', 'src', 'ai-conversations');
 const EXEC_DIR = join(AI_DIR, 'execution');
+const ADAPTERS_DIR = join(EXEC_DIR, 'adapters');
 const ROUTE_FILE = join(ROOT, 'apps', 'api', 'src', 'routes', 'ai-conversations.ts');
 const MIGRATION_0034 = join(
   ROOT,
@@ -76,7 +80,7 @@ function stripComments(source: string): string {
 
 async function shippedConversationSources(): Promise<Array<{ path: string; code: string }>> {
   const files: string[] = [];
-  for (const dir of [AI_DIR, EXEC_DIR]) {
+  for (const dir of [AI_DIR, EXEC_DIR, ADAPTERS_DIR]) {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const e of entries) {
       if (e.isFile() && e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) {
@@ -101,7 +105,7 @@ async function createConversation(): Promise<{ id: string; branchId: string }> {
   return { id: body.id, branchId: body.root_branch.id };
 }
 
-describe('P0-C L1 — the P0-D/P0-E/P0-F route surface does not exist', () => {
+describe('P0-D1 L1 — the P0-D/P0-E/P0-F route surface does not exist', () => {
   it('no retry, stop, stream re-attach, delete or events endpoint is registered', async () => {
     const conv = await createConversation();
     const forbidden: Array<['GET' | 'POST' | 'PATCH' | 'DELETE', string]> = [
@@ -168,7 +172,7 @@ describe('P0-C L1 — the P0-D/P0-E/P0-F route surface does not exist', () => {
   });
 });
 
-describe('P0-C L2 — the REQUEST plane still performs zero provider work', () => {
+describe('P0-D1 L2 — the REQUEST plane still performs zero provider work', () => {
   it('a full control-plane + durable-send exercise produces no upstream request at all', async () => {
     stack.provider.clearRecordedRequests();
     stack.provider.clearRecordedRequestHeaders();
@@ -210,24 +214,26 @@ describe('P0-C L2 — the REQUEST plane still performs zero provider work', () =
   });
 });
 
-describe('P0-C L3 — the durable state carries no P0-D continuation and no P0-F evidence link', () => {
-  it('no provider continuation state and no evidence-link row exists anywhere', async () => {
-    // P0-C stores durable INPUT, durable OUTPUT and execution lifecycle. It stores NO provider
-    // continuation object, NO `previous_response_id`, NO thread or session anchor (§23's wall),
-    // and it does not materialize §14's evidence-link table (P0-F's closeout).
+describe('P0-D1 L3 — the REQUEST plane writes no continuation state and no evidence link', () => {
+  it('after a full request-plane exercise: zero provider-state rows, zero links, zero anchors', async () => {
+    // This suite exercises the REQUEST plane only (no worker ever runs here). The reservation
+    // path stores durable INPUT and lifecycle — it writes NO provider-state row (P0-D1 creates
+    // none anywhere, by adjudication — the durable-context suite proves that for the WORKER
+    // path too), NO continuation anchor (that is the boundary commit's write, worker-plane
+    // only), and no §14 evidence link (P0-F's closeout).
     for (const table of ['ai_conversation_provider_state', 'ai_conversation_evidence_links'] as const) {
       const n = await stack.db.adminPool.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM govai.${table}`,
       );
       expect({ table, n: n.rows[0]!.n }).toEqual({ table, n: '0' });
     }
-    // No attempt anywhere carries a continuation anchor.
     const anchored = await stack.db.adminPool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM govai.ai_conversation_attempts
         WHERE continuation_parent_ciphertext IS NOT NULL`,
     );
     expect(anchored.rows[0]!.n).toBe('0');
-    // And no turn has more than ONE attempt: retry/regenerate is P0-D, so nothing mints attempt 2.
+    // And no turn has more than ONE attempt: the public retry endpoint does not exist, so the
+    // request plane can never mint attempt 2.
     const multi = await stack.db.adminPool.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM (
          SELECT turn_id FROM govai.ai_conversation_attempts GROUP BY turn_id HAVING count(*) > 1
@@ -266,21 +272,22 @@ describe('P0-C L3 — the durable state carries no P0-D continuation and no P0-F
   });
 });
 
-describe('P0-C L4 — the shipped source contains no P0-D continuation construct', () => {
-  it('no provider conversation object, response chaining, thread or session continuation', async () => {
+describe('P0-D1 L4 — the shipped source contains no P0-D2/P0-E/P0-F construct', () => {
+  it('no provider conversation OBJECT, thread or session continuation, provider-state writer or lifecycle op', async () => {
     const sources = await shippedConversationSources();
     expect(sources.length).toBeGreaterThan(8);
     const banned: Array<[string, RegExp]> = [
-      // §11's provider continuation strategies — ALL of them are P0-D.
+      // §11 strategies BEYOND P0-D1's two. (P0-D1 lawfully implements Anthropic stateless
+      // replay and OpenAI `previous_response_id` chaining with the encrypted anchor write —
+      // those bans were retired WITH the movement that implemented them, adapter tests and the
+      // durable-context suite now own their correctness.)
       ['openai conversation object', /conversations?\.create|\/v1\/conversations/i],
-      ['previous_response_id', /previous_response_id|previousResponseId/],
       ['codex thread', /codex[_-]?thread|threadId|thread_id/i],
       ['claude code session', /claude[_-]?code[_-]?session|sessionId|session_id/i],
-      ['continuation anchor write', /continuation_parent_(ciphertext|dek_wrapped|kms_key)/],
       ['provider state table', /ai_conversation_provider_state/],
       ['state taint / rotation', /\btainted\b|seeded_at_causal_version/],
       ['compaction', /compact(ion|Provider)/i],
-      // P0-D/P0-E/P0-F operations.
+      // P0-D2/P0-E/P0-F operations.
       ['retry / regenerate', /\bregenerate\b|attempt_seq\s*\+\s*1|retryAttempt/i],
       // ★ THESE BAN ACTIONS, NOT RECOGNITION. P0-C must be UNABLE to delete or shred — but it
       // MUST recognise those states: `service.ts` refuses to create a descendant of a
@@ -314,7 +321,7 @@ describe('P0-C L4 — the shipped source contains no P0-D continuation construct
   });
 });
 
-describe('P0-C L5 — the request-serving API is STILL not the execution authority', () => {
+describe('P0-D1 L5 — the request-serving API is STILL not the execution authority', () => {
   it('server.ts constructs no worker capability and starts no conversation loop', async () => {
     const server = stripComments(
       await readFile(join(ROOT, 'apps', 'api', 'src', 'server.ts'), 'utf8'),

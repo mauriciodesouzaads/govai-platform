@@ -47,6 +47,10 @@ export type RecordedRequest = {
   /** Provider request id issued by the mock for this reply (`request-id` for Anthropic paths,
    *  `x-request-id` for OpenAI paths, else `openai-request-id`), or null. */
   provider_request_id: string | null;
+  /** P0-D1: the PARSED JSON request body, or null where no JSON body was parsed. Recorded so
+   *  the durable-context suite can assert exactly what history the worker POSTed. Additive —
+   *  pre-existing assertions on method/url/provider_request_id are untouched. */
+  body: unknown;
 };
 
 type ErrorPayload = {
@@ -198,9 +202,20 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
   const recordedByReq = new WeakMap<object, RecordedRequest>();
   app.addHook('onRequest', async (req) => {
     recordedRequestHeaders.push({ ...req.headers });
-    const entry: RecordedRequest = { method: req.method, url: req.raw.url ?? req.url, provider_request_id: null };
+    const entry: RecordedRequest = {
+      method: req.method,
+      url: req.raw.url ?? req.url,
+      provider_request_id: null,
+      body: null,
+    };
     recordedRequests.push(entry);
     recordedByReq.set(req, entry);
+  });
+  // Body is parsed after onRequest; record it at preHandler so tests can assert exactly what
+  // the caller POSTed (P0-D1's server-assembled-context assertions).
+  app.addHook('preHandler', async (req) => {
+    const entry = recordedByReq.get(req);
+    if (entry) entry.body = req.body ?? null;
   });
   app.addHook('onSend', async (req, reply, payload) => {
     const entry = recordedByReq.get(req);
@@ -255,7 +270,7 @@ export async function startProviderProtocolServer(opts: { port?: number } = {}):
       if (body.stream) {
         reply.header('content-type', 'text/event-stream');
         reply.header('cache-control', 'no-cache');
-        const stream = sseChunk({ type: 'message_start', message: { id: requestId, model: body.model ?? 'unknown' } })
+        const stream = sseChunk({ type: 'message_start', message: { id: requestId, role: 'assistant', model: body.model ?? 'unknown' } })
           + sseChunk({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
           + sseChunk({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: responseText } })
           + sseChunk({ type: 'content_block_stop', index: 0 })

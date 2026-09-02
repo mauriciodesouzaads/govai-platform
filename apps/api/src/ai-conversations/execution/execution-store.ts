@@ -303,15 +303,18 @@ export type BoundaryCommitResult =
  *                                   heartbeat timer does not start until the boundary commits.
  *   branch-order                    §8 single-flight: the earlier turn is still running
  *   causal_version = <as sampled>   §7.8: the branch has not advanced since this dispatch cycle
- *                                   sampled it. ★ STATED PRECISELY, BECAUSE THE OBVIOUS READING
- *                                   OVERCLAIMS: in P0-C the request body is the CLIENT's stored
- *                                   provider-native request, so this predicate does NOT certify
- *                                   that GovAI-assembled context is fresh — GovAI assembles none
- *                                   (see `execute-turn.ts`, "THE CONTEXT CONTRACT"). What it
- *                                   does certify is that no sibling turn on this branch
- *                                   terminalized between the sample and the boundary, which is
- *                                   what keeps the single-flight queue and the §7.8 monotonic
- *                                   ordering coherent.
+ *                                   sampled it. ★ AS OF P0-D1 THIS PREDICATE CERTIFIES CONTEXT
+ *                                   FRESHNESS, not merely queue coherence: the request body is
+ *                                   now SERVER-ASSEMBLED from the durable branch projection
+ *                                   read AFTER the version sample (version-first, §7.8), so a
+ *                                   CAS win proves no eligibility-changing commit — a sibling
+ *                                   terminalization, a future probe upgrade, an exclusion
+ *                                   marking — landed between the sample and this commit. A
+ *                                   stale build loses the CAS BEFORE any POST and simply
+ *                                   rebuilds. (This closes the P0-C carry-forward
+ *                                   `BOUNDARY_CAUSAL_VERSION_SNAPSHOT` for the two D1
+ *                                   surfaces: the re-examination the carry-forward required is
+ *                                   this strengthened meaning.)
  *
  * The winning commit also:
  *   * stamps a FRESH deadline — the lease's first renewal, consistent with the heartbeat timer
@@ -322,7 +325,13 @@ export type BoundaryCommitResult =
  *     rejected outright);
  *   * stamps `dispatch_boundary_committed_at` IF NULL — write-once, RETAINED across a restore;
  *   * stamps the as-built `causal_version_at_build` (0031's causal freeze re-opens on the
- *     `accepted` edge precisely so a rebuild may re-stamp it).
+ *     `accepted` edge precisely so a rebuild may re-stamp it);
+ *   * stamps the four `continuation_parent_*` columns — the EXACT anchor this build chained
+ *     from (encrypted; §11 retry mechanics / §20-§21 of the movement dispatch), or NULL for a
+ *     stateless build. Stamped HERE because 0031's post-boundary causal freeze opens these
+ *     columns only while `state = 'accepted'` — the boundary crossing is the one lawful write
+ *     site, and a restore→rebuild lawfully re-stamps them (possibly to NULL if the fresh build
+ *     selected a different strategy: a stale anchor must never survive a rebuild).
  *
  * `ok: false` means fenced out, lease-expired, stop-requested, not at head, or causally stale.
  * The caller reads the row under its still-held claim to learn WHICH — and, critically, does NOT
@@ -337,6 +346,15 @@ export async function commitDispatchBoundary(
     causalVersionAtBuild: string;
     /** Minted by the caller; persisted ONLY if the column is still NULL. */
     candidateRequestId: string;
+    /** The encrypted continuation anchor this build chained from, or null for a stateless
+     *  build. Assigned (not coalesced): a rebuild after a restore must overwrite — including
+     *  overwriting an anchor with NULL when the fresh build went stateless. */
+    continuationParent: {
+      ciphertext: Buffer;
+      dekWrapped: Buffer;
+      kmsKeyId: string;
+      kmsKeyVersion: number;
+    } | null;
   },
 ): Promise<BoundaryCommitResult> {
   const r = await tx.query<{ govai_request_id: string; claim_deadline_at: string }>(
@@ -345,6 +363,10 @@ export async function commitDispatchBoundary(
             dispatch_boundary_committed_at = COALESCE(a.dispatch_boundary_committed_at, now()),
             govai_request_id               = COALESCE(a.govai_request_id, $5::uuid),
             causal_version_at_build        = $4::bigint,
+            continuation_parent_ciphertext      = $6::bytea,
+            continuation_parent_dek_wrapped     = $7::bytea,
+            continuation_parent_kms_key_id      = $8::text,
+            continuation_parent_kms_key_version = $9::integer,
             claim_deadline_at              = now() + make_interval(secs => $3::double precision),
             heartbeat_at                   = now(),
             updated_at                     = now()
@@ -369,6 +391,10 @@ export async function commitDispatchBoundary(
       input.leaseMs / 1000,
       input.causalVersionAtBuild,
       input.candidateRequestId,
+      input.continuationParent?.ciphertext ?? null,
+      input.continuationParent?.dekWrapped ?? null,
+      input.continuationParent?.kmsKeyId ?? null,
+      input.continuationParent?.kmsKeyVersion ?? null,
     ],
   );
   const row = r.rows[0];
@@ -510,6 +536,16 @@ export type HeartbeatResult = { extended: boolean; stopRequested: boolean; state
  * already-expired claimant must not be able to resurrect its own lease and postpone recovery
  * forever.
  *
+ * ★ AS OF P0-D1 THE RENEWAL WINDOW IS THE WHOLE CLAIMED EXECUTION — `accepted` included
+ * (review finding, exact head 3a25f30). P0-C's pre-boundary work was two decrypts, so starting
+ * the timer at the boundary was sufficient; P0-D1's context assembly scales with the branch
+ * history, and a build that outlasts a short lease with NO renewal path would lose the
+ * boundary CAS, be rotated, and deterministically repeat the same over-lease build — a
+ * livelock, not a recovery. Renewal by the LIVE holder under the same token+unexpired
+ * predicates changes no fencing property: a crashed holder still expires on schedule, a
+ * rotated-out holder still matches zero rows, and UNCLAIMED queued reservations are untouched
+ * (they have no claim to renew — head-of-queue pickup stays deadline-free, §8).
+ *
  * ★ THE SAME TICK READS `stop_requested`. Both lease renewal and stop observation are therefore
  * bounded by the heartbeat interval EVEN WHEN THE PROVIDER PRODUCES NO EVENTS AT ALL — a stalled
  * stream yields no pump iterations, so "check between events" alone would let a Stop pend
@@ -529,7 +565,7 @@ export async function heartbeatClaim(
       WHERE a.id = $1::uuid
         AND a.claim_token = $2::uuid
         AND a.claim_deadline_at > now()
-        AND a.state IN ('dispatching', 'streaming')
+        AND a.state IN ('accepted', 'dispatching', 'streaming')
       RETURNING a.stop_requested, a.state`,
     [input.attemptId, input.claimToken, input.leaseMs / 1000],
   );
