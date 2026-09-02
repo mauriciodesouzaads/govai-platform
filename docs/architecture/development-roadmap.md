@@ -314,7 +314,7 @@ The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; th
 mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated candidate scope in the
 baseline doc §10) is **IN_PROGRESS**, with five movements finished and merged, the
 intervening program-level architectural movement also merged (PR #149), and P0-D in
-progress — its first submovement P0-D1 is implemented in this tree:
+progress — its first submovement P0-D1 is implemented in this tree and merged as PR #151:
 
 ```text
 EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
@@ -342,7 +342,10 @@ NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01
 
 P0_D=IN_PROGRESS                                    <- CURRENT
   P0_D1_DURABLE_CONTEXT_API_PROVIDER_CONTINUATION
-      = IMPLEMENTED_IN_THIS_TREE                    (server-assembled durable branch context +
+      = COMPLETE                                    (PR #151, merge 700aad96,
+                                                     tree ff99c89e == reviewed head 63221f0d,
+                                                     post-merge CI 33580661031 SUCCESS;
+                                                     server-assembled durable branch context +
                                                      the §11 ProviderConversationAdapter;
                                                      Anthropic stateless replay; OpenAI
                                                      previous_response_id chaining + stateless
@@ -435,7 +438,7 @@ the `ProviderConversationAdapter` (continuity spec §11), provider continuation 
 the `R1_DURABLE_CONTEXT_P1` carry-forward remedy — P0-C posted the client's stored
 provider-native request verbatim, so a pipelining client composed turn N+1 without turn N's
 answer; the mechanism that closes that is P0-D's, by design.
-**★ P0-D1 EXECUTED (this tree; provider facts reverified first-party 2026-08-30):** the
+**★ P0-D1 EXECUTED AND MERGED (this tree; provider facts reverified first-party 2026-08-30):** the
 executor now builds the context-bearing portion of every dispatch from the durable causal
 projection through the real §11 adapter boundary — Anthropic Messages stateless replay
 (thinking signatures byte-preserved; durable SSE reassembled; first-party model-switch strip)
@@ -445,8 +448,13 @@ at the boundary commit) with stateless replay as the mandatory fallback; migrati
 (two column authorities, nothing else); OpenAI Conversations objects
 DEFERRED_WITHIN_P0D (no tenant policy signal in executable source); NO provider-state row
 created by any D1 flow. `R1_DURABLE_CONTEXT_P1` is CLOSED for `anthropic_messages` +
-`openai_responses` and OPEN for `codex`/`claude_code`. **P0-D2 (Codex thread + Claude Code
-Agent SDK session continuation) is NOT_STARTED and is the remaining half of P0-D.**
+`openai_responses` and OPEN for `codex`/`claude_code`. The movement was independently reviewed,
+owner-authorized, and squash-merged as PR #151 (merge
+`700aad9631f91d0655bd98aa113fbc59d74f88b0`, tree `ff99c89e3e427c95a4b2634fb3859f088ecf5891` —
+byte-identical to the final exact-head-reviewed head
+`63221f0d3290fc02d3a99f15e3b14592f596c92f`; post-merge main CI run `33580661031` SUCCESS).
+**P0-D2 (Codex thread + Claude Code Agent SDK session continuation) is NOT_STARTED and is the
+remaining half of P0-D.**
 
 What P0-C does and does not make real, stated precisely:
 `CONVERSATION_PERSISTENCE=IMPLEMENTED_API_LEVEL_FOR_P0C_SURFACES_ONLY` — the durable
