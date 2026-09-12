@@ -29,6 +29,7 @@ import {
   type ListConversationsInput,
   type PatchConversationInput,
   canonicalSurfaceFor,
+  isAdmissibleNewConversationIdentity,
 } from './contracts.js';
 import { decodeConversationCursor, encodeConversationCursor } from './cursor.js';
 import { decryptConversationTitle, encryptConversationTitle } from './crypto.js';
@@ -207,12 +208,18 @@ function projectFork(
  * identity. Reads, projections and the historical-replay path deliberately do NOT pass through
  * here — an already-committed row keeps its recorded meaning, and re-judging it under a rule that
  * postdates it would turn a request that lawfully succeeded into a present failure.
+ *
+ * ★ THE DECISION ITSELF IS NOT MADE HERE. This function is the ENFORCEMENT point — where a
+ * refusal becomes a typed error — while `isAdmissibleNewConversationIdentity` (`contracts.ts`)
+ * remains the single admission rule. Restating its comparison locally would let the contract's
+ * own tests stay green while production kept enforcing a superseded rule.
  */
 function assertAdmissibleNewIdentity(provider: ConversationProvider, surface: string): void {
-  const canonical = canonicalSurfaceFor(provider);
-  if (canonical !== null && surface !== canonical) {
-    throw new ConversationIdentityNotAdmissibleError(provider, surface, canonical);
-  }
+  if (isAdmissibleNewConversationIdentity(provider, surface)) return;
+  // Reachable ONLY for a provider that HAS a canonical surface: the predicate admits every
+  // surface when `canonicalSurfaceFor` is null, so a refusal proves it is a string here. That
+  // mapping is read for the error's `expected_surface` alone, never as a second admission gate.
+  throw new ConversationIdentityNotAdmissibleError(provider, surface, canonicalSurfaceFor(provider)!);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
