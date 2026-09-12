@@ -166,7 +166,7 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
                                                                   for the two API surfaces —
                                                                   see current-state.md's P0-D1
                                                                   canonical section)
-              P0-D2 CODING HARNESS CONTINUATION               (ARCHITECTURE + INERT ADMISSION
+              P0-D2 CODING HARNESS CONTINUATION                  (ARCHITECTURE + INERT ADMISSION
                                                                   are in the CANDIDATE TREE — an
                                                                   OPEN PR at the time of writing,
                                                                   NOT a merge: verify its PR/CI/
