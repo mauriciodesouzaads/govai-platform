@@ -6,9 +6,19 @@
 // continuation strategy must answer — never a shared conversation wire format. An Anthropic
 // `/v1/messages` history replay and an OpenAI `/v1/responses` chain are structurally different
 // things, and both stay fully native behind this boundary (LAW NX-1: no lowest common
-// denominator; §12: stored truth stays provider-native). The future Codex thread and Claude
-// Code session adapters (P0-D2) attach HERE — they add strategies with provider-held state and
-// receiver-side fencing, they do not reshape this interface into a generic `conversation_id`.
+// denominator; §12: stored truth stays provider-native).
+//
+// ★ CORRECTED BY P0-D2 (`docs/architecture/ai-conversation-coding-harness-continuation-v1.md`).
+// An earlier revision of this header said the future coding-harness strategies "attach HERE".
+// They do not, and the distinction matters twice over. FIRST, this interface is PURE by
+// construction (see below): continuing a provider-native coding harness means creating, resuming
+// and forking a live native object and driving a local runner — process and network I/O, which
+// cannot live behind a pure function without destroying the property that makes every rule here
+// unit-testable. That work belongs to an EXECUTOR-LEVEL driver seam that consumes the same
+// durable projection this boundary consumes; a pure planning/projection step may still be shared,
+// the I/O may not. SECOND, the movement label was wrong: P0-D2 owns the ARCHITECTURE and the
+// inert admission foundation — the Codex runtime is P5 and the Claude harness runtime is P6, each
+// behind its own explicitly deferred gates. Neither runtime exists in this tree.
 //
 // What an adapter owns (movement dispatch §10, realized):
 //   1. STRATEGY SELECTION   from durable facts only — never in-memory hints.

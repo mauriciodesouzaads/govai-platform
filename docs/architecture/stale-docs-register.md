@@ -1134,3 +1134,39 @@ artifact: the merge session completed every gate G0–G15 but was interrupted by
 final report assembly, so the intended merge report was never materialized; the recovery
 re-adjudicated every material claim against live GitHub and repository evidence and preserved the
 interrupted assembly fragments verbatim alongside it.
+
+## P0-D2 coding-harness continuation reconciliation (`P0D2-CANONICALIZATION-DOC-STATUS-01`)
+
+Recorded at **branch time**, in the candidate tree of the P0-D2 canonicalization PR. This is an
+**additive** record: it supersedes the specific CURRENT wording named below and **rewrites no
+historical closeout evidence** — every dated anchor, every prior movement's delta table and every
+`IN_THIS_TREE` token belonging to an earlier movement stays exactly as written.
+
+**What changed, and why it was materially wrong rather than merely old:**
+
+| Document | Superseded current statement | Reconciled to |
+|---|---|---|
+| `ai-conversation-continuity-v1.md` §11 | the one `ProviderConversationAdapter` interface reads as covering the coding harnesses too | ADDITIVE note: for `codex`/`claude_code` the responsibilities remain the correct contract but are **not all discharged at that boundary** — the realized interface is PURE, so native process/network I/O belongs to an **executor-level driver seam** over the same durable projection. Movement ownership corrected: architecture = P0-D2, **runtime = P5 (Codex) / P6 (Claude)**. The accepted design below the note is preserved verbatim |
+| `ai-conversation-continuity-v1.md` §11 (cross-adapter rules) | the seed-staleness sentence could be read as an unconditional per-turn comparison | ADDITIVE note restating it as **conditional** — it belongs to the boundary-version-failure REBUILD path; the anti-race seed binding applies to harnesses as it does to API state; the **fork-pin exemption** in eligible-context selection remains authoritative. No rule was weakened or widened |
+| `native-experience-contract-v1.md` §18.3 | "`codex` / `claude_code` conversations created today remain continuable then" — an unconditional promise the schema cannot keep, since 0031 leaves `surface` free-form AND freezes it for life | **Acknowledged contract amendment** (not a silent rewrite): the architecture obligation is DISCHARGED; the promise is bounded by `PRESERVE_AND_EXPLICIT_NEW_DESTINATION` — canonical identities stay continuable; a row whose harness `surface` is not independently evidenced is preserved, stays UNKNOWN, and carries **no automatic same-record continuation guarantee**. Provider-based inference was rejected as the substitution LAW NX-5 forbids |
+| `current-state.md` summary + final P0-D1 `NEXT` line | "NEXT: `P0-D2` (Codex threads + Claude Code Agent SDK sessions **on this same adapter foundation**)" | a new P0-D2 summary bullet + canonical section, each explicitly marked **CANDIDATE-TREE / OPEN PR, not published completion**; the "same adapter foundation" phrase corrected in place |
+| `development-roadmap.md` status block + P0-D narrative | `P0_D2_CODING_HARNESS_CONTINUATION=NOT_STARTED (… on the same adapter foundation)` | split into `ARCHITECTURE=PUBLISHED_IN_CANDIDATE_TREE` / `INERT_ADMISSION=IMPLEMENTED_IN_CANDIDATE_TREE` / `CODING_HARNESS_RUNTIME=NOT_STARTED (P5/P6)` / `R1_DURABLE_CONTEXT_P1_CODING_HARNESS=OPEN` |
+| `resume-playbook.md` §4 lane block + honesty boundary | P0-D2 listed under `NEXT` as "not started … on the same adapter foundation"; the honesty boundary listed "Codex / Claude Code continuation (P0-D2)" among what does not exist | lane block shows the candidate-tree architecture half with an explicit "verify PR/CI/merge proofs" caution, and `NEXT` moves to **P5 · P6**; the honesty boundary now names the **RUNTIME** as absent and states that **admission is not capability** |
+| `adr/ADR-031-coding-agent-surface.md` | historical body + M3 reconciliation (gateway scope; `X-GovAI-Agent-Session` NOT implemented) | **PRESERVED BYTE-FOR-BYTE**; one bounded ADDITIVE section appended relating the ADR's gateway scope to P0-D2's conversation-identity model and **reaffirming** that Decision 3 remains unimplemented and unrevived |
+| `native-experience-parity-v2.md` + its generated snapshot | dated research snapshot | **UNTOUCHED** — read-only in this movement; no factual/status correction required, and the audited provider pin is described as a dated pin, never as the latest release |
+| `adr/ADR-030-standalone-and-integrated.md` | formal status **Proposed** / doctrine candidate | **UNTOUCHED** — P0-D2 is not its promulgation vehicle; `ADR030_FORMAL_STATUS_CHANGED=NO` |
+
+**What this reconciliation does NOT do.** It closes no implementation gap and weakens no
+non-claim. `P0-D` stays `IN_PROGRESS`. The coding-harness **runtime** stays `NOT_STARTED` and is
+owned by P5/P6. `R1_DURABLE_CONTEXT_P1` stays CLOSED only for `anthropic_messages` +
+`openai_responses` and **OPEN** for `codex`/`claude_code`. The six deferred runtime gates stay
+OPEN. `OPENAI_CONVERSATION_OBJECTS` stays `DEFERRED_WITHIN_P0D`;
+`CROSS_PROVIDER_PORTABLE_PROJECTION` stays `NOT_IMPLEMENTED`; `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED`
+is permanent; `P0A2-P3-A1` / `P0A2-P3-A4` keep their pre-worker-activation dispositions. No
+migration, schema, privilege, workflow or CI change is part of this movement, and no legacy row was
+mutated — `LEGACY_RECORD_MUTATION=NONE PERFORMED, AND FORBIDDEN`.
+
+`DEPLOYED_AMBIGUOUS_ROW_INVENTORY=UNKNOWN`: no deployment inventory was performed or authorized,
+and the absence of a harness runtime is **not** evidence that no such control-plane rows exist. The
+preservation policy is deliberately correct whether that count is zero, non-zero or discovered
+later — which is why no row was touched.

@@ -95,6 +95,41 @@ export class ForkIdempotencyLoserSignal extends Error {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// P0-D2 new-identity admission.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A NEW conversation or fork asked for a coding-harness provider with a surface that is not that
+ * provider's canonical one (`contracts.ts`'s canonical identity block).
+ *
+ * ★ A SEMANTIC REFUSAL, NOT A SYNTAX ERROR, AND NEVER A DB FAULT. The token parsed fine and the
+ * column would accept it — 0031 leaves `surface` unconstrained NOT NULL text — so nothing below
+ * this layer would have complained. Admitting it would freeze an identity whose meaning no
+ * executor can ever resolve, because 0031 also makes a branch’s provider/surface/model immutable
+ * for life. Refusing at admission is the only point where the outcome is still correctable.
+ *
+ * ★ IT ECHOES THE CALLER'S OWN PAIR AND THE EXPECTED SURFACE. Both are the caller's own request
+ * (or, on a fork, the caller's own already-owner-proven parent branch), so the body discloses
+ * nothing about anyone else and tells the client exactly what to send instead — the
+ * `conversation_surface_unsupported` precedent.
+ *
+ * ★ IT SAYS NOTHING ABOUT EXISTING ROWS. Conversations already created with another surface stay
+ * readable and unchanged under their existing owner/lifecycle rules; this error is only ever
+ * raised for an identity that does not exist yet.
+ */
+export class ConversationIdentityNotAdmissibleError extends Error {
+  readonly code = 'conversation_identity_not_admissible';
+  constructor(
+    readonly provider: string,
+    readonly surface: string,
+    readonly expectedSurface: string,
+  ) {
+    super('this provider requires its canonical surface for a new conversation identity');
+    this.name = 'ConversationIdentityNotAdmissibleError';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // P0-C durable send / hydrate failures.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 

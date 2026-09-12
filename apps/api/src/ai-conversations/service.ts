@@ -28,10 +28,12 @@ import {
   type ForkBranchProjection,
   type ListConversationsInput,
   type PatchConversationInput,
+  canonicalSurfaceFor,
 } from './contracts.js';
 import { decodeConversationCursor, encodeConversationCursor } from './cursor.js';
 import { decryptConversationTitle, encryptConversationTitle } from './crypto.js';
 import {
+  ConversationIdentityNotAdmissibleError,
   ConversationNotFoundError,
   ForkIdempotencyConflictError,
   ForkIdempotencyLoserSignal,
@@ -195,6 +197,24 @@ function projectFork(
   };
 }
 
+/**
+ * P0-D2 NEW-IDENTITY ADMISSION — the ONE place the canonical coding-harness rule is enforced.
+ *
+ * Applied to a RESOLVED (provider, surface), never to a raw body: on a fork the pair only exists
+ * after per-field inheritance, so there is nothing for a parser to check (`contracts.ts`).
+ *
+ * ★ NEW IDENTITIES ONLY. Every caller below is on a path that is about to MINT a durable
+ * identity. Reads, projections and the historical-replay path deliberately do NOT pass through
+ * here — an already-committed row keeps its recorded meaning, and re-judging it under a rule that
+ * postdates it would turn a request that lawfully succeeded into a present failure.
+ */
+function assertAdmissibleNewIdentity(provider: ConversationProvider, surface: string): void {
+  const canonical = canonicalSurfaceFor(provider);
+  if (canonical !== null && surface !== canonical) {
+    throw new ConversationIdentityNotAdmissibleError(provider, surface, canonical);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Create
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -213,6 +233,11 @@ export async function createConversation(
   scope: OwnerScope,
   input: CreateConversationInput,
 ): Promise<ConversationDetail> {
+  // ★ BEFORE THE CONNECTION, LET ALONE THE TRANSACTION (P0-D2). The root and its branch are
+  // written atomically below, so an identity refused here costs no pool slot, no lock and no
+  // rolled-back row — and, critically, the check sits at the SERVICE entry point rather than in
+  // the route's parser, so an in-process caller that never sees an HTTP body cannot bypass it.
+  assertAdmissibleNewIdentity(input.provider, input.surface);
   const client = await deps.pool.connect();
   try {
     const { conversation, branch } = await withConversationOwnerContext(
@@ -493,6 +518,29 @@ export async function createFork(
               model,
             }),
           );
+
+          // ── P0-D2: NEW ADMISSION vs. HISTORICAL REPLAY ───────────────────────────────
+          // ★ THE ORDER HERE IS THE WHOLE POINT. A repeat of an ALREADY-COMMITTED fork re-sends
+          // its original body, and the flow below is what answers it: the candidate is inserted,
+          // the reservation is lost, the transaction rolls back and the committed binding is
+          // replayed. A NEW-admission check placed blindly ahead of that flow would reject a
+          // request that lawfully succeeded before this rule existed — the branch it is replaying
+          // is already durable and its identity is frozen by 0031, so there is nothing left to
+          // admit or refuse. So the binding is consulted FIRST, and the new rule applies only
+          // when this really is a NEW fork.
+          //
+          // ★ THE LOOKUP IS SAFE HERE AND NOWHERE EARLIER. It runs inside the owner context,
+          // under the root lock, AFTER the root proved addressable and the full composite lineage
+          // resolved — so it can never become an unauthenticated probe for someone else's key.
+          //
+          // ★ WHAT IT DOES NOT CHANGE. The reservation below remains the single concurrency
+          // arbiter: this read is a replay/new DISCRIMINATOR, never a pre-claim. Two concurrent
+          // NEW requests still both reach it, both pass, and exactly one wins the reservation.
+          // A committed key whose intent DIVERGES keeps its established answer too — it falls
+          // through to the loser path and `resolveCommittedFork` raises the 409 conflict, because
+          // a key that is already bound can mint nothing whatever the new body says.
+          const committed = await store.findForkBinding(c, conversationId, input.client_fork_id);
+          if (!committed) assertAdmissibleNewIdentity(provider, surface);
 
           const branch = await store.insertForkBranch(c, scope, {
             conversationId,

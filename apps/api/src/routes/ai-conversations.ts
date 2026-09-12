@@ -64,6 +64,7 @@ import {
 import { ListTurnsQuery, SendTurnBody } from '../ai-conversations/turn-contracts.js';
 import {
   BranchNotFoundError,
+  ConversationIdentityNotAdmissibleError,
   ConversationNotFoundError,
   ConversationSurfaceUnsupportedError,
   ForkIdempotencyConflictError,
@@ -179,6 +180,21 @@ function replyForServiceError(reply: FastifyReply, err: unknown): boolean {
   }
   if (err instanceof InvalidCursorError) {
     reply.code(400).send({ error: err.code });
+    return true;
+  }
+  // ── P0-D2 ───────────────────────────────────────────────────────────────────────
+  if (err instanceof ConversationIdentityNotAdmissibleError) {
+    // 400, NOT the 409 its neighbour `conversation_surface_unsupported` uses, and the difference
+    // is not cosmetic: 409 means "well-formed, but this SERVER cannot execute your durable
+    // configuration yet", which is a statement about the server and is not fixed by resending.
+    // This one means the REQUEST named an identity this architecture will not create — the client
+    // fixes it by sending the canonical surface, which is exactly what the body carries back.
+    reply.code(400).send({
+      error: err.code,
+      provider: err.provider,
+      surface: err.surface,
+      expected_surface: err.expectedSurface,
+    });
     return true;
   }
   // ── P0-C ──────────────────────────────────────────────────────────────────────────────────

@@ -697,6 +697,24 @@ P0-D consumes this contract and MUST deliver, per continuity spec §11 and the l
 3. Codex/Claude Code continuation ARCHITECTURE anchored to thread/session identity
    (implementation may land in P5/P6; P0-D fixes the identity model so `codex` /
    `claude_code` conversations created today remain continuable then).
+   **★ QUALIFIED BY P0-D2 (an acknowledged contract amendment, not a silent rewrite).** The
+   architecture obligation is DISCHARGED — see
+   [ai-conversation-coding-harness-continuation-v1.md](./ai-conversation-coding-harness-continuation-v1.md).
+   The parenthetical promise above is now bounded by the approved legacy policy
+   `PRESERVE_AND_EXPLICIT_NEW_DESTINATION`, because it could not be kept as written: migration
+   0031 left `surface` as unconstrained `NOT NULL` text AND freezes a branch's
+   provider/surface/model for life, so rows exist (or may exist) whose historical `surface` has no
+   independently evidenced canonical meaning, and no identity model can retroactively decide what
+   such a token was meant to mean. What holds now:
+   - a conversation created with a **canonical** identity — `codex`/`codex` or
+     `claude_code`/`claude_code`, the only harness identities admitted for NEW rows since P0-D2 —
+     remains continuable under this obligation;
+   - a conversation whose harness `surface` is **not** independently evidenced is **preserved
+     unchanged and readable**, its meaning stays UNKNOWN, and it carries **no automatic same-record
+     continuation guarantee**. Continuing from it requires an explicit canonical destination
+     selection and a new lawful destination identity with the applicable provenance relationship.
+   Inferring the canonical surface from the provider was rejected outright: it is exactly the
+   silent surface substitution LAW NX-5 forbids, and a wrong inference would be permanent.
 4. Dispatch-time re-checks of availability/lifecycle facts (LAW NX-3's operational
    readiness axis) with truthful §9-case-H failures.
 5. NO model gating added anywhere (NX-2); NO silent substitution (NX-5); provider

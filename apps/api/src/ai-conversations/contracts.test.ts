@@ -6,6 +6,8 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  CANONICAL_CODING_HARNESS_SURFACE,
+  CODING_HARNESS_PROVIDERS,
   CONVERSATION_LIST_DEFAULT_LIMIT,
   CONVERSATION_LIST_MAX_LIMIT,
   CONVERSATION_PROVIDERS,
@@ -15,6 +17,9 @@ import {
   FORK_BOUNDARY_MODES,
   ListConversationsQuery,
   PatchConversationBody,
+  canonicalSurfaceFor,
+  isAdmissibleNewConversationIdentity,
+  isCodingHarnessProvider,
 } from './contracts.js';
 
 const CONVERSATION = {
@@ -219,5 +224,149 @@ describe('fork body', () => {
     expect(CreateForkBody.safeParse({ ...FORK, boundary_mode: 'terminal_ish' }).success).toBe(
       false,
     );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// P0-D2 — the canonical coding-harness identity rule, as a PURE function.
+//
+// The rule is tested HERE, where it lives, and NOT through the body schemas — because it is
+// deliberately not in them. The two suites below assert both halves of that: what the rule
+// decides, and that the parsers stayed exactly as syntactic as they were.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('canonical coding-harness identity (P0-D2)', () => {
+  it('names exactly the two harness providers, and their one surface each', () => {
+    expect([...CODING_HARNESS_PROVIDERS]).toEqual(['codex', 'claude_code']);
+    expect(CANONICAL_CODING_HARNESS_SURFACE).toEqual({ codex: 'codex', claude_code: 'claude_code' });
+    // The harness set is a SUBSET of 0031's four providers, never a fifth vocabulary.
+    for (const p of CODING_HARNESS_PROVIDERS) {
+      expect(CONVERSATION_PROVIDERS).toContain(p);
+    }
+    for (const p of CONVERSATION_PROVIDERS) {
+      expect({ p, harness: isCodingHarnessProvider(p) }).toEqual({
+        p,
+        harness: p === 'codex' || p === 'claude_code',
+      });
+    }
+  });
+
+  it('admits each canonical pair', () => {
+    for (const provider of CODING_HARNESS_PROVIDERS) {
+      const surface = CANONICAL_CODING_HARNESS_SURFACE[provider];
+      expect({ provider, surface, ok: isAdmissibleNewConversationIdentity(provider, surface) }).toEqual({
+        provider,
+        surface,
+        ok: true,
+      });
+    }
+  });
+
+  it('★ REFUSES a near miss instead of repairing it — no trim, no case fold, no alias', () => {
+    // Every token below is one a human might have MEANT as the canonical surface. Each is refused,
+    // because 0031 freezes provider/surface/model for a branch's lifetime: an identity admitted by
+    // a guess can never be corrected in place, and guessing is the silent substitution NX-5 bans.
+    // (`' codex'` and `'codex '` are refused one layer earlier by SurfaceToken's whitespace rule;
+    // they are listed to show the rule does not RESCUE them by trimming.)
+    for (const surface of [
+      'CODEX',
+      'Codex',
+      'codex_thread',
+      'codex-thread',
+      'codex_app_server',
+      'codex_cli',
+      'codex_sdk',
+      ' codex',
+      'codex ',
+      'claude_code',      // ← the OTHER harness's canonical token: a pair, not a set
+      'anthropic_api',
+      'openai_responses',
+      '',
+    ]) {
+      expect({ surface, ok: isAdmissibleNewConversationIdentity('codex', surface) }).toEqual({
+        surface,
+        ok: false,
+      });
+    }
+    for (const surface of [
+      'CLAUDE_CODE',
+      'claude-code',
+      'claude_code_session',
+      'claudecode',
+      'claude_code_agent_sdk',
+      'codex', // ← likewise, crossed
+      'anthropic_messages',
+      '',
+    ]) {
+      expect({ surface, ok: isAdmissibleNewConversationIdentity('claude_code', surface) }).toEqual({
+        surface,
+        ok: false,
+      });
+    }
+  });
+
+  it('★ leaves the API providers exactly as free-form as they were', () => {
+    // The narrowing is scoped to the two harness providers. `openai`/`anthropic` keep the
+    // admission P0-B gave them; what they can EXECUTE is P0-C's dispatch registry's question,
+    // and this rule must not quietly become a second, different answer to it.
+    for (const provider of ['openai', 'anthropic'] as const) {
+      expect(canonicalSurfaceFor(provider)).toBeNull();
+      for (const surface of [
+        'anthropic_api',
+        'anthropic_messages',
+        'openai_responses',
+        'openai_chat_completions',
+        'some_future_surface_nobody_has_shipped_yet',
+        'codex', // even a harness-shaped token is still admissible on an API provider
+      ]) {
+        expect({ provider, surface, ok: isAdmissibleNewConversationIdentity(provider, surface) }).toEqual({
+          provider,
+          surface,
+          ok: true,
+        });
+      }
+    }
+  });
+
+  it('★ gates on NOTHING but the pair — the model vocabulary stays provider-owned (NX-2)', () => {
+    // A provider shipping a model must never require a GovAI release. `model` is not an input to
+    // the rule at all, which is the strongest form of that guarantee.
+    expect(isAdmissibleNewConversationIdentity.length).toBe(2);
+    for (const model of ['gpt-5-codex', 'claude-opus-5', 'a-model-released-tomorrow', 'x']) {
+      expect(
+        CreateConversationBody.safeParse({
+          mode: 'governed',
+          provider: 'codex',
+          surface: 'codex',
+          model,
+        }).success,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('the body parsers stayed SYNTACTIC (P0-D2)', () => {
+  it('★ the create parser is still provider-agnostic on `surface`', () => {
+    // Asserted deliberately, and it is NOT a gap: the semantic rule is the SERVICE's, so that ONE
+    // rule answers both create and fork — a fork's pair does not even exist until inheritance is
+    // resolved against durable state, which no parser can see.
+    for (const provider of CONVERSATION_PROVIDERS) {
+      expect(
+        CreateConversationBody.safeParse({ ...CONVERSATION, provider, surface: 'anthropic_api' }).success,
+      ).toBe(true);
+    }
+    // ...while the SEMANTIC verdict on the very same pairs is the opposite for the harness two.
+    expect(isAdmissibleNewConversationIdentity('codex', 'anthropic_api')).toBe(false);
+    expect(isAdmissibleNewConversationIdentity('claude_code', 'anthropic_api')).toBe(false);
+  });
+
+  it('★ the FORK parser still leaves the triple optional — the replay path depends on it', () => {
+    // A repeat of an already-committed fork re-sends its original body. If this parser refused a
+    // now-noncanonical pair, that lawful historical request would fail at the outer edge, before
+    // the service could ever consult its committed binding.
+    const parsed = CreateForkBody.parse({ ...FORK, provider: 'codex', surface: 'codex_thread' });
+    expect(parsed.provider).toBe('codex');
+    expect(parsed.surface).toBe('codex_thread');
+    expect(CreateForkBody.parse(FORK).surface).toBeUndefined();
   });
 });

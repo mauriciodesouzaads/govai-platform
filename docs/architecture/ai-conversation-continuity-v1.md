@@ -887,6 +887,22 @@ current terminal state visible → assistant output recovered when possible.
 
 ## 11. ProviderConversationAdapter
 
+> **★ P0-D2 RECONCILIATION — WHERE THE CODING-HARNESS STRATEGIES ACTUALLY LIVE.** This section
+> describes ONE interface covering both API providers and the coding harnesses. For the API
+> providers that is exactly right and P0-D1 implemented it. For `codex` / `claude_code` the
+> responsibilities below remain the correct CONTRACT, but they are **not all discharged at this
+> boundary**: `ProviderConversationAdapter` as realized is **pure** — a function from decrypted
+> durable context and config to a native request body, with no database, KMS, process or network
+> I/O. Continuing a coding harness means creating, resuming and forking a live native object and
+> driving a local runner, which is I/O by definition. That work belongs to an **executor-level
+> driver seam** that consumes this same durable projection; a pure planning/projection step may
+> still be shared, the I/O may not. The split, the identity model, the adoption protocol and the
+> six deferred runtime gates are canonical in
+> [ai-conversation-coding-harness-continuation-v1.md](./ai-conversation-coding-harness-continuation-v1.md).
+> Movement ownership, stated precisely: **P0-D2** owns that architecture and the inert admission
+> foundation; the **Codex runtime is P5** and the **Claude coding-harness runtime is P6**. Neither
+> runtime exists in this tree. Everything below is preserved as the accepted design.
+
 One interface, per-provider strategies; providers are NOT forced into identical state models:
 
 ```
@@ -1035,6 +1051,15 @@ Cross-adapter rules:
   maturity window), the runner's settle touches zero rows, it must NOT commit the object as
   its live anchor, and reconciliation reseeds afresh; if settlement won, cleanup's claim
   touches zero rows and skips.
+- **★ THE SEED-STALENESS RULE IS CONDITIONAL, AND P0-D2 DID NOT WIDEN IT.** The comparison above
+  belongs to the **boundary-version-failure rebuild path**: after a failure the rebuild re-runs
+  reconciliation and treats an anchor seeded at an OLDER causal version as stale. It is NOT an
+  unconditional every-turn comparison, and it does not mean an ordinary successful continuation
+  reseeds or forks. The anti-race seed binding applies to coding harnesses exactly as it applies to
+  API provider state; adopted-boundary ALIGNMENT is a separate question, specified in the
+  coding-harness contract, and a persisted derived representation of it is never a second causal
+  authority over branch history. Canonical eligible-context selection — **including the fork-pin
+  exemption above** — remains authoritative and is not replaced by a global latest-completed filter.
 - **The taint discipline is a PROPERTY OF SHARED PROVIDER-HELD STATE, not an OpenAI special
   case.** Every strategy that reuses provider-held mutable continuation state — the OpenAI
   conversation object above, a CODEX THREAD, a Claude Code SESSION — inherits the same rule: a

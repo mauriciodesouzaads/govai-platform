@@ -34,6 +34,12 @@ import {
 import { installPostgresPoolShutdownGuard } from './setup.js';
 import { buildServer } from '../../apps/api/src/server.js';
 import { branchExecutionAuthorityKey } from '../../apps/api/src/ai-conversations/locks.js';
+import { CANONICAL_CODING_HARNESS_SURFACE } from '../../apps/api/src/ai-conversations/contracts.js';
+import {
+  FORK_INTENT_HASH_VERSION,
+  buildForkIntent,
+  forkIntentHash,
+} from '../../apps/api/src/ai-conversations/fork-intent.js';
 
 let stack: Stack;
 let org: SeededOrg;
@@ -94,6 +100,44 @@ async function seedForkSource(
     [attemptId, turnId],
   );
   return { conversationId, branchId, turnId, attemptId };
+}
+
+/**
+ * A fork source whose conversation AND root branch carry an EXACT (provider, surface) pair.
+ *
+ * Seeded through the ADMIN pool, which is the only lawful way to model two things the service
+ * itself will not produce: a row written BEFORE the P0-D2 admission rule existed (an ambiguous
+ * legacy identity), and a canonical harness identity whose surface the shared `seedConversation`
+ * helper hardcodes. FKs, CHECKs and guard triggers still fire, so the rows are real.
+ */
+async function seedForkSourceWithIdentity(
+  ids: OwnerIds,
+  provider: string,
+  surface: string,
+  model = 'test-model',
+): Promise<Lineage & { model: string; provider: string; surface: string }> {
+  const conv = await admin().query<{ id: string }>(
+    `INSERT INTO govai.ai_conversations (org_id, owner_user_id, mode, provider, surface, model)
+     VALUES ($1::uuid, $2::uuid, 'governed', $3::text, $4::text, $5::text) RETURNING id`,
+    [ids.orgId, ids.ownerUserId, provider, surface, model],
+  );
+  const conversationId = conv.rows[0]!.id;
+  const br = await admin().query<{ id: string }>(
+    `INSERT INTO govai.ai_conversation_branches
+       (org_id, owner_user_id, conversation_id, provider, surface, model)
+     VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text, $6::text) RETURNING id`,
+    [ids.orgId, ids.ownerUserId, conversationId, provider, surface, model],
+  );
+  const branchId = br.rows[0]!.id;
+  const { turnId } = await seedTurn(admin(), ids, conversationId, branchId, 1);
+  const attemptId = await seedAttempt(admin(), ids, conversationId, branchId, turnId, {
+    state: 'completed',
+  });
+  await admin().query(
+    `UPDATE govai.ai_conversation_turns SET current_attempt_id = $1::uuid WHERE id = $2::uuid`,
+    [attemptId, turnId],
+  );
+  return { conversationId, branchId, turnId, attemptId, provider, surface, model };
 }
 
 function forkBody(src: Lineage, over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -1304,4 +1348,219 @@ describe('P0-B L — the fork control plane survives a hostile ambient DateStyle
       identicalProjection: committed,
     });
   }, 180_000);
+});
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// M — P0-D2: canonical harness identity at the RESOLVED fork boundary
+//
+// A fork's triple does not exist until the service resolves it per field against the parent
+// branch, so this is the only layer at which the rule can be applied to a fork at all — and the
+// only layer at which a REPLAY of an already-committed fork can be told apart from a new one.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+describe('P0-D2 M — the RESOLVED fork identity is what the admission rule judges', () => {
+  it('M1 — a canonical harness parent forks, inherited AND explicitly restated', async () => {
+    for (const provider of ['codex', 'claude_code'] as const) {
+      const surface = CANONICAL_CODING_HARNESS_SURFACE[provider];
+      const src = await seedForkSourceWithIdentity(owner, provider, surface);
+
+      // Inherited (the triple omitted entirely).
+      const inherited = await fork(org.api_key, src.conversationId, forkBody(src));
+      expect({ provider, code: inherited.statusCode }).toEqual({ provider, code: 201 });
+      expect((inherited.body as ForkBody).surface).toBe(surface);
+
+      // Explicitly restated — §13's "same fork", and still admissible.
+      const explicit = await fork(
+        org.api_key,
+        src.conversationId,
+        forkBody(src, { provider, surface, model: src.model }),
+      );
+      expect({ provider, code: explicit.statusCode }).toEqual({ provider, code: 201 });
+      expect((explicit.body as ForkBody).surface).toBe(surface);
+    }
+  });
+
+  it('M2 — a resolved NON-canonical pair is refused, however it was resolved', async () => {
+    // Three ways to arrive at the same inadmissible identity: inherit it from a legacy parent,
+    // state it outright, or switch ONLY the provider and let inheritance supply a surface that
+    // was never meant for it. All three must land on the same deterministic answer.
+    const legacy = await seedForkSourceWithIdentity(owner, 'codex', 'anthropic_api');
+    const api = await seedForkSourceWithIdentity(owner, 'anthropic', 'anthropic_api');
+    const before = { legacy: await branchCount(legacy.conversationId), api: await branchCount(api.conversationId) };
+
+    const cases: Array<[string, string, Record<string, unknown>]> = [
+      // INHERITED from a legacy harness parent: the body says nothing about the triple at all.
+      ['inherited-legacy', legacy.conversationId, forkBody(legacy)],
+      // EXPLICIT non-canonical.
+      ['explicit-legacy-token', legacy.conversationId, forkBody(legacy, { surface: 'codex_thread' })],
+      ['explicit-case-variant', legacy.conversationId, forkBody(legacy, { surface: 'CODEX' })],
+      // ★ PROVIDER-ONLY SWITCH: the surface is NOT guessed from the provider. §13 inheritance is
+      // per field, so this resolves to codex/anthropic_api — and is refused rather than silently
+      // promoted to codex/codex, which would be the exact surface substitution NX-5 bans.
+      ['provider-only-switch', api.conversationId, forkBody(api, { provider: 'codex' })],
+      ['provider-only-switch-claude', api.conversationId, forkBody(api, { provider: 'claude_code' })],
+    ];
+    for (const [label, conversationId, body] of cases) {
+      const res = await fork(org.api_key, conversationId, body);
+      expect({ label, code: res.statusCode }).toEqual({ label, code: 400 });
+      const b = res.body as { error: string; provider: string; surface: string; expected_surface: string };
+      expect({ label, error: b.error }).toEqual({ label, error: 'conversation_identity_not_admissible' });
+      expect({ label, expected: b.expected_surface }).toEqual({
+        label,
+        expected: CANONICAL_CODING_HARNESS_SURFACE[b.provider as 'codex' | 'claude_code'],
+      });
+    }
+    // ★ NO BRANCH, on either conversation: the candidate transaction rolled back whole.
+    expect(await branchCount(legacy.conversationId)).toBe(before.legacy);
+    expect(await branchCount(api.conversationId)).toBe(before.api);
+    const bindings = await admin().query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_fork_idempotency
+        WHERE conversation_id = ANY($1::uuid[])`,
+      [[legacy.conversationId, api.conversationId]],
+    );
+    expect(bindings.rows[0]!.n).toBe('0');
+  });
+
+  it('M3 — ★ a COMMITTED legacy fork still REPLAYS, though its identity is no longer admissible', async () => {
+    // THE regression this movement could most easily have shipped. A client retrying a fork it
+    // already committed re-sends its ORIGINAL body; if the new rule ran ahead of the committed
+    // binding, that lawful historical request would start failing forever — and the branch it is
+    // asking about is already durable and frozen by 0031, so there is nothing left to admit.
+    //
+    // The committed state is seeded through the ADMIN pool because the service would (correctly)
+    // refuse to create it today. The intent hash is computed with the SHIPPED canonicalization,
+    // so the replay correspondence being proven is the real one and not a test-local arithmetic.
+    const legacy = await seedForkSourceWithIdentity(owner, 'codex', 'anthropic_api');
+    const clientForkId = randomUUID();
+
+    const child = await admin().query<{ id: string }>(
+      `INSERT INTO govai.ai_conversation_branches
+         (org_id, owner_user_id, conversation_id, provider, surface, model,
+          parent_branch_id, forked_from_turn_id, forked_from_attempt_id, boundary_mode)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'codex', 'anthropic_api', $4::text,
+               $5::uuid, $6::uuid, $7::uuid, 'after_attempt') RETURNING id`,
+      [owner.orgId, owner.ownerUserId, legacy.conversationId, legacy.model,
+       legacy.branchId, legacy.turnId, legacy.attemptId],
+    );
+    const committedBranchId = child.rows[0]!.id;
+    const intentHash = forkIntentHash(
+      buildForkIntent({
+        conversationId: legacy.conversationId,
+        parentBranchId: legacy.branchId,
+        forkedFromTurnId: legacy.turnId,
+        forkedFromAttemptId: legacy.attemptId,
+        boundaryMode: 'after_attempt',
+        provider: 'codex',
+        surface: 'anthropic_api',
+        model: legacy.model,
+      }),
+    );
+    await admin().query(
+      `INSERT INTO govai.ai_conversation_fork_idempotency
+         (org_id, owner_user_id, conversation_id, client_fork_id,
+          fork_intent_hash, fork_intent_hash_version, branch_id)
+       VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::bytea, $6::smallint, $7::uuid)`,
+      [owner.orgId, owner.ownerUserId, legacy.conversationId, clientForkId,
+       intentHash, FORK_INTENT_HASH_VERSION, committedBranchId],
+    );
+    const before = await branchCount(legacy.conversationId);
+
+    // The retry: the ORIGINAL body, with the triple inherited exactly as it was.
+    const replay = await fork(
+      org.api_key,
+      legacy.conversationId,
+      { ...forkBody(legacy), client_fork_id: clientForkId },
+    );
+    expect(replay.statusCode).toBe(200);
+    expect(replay.headers['x-govai-ai-fork-idempotent-replay']).toBe('true');
+    const body = replay.body as ForkBody;
+    expect(body.id).toBe(committedBranchId);
+    expect({ provider: body.provider, surface: body.surface }).toEqual({
+      provider: 'codex',
+      surface: 'anthropic_api',
+    });
+    expect(body.child_turn).toBeNull(); // an after_attempt fork minted none, then and now
+    // ★ MINTED NOTHING.
+    expect(await branchCount(legacy.conversationId)).toBe(before);
+
+    // And restating the inherited triple explicitly is the SAME intent (§13 / I6b), so it replays
+    // too — the equivalence the fork-intent canonicalization guarantees is untouched.
+    const restated = await fork(org.api_key, legacy.conversationId, {
+      ...forkBody(legacy, { provider: 'codex', surface: 'anthropic_api', model: legacy.model }),
+      client_fork_id: clientForkId,
+    });
+    expect(restated.statusCode).toBe(200);
+    expect((restated.body as ForkBody).id).toBe(committedBranchId);
+    expect(await branchCount(legacy.conversationId)).toBe(before);
+
+    // ★ CONFLICT SEMANTICS SURVIVE ON THE SAME COMMITTED KEY. A divergent intent is still the
+    // established 409 — a key that is already bound can mint nothing, whatever the new body says.
+    const conflict = await fork(org.api_key, legacy.conversationId, {
+      ...forkBody(legacy, { boundary_mode: 'before_attempt_output' }),
+      client_fork_id: clientForkId,
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect((conflict.body as { error: string }).error).toBe('fork_idempotency_key_conflict');
+    expect(await branchCount(legacy.conversationId)).toBe(before);
+  });
+
+  it('M4 — a MISSING binding never lets an inadmissible identity through, concurrently or on retry', async () => {
+    // The rule's other half: replay is preserved by the presence of a binding, so its ABSENCE
+    // must not become a loophole. Neither hammering the same key nor racing two requests at it
+    // can produce a row — the reservation remains the single arbiter and is never even reached.
+    const legacy = await seedForkSourceWithIdentity(owner, 'claude_code', 'claude_code_session');
+    const before = await branchCount(legacy.conversationId);
+    const key = randomUUID();
+    const body = { ...forkBody(legacy), client_fork_id: key };
+
+    const [a, b] = await Promise.all([
+      fork(org.api_key, legacy.conversationId, body),
+      fork(org.api_key, legacy.conversationId, body),
+    ]);
+    const retry = await fork(org.api_key, legacy.conversationId, body);
+    for (const [label, res] of [['a', a], ['b', b], ['retry', retry]] as const) {
+      expect({ label, code: res.statusCode }).toEqual({ label, code: 400 });
+      expect({ label, error: (res.body as { error: string }).error }).toEqual({
+        label,
+        error: 'conversation_identity_not_admissible',
+      });
+    }
+    expect(await branchCount(legacy.conversationId)).toBe(before);
+    const bindings = await admin().query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_fork_idempotency
+        WHERE conversation_id = $1::uuid`,
+      [legacy.conversationId],
+    );
+    expect(bindings.rows[0]!.n).toBe('0');
+  });
+
+  it('M5 — the boundary-mode law is unchanged: admissibility does not buy a config translation', async () => {
+    // A `before_attempt_output` fork COPIES the source turn's immutable native request config, so
+    // changing the triple still requires a replacement config this surface does not accept. Being
+    // a canonical harness identity changes nothing about that: the two rules are independent, and
+    // the replacement-config refusal is the one that must fire.
+    const api = await seedForkSourceWithIdentity(owner, 'anthropic', 'anthropic_messages');
+    const res = await fork(
+      org.api_key,
+      api.conversationId,
+      forkBody(api, { boundary_mode: 'before_attempt_output', provider: 'codex', surface: 'codex' }),
+    );
+    expect(res.statusCode).toBe(409);
+    expect((res.body as { error: string }).error).toBe('fork_replacement_config_required');
+    expect(await branchCount(api.conversationId)).toBe(0);
+  });
+
+  it('M6 — an API-provider fork is completely unaffected by the narrowing', async () => {
+    const api = await seedForkSourceWithIdentity(owner, 'anthropic', 'anthropic_api');
+    for (const over of [
+      {},
+      { surface: 'anthropic_messages' },
+      { surface: 'some_future_surface_nobody_has_shipped_yet' },
+      { provider: 'openai' as const, surface: 'openai_responses' },
+      { model: 'a-model-released-tomorrow' },
+    ]) {
+      const res = await fork(org.api_key, api.conversationId, forkBody(api, over));
+      expect({ over, code: res.statusCode }).toEqual({ over, code: 201 });
+    }
+  });
 });
