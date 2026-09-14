@@ -37,6 +37,8 @@ import {
   decodeConversationCursor,
   encodeConversationCursor,
 } from '../../apps/api/src/ai-conversations/cursor.js';
+import { CANONICAL_CODING_HARNESS_SURFACE } from '../../apps/api/src/ai-conversations/contracts.js';
+import { seedConversation } from './helpers/ai-conversation-seed.js';
 
 let stack: Stack;
 /** Owner A — the principal under test. */
@@ -236,15 +238,123 @@ describe('P0-B B — create: conversation + root branch, atomically', () => {
   });
 
   it('B1b — every provider and mode 0031 admits is creatable, and nothing else is', async () => {
-    for (const provider of ['openai', 'anthropic', 'codex', 'claude_code']) {
+    // ★ THE FOUR-PROVIDER × TWO-MODE MATRIX IS UNCHANGED; only the SURFACE each provider is
+    // created with moved (P0-D2). This test used to send one API surface for all four, which is
+    // exactly the ambiguous identity the canonical rule now refuses — so the harness two now send
+    // their canonical surface, and the API two are untouched. Dropping a provider or a mode here
+    // to make the suite green would have hidden the narrowing instead of proving it.
+    for (const provider of ['openai', 'anthropic', 'codex', 'claude_code'] as const) {
+      const surface =
+        provider === 'codex' || provider === 'claude_code'
+          ? CANONICAL_CODING_HARNESS_SURFACE[provider]
+          : CREATE.surface;
       for (const mode of ['governed', 'passthrough']) {
-        const res = await createVia(orgA.api_key, { ...CREATE, provider, mode });
+        const res = await createVia(orgA.api_key, { ...CREATE, provider, surface, mode });
         expect({ provider, mode, code: res.statusCode }).toEqual({ provider, mode, code: 201 });
+        // The BRANCH is the durable owner of the triple (§3): the surface that was admitted is
+        // the surface that was frozen.
+        const body = res.body as ConversationBody;
+        expect({ provider, s: body.root_branch.surface }).toEqual({ provider, s: surface });
       }
     }
     const bad = await createVia(orgA.api_key, { ...CREATE, provider: 'gemini' });
     expect(bad.statusCode).toBe(400);
     expect((bad.body as { error: string }).error).toBe('invalid_request');
+  });
+
+  it('B1c — a NEW harness identity with a non-canonical surface is refused, and writes NOTHING', async () => {
+    // The admission narrowing, proven at the HTTP edge and at the table. A refusal that still left
+    // a conversation row would be worse than no rule at all: 0031 freezes provider/surface/model
+    // for a branch's lifetime, so the bad identity would be permanent.
+    const before = await adminQuery<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversations WHERE org_id = $1::uuid`,
+      [orgA.org_id],
+    );
+    const refused: Array<[string, string]> = [
+      ['codex', 'anthropic_api'], // the token B1b used to send for every provider
+      ['codex', 'codex_thread'], // the historical fixture spelling — never an alias
+      ['codex', 'CODEX'], // case is NOT folded
+      ['codex', 'codex-thread'],
+      ['codex', 'claude_code'], // the other harness's canonical token: a PAIR, not a set
+      ['claude_code', 'claude_code_session'],
+      ['claude_code', 'CLAUDE_CODE'],
+      ['claude_code', 'claude-code'],
+      ['claude_code', 'anthropic_messages'],
+      ['claude_code', 'codex'],
+    ];
+    for (const [provider, surface] of refused) {
+      for (const mode of ['governed', 'passthrough']) {
+        const res = await createVia(orgA.api_key, { ...CREATE, provider, surface, mode });
+        expect({ provider, surface, mode, code: res.statusCode }).toEqual({
+          provider,
+          surface,
+          mode,
+          code: 400,
+        });
+        const body = res.body as {
+          error: string;
+          provider: string;
+          surface: string;
+          expected_surface: string;
+        };
+        // A typed SEMANTIC answer, never `invalid_request` (the parser was fine with this body)
+        // and never a 500 from a CHECK violation (0031 would have accepted the column value).
+        expect({ provider, surface, body }).toEqual({
+          provider,
+          surface,
+          body: {
+            error: 'conversation_identity_not_admissible',
+            provider,
+            surface,
+            expected_surface: CANONICAL_CODING_HARNESS_SURFACE[provider as 'codex' | 'claude_code'],
+          },
+        });
+      }
+    }
+    // ★ NOT ONE ROW, of either kind.
+    const after = await adminQuery<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversations WHERE org_id = $1::uuid`,
+      [orgA.org_id],
+    );
+    expect(after[0]!.n).toBe(before[0]!.n);
+    const strays = await adminQuery<{ n: string }>(
+      `SELECT count(*)::text AS n FROM govai.ai_conversation_branches
+        WHERE org_id = $1::uuid AND surface IN ('codex_thread','claude_code_session','CODEX','CLAUDE_CODE','codex-thread','claude-code')`,
+      [orgA.org_id],
+    );
+    expect(strays[0]!.n).toBe('0');
+  });
+
+  it('B1d — a PRE-EXISTING ambiguous harness row is preserved: still readable, still unchanged', async () => {
+    // POLICY = PRESERVE_AND_EXPLICIT_NEW_DESTINATION. The new rule governs what may be CREATED; it
+    // says nothing about rows that already exist. This row is seeded through the ADMIN pool — the
+    // lawful way to model data written before the rule existed — and must keep its recorded
+    // meaning exactly. UNKNOWN stays UNKNOWN: `anthropic_api` under provider `codex` is NOT
+    // reinterpreted as `codex` just because the provider happens to match.
+    const ids = { orgId: orgA.org_id, ownerUserId: orgA.user_id };
+    const legacy = await seedConversation(stack.db.adminPool, ids, { provider: 'codex' });
+
+    const got = await inject(stack, 'GET', `/v1/ai/conversations/${legacy.conversationId}`, orgA.api_key);
+    expect(got.statusCode).toBe(200);
+    const body = got.body as ConversationBody;
+    expect({ provider: body.provider, surface: body.surface }).toEqual({
+      provider: 'codex',
+      surface: 'anthropic_api',
+    });
+    expect(body.root_branch.surface).toBe('anthropic_api');
+
+    // And it is still enumerable on the owner's own list surface.
+    const list = await inject(stack, 'GET', '/v1/ai/conversations?limit=50', orgA.api_key);
+    expect(list.statusCode).toBe(200);
+    const rows = (list.body as { conversations: ConversationBody[] }).conversations;
+    expect(rows.some((r) => r.id === legacy.conversationId && r.surface === 'anthropic_api')).toBe(true);
+
+    // The stored identity is untouched by the read path.
+    const stored = await adminQuery<{ provider: string; surface: string }>(
+      `SELECT provider, surface FROM govai.ai_conversation_branches WHERE conversation_id = $1::uuid`,
+      [legacy.conversationId],
+    );
+    expect(stored).toEqual([{ provider: 'codex', surface: 'anthropic_api' }]);
   });
 
   it('B3 — a forced second-write failure rolls BOTH writes back (no rootless conversation)', async () => {

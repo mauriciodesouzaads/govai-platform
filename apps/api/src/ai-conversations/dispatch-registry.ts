@@ -18,10 +18,17 @@
 // would send their content to a model/endpoint they never asked for.
 //
 // ★ WHAT IS EXCLUDED AND WHY (§23, the P0-D wall):
-//   * `codex` and `claude_code` — their conversation continuity IS thread/session state
+//   * `codex` and `claude_code` — their conversation continuity IS native harness state
 //     (§11/§17). An INITIAL request against them without the continuation machinery would
 //     execute once and then be structurally unable to continue, which is a worse lie than
-//     refusing. P0-D owns them.
+//     refusing.
+//     ★ OWNERSHIP, RESTATED PRECISELY BY P0-D2. This refusal is UNCHANGED by P0-D2 and is not
+//     weakened by it. P0-D2 narrows which harness identities may be CREATED (`contracts.ts`'s
+//     canonical pair rule); it activates no runtime, so a conversation admitted under a canonical
+//     `codex`/`codex` or `claude_code`/`claude_code` identity is refused here exactly like every
+//     other harness row, and the refusal reason is unchanged. The RUNTIME that retires this
+//     exclusion is P5 (Codex) and P6 (Claude), each gated on its own conformance proof — not the
+//     admission change. Nothing executable below this comment was touched.
 //   * every other `surface` token, including future Anthropic/OpenAI endpoints — files, vector
 //     stores, embeddings, models. None of them is a conversation turn.
 //

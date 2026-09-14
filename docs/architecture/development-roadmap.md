@@ -353,8 +353,20 @@ P0_D=IN_PROGRESS                                    <- CURRENT
                                                      R1_DURABLE_CONTEXT_P1 CLOSED for the two
                                                      API surfaces — see current-state.md's
                                                      P0-D1 canonical section)
-  P0_D2_CODING_HARNESS_CONTINUATION=NOT_STARTED     (Codex threads + Claude Code Agent SDK
-                                                     sessions, on the same adapter foundation)
+  P0_D2_CODING_HARNESS_CONTINUATION
+    ARCHITECTURE=PUBLISHED_IN_CANDIDATE_TREE        (ai-conversation-coding-harness-
+                                                     continuation-v1.md; category B)
+    INERT_ADMISSION=IMPLEMENTED_IN_CANDIDATE_TREE   (canonical pairs codex/codex and
+                                                     claude_code/claude_code for NEW roots and
+                                                     RESOLVED forks; typed 400; legacy rows
+                                                     preserved and committed forks still replay)
+    CODING_HARNESS_RUNTIME=NOT_STARTED              (★ the runtime is P5 Codex / P6 Claude — NOT
+                                                     P0-D2, and NOT "on the same adapter
+                                                     foundation": ProviderConversationAdapter is
+                                                     PURE, so native process/network I/O belongs
+                                                     to an executor-level driver seam over the
+                                                     same durable projection)
+    R1_DURABLE_CONTEXT_P1_CODING_HARNESS=OPEN       (publishing architecture does not close it)
 P0_E=NOT_STARTED
 P0_F=NOT_STARTED
 
@@ -453,8 +465,14 @@ owner-authorized, and squash-merged as PR #151 (merge
 `700aad9631f91d0655bd98aa113fbc59d74f88b0`, tree `ff99c89e3e427c95a4b2634fb3859f088ecf5891` —
 byte-identical to the final exact-head-reviewed head
 `63221f0d3290fc02d3a99f15e3b14592f596c92f`; post-merge main CI run `33580661031` SUCCESS).
-**P0-D2 (Codex thread + Claude Code Agent SDK session continuation) is NOT_STARTED and is the
-remaining half of P0-D.**
+**P0-D2 is the remaining half of P0-D. Its ARCHITECTURE and inert admission half is present in
+the candidate tree (an OPEN PR at the time of writing — not a merge, and not published
+completion): see current-state.md's P0-D2 canonical section and
+[ai-conversation-coding-harness-continuation-v1.md](./ai-conversation-coding-harness-continuation-v1.md).
+The CODING-HARNESS RUNTIME remains `NOT_STARTED` and is owned by P5 (Codex) and P6 (Claude), each
+behind its own deferred gates — Codex supported-surface/maturity, Claude persistence/recovery,
+resource/process fencing, credential mediation, native disposal, and `provider_state` physical
+representation. `R1_DURABLE_CONTEXT_P1` stays OPEN for `codex`/`claude_code`.**
 
 What P0-C does and does not make real, stated precisely:
 `CONVERSATION_PERSISTENCE=IMPLEMENTED_API_LEVEL_FOR_P0C_SURFACES_ONLY` — the durable

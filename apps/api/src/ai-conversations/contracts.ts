@@ -15,15 +15,20 @@
 //   provider  REQUIRED. Mirrors 0031's CHECK exactly (openai|anthropic|codex|claude_code). The
 //             mirror exists so an unknown provider is a clean 400 instead of a CHECK violation
 //             surfacing as a 500; the DATABASE remains the authority.
-//   surface   REQUIRED, free-form token. ★ ADJUDICATED: NO runtime surface registry exists at
-//             this anchor. 0031 constrains `provider` and leaves `surface`/`model` as NOT NULL
-//             text; the only surface vocabulary in the tree is the parity manifest's research
-//             artifact (`docs/architecture/generated/native-experience-parity-v1.json`,
+//   surface   REQUIRED, free-form token. ★ ADJUDICATED (P0-B): NO runtime surface registry
+//             exists at this anchor. 0031 constrains `provider` and leaves `surface`/`model` as
+//             NOT NULL text; the only surface vocabulary in the tree is the parity manifest's
+//             research artifact (`docs/architecture/generated/native-experience-parity-v1.json`,
 //             uppercase OPENAI_API/CODEX/…), whose `provider` axis is a DIFFERENT vocabulary
 //             from 0031's four-value column. Pinning an enum here would invent a mapping the
 //             accepted architecture did not fix and would have to be migrated when the real
-//             registry lands. So the validation is exactly what source supports: a bounded,
-//             control-character-free, non-empty token.
+//             registry lands. So the SYNTACTIC validation is exactly what source supports: a
+//             bounded, control-character-free, non-empty token — and it stays that way.
+//             ★ NARROWED FOR THE TWO CODING-HARNESS PROVIDERS BY P0-D2, AND NOT HERE. The
+//             adjudicated canonical identities below are a SEMANTIC admission rule the SERVICE
+//             applies; this parser is deliberately left provider-agnostic on `surface`. See the
+//             "canonical coding-harness identity" block after the body schemas for the reason
+//             that separation is load-bearing rather than stylistic.
 //   model     REQUIRED, same reasoning; the model vocabulary is provider-owned and changes
 //             without a GovAI release.
 //   ★ NOT accepted at create: `title` (spec §18 derives it from the first user message, or a
@@ -169,6 +174,84 @@ export const CreateForkBody = z
   })
   .strict();
 export type CreateForkInput = z.infer<typeof CreateForkBody>;
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// CANONICAL CODING-HARNESS IDENTITY (P0-D2; `ai-conversation-coding-harness-continuation-v1.md`).
+//
+// PURE, and deliberately NOT wired into either body schema above. This is the whole rule; the
+// service applies it at the two NEW-identity admission boundaries and nowhere else.
+//
+// ★ WHAT IT DECIDES. `provider` is one of 0031's four values; for the two CODING-HARNESS ones
+// the adjudicated NEW identity is an exact pair — `codex`/`codex` and `claude_code`/`claude_code`.
+// The surface names the provider-native HARNESS FAMILY. It is NOT an SDK, language binding, App
+// Server transport, CLI build or protocol schema version: those are compatibility facts of native
+// state and deployment metadata, and encoding them in a frozen durable identity column would make
+// every harness upgrade an identity migration.
+//
+// ★ WHAT IT DOES NOT TOUCH. `openai` and `anthropic` keep their existing free-form surface
+// admission unchanged — P0-C's dispatch registry, not this rule, decides what those can execute.
+// Model ids stay provider-owned free-form tokens in every case: there is no allowlist here, and a
+// provider shipping a new model must never require a GovAI release (LAW NX-2).
+//
+// ★ WHY THERE IS NO NORMALIZATION. A near-miss token is REFUSED, never repaired: not trimmed
+// into shape, not case-folded, not mapped through an alias table, and never inferred from the
+// provider. `CODEX`, `codex_thread`, `claude-code` and `claude_code_session` are all rejected as
+// NEW identities. Guessing what a token was meant to mean is exactly the silent surface
+// substitution LAW NX-5 forbids, and a wrong guess is durable: 0031 freezes a branch's
+// provider/surface/model for its lifetime, so an identity admitted by a guess can never be
+// corrected in place.
+//
+// ★ WHY IT IS NOT A ZOD REFINEMENT ON THE BODIES. A fork's provider/surface are OPTIONAL and
+// INDEPENDENTLY INHERITED from the parent branch (§13), so the pair does not even exist until the
+// service has resolved it against durable state — a parser cannot see it. And a REPLAY of an
+// already-committed fork re-sends its original body: validating in the parser would reject a
+// historical request that lawfully succeeded before this rule existed. Roots follow the same
+// placement so ONE rule produces ONE deterministic answer on both surfaces.
+//
+// ★ THIS IS ADMISSION, NOT CAPABILITY. Admitting the identity does NOT make it executable: the
+// coding-harness RUNTIME does not exist, dispatch still refuses these conversations, and this rule
+// creates no provider state, resolves no credential and wakes no worker. See the canonical
+// architecture document for the six deferred runtime gates that own that half.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The two 0031 providers whose continuation IS a provider-native harness, not an HTTP API. */
+export const CODING_HARNESS_PROVIDERS = ['codex', 'claude_code'] as const;
+export type CodingHarnessProvider = (typeof CODING_HARNESS_PROVIDERS)[number];
+
+/** The ONE canonical `surface` token admitted for each coding-harness provider's NEW identities. */
+export const CANONICAL_CODING_HARNESS_SURFACE: Readonly<Record<CodingHarnessProvider, string>> = {
+  codex: 'codex',
+  claude_code: 'claude_code',
+};
+
+export function isCodingHarnessProvider(
+  provider: ConversationProvider,
+): provider is CodingHarnessProvider {
+  return (CODING_HARNESS_PROVIDERS as readonly string[]).includes(provider);
+}
+
+/**
+ * The canonical surface a NEW identity for `provider` must carry, or `null` when this provider
+ * has no canonical surface and keeps its existing free-form admission (`openai`, `anthropic`).
+ */
+export function canonicalSurfaceFor(provider: ConversationProvider): string | null {
+  return isCodingHarnessProvider(provider) ? CANONICAL_CODING_HARNESS_SURFACE[provider] : null;
+}
+
+/**
+ * Whether (provider, surface) is admissible as a NEW durable conversation identity.
+ *
+ * Exact string equality on purpose — no trim, no case fold, no alias. The caller has already
+ * passed `SurfaceToken`, so the token is syntactically well formed; this answers only whether its
+ * MEANING is one this architecture is willing to freeze into a new row.
+ */
+export function isAdmissibleNewConversationIdentity(
+  provider: ConversationProvider,
+  surface: string,
+): boolean {
+  const canonical = canonicalSurfaceFor(provider);
+  return canonical === null || surface === canonical;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Owner-visible projections.

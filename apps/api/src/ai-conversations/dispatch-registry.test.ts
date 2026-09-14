@@ -11,7 +11,12 @@ import {
   isStreamingNativeRequest,
   resolveDispatchPlan,
 } from './dispatch-registry.js';
-import { CONVERSATION_MODES, CONVERSATION_PROVIDERS } from './contracts.js';
+import {
+  CANONICAL_CODING_HARNESS_SURFACE,
+  CODING_HARNESS_PROVIDERS,
+  CONVERSATION_MODES,
+  CONVERSATION_PROVIDERS,
+} from './contracts.js';
 
 describe('resolveDispatchPlan — what P0-C can execute', () => {
   it('resolves the two supported surfaces, in BOTH conversation modes', () => {
@@ -56,6 +61,34 @@ describe('resolveDispatchPlan — what P0-C can execute', () => {
           surface,
           r: { supported: false, reason: 'provider_requires_p0d_continuation' },
         });
+      }
+    }
+  });
+
+  it('★ P0-D2 ADMISSION DID NOT CREATE A RUNTIME: the CANONICAL pair is refused too', () => {
+    // The exact regression the inert-admission change could have introduced. Narrowing which
+    // harness identities may be CREATED must not, by itself, make any of them EXECUTABLE — the
+    // runtime that retires this refusal is P5 (Codex) / P6 (Claude), each behind its own
+    // conformance gate. A canonical row and an arbitrary legacy row get the SAME answer, in BOTH
+    // modes, with the SAME reason: the registry reads durable identity and knows nothing about
+    // when or under which admission rule that identity was written.
+    for (const provider of CODING_HARNESS_PROVIDERS) {
+      for (const surface of [
+        CANONICAL_CODING_HARNESS_SURFACE[provider], // the NEW canonical identity
+        'codex_thread', // pre-existing legacy rows, unchanged and still readable
+        'claude_code_session',
+        'CODEX', // a near-miss admission would have refused; a stored one still refuses
+        'anthropic_api',
+        '',
+      ]) {
+        for (const mode of CONVERSATION_MODES) {
+          expect({ provider, surface, mode, r: resolveDispatchPlan({ provider, surface, mode }) }).toEqual({
+            provider,
+            surface,
+            mode,
+            r: { supported: false, reason: 'provider_requires_p0d_continuation' },
+          });
+        }
       }
     }
   });

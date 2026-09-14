@@ -12,11 +12,21 @@
 //   L1 ROUTE SURFACE   — retry / stop / delete / stream re-attach still do not exist
 //   L2 PROVIDER        — the request plane still performs ZERO provider work
 //   L3 DURABLE STATE   — the REQUEST plane writes no continuation state and no evidence link
-//   L4 SOURCE          — no P0-D2/P0-E/P0-F construct entered the tree: no OpenAI conversation
-//                        OBJECT, no Codex thread, no Claude Code session, no provider_state
-//                        writer, no taint/rotation, no compaction, no retry mint, no delete,
-//                        no shred, no disposal ledger, no evidence-link materialization
+//   L4 SOURCE          — no P0-D2/P0-E/P0-F RUNTIME construct entered the tree: no OpenAI
+//                        conversation OBJECT, no native harness thread/session continuation, no
+//                        provider_state writer, no taint/rotation, no compaction, no retry mint,
+//                        no delete, no shred, no disposal ledger, no evidence-link materialization
 //   L5 API PROCESS     — the request-serving API is STILL not the execution authority
+//
+// ★ WHAT P0-D2 CHANGED ABOUT THIS FILE, AND WHAT IT DELIBERATELY DID NOT. P0-D2 published the
+// coding-harness continuation ARCHITECTURE and one INERT admission rule: which (provider, surface)
+// pairs may be CREATED. Admission is not capability, so not one ban below is retired by it — the
+// canonical `codex`/`codex` and `claude_code`/`claude_code` identities are refused at dispatch
+// exactly like every other harness row (`dispatch-registry.test.ts`), and the runtimes that would
+// retire these bans are P5 (Codex) and P6 (Claude), each behind its own conformance gate. The
+// only thing that moved is the WORDING: a wall that said "no P0-D2 construct" would now be read
+// as falsified by a pure validation rule, which is a worse outcome than saying precisely what is
+// banned. The L4 list itself is unchanged, and a new case below asserts the distinction directly.
 //
 // L4 scans CODE, not prose: comments are stripped first, so a file that DISCUSSES the boundary
 // (as these files do, at length) cannot accidentally satisfy — or violate — the scan. The scan
@@ -282,8 +292,12 @@ describe('P0-D1 L4 — the shipped source contains no P0-D2/P0-E/P0-F construct'
       // those bans were retired WITH the movement that implemented them, adapter tests and the
       // durable-context suite now own their correctness.)
       ['openai conversation object', /conversations?\.create|\/v1\/conversations/i],
-      ['codex thread', /codex[_-]?thread|threadId|thread_id/i],
-      ['claude code session', /claude[_-]?code[_-]?session|sessionId|session_id/i],
+      // ★ STILL BANNED AFTER P0-D2, AND STILL SPELLED THIS WAY ON PURPOSE. These match native
+      // harness CONTINUATION HANDLES, not the durable surface tokens: the bare literals `codex`
+      // and `claude_code` are admission vocabulary and have always been permitted here, while a
+      // thread/session identifier would mean a runtime that does not exist.
+      ['native harness thread handle', /codex[_-]?thread|threadId|thread_id/i],
+      ['native harness session handle', /claude[_-]?code[_-]?session|sessionId|session_id/i],
       ['provider state table', /ai_conversation_provider_state/],
       ['state taint / rotation', /\btainted\b|seeded_at_causal_version/],
       ['compaction', /compact(ion|Provider)/i],
@@ -308,6 +322,37 @@ describe('P0-D1 L4 — the shipped source contains no P0-D2/P0-E/P0-F construct'
         expect({ path, label, hit: re.test(code) }).toEqual({ path, label, hit: false });
       }
     }
+  });
+
+  it('★ P0-D2 admission is INERT: the canonical tokens exist as vocabulary, the runtime does not', async () => {
+    // The precise statement the reconciled header makes, asserted rather than asserted-in-prose.
+    const sources = await shippedConversationSources();
+    const byName = (n: string): string =>
+      sources.find((s) => s.path.endsWith(n))?.code ?? '';
+
+    // The admission vocabulary IS in the tree — as a pure rule in the contracts module.
+    const contracts = byName('contracts.ts');
+    expect(contracts).toContain('CODING_HARNESS_PROVIDERS');
+    expect(contracts).toContain('isAdmissibleNewConversationIdentity');
+
+    // ★ AND IT BUYS NOTHING AT RUNTIME. No harness executor, no provider-state write, no
+    // credential resolution and no worker wake rides along with it — the whole rule is string
+    // comparison, and the dispatch registry's harness refusal below is untouched.
+    for (const { path, code } of sources) {
+      for (const [label, re] of [
+        ['harness runner / process spawn', /child_process|spawn\s*\(|execFile|app[_-]?server/i],
+        ['agent sdk / harness client', /@anthropic-ai\/claude-(code|agent)|openai_codex|codex-sdk/i],
+        ['session store', /SessionStore|sessionStore/],
+        ['provider state write', /ai_conversation_provider_state/],
+      ] as Array<[string, RegExp]>) {
+        expect({ path, label, hit: re.test(code) }).toEqual({ path, label, hit: false });
+      }
+    }
+
+    // The registry still names only the two API providers it can actually drive.
+    const registry = byName('dispatch-registry.ts');
+    expect(registry).toContain('provider_requires_p0d_continuation');
+    expect(/P0C_DISPATCHABLE_PROVIDERS\s*=\s*\['anthropic',\s*'openai'\]/.test(registry)).toBe(true);
   });
 
   it('migration 0034 grants to exactly one role and no forbidden verb', async () => {

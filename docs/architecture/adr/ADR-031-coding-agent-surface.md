@@ -139,3 +139,31 @@ design); no latency-optimization commitments beyond existing parity budgets.
   (target work; see `docs/architecture/development-roadmap.md`).
 - **Decision 6 (Workroom linkage):** target — Workroom Phase 6 (UI) does not
   exist; no session header exists to bind.
+
+## P0-D2 reconciliation (coding-harness continuation architecture)
+
+Bounded and ADDITIVE. The historical body above, its PR-0 header and the M3 reconciliation are
+unchanged; this section only relates this ADR to the identity model published by P0-D2 in
+[`../ai-conversation-coding-harness-continuation-v1.md`](../ai-conversation-coding-harness-continuation-v1.md).
+
+- **Two different concerns, deliberately not merged.** This ADR is about coding agents as a
+  governed **gateway** surface: the user's own CLI is pointed at GovAI as its base URL, GovAI
+  governs the provider calls it makes, and the conversation lives in the agent's own client. P0-D2
+  is about GovAI **owning** a conversation whose continuation state is a provider-native harness
+  object. The gateway scope of this ADR is preserved exactly as decided; P0-D2 neither extends nor
+  retires it.
+- **Distinct identities.** The `codex` / `claude_code` values P0-D2 admits are the durable
+  `(provider, surface)` identity of a **GovAI conversation branch**. They are not, and must not be
+  read as, a client build, CLI version, SDK, transport or agent installation — those remain
+  compatibility metadata. Equally, a native harness thread or session handle is a provider-owned
+  object inside an encrypted state envelope: it is never equated with a GovAI branch, attempt or
+  request identity, and it confers no authority of its own.
+- **Decision 3 (`X-GovAI-Agent-Session`) is UNCHANGED and still NOT implemented.** P0-D2 adds no
+  header, no durable Agent Session id and no session-binding mechanism; it reaffirms that the
+  existing branch and attempt/claim identities already express continuation and execution fencing,
+  so no new durable identity is justified without a concrete invariant they cannot express. This
+  section does not revive Decision 3 or promise its delivery.
+- **No runtime is created here either.** P0-D2 is architecture plus an inert admission rule; the
+  Codex runtime is P5 and the Claude coding-harness runtime is P6, each behind its own deferred
+  gates. The real-agent acceptance recorded in the M3 section above remains exactly what it was:
+  evidence for the executed gateway lanes, versions and modes, and nothing broader.

@@ -23,6 +23,7 @@ import {
   type SeededOrg,
   type Stack,
 } from './helpers/server-fixture.js';
+import { seedConversation } from './helpers/ai-conversation-seed.js';
 
 let stack: Stack;
 let org: SeededOrg;
@@ -296,12 +297,17 @@ describe('SEND — the durable reservation', () => {
   });
 
   it('SEND-07 — an UNSUPPORTED provider/surface fails CLOSED before anything durable is written', async () => {
+    // ★ THE HARNESS ROWS ARE NOW CREATED WITH THEIR CANONICAL SURFACE (P0-D2). `codex_thread` and
+    // `claude_code_session` were never aliases — they were this file's fixture spellings, and NEW
+    // admission no longer accepts them. What they used to cover is covered instead by SEND-07b,
+    // against rows seeded the way a pre-rule row really exists. Renaming them here and stopping
+    // there would have quietly deleted the legacy half of this wall.
     stack.provider.clearRecordedRequests();
     for (const [provider, surface] of [
       ['anthropic', 'anthropic_api'], // a real token in this repo — but not a P0-C dispatch surface
       ['openai', 'openai_chat_completions'],
-      ['codex', 'codex_thread'],
-      ['claude_code', 'claude_code_session'],
+      ['codex', 'codex'],
+      ['claude_code', 'claude_code'],
     ] as const) {
       const conv = await createConversation(org.api_key, { provider, surface });
       const res = await send(org.api_key, conv.id, {
@@ -326,6 +332,48 @@ describe('SEND — the durable reservation', () => {
         [conv.id],
       );
       expect({ provider, surface, turns: n.rows[0]!.n }).toEqual({ provider, surface, turns: '0' });
+    }
+    expect(stack.provider.recordedRequests).toEqual([]);
+  });
+
+  it('SEND-07b — a PRE-EXISTING ambiguous harness row is preserved AND still refused at Send', async () => {
+    // The legacy half of the wall, on rows the service itself would no longer create. Seeded via
+    // the ADMIN pool — the lawful way to model data written before the P0-D2 admission rule — so
+    // this proves what the narrowing did NOT do: it did not mutate these rows, did not reinterpret
+    // their surface as the provider's canonical one, and did not make them dispatchable.
+    stack.provider.clearRecordedRequests();
+    const ids = { orgId: org.org_id, ownerUserId: org.user_id };
+    for (const provider of ['codex', 'claude_code'] as const) {
+      const legacy = await seedConversation(stack.db.adminPool, ids, { provider });
+      const res = await send(org.api_key, legacy.conversationId, {
+        client_turn_id: randomUUID(),
+        branch_id: legacy.branchId,
+        native_request: nativeRequest(),
+      });
+      expect({ provider, code: res.statusCode }).toEqual({ provider, code: 409 });
+      const body = res.body as { error: string; provider: string; surface: string; reason: string };
+      // ★ THE SURFACE COMES BACK EXACTLY AS STORED — `anthropic_api`, not `codex`/`claude_code`.
+      // UNKNOWN stays UNKNOWN: the answer never guesses what the token was meant to mean.
+      expect({ provider, body }).toEqual({
+        provider,
+        body: {
+          error: 'conversation_surface_unsupported',
+          provider,
+          surface: 'anthropic_api',
+          reason: 'provider_requires_p0d_continuation',
+        },
+      });
+      const n = await stack.db.adminPool.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM govai.ai_conversation_turns WHERE conversation_id = $1::uuid`,
+        [legacy.conversationId],
+      );
+      expect({ provider, turns: n.rows[0]!.n }).toEqual({ provider, turns: '0' });
+      // The durable identity is unchanged by the attempt.
+      const stored = await stack.db.adminPool.query<{ provider: string; surface: string }>(
+        `SELECT provider, surface FROM govai.ai_conversation_branches WHERE id = $1::uuid`,
+        [legacy.branchId],
+      );
+      expect(stored.rows).toEqual([{ provider, surface: 'anthropic_api' }]);
     }
     expect(stack.provider.recordedRequests).toEqual([]);
   });

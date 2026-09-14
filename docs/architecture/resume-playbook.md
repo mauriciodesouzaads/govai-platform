@@ -166,9 +166,27 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
                                                                   for the two API surfaces —
                                                                   see current-state.md's P0-D1
                                                                   canonical section)
-  NEXT      P0-D2 CODING HARNESS CONTINUATION                    (not started: Codex threads +
-                                                                  Claude Code Agent SDK sessions
-                                                                  on the same adapter foundation)
+              P0-D2 CODING HARNESS CONTINUATION                  (ARCHITECTURE + INERT ADMISSION
+                                                                  are in the CANDIDATE TREE — an
+                                                                  OPEN PR at the time of writing,
+                                                                  NOT a merge: verify its PR/CI/
+                                                                  merge proofs before treating it
+                                                                  as known-good. Canonical doc
+                                                                  ai-conversation-coding-harness-
+                                                                  continuation-v1.md; NEW roots
+                                                                  and RESOLVED forks must carry
+                                                                  codex/codex or claude_code/
+                                                                  claude_code; legacy rows
+                                                                  preserved, committed forks
+                                                                  still replay.
+                                                                  ★ The HARNESS RUNTIME is NOT
+                                                                  P0-D2 and NOT "on the same
+                                                                  adapter foundation" — it is P5
+                                                                  (Codex) / P6 (Claude) over an
+                                                                  executor-level driver seam;
+                                                                  R1_DURABLE_CONTEXT_P1 stays
+                                                                  OPEN for codex/claude_code)
+  NEXT      P5 · P6 CODING HARNESS RUNTIME                       (not started; six deferred gates)
   LATER     P0-E · P0-F                                          (not started)
   ```
 
@@ -236,7 +254,10 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   governed and passthrough where implemented, stream and non-stream) — and since P0-D1 the
   dispatch builds its provider request from SERVER-ASSEMBLED durable branch context (a
   pipelined turn N+1 dispatches WITH turn N's completed answer; the browser never owns
-  history). What still does NOT exist: Codex / Claude Code continuation (P0-D2), the
+  history). What still does NOT exist: the Codex / Claude coding-harness RUNTIME — P0-D2
+  published its ARCHITECTURE and one INERT admission rule in the candidate tree, and admission
+  is NOT capability: a canonical `codex`/`codex` conversation is still refused at dispatch, no
+  native object is ever created, and the six deferred runtime gates are owned by P5/P6 — the
   persistent AI workspace UI (P0-E — the AI Console transcript remains memory-only by
   construction, its acceptance test unchanged), public Retry, complete public Stop
   terminalization, the §19 Delete protocol, reattach-to-live-stream semantics, exact final

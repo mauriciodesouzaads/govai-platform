@@ -13,7 +13,8 @@
 - **The Native Experience Parity V1 BASELINE is complete in this tree** (EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01, research snapshot 2026-08-21): parity vocabulary + four provider-surface baselines + product-UX reference + the 248-row machine manifest (`pnpm docs:parity:check`), and the **AI Conversation Continuity V1 DESIGN spec** — documentation, manifest and validator tooling ONLY. At that movement's anchor `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED`; no provider capability was implemented; no runtime behaviour changed. **★ The baseline remains a versioned historical/research snapshot (2026-08-21); the persistence verdict it recorded is superseded by the P0-C bullet below, and post-baseline implementation does not retroactively rewrite its rows** — a refreshed current parity baseline requires a separate deliberate movement/version. See §*EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01 canonical state* at the end of this document.
 - **AI Conversation Continuity V1 runtime has progressed through P0-C** (EP-AI-CONVERSATION-CONTINUITY-V1-01): `P0-A1 COMPLETE · T1 COMPLETE · P0-A2 COMPLETE · P0-B COMPLETE · P0-C COMPLETE`; `P0-D / P0-E / P0-F NOT_STARTED`. P0-C (PR #147, squash-merged as `c1ddfd30c811e453fc042b81f3500795b22a6837`, tree `92ffaa7df74635f0a9caa68a0b5373f85084e5d9` — byte-identical to the independently audited head `13392bbd`; post-merge main CI run `33226802442` SUCCESS) is the **durable Send / execution kernel**: durable Send reservation, immutable provider-native request/config persistence, server-owned execution after durable acceptance, a detached conversation worker with claim/lease/heartbeat/fencing, credential provenance durable before any provider POST, Anthropic Messages + OpenAI Responses execution (governed and passthrough where implemented, stream and non-stream), durable provider output and streaming chunks, honest `outcome_unknown` semantics, recovery/ratchet, and hydrate after process/request loss. **Surface-limited by design** (`anthropic_messages` → `/v1/messages`; `openai_responses` → `/v1/responses`); this is NOT a model allowlist — the model vocabulary remains provider-owned and is not gated by P0-C's dispatch registry. Provider continuation (P0-D), the persistent AI workspace UI (P0-E — the AI Console transcript remains memory-only) and the lifecycle/evidence closeout (P0-F) did NOT exist at that anchor; no provider exactly-once is claimed. **★ The P0-D half of that statement is superseded by the P0-D1 bullet below (this tree); P0-E and P0-F remain absent.** See §*EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-C canonical state* at the end of this document.
 - **The Native Experience Contract V1 and the CURRENT parity baseline V2 are authored in this tree** (EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01, research snapshot 2026-08-29 — documentary/normative + deterministic research tooling ONLY, no runtime change): `native-experience-contract-v1.md` (LAWs NX-1…NX-26 + explicit P0-D/P0-E/P0-F obligations), `native-experience-parity-v2.md` + `generated/native-experience-parity-v2.json` (252 rows, `pnpm docs:parity2:check`, new fields retirement_date/capability_source/state_nature/next_wave; FULL remains 3, all `ANTHROPIC_API`), and the ADDITIVE V2 validator lane. **The 2026-08-21 V1 baseline is byte-preserved** (hashes recorded in the movement's canonical section). Model-discovery/chooser carry-forwards re-adjudicated to precise vocabulary (`NATIVE_PROVIDER_MODEL_DISCOVERY=PARTIAL`, `USER_MODEL_CHOOSER=PARTIAL`, capability/policy-aware chooser `NOT_IMPLEMENTED`). `P0-D / P0-E / P0-F` remain `NOT_STARTED`. The movement was independently reviewed, owner-authorized, and squash-merged as PR #149 (merge `f998f55aee405adbc12c762f237854f118b8939c`, tree `86093763952a4fb5dbb38ee6c7ef736f21f9c870` — byte-identical to the final independently reviewed tree; post-merge main CI run `33288386315` SUCCESS): the contract is the CURRENT normative contract and V2 is the CURRENT research baseline. See §*EP-PROVIDER-NATIVE-PARITY-V1-NATIVE-EXPERIENCE-CONTRACT-AND-CURRENT-BASELINE-01 canonical state* at the end of this document.
-- **P0-D — PROVIDER CONTINUATION — is IN_PROGRESS: its first submovement, P0-D1 (DURABLE CONTEXT + API PROVIDER CONTINUATION), is IMPLEMENTED IN THIS TREE AND MERGED** (EP-AI-CONVERSATION-CONTINUITY-V1-P0-D1-DURABLE-CONTEXT-API-PROVIDER-CONTINUATION-01; independently reviewed, owner-authorized, and squash-merged as PR #151 — merge `700aad9631f91d0655bd98aa113fbc59d74f88b0`, tree `ff99c89e3e427c95a4b2634fb3859f088ecf5891`, byte-identical to the final exact-head-reviewed head `63221f0d3290fc02d3a99f15e3b14592f596c92f`; post-merge main CI run `33580661031` SUCCESS). The executor no longer POSTs the client's stored request for a turn with eligible history: at dispatch the SERVER assembles the context-bearing portion of the provider-native request from the durable causal projection (continuity spec §7.5 eligibility, §3 fork boundaries, LAW 4 retry boundary, §7.8 causal-version freshness certified by the boundary CAS) through the real §11 `ProviderConversationAdapter` boundary — Anthropic Messages as provider-native STATELESS REPLAY (content blocks, tool_use/tool_result, thinking blocks + signatures preserved; durable SSE reassembled; first-party model-switch strip rule applied on model-switched forks) and OpenAI Responses as `previous_response_id` CHAINING where every correctness condition holds (anchor derived from the durable projection; credential-anchor reconciliation; anchor/turn `store:false` honored, never flipped; exact parent anchor persisted ENCRYPTED on the attempt at the boundary commit) with durable STATELESS REPLAY as the mandatory fallback. `R1_DURABLE_CONTEXT_P1` is CLOSED FOR `anthropic_messages` + `openai_responses` (a pipelined turn N+1 dispatches WITH turn N's completed answer); it remains OPEN for `codex`/`claude_code`, whose continuation is P0-D2 (NOT_STARTED). OpenAI Conversations objects are DEFERRED_WITHIN_P0D (no tenant policy signal for provider-stored state exists in executable source); NO `ai_conversation_provider_state` row is created by any P0-D1 flow and no role gained authority over that table; migration 0036 adds exactly two column authorities (worker SELECT on the branch fork columns; worker UPDATE on the four `continuation_parent_*` columns — write-only, never readable). A turn with NO eligible history still POSTs its stored config byte-identically to P0-C. `P0-E` / `P0-F` remain `NOT_STARTED`; no provider exactly-once is claimed. See §*EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-D1 canonical state* at the end of this document.
+- **P0-D — PROVIDER CONTINUATION — is IN_PROGRESS: its first submovement, P0-D1 (DURABLE CONTEXT + API PROVIDER CONTINUATION), is IMPLEMENTED IN THIS TREE AND MERGED** (EP-AI-CONVERSATION-CONTINUITY-V1-P0-D1-DURABLE-CONTEXT-API-PROVIDER-CONTINUATION-01; independently reviewed, owner-authorized, and squash-merged as PR #151 — merge `700aad9631f91d0655bd98aa113fbc59d74f88b0`, tree `ff99c89e3e427c95a4b2634fb3859f088ecf5891`, byte-identical to the final exact-head-reviewed head `63221f0d3290fc02d3a99f15e3b14592f596c92f`; post-merge main CI run `33580661031` SUCCESS). The executor no longer POSTs the client's stored request for a turn with eligible history: at dispatch the SERVER assembles the context-bearing portion of the provider-native request from the durable causal projection (continuity spec §7.5 eligibility, §3 fork boundaries, LAW 4 retry boundary, §7.8 causal-version freshness certified by the boundary CAS) through the real §11 `ProviderConversationAdapter` boundary — Anthropic Messages as provider-native STATELESS REPLAY (content blocks, tool_use/tool_result, thinking blocks + signatures preserved; durable SSE reassembled; first-party model-switch strip rule applied on model-switched forks) and OpenAI Responses as `previous_response_id` CHAINING where every correctness condition holds (anchor derived from the durable projection; credential-anchor reconciliation; anchor/turn `store:false` honored, never flipped; exact parent anchor persisted ENCRYPTED on the attempt at the boundary commit) with durable STATELESS REPLAY as the mandatory fallback. `R1_DURABLE_CONTEXT_P1` is CLOSED FOR `anthropic_messages` + `openai_responses` (a pipelined turn N+1 dispatches WITH turn N's completed answer); it remains OPEN for `codex`/`claude_code`, whose continuation is P0-D2 (**★ the `(NOT_STARTED)` parenthetical was true at the P0-D1 anchor and is superseded by the P0-D2 bullet below: that movement's ARCHITECTURE and inert admission are in this candidate tree, while its coding-harness RUNTIME — the half `R1_DURABLE_CONTEXT_P1` is waiting on — remains NOT_STARTED and is owned by P5/P6, so R1 itself is unchanged**). OpenAI Conversations objects are DEFERRED_WITHIN_P0D (no tenant policy signal for provider-stored state exists in executable source); NO `ai_conversation_provider_state` row is created by any P0-D1 flow and no role gained authority over that table; migration 0036 adds exactly two column authorities (worker SELECT on the branch fork columns; worker UPDATE on the four `continuation_parent_*` columns — write-only, never readable). A turn with NO eligible history still POSTs its stored config byte-identically to P0-C. `P0-E` / `P0-F` remain `NOT_STARTED`; no provider exactly-once is claimed. See §*EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-D1 canonical state* at the end of this document.
+- **P0-D2 — CODING HARNESS CONTINUATION — ARCHITECTURE AND INERT ADMISSION ARE IN THIS CANDIDATE TREE; THE HARNESS RUNTIME IS NOT** (EP-AI-CONVERSATION-CONTINUITY-V1-01 P0-D2, category B = DOCS + MINIMAL INERT STRUCTURAL CODE). **★ CANDIDATE-TREE STATE, NOT PUBLISHED STATE:** at the time of writing this movement is an OPEN PULL REQUEST, not a merge — do not read this bullet as a published completion, and check the PR/CI/merge proofs before treating it as known-good. What exists here: the canonical contract [ai-conversation-coding-harness-continuation-v1.md](./ai-conversation-coding-harness-continuation-v1.md) (identity model; `provider_state` semantic role and its non-activation; seed installation vs. terminal advancement; alignment against the durable projection incl. the fork-pin exemption and the CONDITIONAL stale-seed rule; credential/traffic mediation; resource/process fencing and workspace ownership; native create → provisional disposal → adoption/settlement; the Claude persistence gate and the Codex four-interface-level maturity gate; the legacy policy; FC-A–FC-D), plus ONE inert admission rule: NEW conversation roots and RESOLVED new forks must carry a canonical coding-harness pair — `codex`/`codex` or `claude_code`/`claude_code` — refused otherwise with the typed `conversation_identity_not_admissible` (HTTP 400), never a parser error and never a DB 500. **★ ADMISSION IS NOT CAPABILITY:** no harness runtime, no native object, no provider call, NO `ai_conversation_provider_state` row, no worker privilege, no new endpoint and no migration — a canonical `codex`/`codex` conversation is refused at dispatch exactly like every other harness row, pinned by a regression test. **★ EXISTING ROWS ARE PRESERVED** (`PRESERVE_AND_EXPLICIT_NEW_DESTINATION`): a pre-existing harness row with a non-canonical `surface` stays readable and UNCHANGED, its meaning stays UNKNOWN (never inferred from the provider), it carries no automatic same-record continuation guarantee, and an already-COMMITTED fork still REPLAYS under the tightened rule — the committed binding is consulted before new-admission, so a lawful historical request cannot start failing. `openai`/`anthropic` admission, the provider-owned model vocabulary (NX-2) and every P0-C/P0-D1 runtime behaviour are unchanged. **`R1_DURABLE_CONTEXT_P1` remains OPEN for `codex`/`claude_code`**; the six deferred runtime gates (Codex P5 maturity, Claude P6 persistence, resource fencing, credential mediation, native disposal, `provider_state` physical representation) remain OPEN and are owned by P5/P6. `P0-D` remains `IN_PROGRESS`; `P0-E`/`P0-F` remain `NOT_STARTED`. See §*EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-D2 canonical state* at the end of this document.
 
 ### Status vocabulary (every IMPLEMENTED_* row must cite source; SOURCE_AND_TEST also cites a test)
 
@@ -46,7 +47,7 @@ is one collected test module.
 
 | Structure | Source pattern | Count |
 |---|---|---|
-| Architecture docs | `docs/architecture/**/*.md` | 108 |
+| Architecture docs | `docs/architecture/**/*.md` | 109 |
 | Regulatory docs | `docs/architecture/regulatory/*.md` | 20 |
 | ADR decision records | `docs/architecture/adr/ADR-[0-9][0-9][0-9]-*.md` (excludes `ADR-INDEX.md`) | 31 |
 | Workspace apps | `apps/*` | 3 — `apps/api`, `apps/audit-sealer`, `apps/ui` |
@@ -57,9 +58,9 @@ is one collected test module.
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 152 | 1877 |
-| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 95 | 1493 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 247 | 3370 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 152 | 1885 |
+| Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 95 | 1503 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 247 | 3388 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 
@@ -1533,7 +1534,10 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
 - **NEXT IMPLEMENTATION MOVEMENT: `P0-D — PROVIDER CONTINUATION`** — this movement's
   independent architecture review and owner merge are COMPLETE (PR #149); P0-D consumes
   `native-experience-contract-v1.md` §18 and the continuity spec §11. **★ EXECUTED IN PART:
-  P0-D1 is implemented in this tree — see the canonical section below; P0-D2 is NOT_STARTED.**
+  P0-D1 is implemented in this tree — see the canonical section below; P0-D2's ARCHITECTURE and
+  inert admission are now in this candidate tree too (its §18.3 obligation is DISCHARGED, with the
+  legacy qualification recorded there), while P0-D2's coding-harness RUNTIME remains NOT_STARTED
+  and is owned by P5/P6 — see the P0-D2 canonical section below.**
 
 ### EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-D1 canonical state (this tree)
 
@@ -1681,5 +1685,89 @@ Subfamily B "no audit event": the `purpose_deprecated_post_sunset` branch) is
   `AUDITBRIDGE_RAW_ERR_MESSAGE_ON_WORKER_LOGS`, `P0C-SWEEP-01-P0B-KMS-HELD-CHECKOUT`,
   `NATIVE_PROVIDER_FULL_PARITY`, `CAPABILITY_AWARE_CATALOGUE`, `POLICY_AWARE_MODEL_CHOOSER`)
   keeps its prior disposition unchanged.
-- **NEXT: `P0-D2 — CODING HARNESS CONTINUATION` (Codex threads + Claude Code Agent SDK
-  sessions on this same adapter foundation), then P0-E / P0-F.**
+- **NEXT after P0-D1 WAS `P0-D2 — CODING HARNESS CONTINUATION`, and its ARCHITECTURE half is in
+  this candidate tree** — see the P0-D2 canonical section below. **★ The phrase "on this same
+  adapter foundation" is corrected there:** `ProviderConversationAdapter` is PURE, and native
+  harness process/network I/O belongs to an executor-level driver seam consuming the same durable
+  projection — not to this interface. The harness RUNTIME is **P5** (Codex) and **P6** (Claude),
+  not P0-D2. Then P0-E / P0-F.
+
+## EP-AI-CONVERSATION-CONTINUITY-V1-01 — P0-D2 canonical state
+
+**★ READ THIS FIRST: CANDIDATE-TREE STATE.** This section describes what is implemented **in this
+tree**. At the time of writing the movement is an **OPEN PULL REQUEST**; it is not merged, its CI
+result is not recorded here, and no independent review is claimed. Exact commits, check runs and
+review provenance belong to the movement's external execution record, never to this document.
+
+- **Movement:** `P0-D2 — CODING HARNESS CONTINUATION`, category **B** (docs + minimal inert
+  structural code). Architecture + inert foundation only, by adjudicated design.
+- **Canonical contract:**
+  [ai-conversation-coding-harness-continuation-v1.md](./ai-conversation-coding-harness-continuation-v1.md)
+  — self-contained: it does not require any external record to be understood or applied.
+- **Implemented in this tree (inert):**
+  - ONE pure canonical-pair rule (`contracts.ts`): the harness providers `codex` / `claude_code`
+    each admit exactly ONE `surface` — `codex` / `claude_code` respectively. Exact match only: no
+    trim, no case fold, no alias table, no provider-based inference (LAW NX-5).
+  - Enforced at BOTH new-identity admission boundaries in `service.ts`: new conversation roots
+    (before the pool connection, so a refusal costs no lock and no rolled-back row) and the
+    **RESOLVED** fork triple (after §13's per-field inheritance — a provider-only switch cannot
+    silently pick a surface).
+  - Typed semantic failure `ConversationIdentityNotAdmissibleError` → HTTP **400**
+    `conversation_identity_not_admissible`, echoing the caller's own pair plus `expected_surface`.
+    Deliberately NOT a 409 (which means "the server cannot execute your configuration") and
+    deliberately NOT a parser error — the parsers stay syntactic.
+  - COMMENT-ONLY corrections, executable bytes unchanged: `conversation-adapter.ts` (the future
+    harness strategies do NOT "attach HERE"; the interface is pure, native I/O is an
+    executor-level driver seam, and the runtimes are P5/P6 — not P0-D2) and `dispatch-registry.ts`
+    (P0-D2 narrows admission; it does not weaken this refusal).
+- **Explicitly NOT implemented, and NOT claimed:** no coding-harness runtime, no native thread or
+  session is ever created/resumed/forked, no provider inference call, **no
+  `ai_conversation_provider_state` row and no privilege over that table**, no worker/queue change,
+  no new endpoint, no migration, no credential issuer, no supervisor, no delete/disposal execution,
+  no UI.
+- **Legacy behaviour preserved (`PRESERVE_AND_EXPLICIT_NEW_DESTINATION`):** pre-existing harness
+  rows with a non-canonical `surface` remain readable and byte-unchanged through the existing
+  owner-scoped surfaces; their meaning stays **UNKNOWN**; they carry no automatic same-record
+  continuation guarantee; and a **committed fork binding still REPLAYS** — the binding is consulted
+  BEFORE the new rule, so a lawfully committed historical request cannot begin to fail. The unique
+  reservation remains the single concurrency arbiter, divergent-intent conflict semantics are
+  unchanged, and a missing binding never admits an inadmissible identity (retry or concurrent).
+- **Proof in this tree:** pure-rule and parser-separation cases in `contracts.test.ts`; the
+  runtime-refusal regression (canonical AND legacy tokens, both modes) in
+  `dispatch-registry.test.ts`; create admission + refusal-writes-nothing + legacy preservation in
+  `ai-conversation-control-plane.test.ts` (B1b/B1c/B1d); resolved-fork admission, legacy committed
+  replay/conflict, and the concurrency/retry wall in `ai-conversation-fork-control-plane.test.ts`
+  (group M); canonical-pair Send refusal plus legacy-row Send refusal in
+  `ai-conversation-durable-send.test.ts` (SEND-07 / SEND-07b); and the inertness assertion in
+  `ai-conversation-p0c-boundary.test.ts`, whose L4 bans are all retained.
+- **Dispositions:**
+  ```
+  P0D2_ARCHITECTURE                    = PUBLISHED (this tree)
+  P0D2_INERT_ADMISSION                 = IMPLEMENTED (this tree)
+  P0D2_CODING_HARNESS_RUNTIME          = NOT_IMPLEMENTED (P5 Codex / P6 Claude)
+  R1_DURABLE_CONTEXT_P1_CODING_HARNESS = OPEN (unchanged by publishing architecture)
+  LEGACY_SURFACE_POLICY                = PRESERVE_AND_EXPLICIT_NEW_DESTINATION
+  LEGACY_RECORD_MUTATION               = NONE PERFORMED, AND FORBIDDEN
+  DEPLOYED_AMBIGUOUS_ROW_INVENTORY     = UNKNOWN (no inventory performed; absence of a runtime is
+                                         NOT evidence that no such control-plane rows exist — the
+                                         policy is correct for zero, non-zero or later-discovered)
+  PROVIDER_STATE_ROWS_CREATED_BY_P0D2  = NONE
+  NEW_DURABLE_AGENT_SESSION_ID         = NONE ADDED (branch + attempt/claim + native generation
+                                         already express continuation and execution fencing)
+  MODEL_ID_AGNOSTICISM                 = PRESERVED (model is not an input to the rule)
+  PROVIDER_EXACTLY_ONCE                = NOT_CLAIMED (permanent)
+  ADR_030_FORMAL_STATUS                = UNCHANGED (Proposed / doctrine candidate; P0-D2 is not
+                                         its promulgation vehicle)
+  ```
+- **The six deferred runtime gates remain OPEN** and block their corresponding activation, not this
+  architecture: Codex P5 supported-surface/maturity/conformance; Claude P6 persistence and
+  recovery; resource/process fencing; credential mediation, provenance and non-bypass; minimal safe
+  native disposal before activation; `provider_state` physical representation, writer privilege/CAS
+  and atomic terminal integration. `P0-A2`'s `A1`/`A4` remain **CLOSED** — a new harness topology
+  owes its own applicability/non-bypass proof and does not reopen them.
+- **Forward-compatibility qualifications FC-A–FC-D** are recorded in the canonical contract §13.
+  They add no migration, table, column, policy, grant, generic actor/action entity, authority or
+  delegation engine, registry or runtime, and they discharge no gate.
+- **NEXT after P0-D2:** `P5` (Codex runtime) and `P6` (Claude coding-harness runtime) own the
+  harness runtime; `P0-E` (persistent AI workspace) and `P0-F` (lifecycle/evidence closeout) remain
+  `NOT_STARTED`. Workroom and Managed Agents remain distinct surfaces and are not absorbed.
