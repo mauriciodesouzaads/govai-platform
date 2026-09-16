@@ -314,7 +314,9 @@ The dependency-adjudicated wave plan (P0…P9) lives in the baseline doc §9; th
 mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` (P0, source-adjudicated candidate scope in the
 baseline doc §10) is **IN_PROGRESS**, with five movements finished and merged, the
 intervening program-level architectural movement also merged (PR #149), and P0-D in
-progress — its first submovement P0-D1 is implemented in this tree and merged as PR #151:
+progress — its first submovement P0-D1 is implemented in this tree and merged as PR #151, and
+P0-D2's architecture + inert admission are merged as PR #153 (the coding-harness runtime is not
+started):
 
 ```text
 EP_AI_CONVERSATION_CONTINUITY_V1=IMPLEMENTATION_IN_PROGRESS
@@ -354,9 +356,12 @@ P0_D=IN_PROGRESS                                    <- CURRENT
                                                      API surfaces — see current-state.md's
                                                      P0-D1 canonical section)
   P0_D2_CODING_HARNESS_CONTINUATION
-    ARCHITECTURE=PUBLISHED_IN_CANDIDATE_TREE        (ai-conversation-coding-harness-
+    ARCHITECTURE=PUBLISHED_AND_MERGED               (PR #153, merge 71689db8,
+                                                     tree b977c8a1 == reviewed head 475259c8,
+                                                     post-merge CI 34911152172 SUCCESS;
+                                                     ai-conversation-coding-harness-
                                                      continuation-v1.md; category B)
-    INERT_ADMISSION=IMPLEMENTED_IN_CANDIDATE_TREE   (canonical pairs codex/codex and
+    INERT_ADMISSION=IMPLEMENTED_AND_MERGED          (canonical pairs codex/codex and
                                                      claude_code/claude_code for NEW roots and
                                                      RESOLVED forks; typed 400; legacy rows
                                                      preserved and committed forks still replay)
@@ -465,9 +470,12 @@ owner-authorized, and squash-merged as PR #151 (merge
 `700aad9631f91d0655bd98aa113fbc59d74f88b0`, tree `ff99c89e3e427c95a4b2634fb3859f088ecf5891` —
 byte-identical to the final exact-head-reviewed head
 `63221f0d3290fc02d3a99f15e3b14592f596c92f`; post-merge main CI run `33580661031` SUCCESS).
-**P0-D2 is the remaining half of P0-D. Its ARCHITECTURE and inert admission half is present in
-the candidate tree (an OPEN PR at the time of writing — not a merge, and not published
-completion): see current-state.md's P0-D2 canonical section and
+**P0-D2 is the remaining half of P0-D. Its ARCHITECTURE and inert admission half is merged:
+independently reviewed (`PASS_WITH_QUALIFICATIONS`, blocking findings 0), owner-authorized, and
+squash-merged as PR #153 (merge `71689db8d703b53dbda46950f217349da11c6c54`, tree
+`b977c8a11b031fa0ded34debdff2324502e267cb` — byte-identical to the frozen reviewed head
+`475259c848b7b24d727376a4a7b0db41b116c4d6`; exact-head PR CI `34698847707` SUCCESS; post-merge
+main CI run `34911152172` SUCCESS): see current-state.md's P0-D2 canonical section and
 [ai-conversation-coding-harness-continuation-v1.md](./ai-conversation-coding-harness-continuation-v1.md).
 The CODING-HARNESS RUNTIME remains `NOT_STARTED` and is owned by P5 (Codex) and P6 (Claude), each
 behind its own deferred gates — Codex supported-surface/maturity, Claude persistence/recovery,

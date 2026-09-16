@@ -50,14 +50,14 @@ branch protection (permanently owner-declined, BY_DESIGN / NOT_A_FINDING).
 
 - **Provider** — one of the four durable `ai_conversations.provider` values
   (`openai | anthropic | codex | claude_code`, migration 0031 CHECK, mirrored in
-  `apps/api/src/ai-conversations/contracts.ts:78`).
+  `apps/api/src/ai-conversations/contracts.ts · CONVERSATION_PROVIDERS`).
 - **Surface** — a provider-native endpoint/harness family a conversation executes against.
-  Durably a free-form bounded token (`contracts.ts:113`); the only registry is the
+  Durably a free-form bounded token (`contracts.ts · SurfaceToken`); the only registry is the
   fail-closed P0-C dispatch registry (`dispatch-registry.ts`), which recognizes
   `anthropic_messages` and `openai_responses` and refuses everything else truthfully.
 - **Model ID** — provider-owned vocabulary. A bounded free-form token in GovAI
-  (`ModelToken`, `contracts.ts:114`); never an enum, never an input to
-  `resolveDispatchPlan()` (`dispatch-registry.ts:91-95`).
+  (`ModelToken`, `contracts.ts · ModelToken`); never an enum, never an input to
+  `resolveDispatchPlan()` (`dispatch-registry.ts · "model is NOT an input" comment`).
 - **Discovery** — learning what models a provider account can see, from the provider's own
   metadata endpoints. Distinct from compatibility, capability, policy, entitlement and
   readiness (LAW NX-3).

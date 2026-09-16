@@ -1170,3 +1170,99 @@ mutated — `LEGACY_RECORD_MUTATION=NONE PERFORMED, AND FORBIDDEN`.
 and the absence of a harness runtime is **not** evidence that no such control-plane rows exist. The
 preservation policy is deliberately correct whether that count is zero, non-zero or discovered
 later — which is why no row was touched.
+
+### Post-merge status reconciliation — `PR153-POST-MERGE-DOC-STATUS-01`
+
+P0-D2's architecture and inert admission were independently reviewed (`PASS_WITH_QUALIFICATIONS`,
+blocking findings 0; `HISTORICAL_EXECUTION_CONFORMANCE=QUALIFIED`), owner-authorized, and
+squash-merged as PR **#153** → `71689db8d703b53dbda46950f217349da11c6c54` (parent
+`0d511c8171c384716c366b5b52a6888ed3a2dd20`, tree `b977c8a11b031fa0ded34debdff2324502e267cb` —
+byte-identical to the frozen reviewed head `475259c848b7b24d727376a4a7b0db41b116c4d6`; exact-head
+PR CI `34698847707` SUCCESS; post-merge main CI run `34911152172` SUCCESS).
+
+**Unlike `PR151-POST-MERGE-DOC-STATUS-01`, the merge falsified wording.** The P0-D2 documents
+deliberately described their own lifecycle at branch time — "candidate tree", "an OPEN PULL
+REQUEST", "not merged", "its CI result is not recorded here", "no independent review is claimed" —
+as an honest caution. The frozen tree merged unchanged, so `TREE(main) == b977c8a1…` carried those
+sentences into main, where they are no longer true. This reconciliation is therefore
+**corrective** for that wording and **additive** for the merge evidence (P3 documentary status
+precision; no runtime/security/architecture/merge/tree-identity defect; no P0-D2 reopen).
+
+| Document | Was (at `71689db8`, the merged tree) | Now (this tree) |
+|---|---|---|
+| `current-state.md` summary bullets | P0-D2 bullet "ARCHITECTURE AND INERT ADMISSION ARE IN THIS CANDIDATE TREE" + "★ CANDIDATE-TREE STATE, NOT PUBLISHED STATE … an OPEN PULL REQUEST, not a merge"; the P0-D1 bullet's ★ note placed the architecture "in this candidate tree" | "ARE IN THIS TREE AND MERGED" + the sibling-form anchor (review verdict, PR #153, merge, tree, byte-identity to head `475259c8`, post-merge main CI `34911152172`); the ★ note says merged (PR #153) |
+| `current-state.md` Contract-V1 `NEXT` note and P0-D1 section | "now in this candidate tree too"; the conflated token `P0_D2_CODING_HARNESS_CONTINUATION=NOT_STARTED` (review note N-03); "NEXT after P0-D1 WAS `P0-D2` … its ARCHITECTURE half is in this candidate tree"; the migration-0036 bullet's "NO `ai_conversation_provider_state` privilege for any role" | "merged as PR #153"; four separate facts `P0_D_PROVIDER_CONTINUATION=IN_PROGRESS` / `P0_D1_DURABLE_CONTEXT_API_PROVIDER_CONTINUATION=COMPLETE` / `P0_D2_ARCHITECTURE_AND_INERT_ADMISSION=MERGED` / `P0_D2_CODING_HARNESS_RUNTIME=NOT_STARTED`, with "`P0_D` itself is NOT complete" retained; "its ARCHITECTURE half is merged (PR #153)"; "NO **new** … privilege for any role" with the existing 0031 grant named (F-01 below) |
+| `current-state.md` P0-D2 section | "★ READ THIS FIRST: CANDIDATE-TREE STATE … an OPEN PULL REQUEST; it is not merged, its CI result is not recorded here, and no independent review is claimed"; non-claim "no privilege over that table" | the four status facts + base/merge anchors; an immutable **Completion evidence** block (`TECHNICAL_PR` … `OBS-01`, including `CODEX_REVIEW_STATE_AT_FROZEN_HEAD` and `EXACT_HEAD_ASSURANCE_SOURCE`) pointing at the sealed external records; a **Carried qualifications** block (F-01, F-02, F-03, `HISTORICAL_EXECUTION_CONFORMANCE=QUALIFIED`); the non-claim reads "no privilege … added by P0-D2" and names the existing 0031 grant |
+| `development-roadmap.md` | wave-plan sentence named only P0-D1's merge; status block `ARCHITECTURE=PUBLISHED_IN_CANDIDATE_TREE` / `INERT_ADMISSION=IMPLEMENTED_IN_CANDIDATE_TREE`; P0-D narrative "present in the candidate tree (an OPEN PR at the time of writing — not a merge, and not published completion)" | wave-plan sentence names the PR #153 merge; `ARCHITECTURE=PUBLISHED_AND_MERGED` (+ the PR #153 sibling anchor) / `INERT_ADMISSION=IMPLEMENTED_AND_MERGED`; `CODING_HARNESS_RUNTIME=NOT_STARTED` and `R1_DURABLE_CONTEXT_P1_CODING_HARNESS=OPEN` unchanged; the narrative carries the merged fact |
+| `resume-playbook.md` §4 | resume guard listed six finished-and-merged movements; lane block "(ARCHITECTURE + INERT ADMISSION are in the CANDIDATE TREE — an OPEN PR at the time of writing, NOT a merge …)"; no P0-D2 closeout-anchor paragraph; honesty boundary "in the candidate tree" | guard names P0-D2's architecture + inert admission (seven); lane block shows MERGED with the anchor; a **P0-D2 frozen closeout anchors** paragraph precedes the unchanged P0-D1 one; honesty boundary says merged as PR #153. `NEXT` (P5 · P6, not started) and `LATER` (P0-E · P0-F) unchanged |
+| `native-experience-contract-v1.md` §2 | four `file:line` source anchors shifted by PR #153 (F-02 below) | the same four anchors in `file · symbol` form; no other line of the contract changed |
+| this register (P0-D2 section above) | branch-time record "Recorded at **branch time**, in the candidate tree of the P0-D2 canonicalization PR" | **PRESERVED AS WRITTEN** — it is that movement's authoring-time record, per the `PR151-POST-MERGE-DOC-STATUS-01` precedent — + these subsections appended |
+| `ai-conversation-coding-harness-continuation-v1.md`, `adr/ADR-031-coding-agent-surface.md`, `ai-conversation-continuity-v1.md`, `generated/source-manifest.json` | no candidate / open-PR / not-merged status wording found on inspection | **UNTOUCHED** (why the harness contract is not edited for F-01 is recorded below) |
+
+Historical records are NOT rewritten: the branch-time P0-D2 section above, the P0-D1 frozen
+closeout anchors in `resume-playbook.md`, the `R1_DURABLE_CONTEXT_P1 … / P0-D2` rows written at the
+P0-D1 anchor, and every other tree-stable `IN_THIS_TREE` / "this tree" token stay as written.
+
+This reconciliation closes NO implementation gap and weakens no non-claim. **`P0-D` is
+`IN_PROGRESS`, not complete** — `P0_D2_ARCHITECTURE_AND_INERT_ADMISSION=MERGED` and
+`P0_D2_CODING_HARNESS_RUNTIME=NOT_STARTED` (P5 Codex / P6 Claude, each behind its own deferred
+gates); `R1_DURABLE_CONTEXT_P1` stays CLOSED only for `anthropic_messages` + `openai_responses` and
+OPEN for `codex`/`claude_code`; the six deferred runtime gates stay OPEN; `P0-E` / `P0-F` remain
+`NOT_STARTED`; ADR-030 stays Proposed / doctrine candidate; `PROVIDER_EXACTLY_ONCE=NOT_CLAIMED` is
+permanent. No runtime, test, migration, schema, privilege, workflow or generated-manifest source
+changed.
+
+The external sealed proofs are
+`/Users/Shared/govai-handoff/audits/ai-conversation-continuity-v1/p0-d2-coding-harness-continuation/P0-D2-FROZEN-TREE-MERGE-PR153-01-EXECUTION-REPORT-01.md`
+(SHA-256 `05372b97d546bacfdfcf238d10ee0c02eecd6b96fd6969ed86bcb686b08d1d2d`) for the merge, and
+`P0-D2-CANONICALIZATION-INDEPENDENT-CONVERGENCE-REVIEW-01-REPORT-01.md` in the same directory
+(SHA-256 `0a8bd14f69ad0a73de3b947b4e7524e8116436abc0726efaf9e62f8c9a9dfc9c`) for the review and its
+F-01 / F-02 findings.
+
+### F-01 carry-forward — `ai_conversation_provider_state` privilege wording (P3, NOT CLOSED)
+
+Raised by the P0-D2 independent convergence review. Executable fact at this tree: migration `0031`
+revokes all privileges on `govai.ai_conversation_provider_state` from `PUBLIC`, grants
+`SELECT, INSERT` on it to `govai_app`, and scopes both through owner policies;
+`tests/integration/ai-conversation-migration-0036.test.ts` (case N4) pins that the worker role holds
+no privilege on the table and that `govai_app` holds no `UPDATE` or `DELETE` there.
+
+```
+P0-D2_ADDED_PROVIDER_STATE_PRIVILEGE = NO
+PRODUCTION_HARNESS_WRITER            = NONE
+EXISTING_0031_GOVAI_APP_PRIVILEGE    = SELECT + INSERT on govai.ai_conversation_provider_state
+F-01                                 = CARRY_FORWARD_REQUIRED — future PROVIDER_STATE_PHYSICAL
+                                       activation must revalidate and revoke/narrow, or formally
+                                       prove non-bypass of, this privilege boundary
+```
+
+Registered wording, not edited: `ai-conversation-coding-harness-continuation-v1.md` §3 opens by
+saying that no production code path writes the table and that "no role holds harness-adoption
+authority over the table". Read precisely, that is true — no targeted adoption privilege or CAS
+exists — but it omits the existing 0031 grant, so a reader can conclude the table is unprivileged.
+It asserts no absolute absence of privilege, so the contract is left unchanged and the
+qualification is carried here and in `current-state.md` (the P0-D2 section's carried-qualifications
+block and non-claims, and the P0-D1 migration-0036 bullet). The remedy belongs to the future
+`PROVIDER_STATE_PHYSICAL` gate (P5 / P6). No migration, grant or privilege changes, and F-01 is not
+resolved by these documents.
+
+### F-02 anchor remediation — `native-experience-contract-v1.md` §2 source anchors (P3)
+
+Raised by the P0-D2 independent convergence review: PR #153 added header comments to
+`contracts.ts` (+5 lines) and `dispatch-registry.ts` (+7 lines), so four `file:line` anchors in the
+contract's §2 definitions pointed at unrelated lines while the cited symbols stayed unchanged.
+`F-02 = P3 · CARRY_FORWARD_REQUIRED` at the entry of this post-merge reconciliation. In this tree
+the four anchors are rewritten to `file · symbol` form with no line number retained, so a later
+header edit cannot shift them:
+
+| §2 definition | Was | Now (this tree) |
+|---|---|---|
+| Provider | `apps/api/src/ai-conversations/contracts.ts:78` | `apps/api/src/ai-conversations/contracts.ts · CONVERSATION_PROVIDERS` |
+| Surface | `contracts.ts:113` | `contracts.ts · SurfaceToken` |
+| Model ID | `contracts.ts:114` | `contracts.ts · ModelToken` |
+| Model ID | `dispatch-registry.ts:91-95` | `dispatch-registry.ts · "model is NOT an input" comment` |
+
+No other line of the contract changed: its status header, SOURCE ANCHOR, precedence rule and every
+LAW are untouched, and no semantic contract change is made. These documents do not declare F-02
+closed; that is established only from the actual merge and tree identity of the change that carries
+these bytes.

@@ -133,8 +133,9 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
 - **Current product lane:** `UI_UX_V1_FOUNDATION` — **STARTED**. **U1 (evidence cockpit, `apps/ui`) is implemented**; **EP-B2 (`GET /v1/me`, the shared identity prerequisite) is implemented**; **U1.5 (AI Console, `/ai`) is IMPLEMENTED** — and the two backend findings its live acceptance produced were owner-adjudicated and are **FIXED** in the same lane (`EP-UIUX-V1-U1.5-AI-CONSOLE-CLOSEOUT-02`): `AI-CONSOLE-ORIGIN-RELAY-01` (the server→provider hop no longer relays the browser's `Origin`, class-wide across both providers and both modes — the Anthropic surface works from a browser, live-reaccepted) and `AI-CONSOLE-RESPONSES-DLP-GAP-01` (governed Responses DLP now reads all five accepted message spellings). Those two are this milestone's ONLY backend runtime change. Two residuals stay OPEN and deliberately unfixed, both provider-route behaviour the owner adjudicates per finding: `PROVIDER-INBOUND-HOP-HEADER-RESIDUAL-01` (`referer` / `cookie`) and `PROVIDER-NONSTREAM-FORWARD-UNBOUNDED-01` (non-stream `forwardRaw` has no deadline and no body ceiling; streaming is unaffected); **U2 (workroom console) is NOT started** and is now gated only on EP-B4 (workroom participants). A production human release still requires the human auth / session / API-key lifecycle that does not exist (residual R14) — the U1 session is an explicitly labelled development / controlled-pilot mechanism, not production auth. No UI may represent ask/sandbox/enforcement as applied (R12) or couple commercial tier to governance profile (R13). See development-roadmap.md and current-state.md §1 *Interface layer*.
 - **`GOVAI_NATIVE_EXPERIENCE_PARITY_V1` = `BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`.** The owner's declared program direction — the baseline movement is complete in this tree, the target itself is NOT implemented and no capability wave is in flight: expose OpenAI, Anthropic, **Codex** and **Claude Code** capabilities with provider-native fidelity where an official supported programmatic interface exists, and a GovAI-product-equivalent experience where the provider app has no equivalent public interface. Doctrine: native semantics preserved (no normalization to a common denominator); a registered endpoint is NOT a fully-available capability; Native and Governed coverage proven independently; UI exposure an independent axis; live acceptance an independent axis; app-only features are `GOVAI_PRODUCT_EQUIVALENT`, never `PROVIDER_NATIVE`; Codex via supported structured interfaces (e.g. `codex app-server`) not terminal scraping; Claude Code via the supported Agent SDK / structured CLI, not TUI scraping. First movement — **`EP-PROVIDER-NATIVE-PARITY-V1-BASELINE-01`** — is **COMPLETE in this tree** (research snapshot 2026-08-21): the parity status is now `BASELINE_COMPLETE_TARGET_NOT_IMPLEMENTED`. Read [native-experience-parity-v1.md](./native-experience-parity-v1.md) (baseline, findings incl. `TOOL-TAXONOMY-DRIFT-2026-08`, wave plan) + [ai-conversation-continuity-v1.md](./ai-conversation-continuity-v1.md) (the P0 DESIGN spec — both are VERSIONED 2026-08-21 snapshots: the `CONVERSATION_PERSISTENCE=NOT_IMPLEMENTED` verdict in their headers is their historical anchor state, superseded for the current tree by the P0-C completion recorded in the lane bullet below and in current-state.md; the baseline's 248 rows / FULL-PARTIAL-MISSING counts are NOT retroactively rewritten by post-baseline implementation — a refreshed current parity baseline requires a separate deliberate movement/version); the machine manifest is `generated/native-experience-parity-v1.json`, gated by `pnpm docs:parity:check` and the unit lane. The implementation mission `EP-AI-CONVERSATION-CONTINUITY-V1-01` is IN_PROGRESS — see the dedicated lane bullet below for its current movement state.
 - **Current implementation lane: `EP-AI-CONVERSATION-CONTINUITY-V1-01` — IN_PROGRESS.** This is
-  the lane a new session resumes today. Do **not** start P0-A1, T1, P0-A2, P0-B, P0-C **or
-  P0-D1**: all six are finished and merged. **Do not reopen P0-C** unless NEW evidence
+  the lane a new session resumes today. Do **not** start P0-A1, T1, P0-A2, P0-B, P0-C, P0-D1
+  **or P0-D2's architecture + inert admission**: all seven are finished and merged (the
+  coding-harness RUNTIME is not started — see the lane block). **Do not reopen P0-C** unless NEW evidence
   demonstrates a genuine regression against the merged tree — its frozen closeout anchors are below, and a
   fresh session that "resumes P0-C implementation" from an older document is drifting.
 
@@ -167,11 +168,12 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
                                                                   see current-state.md's P0-D1
                                                                   canonical section)
               P0-D2 CODING HARNESS CONTINUATION                  (ARCHITECTURE + INERT ADMISSION
-                                                                  are in the CANDIDATE TREE — an
-                                                                  OPEN PR at the time of writing,
-                                                                  NOT a merge: verify its PR/CI/
-                                                                  merge proofs before treating it
-                                                                  as known-good. Canonical doc
+                                                                  MERGED — squash-merged as
+                                                                  PR #153, merge 71689db8,
+                                                                  reviewed-tree-identical,
+                                                                  post-merge main CI
+                                                                  34911152172 SUCCESS.
+                                                                  Canonical doc
                                                                   ai-conversation-coding-harness-
                                                                   continuation-v1.md; NEW roots
                                                                   and RESOLVED forks must carry
@@ -189,6 +191,33 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   NEXT      P5 · P6 CODING HARNESS RUNTIME                       (not started; six deferred gates)
   LATER     P0-E · P0-F                                          (not started)
   ```
+
+  **P0-D2 (coding-harness continuation architecture + inert admission) frozen closeout anchors** —
+  PR **#153**, frozen reviewed head `475259c848b7b24d727376a4a7b0db41b116c4d6`, squash merge
+  `71689db8d703b53dbda46950f217349da11c6c54`, reviewed/merged tree
+  `b977c8a11b031fa0ded34debdff2324502e267cb` (the merge commit's tree IS the frozen reviewed tree,
+  byte for byte), merge parent `0d511c8171c384716c366b5b52a6888ed3a2dd20`, exact-head PR CI
+  **34698847707** (unit / integration / ui success), independent convergence review
+  **PASS_WITH_QUALIFICATIONS** (blocking findings 0; historical execution conformance
+  **QUALIFIED**), post-merge main CI run **34911152172 SUCCESS**.
+  `CODEX_REVIEW_STATE_AT_FROZEN_HEAD`: review 5185064864 COMMENTED on commit
+  `83562b81034d7ff9d3518ff109261bb37f4687d6`; its one P2 ("call the canonical admission
+  predicate") is remediated by the frozen head; thread `PRRT_kwDOSTiHm86hs0Ww` resolved; 0
+  unresolved non-outdated threads — no exact-head Codex approval or review is claimed, and the
+  exact-head assurance source is the independent convergence review. What shipped: the canonical
+  contract `ai-conversation-coding-harness-continuation-v1.md` and ONE inert admission rule (NEW
+  roots and RESOLVED forks must carry `codex`/`codex` or `claude_code`/`claude_code`, refused
+  otherwise with the typed HTTP 400; legacy rows preserved, committed forks still replay) — no
+  runtime, no native object, no `ai_conversation_provider_state` row, no migration, no privilege
+  added. F-01 is carried and NOT closed (migration `0031`'s existing `govai_app` SELECT + INSERT
+  on `ai_conversation_provider_state`: a future `PROVIDER_STATE_PHYSICAL` activation must
+  revalidate and revoke/narrow, or formally prove non-bypass of, that privilege boundary); F-02's
+  four shifted `file:line` anchors in `native-experience-contract-v1.md` are
+  rewritten to file + symbol form in this tree, and no closure of F-02 is declared here. Full
+  canonical detail is in current-state.md's *P0-D2 canonical state* section. **Do not
+  re-implement P0-D2's architecture or admission rule**, and do not read `R1_DURABLE_CONTEXT_P1`
+  still being OPEN for `codex`/`claude_code` as a P0-D2 gap: it closes only with the
+  coding-harness runtime — P5 (Codex) / P6 (Claude) — which is not started.
 
   **P0-D1 (durable context + API provider continuation) frozen closeout anchors** — PR **#151**,
   final frozen head `63221f0d3290fc02d3a99f15e3b14592f596c92f`, squash merge
@@ -255,7 +284,7 @@ FOUNDATION_V1_DOCUMENTARY_FREEZE = the M3 canonical-freeze PR #133 (branch docs/
   dispatch builds its provider request from SERVER-ASSEMBLED durable branch context (a
   pipelined turn N+1 dispatches WITH turn N's completed answer; the browser never owns
   history). What still does NOT exist: the Codex / Claude coding-harness RUNTIME — P0-D2
-  published its ARCHITECTURE and one INERT admission rule in the candidate tree, and admission
+  published its ARCHITECTURE and one INERT admission rule (merged as PR #153), and admission
   is NOT capability: a canonical `codex`/`codex` conversation is still refused at dispatch, no
   native object is ever created, and the six deferred runtime gates are owned by P5/P6 — the
   persistent AI workspace UI (P0-E — the AI Console transcript remains memory-only by
