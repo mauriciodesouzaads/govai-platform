@@ -4,7 +4,7 @@
   "regenerate": "pnpm docs:manifest:write",
   "verify": "pnpm docs:manifest:check",
   "structure": {
-    "architecture_docs": 109,
+    "architecture_docs": 110,
     "regulatory_docs": 20,
     "adr_decision_records": 31,
     "workspace_apps": [
@@ -36,16 +36,16 @@
   },
   "tests": {
     "root_unit": {
-      "files": 152,
-      "tests": 1885
+      "files": 161,
+      "tests": 2064
     },
     "root_integration_only": {
       "files": 95,
       "tests": 1503
     },
     "root_full_integration_gate": {
-      "files": 247,
-      "tests": 3388
+      "files": 256,
+      "tests": 3567
     },
     "ui": {
       "files": 33,
