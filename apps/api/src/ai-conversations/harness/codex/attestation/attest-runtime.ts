@@ -1,22 +1,28 @@
 // CONT-P5-A — runtime attestation of the pinned codex-app-server (dispatch §2 attestation/, §0, §0.1, §4).
 //
-// `attestRuntime` is the ONLY way to obtain a client whose thread/turn methods are unlocked. In order, each
-// step fail-closed with a typed `RuntimeAttestationFailed`:
+// `attestRuntime` is the ordinary supported path to a client whose thread/turn methods are unlocked (the unlock
+// symbol it uses is an exported structural seam, not a security boundary). In order, each step fail-closed with a
+// typed `RuntimeAttestationFailed`:
 //   1. host is the pinned platform (darwin-arm64); every other host is FAIL_CLOSED_NOT_YET_PINNED
 //   2. the expected executable SHA-256 and version ARE the pin (a caller cannot attest a different artifact)
 //   3. the binary path is absolute + normalized, names the §0 member and is a regular file
 //   4. SHA-256(executable) == §0 EXPECTED_EXECUTABLE_SHA256 (streamed, before anything is executed)
 //   5. CODEX_HOME is an absolute, existing, CANONICAL directory (the server canonicalizes it, so only a
-//      canonical path can be compared byte-for-byte with the answer)
-//   6. `<abs path> --version` runs in the same isolated environment; stdout is recorded VERBATIM; exactly one
-//      semantic version must be parseable from it and equal the pinned release
+//      canonical path can be compared byte-for-byte with the answer). Canonical + existing is ALL that is
+//      verified: its disposability, freshness and ownership — and those of `homeDir` and `workDir` — are the
+//      caller's responsibility
+//   6. `<abs path> --version` runs in the same isolated environment (before the spawn's own directory checks);
+//      stdout is recorded VERBATIM; exactly one semantic version must be parseable from it and equal the pin
 //   7. the server is spawned (own process group, explicit env) and `initialize` is sent with the §0.1
 //      FROZEN request; the serialized bytes are asserted (`experimentalApi: false`, `requestAttestation:
 //      false`, nothing else)
 //   8. `response.codexHome` == the disposable CODEX_HOME; userAgent / platformFamily / platformOs recorded
-//   9. `initialized` is notified and only then the channel is unlocked for thread methods
-// On any failure after the spawn, the process group is terminated before the error propagates.
-// No server-reported schema hash is required: none exists at the pin.
+//   9. `initialized` is written and only then the channel is unlocked for thread methods
+// Everything after the spawn is ONE safety region: on any failure the tap is switched off, the client closed, the
+// managed group signalled under the two-state law of `CodexProcessHandle.terminate()` and the direct child reaped,
+// and the typed failure carries the cleanup outcome (a failed cleanup included). No descendant-containment claim
+// is made (PROCESS_GROUP_CONTROL = FOUNDATION_ONLY). No server-reported schema hash is required: none exists at
+// the pin.
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -26,8 +32,11 @@ import { basename, isAbsolute, normalize } from 'node:path';
 import { CODEX_CLIENT_UNLOCK_AFTER_ATTESTATION, CodexJsonRpcClient } from '../client/json-rpc-client.js';
 import {
   CODEX_CHILD_PATH,
+  cleanupOwnedProcess,
   CodexProcessHandle,
+  CodexProcessSpawnRefused,
   systemPsRunner,
+  type CodexCleanupOutcome,
   type InGroupMember,
   type PsRunner,
 } from '../client/process-handle.js';
@@ -51,7 +60,11 @@ export type RuntimeAttestationFailureReason =
   | 'initialize_request_bytes_mismatch'
   | 'initialize_failed'
   | 'initialize_response_invalid'
-  | 'codex_home_mismatch';
+  | 'codex_home_mismatch'
+  /** The channel failed at `initialized` (after the initialize response): nothing is unlocked. */
+  | 'initialized_notification_failed'
+  /** Any other throw inside the post-spawn handshake region. */
+  | 'handshake_internal_error';
 
 export class RuntimeAttestationFailed extends Error {
   readonly code = 'codex_runtime_attestation_failed';
@@ -59,9 +72,23 @@ export class RuntimeAttestationFailed extends Error {
     readonly reason: RuntimeAttestationFailureReason,
     /** Whatever was established before the failure — never a credential, never a payload beyond the handshake. */
     readonly evidence: Readonly<Partial<CodexRuntimeAttestationEvidence>>,
+    /** Present whenever a process was owned: the outcome of its owned cleanup (never swallowed). */
+    readonly cleanup?: CodexCleanupOutcome,
+    cause?: unknown,
   ) {
-    super(`codex runtime attestation failed: ${reason}`);
+    super(`codex runtime attestation failed: ${reason}`, cause === undefined ? undefined : { cause });
     this.name = 'RuntimeAttestationFailed';
+  }
+}
+
+/** Internal: a mapped step failure inside the post-spawn region; it never escapes the region. */
+class HandshakeStepFailure extends Error {
+  constructor(
+    readonly reason: RuntimeAttestationFailureReason,
+    cause?: unknown,
+  ) {
+    super(`codex handshake step failed: ${reason}`, cause === undefined ? undefined : { cause });
+    this.name = 'HandshakeStepFailure';
   }
 }
 
@@ -69,7 +96,10 @@ export type AttestRuntimeInput = {
   readonly binaryPath: string;
   readonly expectedExecutableSha256: string;
   readonly expectedVersion: string;
-  /** Disposable, canonical CODEX_HOME the server must report back verbatim. */
+  /**
+   * Canonical CODEX_HOME the server must report back verbatim. Verified: absolute, existing, canonical. Its
+   * disposability, freshness and ownership are the caller's responsibility.
+   */
   readonly expectedCodexHome: string;
   /** Disposable HOME for the child (default: `expectedCodexHome`). */
   readonly homeDir?: string;
@@ -102,7 +132,10 @@ export type AttestedCodexRuntime = {
   readonly handle: CodexProcessHandle;
 };
 
-/** Seams for unit tests with fake executables; production callers never pass them. */
+/**
+ * A trusted test seam (fake executables, fake pin/host). Nothing enforces who passes it: it is trusted, not a
+ * security boundary, and the production deps below are the pinned ones.
+ */
 export type CodexAttestationDeps = {
   readonly pin: { readonly executableSha256: string; readonly release: string; readonly executableMemberName: string };
   readonly host: () => CodexHostPlatform;
@@ -167,6 +200,10 @@ function lineId(line: string): unknown {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
@@ -180,8 +217,8 @@ export async function attestRuntime(
   deps: CodexAttestationDeps = PRODUCTION_ATTESTATION_DEPS,
 ): Promise<AttestedCodexRuntime> {
   const evidence: { -readonly [K in keyof CodexRuntimeAttestationEvidence]?: CodexRuntimeAttestationEvidence[K] } = {};
-  const fail = (reason: RuntimeAttestationFailureReason): RuntimeAttestationFailed =>
-    new RuntimeAttestationFailed(reason, Object.freeze({ ...evidence }));
+  const fail = (reason: RuntimeAttestationFailureReason, cleanup?: CodexCleanupOutcome, cause?: unknown): RuntimeAttestationFailed =>
+    new RuntimeAttestationFailed(reason, Object.freeze({ ...evidence }), cleanup, cause);
 
   const host = deps.host();
   evidence.hostPlatform = `${host.platform}-${host.arch}`;
@@ -231,76 +268,84 @@ export async function attestRuntime(
   let handle: CodexProcessHandle;
   try {
     handle = await CodexProcessHandle.spawn({ binaryPath: input.binaryPath, codexHome, homeDir, workDir }, deps.ps);
-  } catch {
-    throw fail('spawn_failed');
+  } catch (error) {
+    // Before the OS spawn nothing is owned; after it, `spawn()` completed the owned cleanup and reports it.
+    throw fail('spawn_failed', error instanceof CodexProcessSpawnRefused ? error.cleanup : undefined, error);
   }
-  evidence.process = Object.freeze({
-    pid: handle.pid,
-    pgid: handle.pgid,
-    ownProcessGroupEvidence: handle.ownProcessGroupEvidence,
-  });
 
-  // The tap records the handshake only; it is switched off before the client is handed out, so a
-  // long-lived session never accumulates wire lines here.
+  // ★ ONE POST-SPAWN SAFETY REGION, from here to the `return`. ANY throw inside it — typed or not — switches the
+  //   tap off, closes the client (if constructed), completes the owned cleanup and surfaces as a typed
+  //   RuntimeAttestationFailed carrying the reason AND the cleanup outcome. Nothing raw escapes.
   const lines: { direction: 'out' | 'in'; line: string }[] = [];
   let tapping = true;
-  const client = new CodexJsonRpcClient(
-    { input: handle.stdout, output: handle.stdin },
-    { wireTap: (direction, line) => (tapping ? lines.push({ direction, line }) : undefined) },
-  );
-  const abort = async (reason: RuntimeAttestationFailureReason): Promise<never> => {
-    tapping = false;
-    client.close();
-    await handle.terminate({ graceMs: 2_000, killWaitMs: 3_000 }).catch(() => undefined);
-    throw fail(reason);
-  };
-
-  const initialize = GovAICodexSafeRequestBuilder.initialize();
-  let response: InitializeResponse;
+  let client: CodexJsonRpcClient | null = null;
   try {
-    response = await client.request('initialize', initialize.params, {
-      timeoutMs: input.initializeTimeoutMs ?? 20_000,
+    evidence.process = Object.freeze({
+      pid: handle.pid,
+      pgid: handle.pgid,
+      ownProcessGroupEvidence: handle.ownProcessGroupEvidence,
     });
-  } catch {
-    return abort('initialize_failed');
-  }
+    // The tap records the handshake only; it is switched off before the client is handed out, so a
+    // long-lived session never accumulates wire lines here.
+    client = new CodexJsonRpcClient(
+      { input: handle.stdout, output: handle.stdin },
+      { wireTap: (direction, line) => (tapping ? lines.push({ direction, line }) : undefined) },
+    );
+    const timeoutMs = input.initializeTimeoutMs ?? 20_000;
+    const initialize = GovAICodexSafeRequestBuilder.initialize();
+    let result: unknown;
+    try {
+      result = await client.request('initialize', initialize.params, { timeoutMs });
+    } catch (error) {
+      // JSON-RPC error object, timeout, or the channel closing before the response.
+      throw new HandshakeStepFailure('initialize_failed', error);
+    }
 
-  const sent = lines.find((l) => l.direction === 'out')?.line ?? '';
-  evidence.initializeRequestLine = sent;
-  if (sent !== frozenInitializeRequestLine(1)) return abort('initialize_request_bytes_mismatch');
-  const sentParams = (JSON.parse(sent) as { params: { capabilities: Record<string, unknown> } }).params.capabilities;
-  if (sentParams['experimentalApi'] !== false || sentParams['requestAttestation'] !== false) {
-    return abort('initialize_request_bytes_mismatch');
-  }
-  evidence.experimentalApi = false;
-  evidence.requestAttestation = false;
-  evidence.initializeResponseLine = lines.find((l) => l.direction === 'in' && lineId(l.line) === 1)?.line ?? '';
+    const sent = lines.find((l) => l.direction === 'out')?.line ?? '';
+    evidence.initializeRequestLine = sent;
+    if (sent !== frozenInitializeRequestLine(1)) throw new HandshakeStepFailure('initialize_request_bytes_mismatch');
+    const sentParams = (JSON.parse(sent) as { params: { capabilities: Record<string, unknown> } }).params.capabilities;
+    if (sentParams['experimentalApi'] !== false || sentParams['requestAttestation'] !== false) {
+      throw new HandshakeStepFailure('initialize_request_bytes_mismatch');
+    }
+    evidence.experimentalApi = false;
+    evidence.requestAttestation = false;
+    evidence.initializeResponseLine = lines.find((l) => l.direction === 'in' && lineId(l.line) === 1)?.line ?? '';
 
-  const r = response as unknown as Record<string, unknown>;
-  if (
-    typeof r['userAgent'] !== 'string' ||
-    typeof r['codexHome'] !== 'string' ||
-    typeof r['platformFamily'] !== 'string' ||
-    typeof r['platformOs'] !== 'string'
-  ) {
-    return abort('initialize_response_invalid');
-  }
-  evidence.initializeResponse = Object.freeze({
-    userAgent: response.userAgent,
-    codexHome: response.codexHome,
-    platformFamily: response.platformFamily,
-    platformOs: response.platformOs,
-  });
-  if (response.codexHome !== codexHome) return abort('codex_home_mismatch');
+    // The result is validated at runtime BEFORE any property access; evidence is built from validated locals.
+    if (!isRecord(result)) throw new HandshakeStepFailure('initialize_response_invalid');
+    const { userAgent, codexHome: answeredCodexHome, platformFamily, platformOs } = result;
+    if (
+      typeof userAgent !== 'string' ||
+      typeof answeredCodexHome !== 'string' ||
+      typeof platformFamily !== 'string' ||
+      typeof platformOs !== 'string'
+    ) {
+      throw new HandshakeStepFailure('initialize_response_invalid');
+    }
+    evidence.initializeResponse = Object.freeze({ userAgent, codexHome: answeredCodexHome, platformFamily, platformOs });
+    if (answeredCodexHome !== codexHome) throw new HandshakeStepFailure('codex_home_mismatch');
 
-  tapping = false;
-  client.notifyInitialized();
-  client[CODEX_CLIENT_UNLOCK_AFTER_ATTESTATION]();
-  return Object.freeze({
-    evidence: Object.freeze(evidence as CodexRuntimeAttestationEvidence),
-    client,
-    handle,
-  });
+    tapping = false;
+    try {
+      await client.notifyInitialized();
+    } catch (error) {
+      throw new HandshakeStepFailure('initialized_notification_failed', error);
+    }
+    // Unlocked only after `initialized` was written.
+    client[CODEX_CLIENT_UNLOCK_AFTER_ATTESTATION]();
+    return Object.freeze({
+      evidence: Object.freeze(evidence as CodexRuntimeAttestationEvidence),
+      client,
+      handle,
+    });
+  } catch (error) {
+    tapping = false;
+    client?.close();
+    const cleanup = await cleanupOwnedProcess(handle, { graceMs: 2_000, killWaitMs: 3_000 });
+    if (error instanceof HandshakeStepFailure) throw fail(error.reason, cleanup, error.cause);
+    throw fail('handshake_internal_error', cleanup, error);
+  }
 }
 
 /**

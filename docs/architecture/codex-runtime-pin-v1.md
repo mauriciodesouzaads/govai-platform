@@ -49,13 +49,18 @@ derived file to its digest, its commit-addressed retrieval URL and its upstream 
 
 In order, each step fail-closed with a typed `RuntimeAttestationFailed`: pinned host platform → the expected
 digest and version ARE the pin → absolute, normalized path naming the §0 member → executable SHA-256 → canonical,
-existing, disposable `CODEX_HOME` → `--version` (verbatim stdout, one parsed semver, equal to the pin) → spawn
+existing `CODEX_HOME` → `--version` (verbatim stdout, one parsed semver, equal to the pin) → spawn
 in the child's own process group with the explicit environment → `initialize` with the frozen request
 (`clientInfo = govai-cont-p5a-harness / GovAI CONT-P5-A inert foundation / <apps/api version>`,
 `capabilities = { experimentalApi: false, requestAttestation: false }`, bytes asserted) →
-`response.codexHome == CODEX_HOME` (userAgent / platformFamily / platformOs recorded) → `initialized` →
-only then are thread methods unlocked. A failure after the spawn terminates the process group first. No
-server-reported schema hash exists at the pin, and none is required.
+`response.codexHome == CODEX_HOME` (userAgent / platformFamily / platformOs recorded) → `initialized` written →
+only then are thread methods unlocked. Everything after the spawn is one safety region: on any failure the client
+is closed, the managed group is signalled under the two-state law of §5 and the direct child reaped, and the
+typed failure carries the cleanup outcome; no descendant claim is made. For `CODEX_HOME` only "canonical +
+existing" is verified: its disposability, freshness and ownership — and those of `homeDir` / `workDir` — are the
+caller's responsibility (`--version` runs before the spawn's directory checks). This is the ordinary supported
+path, not the only possible one (see the seams in §5). No server-reported schema hash exists at the pin, and none
+is required.
 
 ## 5. Governance posture
 
@@ -71,10 +76,22 @@ server-reported schema hash exists at the pin, and none is required.
 - GovAI allows: approval policy `on-request` | `untrusted`; approvals reviewer `user`; sandbox `read-only` |
   `workspace-write` (`readOnly` | `workspaceWrite` policies). `thread/fork` requires `lastTurnId`; `turn/steer`
   requires `expectedTurnId`.
+- One primitive decides outbound policy: `enforceGovAICodexOutboundPolicy` (an exact-key allowlist per covered
+  method, the experimental lockout inside it). `CodexJsonRpcClient.request()` runs it unconditionally and
+  serializes its owned, deep-frozen return value; there is no option to replace it. GovAI outbound policy is
+  non-bypassable through CodexJsonRpcClient. It is NOT claimed to be a security boundary against arbitrary
+  trusted code that already holds the raw process handle inside the same process. Known structural seams: the
+  exported unlock symbol, the attestation deps (a trusted test seam, unenforced) and `CodexProcessHandle.stdin` /
+  `.stdout` (not hardened in A; possible hardening belongs to the later supervisor-authority movement).
+- `UserInput` is validated with exact keys at every depth and rebuilt as an owned value; content strings may be
+  empty. OPEN for the first real-content movement: URL scheme policy, local path confinement, content size
+  policy, semantic text policy.
 - `PROCESS_GROUP_CONTROL = FOUNDATION_ONLY` (own group, in-group inventory, SIGTERM → SIGKILL to the managed
-  group, direct-child reap). `RESOURCE_FENCING_GATE = OPEN`; `DESCENDANT_QUIESCENCE_PROOF` and `STALE_WRITER_PROOF`
-  are DEFERRED (E1); `PROCESS_ESCAPE_DETECTION` is DEFERRED (C/E2). No claim of all-descendants-terminated,
-  no-orphans or no-MCP-residue is made.
+  group, direct-child reap). While the direct child is alive the group is signalled whatever the diagnostic
+  inventory says; after its exit only on current positive inventory evidence (unavailable → no signal, residue
+  recorded as unknown). A failed cleanup is typed and reported, never swallowed. `RESOURCE_FENCING_GATE = OPEN`;
+  `DESCENDANT_QUIESCENCE_PROOF` and `STALE_WRITER_PROOF` are DEFERRED (E1); `PROCESS_ESCAPE_DETECTION` is DEFERRED
+  (C/E2). No claim of all-descendants-terminated, no-orphans or no-MCP-residue is made.
 
 ## 6. Recorded at the pin (CONT-P5-A executor evidence; no credential; observed, not normative)
 

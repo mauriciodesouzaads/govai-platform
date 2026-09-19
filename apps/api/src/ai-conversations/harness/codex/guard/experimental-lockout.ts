@@ -1,7 +1,9 @@
 // CONT-P5-A — GovAICodexExperimentalLockout (dispatch §2 guard/, §4 invariants).
 //
-// PURE. The single gate every OUTBOUND client request passes before a byte is written, and the verdict on
-// every INBOUND notification before it reaches a typed handler. Its tables are the source-derived inventory
+// PURE. Every OUTBOUND client request passes this lockout before a byte is written — inside the mandatory GovAI
+// outbound policy primitive (`enforceGovAICodexOutboundPolicy`, ../protocol/govai-policy.ts), which applies it to
+// the caller's params and again to its own reconstruction — and it gives the verdict on every INBOUND
+// notification before it reaches a typed handler. Its tables are the source-derived inventory
 // (../protocol/experimental-inventory.ts) — nothing here is a hand-maintained list of "dangerous" names.
 //
 // ★ WHAT IT REFUSES (outbound):

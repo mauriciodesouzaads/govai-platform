@@ -47,7 +47,7 @@ is one collected test module.
 
 | Structure | Source pattern | Count |
 |---|---|---|
-| Architecture docs | `docs/architecture/**/*.md` | 109 |
+| Architecture docs | `docs/architecture/**/*.md` | 110 |
 | Regulatory docs | `docs/architecture/regulatory/*.md` | 20 |
 | ADR decision records | `docs/architecture/adr/ADR-[0-9][0-9][0-9]-*.md` (excludes `ADR-INDEX.md`) | 31 |
 | Workspace apps | `apps/*` | 3 — `apps/api`, `apps/audit-sealer`, `apps/ui` |
@@ -58,9 +58,9 @@ is one collected test module.
 
 | Test category | Execution | Files | Tests |
 |---|---|---|---|
-| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 152 | 1885 |
+| Root unit | `pnpm test` (no `GOVAI_INTEGRATION`) | 161 | 2064 |
 | Root integration-only | the identities `GOVAI_INTEGRATION=1` adds (proved set difference, all under `tests/integration/`) | 95 | 1503 |
-| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 247 | 3388 |
+| Root full integration gate | `pnpm test:integration` (unit + integration; the CI `integration` job) | 256 | 3567 |
 | UI (`@govai/ui`) | `pnpm --filter @govai/ui test` (own jsdom config; excluded from the root config) | 33 | 753 |
 | Live-gated | `pnpm test:live` (never in CI) | 6 | files only — see manifest `reason` |
 

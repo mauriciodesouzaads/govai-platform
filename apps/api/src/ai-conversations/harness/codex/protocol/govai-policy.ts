@@ -19,6 +19,11 @@
 //   builder never lets the server pick "whatever is newest".
 // ★ FAIL CLOSED ON SHAPE. Only the listed keys are copied; an unexpected input key (a category (1) name
 //   included) is a `GovAICodexPolicyViolation`, never silently forwarded or dropped.
+// ★ ONE PRIMITIVE DECIDES. `enforceGovAICodexOutboundPolicy(method, params)` is the only place GovAI outbound policy
+//   is decided: total over the 13 covered methods, an exact-key ALLOWLIST per method (never a denylist), the
+//   experimental lockout kept inside it as defense in depth, and an OWNED, deep-frozen reconstruction as its
+//   return value. `CodexJsonRpcClient.request()` runs it unconditionally and serializes that return value; the
+//   builder below is a typed façade over it.
 
 import {
   assertOutboundRequestAllowed,
@@ -39,8 +44,9 @@ import type { TurnInterruptParams } from './generated/v2/TurnInterruptParams';
 import type { TurnStartParams } from './generated/v2/TurnStartParams';
 import type { TurnSteerParams } from './generated/v2/TurnSteerParams';
 import type { UserInput } from './generated/v2/UserInput';
-import { CODEX_SORT_DIRECTIONS, CODEX_TURN_ITEMS_VIEWS, CODEX_USER_INPUT_TYPES } from './method-names.js';
-import type { CodexClientParams, CodexCoveredClientMethod } from './wire.js';
+import { ownGovAICodexUserInputs } from './govai-user-input.js';
+import { CODEX_SORT_DIRECTIONS, CODEX_TURN_ITEMS_VIEWS } from './method-names.js';
+import { isCoveredClientMethod, type CodexClientParams, type CodexCoveredClientMethod } from './wire.js';
 
 type Exactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 
@@ -94,23 +100,50 @@ export function isGovAIAllowedSandboxMode(value: unknown): value is GovAICodexAl
   return typeof value === 'string' && (GOVAI_CODEX_ALLOWED_SANDBOX_MODES as readonly string[]).includes(value);
 }
 
+/**
+ * Exact generated shape of the two allowed `SandboxPolicy` arms, reconstructed: a fresh object in generated key
+ * order, each property read exactly once (the value validated is the value returned). `null` for any other arm,
+ * a missing or extra key, or a wrong type.
+ */
+export function ownGovAICodexSandboxPolicy(value: unknown): GovAICodexAllowedSandboxPolicy | null {
+  if (!isRecord(value)) return null;
+  const type = Object.hasOwn(value, 'type') ? value['type'] : undefined;
+  if (type === 'readOnly') {
+    if (!hasExactKeys(value, ['type', 'networkAccess'])) return null;
+    const networkAccess = value['networkAccess'];
+    return typeof networkAccess === 'boolean' ? { type, networkAccess } : null;
+  }
+  if (type === 'workspaceWrite') {
+    if (!hasExactKeys(value, ['type', 'writableRoots', 'networkAccess', 'excludeTmpdirEnvVar', 'excludeSlashTmp'])) {
+      return null;
+    }
+    const writableRoots = value['writableRoots'];
+    const networkAccess = value['networkAccess'];
+    const excludeTmpdirEnvVar = value['excludeTmpdirEnvVar'];
+    const excludeSlashTmp = value['excludeSlashTmp'];
+    if (
+      !Array.isArray(writableRoots) ||
+      typeof networkAccess !== 'boolean' ||
+      typeof excludeTmpdirEnvVar !== 'boolean' ||
+      typeof excludeSlashTmp !== 'boolean'
+    ) {
+      return null;
+    }
+    const roots: string[] = [];
+    const length = writableRoots.length;
+    for (let i = 0; i < length; i += 1) {
+      const root: unknown = writableRoots[i];
+      if (typeof root !== 'string' || !root.startsWith('/')) return null;
+      roots.push(root);
+    }
+    return { type, writableRoots: roots, networkAccess, excludeTmpdirEnvVar, excludeSlashTmp };
+  }
+  return null;
+}
+
 /** Exact generated shape of the two allowed `SandboxPolicy` arms; any other arm or extra key is refused. */
 export function isGovAIAllowedSandboxPolicy(value: unknown): value is GovAICodexAllowedSandboxPolicy {
-  if (!isRecord(value)) return false;
-  if (value['type'] === 'readOnly') {
-    return hasExactKeys(value, ['type', 'networkAccess']) && typeof value['networkAccess'] === 'boolean';
-  }
-  if (value['type'] === 'workspaceWrite') {
-    return (
-      hasExactKeys(value, ['type', 'writableRoots', 'networkAccess', 'excludeTmpdirEnvVar', 'excludeSlashTmp']) &&
-      Array.isArray(value['writableRoots']) &&
-      value['writableRoots'].every((root) => typeof root === 'string' && root.startsWith('/')) &&
-      typeof value['networkAccess'] === 'boolean' &&
-      typeof value['excludeTmpdirEnvVar'] === 'boolean' &&
-      typeof value['excludeSlashTmp'] === 'boolean'
-    );
-  }
-  return false;
+  return ownGovAICodexSandboxPolicy(value) !== null;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -126,13 +159,16 @@ export type GovAICodexPolicyRule =
   | 'sandbox_mode_not_allowed'
   | 'sandbox_policy_not_allowed'
   | 'fork_requires_last_turn_id'
-  | 'steer_requires_expected_turn_id';
+  | 'steer_requires_expected_turn_id'
+  | 'method_not_covered';
 
 export class GovAICodexPolicyViolation extends Error {
   readonly code = 'govai_codex_policy_violation';
   constructor(
     readonly rule: GovAICodexPolicyRule,
-    readonly method: CodexCoveredClientMethod,
+    /** A covered method, or — for `method_not_covered` only — the refused method name as given. */
+    readonly method: string,
+    /** Precise field path, e.g. `input[2].text_elements[0].byteRange.start`. */
     readonly field: string,
   ) {
     super(`govai codex policy: ${rule} (${method}.${field})`);
@@ -141,7 +177,7 @@ export class GovAICodexPolicyViolation extends Error {
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// Safe request builder
+// Frozen client info, typed builder inputs and the single-read input reader
 // ---------------------------------------------------------------------------------------------------------
 
 /** §0.1 FROZEN clientInfo. `version` = apps/api/package.json `version` (asserted by govai-policy.test.ts). */
@@ -213,25 +249,47 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   return own.length === keys.length && own.every((k) => keys.includes(k));
 }
 
-/** Validates an untyped input object against the builder's key allowlist and field rules. */
+/**
+ * Validates an untyped params object against the method's key ALLOWLIST and field rules. SINGLE READ: every own
+ * property is read exactly once, into a snapshot, and every rule below validates — and returns — that snapshot.
+ */
 class InputReader {
+  private readonly values = new Map<string, unknown>();
+
   constructor(
     private readonly method: CodexCoveredClientMethod,
-    private readonly input: unknown,
+    input: unknown,
     allowedKeys: readonly string[],
   ) {
     if (!isRecord(input)) throw new GovAICodexPolicyViolation('invalid_field_value', method, '<input>');
     for (const key of Object.keys(input)) {
       if (!allowedKeys.includes(key)) throw new GovAICodexPolicyViolation('unexpected_input_key', method, key);
+      this.values.set(key, input[key]);
     }
   }
 
   private raw(field: string): unknown {
-    return (this.input as Record<string, unknown>)[field];
+    return this.values.get(field);
   }
 
+  /** An own key whose value is `undefined` is treated as absent. */
   has(field: string): boolean {
-    return Object.hasOwn(this.input as object, field) && this.raw(field) !== undefined;
+    return this.values.has(field) && this.raw(field) !== undefined;
+  }
+
+  /** `field` must be a record whose own keys and values are EXACTLY `expected` (the §0.1 frozen request). */
+  exactly(field: string, expected: Readonly<Record<string, string | boolean>>): void {
+    const v = this.raw(field);
+    if (v === undefined) throw new GovAICodexPolicyViolation('required_field_missing', this.method, field);
+    if (!isRecord(v)) throw new GovAICodexPolicyViolation('invalid_field_value', this.method, field);
+    const own = Object.keys(v);
+    for (const key of own) {
+      if (!Object.hasOwn(expected, key)) throw new GovAICodexPolicyViolation('unexpected_input_key', this.method, `${field}.${key}`);
+    }
+    for (const [key, value] of Object.entries(expected)) {
+      if (!own.includes(key)) throw new GovAICodexPolicyViolation('required_field_missing', this.method, `${field}.${key}`);
+      if (v[key] !== value) throw new GovAICodexPolicyViolation('invalid_field_value', this.method, `${field}.${key}`);
+    }
   }
 
   requiredString(field: string, rule: GovAICodexPolicyRule = 'required_field_missing'): string {
@@ -310,33 +368,17 @@ class InputReader {
 
   sandboxPolicy(): GovAICodexAllowedSandboxPolicy | undefined {
     if (!this.has('sandboxPolicy')) return undefined;
-    const v = this.raw('sandboxPolicy');
-    if (!isGovAIAllowedSandboxPolicy(v)) {
-      throw new GovAICodexPolicyViolation('sandbox_policy_not_allowed', this.method, 'sandboxPolicy');
-    }
     // A fresh object in the generated key order: nothing the caller attached rides along.
-    return v.type === 'readOnly'
-      ? { type: 'readOnly', networkAccess: v.networkAccess }
-      : {
-          type: 'workspaceWrite',
-          writableRoots: [...v.writableRoots],
-          networkAccess: v.networkAccess,
-          excludeTmpdirEnvVar: v.excludeTmpdirEnvVar,
-          excludeSlashTmp: v.excludeSlashTmp,
-        };
+    const owned = ownGovAICodexSandboxPolicy(this.raw('sandboxPolicy'));
+    if (owned === null) throw new GovAICodexPolicyViolation('sandbox_policy_not_allowed', this.method, 'sandboxPolicy');
+    return owned;
   }
 
+  /** The OWNED `input` (./govai-user-input.ts): every item validated and rebuilt, with precise violation paths. */
   userInputs(): UserInput[] {
-    const v = this.raw('input');
-    if (!Array.isArray(v) || v.length === 0) {
-      throw new GovAICodexPolicyViolation('required_field_missing', this.method, 'input');
-    }
-    for (const item of v) {
-      if (!isRecord(item) || !(CODEX_USER_INPUT_TYPES as readonly unknown[]).includes(item['type'])) {
-        throw new GovAICodexPolicyViolation('invalid_field_value', this.method, 'input');
-      }
-    }
-    return [...(v as UserInput[])];
+    return ownGovAICodexUserInputs(this.raw('input'), (rule, path) => {
+      throw new GovAICodexPolicyViolation(rule, this.method, path);
+    });
   }
 }
 
@@ -346,18 +388,35 @@ function defined<T extends Record<string, unknown>>(obj: T): T {
   return obj;
 }
 
-function finish<M extends CodexCoveredClientMethod>(method: M, params: CodexClientParams<M>): GovAICodexOutboundRequest<M> {
-  // Defense in depth: the lockout must agree with the builder on every request it emits.
-  assertOutboundRequestAllowed(method, params);
-  return Object.freeze({ method, params });
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null) {
+    for (const key of Object.keys(value)) deepFreeze((value as Record<string, unknown>)[key]);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** The own enumerable properties of `params`, each read exactly once (a non-record is returned as given). */
+function snapshotOwn(params: unknown): unknown {
+  if (!isRecord(params)) return params;
+  const copy: Record<string, unknown> = {};
+  for (const key of Object.keys(params)) copy[key] = params[key];
+  return copy;
 }
 
 const GOVERNED_KEYS = ['approvalPolicy', 'approvalsReviewer', 'sandbox'] as const;
 
-export const GovAICodexSafeRequestBuilder = Object.freeze({
-  /** §0.1 FROZEN initialize request: `capabilities` always sent, both flags explicitly false. */
-  initialize(): GovAICodexOutboundRequest<'initialize'> {
-    return finish('initialize', {
+// ---------------------------------------------------------------------------------------------------------
+// THE primitive: one ALLOWLIST rule per covered method (total — a covered method without a rule cannot compile)
+// ---------------------------------------------------------------------------------------------------------
+
+const GOVAI_CODEX_OUTBOUND_POLICY = {
+  /** §0.1 FROZEN initialize request: exactly `{clientInfo, capabilities}` holding the frozen values, nothing else. */
+  initialize: (params: unknown) => {
+    const r = new InputReader('initialize', params, ['clientInfo', 'capabilities']);
+    r.exactly('clientInfo', GOVAI_CODEX_CLIENT_INFO);
+    r.exactly('capabilities', GOVAI_CODEX_INITIALIZE_CAPABILITIES);
+    return {
       clientInfo: {
         name: GOVAI_CODEX_CLIENT_INFO.name,
         title: GOVAI_CODEX_CLIENT_INFO.title,
@@ -367,92 +426,74 @@ export const GovAICodexSafeRequestBuilder = Object.freeze({
         experimentalApi: GOVAI_CODEX_INITIALIZE_CAPABILITIES.experimentalApi,
         requestAttestation: GOVAI_CODEX_INITIALIZE_CAPABILITIES.requestAttestation,
       },
+    };
+  },
+
+  'thread/start': (params: unknown) => {
+    const r = new InputReader('thread/start', params, [...GOVERNED_KEYS, 'model', 'cwd']);
+    return defined({
+      model: r.optionalString('model'),
+      cwd: r.optionalString('cwd'),
+      approvalPolicy: r.approvalPolicy(true),
+      approvalsReviewer: r.approvalsReviewer(true),
+      sandbox: r.sandboxMode(),
     });
   },
 
-  threadStart(input: GovAICodexThreadStartInput): GovAICodexOutboundRequest<'thread/start'> {
-    const r = new InputReader('thread/start', input, [...GOVERNED_KEYS, 'model', 'cwd']);
-    return finish(
-      'thread/start',
-      defined({
-        model: r.optionalString('model'),
-        cwd: r.optionalString('cwd'),
-        approvalPolicy: r.approvalPolicy(true),
-        approvalsReviewer: r.approvalsReviewer(true),
-        sandbox: r.sandboxMode(),
-      }),
-    );
+  'thread/resume': (params: unknown) => {
+    const r = new InputReader('thread/resume', params, ['threadId', ...GOVERNED_KEYS, 'model', 'cwd']);
+    return defined({
+      threadId: r.requiredString('threadId'),
+      model: r.optionalString('model'),
+      cwd: r.optionalString('cwd'),
+      approvalPolicy: r.approvalPolicy(true),
+      approvalsReviewer: r.approvalsReviewer(true),
+      sandbox: r.sandboxMode(),
+    });
   },
 
-  threadResume(input: GovAICodexThreadResumeInput): GovAICodexOutboundRequest<'thread/resume'> {
-    const r = new InputReader('thread/resume', input, ['threadId', ...GOVERNED_KEYS, 'model', 'cwd']);
-    return finish(
-      'thread/resume',
-      defined({
-        threadId: r.requiredString('threadId'),
-        model: r.optionalString('model'),
-        cwd: r.optionalString('cwd'),
-        approvalPolicy: r.approvalPolicy(true),
-        approvalsReviewer: r.approvalsReviewer(true),
-        sandbox: r.sandboxMode(),
-      }),
-    );
+  'thread/fork': (params: unknown) => {
+    const r = new InputReader('thread/fork', params, ['threadId', 'lastTurnId', ...GOVERNED_KEYS, 'model', 'cwd']);
+    return defined({
+      threadId: r.requiredString('threadId'),
+      lastTurnId: r.requiredString('lastTurnId', 'fork_requires_last_turn_id'),
+      model: r.optionalString('model'),
+      cwd: r.optionalString('cwd'),
+      approvalPolicy: r.approvalPolicy(true),
+      approvalsReviewer: r.approvalsReviewer(true),
+      sandbox: r.sandboxMode(),
+    });
   },
 
-  threadFork(input: GovAICodexThreadForkInput): GovAICodexOutboundRequest<'thread/fork'> {
-    const r = new InputReader('thread/fork', input, ['threadId', 'lastTurnId', ...GOVERNED_KEYS, 'model', 'cwd']);
-    return finish(
-      'thread/fork',
-      defined({
-        threadId: r.requiredString('threadId'),
-        lastTurnId: r.requiredString('lastTurnId', 'fork_requires_last_turn_id'),
-        model: r.optionalString('model'),
-        cwd: r.optionalString('cwd'),
-        approvalPolicy: r.approvalPolicy(true),
-        approvalsReviewer: r.approvalsReviewer(true),
-        sandbox: r.sandboxMode(),
-      }),
-    );
+  'thread/read': (params: unknown) => {
+    const r = new InputReader('thread/read', params, ['threadId', 'includeTurns']);
+    return defined({ threadId: r.requiredString('threadId'), includeTurns: r.optionalBoolean('includeTurns') });
   },
 
-  threadRead(input: GovAICodexThreadReadInput): GovAICodexOutboundRequest<'thread/read'> {
-    const r = new InputReader('thread/read', input, ['threadId', 'includeTurns']);
-    return finish(
-      'thread/read',
-      defined({ threadId: r.requiredString('threadId'), includeTurns: r.optionalBoolean('includeTurns') }),
-    );
+  'thread/turns/list': (params: unknown) => {
+    const r = new InputReader('thread/turns/list', params, ['threadId', 'cursor', 'limit', 'sortDirection', 'itemsView']);
+    return defined({
+      threadId: r.requiredString('threadId'),
+      cursor: r.optionalString('cursor'),
+      limit: r.optionalPositiveInt('limit'),
+      sortDirection: r.optionalLiteral('sortDirection', CODEX_SORT_DIRECTIONS),
+      itemsView: r.optionalLiteral('itemsView', CODEX_TURN_ITEMS_VIEWS),
+    });
   },
 
-  threadTurnsList(input: GovAICodexThreadTurnsListInput): GovAICodexOutboundRequest<'thread/turns/list'> {
-    const r = new InputReader('thread/turns/list', input, ['threadId', 'cursor', 'limit', 'sortDirection', 'itemsView']);
-    return finish(
-      'thread/turns/list',
-      defined({
-        threadId: r.requiredString('threadId'),
-        cursor: r.optionalString('cursor'),
-        limit: r.optionalPositiveInt('limit'),
-        sortDirection: r.optionalLiteral('sortDirection', CODEX_SORT_DIRECTIONS),
-        itemsView: r.optionalLiteral('itemsView', CODEX_TURN_ITEMS_VIEWS),
-      }),
-    );
+  'thread/items/list': (params: unknown) => {
+    const r = new InputReader('thread/items/list', params, ['threadId', 'turnId', 'cursor', 'limit', 'sortDirection']);
+    return defined({
+      threadId: r.requiredString('threadId'),
+      turnId: r.optionalString('turnId'),
+      cursor: r.optionalString('cursor'),
+      limit: r.optionalPositiveInt('limit'),
+      sortDirection: r.optionalLiteral('sortDirection', CODEX_SORT_DIRECTIONS),
+    });
   },
 
-  threadItemsList(input: GovAICodexThreadItemsListInput): GovAICodexOutboundRequest<'thread/items/list'> {
-    const r = new InputReader('thread/items/list', input, ['threadId', 'turnId', 'cursor', 'limit', 'sortDirection']);
-    return finish(
-      'thread/items/list',
-      defined({
-        threadId: r.requiredString('threadId'),
-        turnId: r.optionalString('turnId'),
-        cursor: r.optionalString('cursor'),
-        limit: r.optionalPositiveInt('limit'),
-        sortDirection: r.optionalLiteral('sortDirection', CODEX_SORT_DIRECTIONS),
-      }),
-    );
-  },
-
-  turnStart(input: GovAICodexTurnStartInput): GovAICodexOutboundRequest<'turn/start'> {
-    const r = new InputReader('turn/start', input, [
+  'turn/start': (params: unknown) => {
+    const r = new InputReader('turn/start', params, [
       'threadId',
       'input',
       'clientUserMessageId',
@@ -462,51 +503,147 @@ export const GovAICodexSafeRequestBuilder = Object.freeze({
       'approvalsReviewer',
       'sandboxPolicy',
     ]);
-    return finish(
-      'turn/start',
-      defined({
-        threadId: r.requiredString('threadId'),
-        clientUserMessageId: r.optionalString('clientUserMessageId'),
-        input: r.userInputs(),
-        cwd: r.optionalString('cwd'),
-        approvalPolicy: r.approvalPolicy(false),
-        approvalsReviewer: r.approvalsReviewer(false),
-        sandboxPolicy: r.sandboxPolicy(),
-        model: r.optionalString('model'),
-      }),
-    );
+    return defined({
+      threadId: r.requiredString('threadId'),
+      clientUserMessageId: r.optionalString('clientUserMessageId'),
+      input: r.userInputs(),
+      cwd: r.optionalString('cwd'),
+      approvalPolicy: r.approvalPolicy(false),
+      approvalsReviewer: r.approvalsReviewer(false),
+      sandboxPolicy: r.sandboxPolicy(),
+      model: r.optionalString('model'),
+    });
+  },
+
+  'turn/steer': (params: unknown) => {
+    const r = new InputReader('turn/steer', params, ['threadId', 'input', 'expectedTurnId', 'clientUserMessageId']);
+    return defined({
+      threadId: r.requiredString('threadId'),
+      clientUserMessageId: r.optionalString('clientUserMessageId'),
+      input: r.userInputs(),
+      expectedTurnId: r.requiredString('expectedTurnId', 'steer_requires_expected_turn_id'),
+    });
+  },
+
+  'turn/interrupt': (params: unknown) => {
+    const r = new InputReader('turn/interrupt', params, ['threadId', 'turnId']);
+    return { threadId: r.requiredString('threadId'), turnId: r.requiredString('turnId') };
+  },
+
+  'thread/archive': (params: unknown) => {
+    const r = new InputReader('thread/archive', params, ['threadId']);
+    return { threadId: r.requiredString('threadId') };
+  },
+
+  'thread/delete': (params: unknown) => {
+    const r = new InputReader('thread/delete', params, ['threadId']);
+    return { threadId: r.requiredString('threadId') };
+  },
+
+  'thread/unsubscribe': (params: unknown) => {
+    const r = new InputReader('thread/unsubscribe', params, ['threadId']);
+    return { threadId: r.requiredString('threadId') };
+  },
+} satisfies { readonly [M in CodexCoveredClientMethod]: (params: unknown) => CodexClientParams<M> };
+
+function ruleOf<M extends CodexCoveredClientMethod>(method: M): (params: unknown) => CodexClientParams<M> {
+  return GOVAI_CODEX_OUTBOUND_POLICY[method] as (params: unknown) => CodexClientParams<M>;
+}
+
+/**
+ * THE GovAI outbound policy primitive — the only place it is decided, applied unconditionally by
+ * `CodexJsonRpcClient.request()` to every request, whatever the client instance.
+ *   · total over the 13 covered methods; any other method is refused (`method_not_covered`);
+ *   · the experimental lockout (categories (1)/(2), `experimentalApi`) runs INSIDE it first, as defense in depth,
+ *     and again on the reconstruction;
+ *   · then the method's exact-key ALLOWLIST: any other key is `unexpected_input_key`; a non-record is a violation;
+ *     `null` is never accepted for a params field (the nullable `placeholder` of a text element is the single,
+ *     explicit exception); an own key holding `undefined` counts as absent;
+ *   · category (3) values, the governance fields of thread/start|resume|fork, `lastTurnId` on fork and
+ *     `expectedTurnId` on steer are required as before; turn/start may omit governance overrides, never widen them;
+ *   · returns OWNED params: each source property read once, fresh containers in generated key order,
+ *     deep-frozen, no caller object reachable. Idempotent: enforce(m, enforce(m, x)) deep-equals enforce(m, x)
+ *     and serializes byte-identically.
+ */
+export function enforceGovAICodexOutboundPolicy<M extends CodexCoveredClientMethod>(
+  method: M,
+  params: unknown,
+): CodexClientParams<M> {
+  const source = snapshotOwn(params);
+  assertOutboundRequestAllowed(method, source);
+  if (!isCoveredClientMethod(method)) throw new GovAICodexPolicyViolation('method_not_covered', method, '<method>');
+  const owned = ruleOf(method)(source);
+  assertOutboundRequestAllowed(method, owned);
+  return deepFreeze(owned);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Safe request builder — a typed façade over the primitive
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * The method's rule runs first, so a typed caller keeps seeing GovAI policy violations for its input (a category
+ * (1) key is `unexpected_input_key`, `granular` is `approval_policy_not_allowed`); its reconstruction then goes
+ * through the primitive (lockout, the same rule — idempotent — and the deep freeze).
+ */
+function finish<M extends CodexCoveredClientMethod>(method: M, input: unknown): GovAICodexOutboundRequest<M> {
+  return Object.freeze({ method, params: enforceGovAICodexOutboundPolicy(method, ruleOf(method)(input)) });
+}
+
+export const GovAICodexSafeRequestBuilder = Object.freeze({
+  /** §0.1 FROZEN initialize request: `capabilities` always sent, both flags explicitly false. */
+  initialize(): GovAICodexOutboundRequest<'initialize'> {
+    return finish('initialize', {
+      clientInfo: { ...GOVAI_CODEX_CLIENT_INFO },
+      capabilities: { ...GOVAI_CODEX_INITIALIZE_CAPABILITIES },
+    });
+  },
+
+  threadStart(input: GovAICodexThreadStartInput): GovAICodexOutboundRequest<'thread/start'> {
+    return finish('thread/start', input);
+  },
+
+  threadResume(input: GovAICodexThreadResumeInput): GovAICodexOutboundRequest<'thread/resume'> {
+    return finish('thread/resume', input);
+  },
+
+  threadFork(input: GovAICodexThreadForkInput): GovAICodexOutboundRequest<'thread/fork'> {
+    return finish('thread/fork', input);
+  },
+
+  threadRead(input: GovAICodexThreadReadInput): GovAICodexOutboundRequest<'thread/read'> {
+    return finish('thread/read', input);
+  },
+
+  threadTurnsList(input: GovAICodexThreadTurnsListInput): GovAICodexOutboundRequest<'thread/turns/list'> {
+    return finish('thread/turns/list', input);
+  },
+
+  threadItemsList(input: GovAICodexThreadItemsListInput): GovAICodexOutboundRequest<'thread/items/list'> {
+    return finish('thread/items/list', input);
+  },
+
+  turnStart(input: GovAICodexTurnStartInput): GovAICodexOutboundRequest<'turn/start'> {
+    return finish('turn/start', input);
   },
 
   turnSteer(input: GovAICodexTurnSteerInput): GovAICodexOutboundRequest<'turn/steer'> {
-    const r = new InputReader('turn/steer', input, ['threadId', 'input', 'expectedTurnId', 'clientUserMessageId']);
-    return finish(
-      'turn/steer',
-      defined({
-        threadId: r.requiredString('threadId'),
-        clientUserMessageId: r.optionalString('clientUserMessageId'),
-        input: r.userInputs(),
-        expectedTurnId: r.requiredString('expectedTurnId', 'steer_requires_expected_turn_id'),
-      }),
-    );
+    return finish('turn/steer', input);
   },
 
   turnInterrupt(input: GovAICodexTurnInterruptInput): GovAICodexOutboundRequest<'turn/interrupt'> {
-    const r = new InputReader('turn/interrupt', input, ['threadId', 'turnId']);
-    return finish('turn/interrupt', { threadId: r.requiredString('threadId'), turnId: r.requiredString('turnId') });
+    return finish('turn/interrupt', input);
   },
 
   threadArchive(input: GovAICodexThreadIdInput): GovAICodexOutboundRequest<'thread/archive'> {
-    const r = new InputReader('thread/archive', input, ['threadId']);
-    return finish('thread/archive', { threadId: r.requiredString('threadId') });
+    return finish('thread/archive', input);
   },
 
   threadDelete(input: GovAICodexThreadIdInput): GovAICodexOutboundRequest<'thread/delete'> {
-    const r = new InputReader('thread/delete', input, ['threadId']);
-    return finish('thread/delete', { threadId: r.requiredString('threadId') });
+    return finish('thread/delete', input);
   },
 
   threadUnsubscribe(input: GovAICodexThreadIdInput): GovAICodexOutboundRequest<'thread/unsubscribe'> {
-    const r = new InputReader('thread/unsubscribe', input, ['threadId']);
-    return finish('thread/unsubscribe', { threadId: r.requiredString('threadId') });
+    return finish('thread/unsubscribe', input);
   },
 });

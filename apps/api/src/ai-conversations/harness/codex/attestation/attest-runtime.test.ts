@@ -5,12 +5,20 @@
 import { symlinkSync, rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
-import { makeDisposableDirs, writeFakeAppServer, type FakeAppServerBehaviour } from '../client/fake-app-server.fixture.js';
+import {
+  makeDisposableDirs,
+  writeFakeAppServer,
+  writeStdinClosingFakeAppServer,
+  type FakeAppServerBehaviour,
+} from '../client/fake-app-server.fixture.js';
 import { CodexClientGateError } from '../client/errors.js';
-import { systemPsRunner } from '../client/process-handle.js';
+import { CodexJsonRpcClient } from '../client/json-rpc-client.js';
+import { systemPsRunner, type CodexProcessHandle, type PsRunner } from '../client/process-handle.js';
+import { CodexExperimentalLockoutViolation } from '../guard/experimental-lockout.js';
 import { CODEX_PIN, CODEX_PIN_SCHEMA } from '../pin/PIN.js';
+import { GovAICodexPolicyViolation } from '../protocol/govai-policy.js';
 import {
   attestRuntime,
   CODEX_BUILD_CLIENT_PROVENANCE,
@@ -21,6 +29,7 @@ import {
   sha256File,
   type AttestRuntimeInput,
   type CodexAttestationDeps,
+  type RuntimeAttestationFailureReason,
 } from './attest-runtime.js';
 
 const dirs = makeDisposableDirs('govai-cont-p5a-attest-');
@@ -31,10 +40,33 @@ afterAll(async () => {
   rmSync(dirs.root, { recursive: true, force: true });
 });
 
+// LEAK LAW: every test proves in afterEach that the processes IT spawned are gone, and kills its own group if not.
+const ownedByThisTest: { pid: number; handle: CodexProcessHandle | undefined }[] = [];
+function own(pid: number | undefined, handle?: CodexProcessHandle): void {
+  if (pid !== undefined) ownedByThisTest.push({ pid, handle });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  const alive = ownedByThisTest.filter(({ pid, handle }) => (handle === undefined || handle.exited === null) && !processGone(pid));
+  for (const { pid } of alive) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+  ownedByThisTest.length = 0;
+  expect(alive.map((o) => o.pid), 'LEAK LAW: a process spawned by this test is still alive').toEqual([]);
+});
+
 let serial = 0;
-async function fake(behaviour: FakeAppServerBehaviour = {}): Promise<{ path: string; deps: CodexAttestationDeps; input: AttestRuntimeInput }> {
+async function fake(
+  behaviour: FakeAppServerBehaviour = {},
+  write: (dir: string, fileName: string) => string = (dir, fileName) => writeFakeAppServer(dir, fileName, behaviour),
+): Promise<{ path: string; deps: CodexAttestationDeps; input: AttestRuntimeInput }> {
   serial += 1;
-  const path = writeFakeAppServer(dirs.root, `fake-codex-app-server-${serial}`, behaviour);
+  const path = write(dirs.root, `fake-codex-app-server-${serial}`);
   const sha = await sha256File(path);
   const deps: CodexAttestationDeps = {
     pin: { executableSha256: sha, release: '0.154.0', executableMemberName: basename(path) },
@@ -55,6 +87,7 @@ async function fake(behaviour: FakeAppServerBehaviour = {}): Promise<{ path: str
 
 async function failure(input: AttestRuntimeInput, deps: CodexAttestationDeps): Promise<RuntimeAttestationFailed> {
   const error = await attestRuntime(input, deps).catch((e: unknown) => e);
+  if (error instanceof RuntimeAttestationFailed) own(error.evidence.process?.pid);
   expect(error).toBeInstanceOf(RuntimeAttestationFailed);
   return error as RuntimeAttestationFailed;
 }
@@ -72,6 +105,7 @@ describe('attestRuntime — happy path on a fake', () => {
   it('records the evidence, sends the frozen initialize bytes and only then unlocks thread methods', async () => {
     const { input, deps } = await fake();
     const attested = await attestRuntime(input, deps);
+    own(attested.handle.pid, attested.handle);
     cleanups.push(() => attested.handle.terminate({ graceMs: 2_000 }));
     const e = attested.evidence;
     expect(e.versionCommand).toEqual({ argv: [input.binaryPath, '--version'], stdout: 'codex-app-server 0.154.0\n', exitCode: 0 });
@@ -176,6 +210,139 @@ describe('attestRuntime — every mismatch fails closed with a typed reason', ()
         expect(f.evidence.initializeRequestLine).toBe(frozenInitializeRequestLine(1));
       }
     }
+  });
+});
+
+/** `ps` that answers the spawn's initial inventory for real, then is unavailable for every later call. */
+function inventoryUnavailableAfterSpawn(): PsRunner {
+  let calls = 0;
+  return () => {
+    calls += 1;
+    return calls === 1 ? systemPsRunner() : Promise.reject(new Error('ps unavailable (test)'));
+  };
+}
+
+const HANDSHAKE_FAILURES: readonly (readonly [
+  string,
+  FakeAppServerBehaviour | 'stdin-closing-fake',
+  RuntimeAttestationFailureReason,
+  Partial<AttestRuntimeInput>,
+])[] = [
+  ['result null', { initializeResultJson: 'null' }, 'initialize_response_invalid', {}],
+  ['result primitive', { initializeResultJson: '42' }, 'initialize_response_invalid', {}],
+  ['result array', { initializeResultJson: '[]' }, 'initialize_response_invalid', {}],
+  [
+    'malformed result object',
+    { initializeResultJson: '{"userAgent":1,"codexHome":"/x","platformFamily":"unix","platformOs":"darwin"}' },
+    'initialize_response_invalid',
+    {},
+  ],
+  [
+    'result missing a field',
+    { initializeResultJson: '{"userAgent":"u","platformFamily":"unix","platformOs":"darwin"}' },
+    'initialize_response_invalid',
+    {},
+  ],
+  ['initialize error object', { initializeError: true }, 'initialize_failed', {}],
+  ['initialize timeout', { initializeNoAnswer: true }, 'initialize_failed', { initializeTimeoutMs: 300 }],
+  ['channel closed before the response', { exitOnInitialize: true }, 'initialize_failed', {}],
+  ['channel closed after the response', 'stdin-closing-fake', 'initialized_notification_failed', {}],
+];
+
+describe('R5 — one post-spawn safety region: typed reason, client closed, child gone, cleanup outcome present', () => {
+  for (const inventory of ['available', 'unavailable after spawn'] as const) {
+    for (const [label, spec, reason, extra] of HANDSHAKE_FAILURES) {
+      it(`${label} → ${reason} (inventory ${inventory})`, async () => {
+        const { input, deps } = await (spec === 'stdin-closing-fake' ? fake({}, writeStdinClosingFakeAppServer) : fake(spec));
+        const closeSpy = vi.spyOn(CodexJsonRpcClient.prototype, 'close');
+        const ps = inventory === 'available' ? deps.ps : inventoryUnavailableAfterSpawn();
+        const f = await failure({ ...input, ...extra }, { ...deps, ps });
+        expect(f.reason).toBe(reason);
+        expect(closeSpy).toHaveBeenCalled();
+        expect(f.cleanup?.status).toBe('terminated');
+        const record = f.cleanup?.status === 'terminated' ? f.cleanup.record : undefined;
+        expect(record?.directChildReaped).toBe(true);
+        expect(processGone(f.evidence.process!.pid)).toBe(true);
+        if (inventory === 'unavailable after spawn') expect(record?.inGroupResidue).toBe('unknown_inventory_unavailable');
+      });
+    }
+
+    it(`an injected unexpected throw inside the region → handshake_internal_error (inventory ${inventory})`, async () => {
+      const { input, deps } = await fake();
+      const closeSpy = vi.spyOn(CodexJsonRpcClient.prototype, 'close');
+      const injected = { ...input };
+      Object.defineProperty(injected, 'initializeTimeoutMs', {
+        enumerable: true,
+        get(): number {
+          throw new Error('injected inside the handshake region');
+        },
+      });
+      const ps = inventory === 'available' ? deps.ps : inventoryUnavailableAfterSpawn();
+      const f = await failure(injected, { ...deps, ps });
+      expect(f.reason).toBe('handshake_internal_error');
+      expect(f.cause).toBeInstanceOf(Error);
+      expect(closeSpy).toHaveBeenCalled();
+      expect(f.cleanup?.status).toBe('terminated');
+      expect(processGone(f.evidence.process!.pid)).toBe(true);
+    });
+  }
+
+  it('a post-OS-spawn spawn() failure is spawn_failed WITH the cleanup outcome', async () => {
+    const { input, deps } = await fake();
+    const f = await failure(input, { ...deps, ps: () => Promise.reject(new Error('ps unavailable (test)')) });
+    expect(f.reason).toBe('spawn_failed');
+    expect(f.cleanup?.status).toBe('terminated');
+    const record = f.cleanup?.status === 'terminated' ? f.cleanup.record : undefined;
+    own(record?.pid);
+    expect(record?.directChildReaped).toBe(true);
+    expect(processGone(record!.pid)).toBe(true);
+    expect(f.evidence.process).toBeUndefined();
+  });
+});
+
+describe('R1 — a genuinely attested client enforces the GovAI policy at the send boundary', () => {
+  it('refuses category (3), missing governance, fork/steer boundaries, allowlisted-out keys and non-records — zero bytes reach the child', async () => {
+    const { input, deps } = await fake({ reportLines: true });
+    const attested = await attestRuntime(input, deps);
+    own(attested.handle.pid, attested.handle);
+    const client = attested.client;
+    const governed = { approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'read-only' };
+    const text = [{ type: 'text', text: 'hello', text_elements: [] }];
+    const policyRefusals: readonly (readonly [string, unknown])[] = [
+      ['thread/start', { ...governed, approvalPolicy: 'never' }],
+      ['thread/start', { ...governed, approvalsReviewer: 'auto_review' }],
+      ['thread/resume', { ...governed, threadId: 't', approvalsReviewer: 'guardian_subagent' }],
+      ['thread/fork', { ...governed, threadId: 't', lastTurnId: 'u', sandbox: 'danger-full-access' }],
+      ['turn/start', { threadId: 't', input: text, sandboxPolicy: { type: 'dangerFullAccess' } }],
+      ['turn/start', { threadId: 't', input: text, sandboxPolicy: { type: 'externalSandbox', networkAccess: 'restricted' } }],
+      ['thread/start', { approvalsReviewer: 'user', sandbox: 'read-only' }],
+      ['thread/fork', { ...governed, threadId: 't' }],
+      ['turn/steer', { threadId: 't', input: text }],
+      ['thread/start', { ...governed, config: { model_provider: 'x' } }],
+      ['thread/start', { ...governed, baseInstructions: 'x' }],
+      ['thread/resume', { ...governed, threadId: 't', developerInstructions: 'x' }],
+      ['turn/start', { threadId: 't', input: text, toolOutput: null }],
+      ['thread/read', 'not-a-record'],
+    ];
+    for (const [method, params] of policyRefusals) {
+      await expect(client.request(method as never, params as never), method).rejects.toBeInstanceOf(GovAICodexPolicyViolation);
+    }
+    await expect(
+      client.request('thread/start', { ...governed, approvalPolicy: { granular: { sandbox_approval: true } } } as never),
+    ).rejects.toBeInstanceOf(CodexExperimentalLockoutViolation);
+    // The next accepted request is id 2: refusals consumed no id; the child saw nothing of them.
+    await expect(client.request('thread/read', { threadId: 't' })).resolves.toEqual({ echo: 'thread/read' });
+    const received = (): string[] => [...attested.handle.stderr.tail.matchAll(/^LINE (.*)$/gm)].map((m) => m[1] ?? '');
+    const until = Date.now() + 5_000;
+    while (!received().some((l) => l.includes('"thread/read"')) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(received().map((l) => JSON.parse(l) as { id?: number; method: string })).toEqual([
+      expect.objectContaining({ id: 1, method: 'initialize' }),
+      { method: 'initialized' },
+      { id: 2, method: 'thread/read', params: { threadId: 't' } },
+    ]);
+    expect((await attested.handle.terminate({ graceMs: 3_000 })).directChildReaped).toBe(true);
   });
 });
 

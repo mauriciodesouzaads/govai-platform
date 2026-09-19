@@ -22,6 +22,14 @@ export type FakeAppServerBehaviour = {
   readonly spawnGroupChild?: boolean;
   /** Print the sorted environment KEYS (never values) on stderr at startup. */
   readonly reportEnvKeys?: boolean;
+  /** Raw JSON text used as the initialize `result` (e.g. `null`, `42`, `[]`, a malformed object). */
+  readonly initializeResultJson?: string;
+  /** Never answer `initialize` (the client's deadline decides). */
+  readonly initializeNoAnswer?: boolean;
+  /** Exit on `initialize` without answering: the channel closes before the response. */
+  readonly exitOnInitialize?: boolean;
+  /** Echo every received line on stderr as `LINE <line>` (proves what did — and did not — reach the child). */
+  readonly reportLines?: boolean;
 };
 
 /** Line the fake prints on stderr once its signal handlers are installed (tests wait for it before signalling). */
@@ -69,16 +77,38 @@ if (B.spawnGroupChild) {
 process.stderr.write('READY\\n');
 const rl = require('readline').createInterface({ input: process.stdin });
 rl.on('line', (line) => {
+  if (B.reportLines) process.stderr.write('LINE ' + line + '\\n');
   let m;
   try { m = JSON.parse(line); } catch (e) { return; }
   if (m.method === 'initialize') {
+    if (B.exitOnInitialize) process.exit(0);
+    if (B.initializeNoAnswer) return;
     if (B.initializeError) return out({ error: { code: -32603, message: 'fake initialize failure' }, id: m.id });
+    if (B.initializeResultJson !== undefined) return process.stdout.write('{"id":' + JSON.stringify(m.id) + ',"result":' + B.initializeResultJson + '}\\n');
     const home = B.codexHomeAnswer === undefined || B.codexHomeAnswer === 'echo' ? process.env.CODEX_HOME : B.codexHomeAnswer;
     return out({ id: m.id, result: { userAgent: 'fake-app-server/0.154.0', codexHome: home, platformFamily: 'unix', platformOs: process.platform } });
   }
   if (m.id !== undefined && typeof m.method === 'string') out({ id: m.id, result: { echo: m.method } });
 });
 setInterval(() => {}, 1 << 30);
+`;
+  const path = join(dir, fileName);
+  writeFileSync(path, script, { mode: 0o755 });
+  return path;
+}
+
+/**
+ * A POSIX-sh fake for ONE scenario: it reads the `initialize` line, CLOSES its stdin (no reader is left), and only
+ * then answers. The channel has therefore already failed when the client writes `initialized` — deterministically,
+ * with no timing race. After answering it stays alive (`sleep`) in its own group until it is signalled.
+ */
+export function writeStdinClosingFakeAppServer(dir: string, fileName: string): string {
+  const script = `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'codex-app-server 0.154.0\\n'; exit 0; fi
+IFS= read -r line
+exec 0<&-
+printf '{"id":1,"result":{"userAgent":"fake-app-server/0.154.0","codexHome":"%s","platformFamily":"unix","platformOs":"fake"}}\\n' "$CODEX_HOME"
+exec /bin/sleep 60
 `;
   const path = join(dir, fileName);
   writeFileSync(path, script, { mode: 0o755 });

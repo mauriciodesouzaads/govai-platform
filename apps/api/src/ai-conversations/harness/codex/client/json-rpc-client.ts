@@ -7,8 +7,15 @@
 // ★ ORDERING LAW. Only `initialize` may be sent on a fresh channel; every thread/turn method is refused
 //   locally (`CodexClientGateError: attestation_required`) until `attestRuntime` has verified the binary,
 //   the version, the frozen initialize bytes and the CODEX_HOME answer and then unlocked the channel.
-// ★ NOTHING UNGATED LEAVES. Every outbound request passes the experimental lockout BEFORE serialization; a
-//   refused request writes zero bytes. Methods outside the covered set are refused as `unknown_method`.
+// ★ NOTHING UNGATED LEAVES. Every outbound request passes the MANDATORY GovAI outbound policy
+//   (`enforceGovAICodexOutboundPolicy`, ../protocol/govai-policy.ts — the experimental lockout included) BEFORE
+//   serialization, and what is serialized is the policy's RETURN VALUE, never the caller's object. The policy is
+//   not an option: no hook can replace or relax it, on any instance, however constructed or unlocked. A refused
+//   request writes zero bytes, consumes no id and registers nothing. Methods outside the covered set are refused
+//   as `unknown_method`.
+// ★ SCOPE OF THAT GUARANTEE. GovAI outbound policy is non-bypassable through CodexJsonRpcClient. It is NOT claimed
+//   to be a security boundary against arbitrary trusted code that already holds the raw process handle inside
+//   the same process (`CodexProcessHandle.stdin` / `.stdout` stay a documented structural seam).
 // ★ BOUNDED. Every request has a deadline clamped to `maxTimeoutMs`; an inbound line longer than
 //   `maxLineChars` is a protocol error that closes the channel (framing can no longer be trusted).
 // ★ INBOUND. Responses correlate by integer id; a response nobody awaits is a protocol error, never a crash.
@@ -19,14 +26,11 @@
 
 import type { Readable, Writable } from 'node:stream';
 
-import {
-  assertOutboundRequestAllowed,
-  classifyInboundNotification,
-  type CodexInboundNotificationVerdict,
-} from '../guard/experimental-lockout.js';
+import { classifyInboundNotification, type CodexInboundNotificationVerdict } from '../guard/experimental-lockout.js';
 import type { RequestId } from '../protocol/generated/RequestId';
 import type { ServerNotificationEnvelope } from '../protocol/generated/ServerNotificationEnvelope';
 import type { JsonValue } from '../protocol/generated/serde_json/JsonValue';
+import { enforceGovAICodexOutboundPolicy } from '../protocol/govai-policy.js';
 import { isGeneratedServerNotificationMethod, isGeneratedServerRequestMethod } from '../protocol/method-names.js';
 import {
   isCoveredClientMethod,
@@ -82,14 +86,17 @@ export interface CodexJsonRpcClientOptions {
   readonly defaultTimeoutMs?: number;
   readonly maxTimeoutMs?: number;
   readonly maxLineChars?: number;
-  /** Outbound gate; defaults to the GovAI experimental lockout. */
-  readonly outboundGuard?: (method: string, params: unknown) => void;
+  /**
+   * Observation only: receives each serialized line (outbound: after the policy accepted it). There is no outbound
+   * gate option — the GovAI outbound policy is mandatory and cannot be replaced.
+   */
   readonly wireTap?: CodexWireTap;
 }
 
 /**
- * Unlock key for the ordering law. Only `attestRuntime` (../attestation/attest-runtime.ts) calls it, after
- * every attestation predicate passed. It is a structural seam, not a security boundary.
+ * Unlock key for the ordering law. The ordinary supported path calls it from `attestRuntime`
+ * (../attestation/attest-runtime.ts), after every attestation predicate passed. It is an exported structural seam,
+ * not a security boundary; the outbound policy applies to every instance whether or not it was unlocked this way.
  */
 export const CODEX_CLIENT_UNLOCK_AFTER_ATTESTATION: unique symbol = Symbol('codex-client-unlock-after-attestation');
 
@@ -108,7 +115,6 @@ export class CodexJsonRpcClient {
   private readonly defaultTimeoutMs: number;
   private readonly maxTimeoutMs: number;
   private readonly maxLineChars: number;
-  private readonly outboundGuard: (method: string, params: unknown) => void;
   private readonly wireTap: CodexWireTap | undefined;
   private readonly pending = new Map<number, Pending>();
   private readonly notificationHandlers = new Set<(n: ServerNotificationEnvelope) => void>();
@@ -121,6 +127,9 @@ export class CodexJsonRpcClient {
   private closedWith: CodexTransportError | CodexProtocolError | null = null;
   private readonly onData = (chunk: string): void => this.ingest(chunk);
   private readonly onEnd = (): void => this.close(new CodexTransportError('stdout_closed'));
+  // A failed write (e.g. EPIPE once the peer closed its end) is a transport failure of this channel, never an
+  // unhandled stream error. The listener stays attached after `close()`.
+  private readonly onOutputError = (): void => this.close(new CodexTransportError('write_failed'));
 
   constructor(
     private readonly io: { readonly input: Readable; readonly output: Writable },
@@ -129,12 +138,12 @@ export class CodexJsonRpcClient {
     this.maxTimeoutMs = options.maxTimeoutMs ?? CODEX_CLIENT_MAX_TIMEOUT_MS;
     this.defaultTimeoutMs = Math.min(options.defaultTimeoutMs ?? CODEX_CLIENT_DEFAULT_TIMEOUT_MS, this.maxTimeoutMs);
     this.maxLineChars = options.maxLineChars ?? CODEX_CLIENT_MAX_LINE_CHARS;
-    this.outboundGuard = options.outboundGuard ?? assertOutboundRequestAllowed;
     this.wireTap = options.wireTap;
     io.input.setEncoding('utf8');
     io.input.on('data', this.onData);
     io.input.on('end', this.onEnd);
     io.input.on('close', this.onEnd);
+    io.output.on('error', this.onOutputError);
   }
 
   /** Non-null once the channel failed or was closed; every later call rejects with it. */
@@ -179,15 +188,19 @@ export class CodexJsonRpcClient {
     } else if (!this.unlocked) {
       return Promise.reject(new CodexClientGateError('attestation_required', method));
     }
+    // The mandatory policy runs BEFORE any state changes: a refusal writes nothing, taps nothing, consumes no id,
+    // registers no pending entry and leaves `initializeSent` as it was.
+    let owned: CodexClientParams<M>;
     try {
-      this.outboundGuard(method, params);
+      owned = enforceGovAICodexOutboundPolicy(method, params);
     } catch (error) {
       return Promise.reject(error);
     }
     if (method === 'initialize') this.initializeSent = true;
 
     const id = this.nextId++;
-    const line = JSON.stringify(params === undefined ? { id, method } : { id, method, params });
+    // The policy's RETURN VALUE is serialized — never the caller's object.
+    const line = JSON.stringify({ id, method, params: owned });
     const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? this.defaultTimeoutMs, this.maxTimeoutMs));
     return new Promise<CodexCoveredClientResponses[M]>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -205,10 +218,16 @@ export class CodexJsonRpcClient {
     });
   }
 
-  /** The only client notification of the pinned protocol (`ClientNotification = { method: "initialized" }`). */
-  notifyInitialized(): void {
-    if (this.closedWith !== null) throw this.closedWith;
-    this.writeLine(JSON.stringify({ method: 'initialized' }));
+  /**
+   * The only client notification of the pinned protocol (`ClientNotification = { method: "initialized" }`).
+   * Resolves once the line was handed to the channel; rejects with the channel's error when it is closed or the
+   * write fails — "sent" is never assumed.
+   */
+  notifyInitialized(): Promise<void> {
+    if (this.closedWith !== null) return Promise.reject(this.closedWith);
+    return new Promise<void>((resolve, reject) => {
+      this.writeLine(JSON.stringify({ method: 'initialized' }), (error) => (error === null ? resolve() : reject(error)));
+    });
   }
 
   /** Stop reading, reject everything pending with `error` (default `client_closed`). Idempotent. */
@@ -236,10 +255,11 @@ export class CodexJsonRpcClient {
     this.emit({ type: 'protocol_error', error: new CodexProtocolError(failure) });
   }
 
-  private writeLine(line: string): void {
+  private writeLine(line: string, done?: (error: CodexTransportError | CodexProtocolError | null) => void): void {
     this.wireTap?.('out', line);
     this.io.output.write(`${line}\n`, (error) => {
       if (error) this.close(new CodexTransportError('write_failed'));
+      done?.(error ? (this.closedWith ?? new CodexTransportError('write_failed')) : null);
     });
   }
 

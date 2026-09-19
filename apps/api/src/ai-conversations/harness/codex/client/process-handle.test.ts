@@ -5,7 +5,7 @@
 
 import { rmSync } from 'node:fs';
 
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   FAKE_APP_SERVER_READY,
@@ -16,10 +16,14 @@ import {
 import {
   CODEX_CHILD_ENV_KEYS,
   CODEX_CHILD_PATH,
+  CODEX_INVENTORY_BOUND_MS,
+  CodexProcessCleanupFailed,
   CodexProcessHandle,
   CodexProcessSpawnRefused,
   parsePsInventory,
+  systemPsRunner,
   type CodexProcessSpawnInput,
+  type PsRunner,
 } from './process-handle.js';
 
 const dirs = makeDisposableDirs('govai-cont-p5a-handle-');
@@ -30,14 +34,64 @@ afterAll(async () => {
   rmSync(dirs.root, { recursive: true, force: true });
 });
 
+function processGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+// LEAK LAW: every test proves in afterEach that the processes IT spawned are gone, and kills its own group if not.
+const ownedByThisTest: { pid: number; handle: CodexProcessHandle | undefined }[] = [];
+function own(pid: number, handle?: CodexProcessHandle): void {
+  ownedByThisTest.push({ pid, handle });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  const alive = ownedByThisTest.filter(({ pid, handle }) => (handle === undefined || handle.exited === null) && !processGone(pid));
+  for (const { pid } of alive) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // not a group leader (or already gone): the pid itself
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
+  }
+  ownedByThisTest.length = 0;
+  expect(alive.map((o) => o.pid), 'LEAK LAW: a process spawned by this test is still alive').toEqual([]);
+});
+
 function input(binaryPath: string): CodexProcessSpawnInput {
   return { binaryPath, codexHome: dirs.codexHome, homeDir: dirs.home, workDir: dirs.work };
 }
 
-async function spawnTracked(binaryPath: string): Promise<CodexProcessHandle> {
-  const h = await CodexProcessHandle.spawn(input(binaryPath));
+async function spawnTracked(binaryPath: string, ps?: PsRunner): Promise<CodexProcessHandle> {
+  const h = await CodexProcessHandle.spawn(input(binaryPath), ps);
   handles.push(h);
+  own(h.pid, h);
   return h;
+}
+
+/** A `ps` runner the test switches between the real one, failing and never settling. */
+function switchablePs(): { readonly ps: PsRunner; set(mode: 'real' | 'reject' | 'hang'): void } {
+  let mode: 'real' | 'reject' | 'hang' = 'real';
+  return {
+    ps: () => {
+      if (mode === 'reject') return Promise.reject(new Error('ps unavailable (test)'));
+      if (mode === 'hang') return new Promise<string>(() => undefined);
+      return systemPsRunner();
+    },
+    set(next) {
+      mode = next;
+    },
+  };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
@@ -115,7 +169,7 @@ describe('foundation controls', () => {
       directChildReaped: true,
       exit: { code: 0, signal: null },
     });
-    expect(record.inGroupMembersBeforeTermination.map((m) => m.pid).sort()).toEqual([h.pid, grandchild].sort());
+    expect(record.inGroupMembersBeforeTermination?.map((m) => m.pid).sort()).toEqual([h.pid, grandchild].sort());
     expect(h.stderr.tail).toContain('SIGTERM_RECEIVED');
     // Recorded, not claimed: the foundation reports what is left in the group; here the group drained.
     expect(record.inGroupMembersAfterTermination).toEqual([]);
@@ -141,6 +195,128 @@ describe('foundation controls', () => {
     const h = await spawnTracked(fake);
     await h.terminate({ graceMs: 3_000 });
     const again = await h.terminate({ graceMs: 100 });
+    expect(again).toMatchObject({ sigtermSentToGroup: false, sigkillSentToGroup: false, directChildReaped: true });
+  });
+});
+
+describe('R3 — ownership from the spawn event and the two-state signalling law', () => {
+  it('initial inventory fails after a real detached spawn: the child is gone, the refusal is typed with its cleanup', async () => {
+    const fake = writeFakeAppServer(dirs.root, 'fake-app-server-ps-down');
+    const sw = switchablePs();
+    sw.set('reject');
+    const error = await CodexProcessHandle.spawn(input(fake), sw.ps).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CodexProcessSpawnRefused);
+    const refused = error as CodexProcessSpawnRefused;
+    if (refused.cleanup?.status === 'terminated') own(refused.cleanup.record.pid);
+    if (refused.cleanup?.status === 'failed') own(refused.cleanup.error.pid);
+    expect(refused.reason).toBe('inventory_unavailable');
+    expect(refused.cleanup?.status).toBe('terminated');
+    const record = refused.cleanup?.status === 'terminated' ? refused.cleanup.record : undefined;
+    expect(record).toMatchObject({
+      sigtermSentToGroup: true,
+      directChildReaped: true,
+      inGroupMembersBeforeTermination: null,
+      inGroupResidue: 'unknown_inventory_unavailable',
+    });
+    expect(record?.diagnostics.every((d) => d.status === 'unavailable')).toBe(true);
+    expect(processGone(record!.pid)).toBe(true);
+  });
+
+  it('child alive + inventory failing on every call: SIGTERM is still sent and the child reaped', async () => {
+    const sw = switchablePs();
+    const h = await spawnTracked(writeFakeAppServer(dirs.root, 'fake-app-server-ps-fails'), sw.ps);
+    await waitFor(() => h.stderr.tail.includes(FAKE_APP_SERVER_READY));
+    sw.set('reject');
+    const record = await h.terminate({ graceMs: 3_000 });
+    expect(record).toMatchObject({
+      sigtermSentToGroup: true,
+      sigkillSentToGroup: false,
+      directChildReaped: true,
+      inGroupMembersBeforeTermination: null,
+      inGroupMembersAfterTermination: null,
+      inGroupResidue: 'unknown_inventory_unavailable',
+    });
+    expect(record.diagnostics.length).toBeGreaterThan(0);
+    expect(record.diagnostics.every((d) => d.status === 'unavailable' && d.reason === 'ps_failed')).toBe(true);
+    expect(h.stderr.tail).toContain('SIGTERM_RECEIVED');
+  });
+
+  it('child alive + inventory never settling: the signal is sent within the diagnostic bound', async () => {
+    const sw = switchablePs();
+    const h = await spawnTracked(writeFakeAppServer(dirs.root, 'fake-app-server-ps-hangs'), sw.ps);
+    await waitFor(() => h.stderr.tail.includes(FAKE_APP_SERVER_READY));
+    sw.set('hang');
+    const realKill = process.kill.bind(process);
+    let signalledAt: number | null = null;
+    vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      if (pid === -h.pgid && signalledAt === null) signalledAt = Date.now();
+      return realKill(pid, signal);
+    });
+    const started = Date.now();
+    const record = await h.terminate({ graceMs: 3_000 });
+    expect(signalledAt).not.toBeNull();
+    expect(signalledAt! - started).toBeLessThanOrEqual(CODEX_INVENTORY_BOUND_MS + 500);
+    expect(record.diagnostics[0]).toEqual({ status: 'unavailable', reason: 'ps_timeout' });
+    expect(record).toMatchObject({ sigtermSentToGroup: true, directChildReaped: true });
+  });
+
+  it('child exit observed + inventory unavailable: NO group signal, residue recorded as unknown', async () => {
+    const sw = switchablePs();
+    const h = await spawnTracked(writeFakeAppServer(dirs.root, 'fake-app-server-exited-blind'), sw.ps);
+    await waitFor(() => h.stderr.tail.includes(FAKE_APP_SERVER_READY));
+    process.kill(h.pid, 'SIGKILL'); // the direct child exits (pid-targeted, not a group signal)
+    await waitFor(() => h.exited !== null);
+    sw.set('reject');
+    const killSpy = vi.spyOn(process, 'kill');
+    const record = await h.terminate({ graceMs: 500 });
+    expect(killSpy.mock.calls.filter(([pid]) => pid === -h.pgid)).toEqual([]);
+    expect(record).toMatchObject({
+      sigtermSentToGroup: false,
+      sigkillSentToGroup: false,
+      directChildReaped: true,
+      inGroupResidue: 'unknown_inventory_unavailable',
+    });
+  });
+
+  it('child exit observed + inventory listing a member: the group IS signalled (current positive evidence)', async () => {
+    const h = await spawnTracked(writeFakeAppServer(dirs.root, 'fake-app-server-residue', { spawnGroupChild: true }));
+    await waitFor(() => h.stderr.tail.includes('GROUP_CHILD='));
+    const grandchild = Number(/GROUP_CHILD=(\d+)/.exec(h.stderr.tail)?.[1]);
+    own(grandchild);
+    process.kill(h.pid, 'SIGKILL'); // the leader exits; its group child stays in the managed group
+    await waitFor(() => h.exited !== null);
+    const killSpy = vi.spyOn(process, 'kill');
+    const record = await h.terminate({ graceMs: 3_000 });
+    expect(killSpy).toHaveBeenCalledWith(-h.pgid, 'SIGTERM');
+    expect(record.sigtermSentToGroup).toBe(true);
+    expect(record.inGroupMembersBeforeTermination?.map((m) => m.pid)).toEqual([grandchild]);
+    await waitFor(() => processGone(grandchild));
+  });
+
+  it('never reaped: terminate() rejects with a typed CodexProcessCleanupFailed, never a plain Error', async () => {
+    const h = await spawnTracked(writeFakeAppServer(dirs.root, 'fake-app-server-unreaped'));
+    await waitFor(() => h.stderr.tail.includes(FAKE_APP_SERVER_READY));
+    vi.spyOn(process, 'kill').mockImplementation(() => true); // signals never reach the group
+    const error = await h.terminate({ graceMs: 200, killWaitMs: 300 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CodexProcessCleanupFailed);
+    expect(error).toMatchObject({
+      code: 'codex_process_cleanup_failed',
+      failure: 'not_reaped_after_sigkill',
+      pid: h.pid,
+      progress: { sigtermSentToGroup: true, sigkillSentToGroup: true },
+    });
+    vi.restoreAllMocks();
+    expect((await h.terminate({ graceMs: 3_000 })).directChildReaped).toBe(true);
+  });
+
+  it('concurrent terminate() calls share one in-flight termination; a later call is a fresh, idempotent pass', async () => {
+    const h = await spawnTracked(writeFakeAppServer(dirs.root, 'fake-app-server-concurrent'));
+    await waitFor(() => h.stderr.tail.includes(FAKE_APP_SERVER_READY));
+    const [a, b] = await Promise.all([h.terminate({ graceMs: 3_000 }), h.terminate({ graceMs: 3_000 })]);
+    expect(a).toBe(b);
+    expect(a).toMatchObject({ sigtermSentToGroup: true, directChildReaped: true });
+    const again = await h.terminate({ graceMs: 100 });
+    expect(again).not.toBe(a);
     expect(again).toMatchObject({ sigtermSentToGroup: false, sigkillSentToGroup: false, directChildReaped: true });
   });
 });

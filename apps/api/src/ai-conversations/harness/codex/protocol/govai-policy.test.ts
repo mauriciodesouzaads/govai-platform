@@ -9,6 +9,7 @@ import { assertOutboundRequestAllowed } from '../guard/experimental-lockout.js';
 import { CODEX_EXPERIMENTAL_INVENTORY } from './experimental-inventory.js';
 import type { UserInput } from './generated/v2/UserInput';
 import {
+  enforceGovAICodexOutboundPolicy,
   GOVAI_CODEX_ALLOWED_APPROVAL_POLICIES,
   GOVAI_CODEX_ALLOWED_APPROVALS_REVIEWERS,
   GOVAI_CODEX_ALLOWED_SANDBOX_MODES,
@@ -24,7 +25,7 @@ import {
 } from './govai-policy.js';
 import { resolvePointer, validateAgainstSchema, type JsonSchemaNode } from './json-schema-subset.js';
 import { HARNESS_CODEX_DIR } from './vendored-schema.js';
-import type { CodexCoveredClientMethod } from './wire.js';
+import { CODEX_COVERED_CLIENT_METHODS, type CodexCoveredClientMethod } from './wire.js';
 
 const CLIENT_REQUEST_SCHEMA: unknown = JSON.parse(
   readFileSync(join(HARNESS_CODEX_DIR, 'pin', 'vendor', 'json', 'ClientRequest.json'), 'utf8'),
@@ -311,5 +312,149 @@ describe('GovAICodexSafeRequestBuilder — what GovAI emits', () => {
     ];
     for (const r of emitted) expect(() => assertOutboundRequestAllowed(r.method, r.params)).not.toThrow();
     for (const r of emitted) expect(Object.isFrozen(r)).toBe(true);
+  });
+});
+
+function deeplyFrozen(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return true;
+  return Object.isFrozen(value) && Object.values(value).every(deeplyFrozen);
+}
+
+describe('enforceGovAICodexOutboundPolicy — THE outbound policy primitive (R1)', () => {
+  const samples: Record<CodexCoveredClientMethod, unknown> = {
+    initialize: B.initialize().params,
+    'thread/start': { ...GOVERNED },
+    'thread/resume': { ...GOVERNED, threadId: 't' },
+    'thread/read': { threadId: 't', includeTurns: true },
+    'thread/turns/list': { threadId: 't', limit: 3 },
+    'thread/items/list': { threadId: 't', turnId: 'u' },
+    'thread/fork': { ...GOVERNED, threadId: 't', lastTurnId: 'u' },
+    'turn/start': { threadId: 't', input: USER_TEXT },
+    'turn/steer': { threadId: 't', input: USER_TEXT, expectedTurnId: 'u' },
+    'turn/interrupt': { threadId: 't', turnId: 'u' },
+    'thread/archive': { threadId: 't' },
+    'thread/delete': { threadId: 't' },
+    'thread/unsubscribe': { threadId: 't' },
+  };
+
+  it('is total over the 13 covered methods: a valid request passes, a non-record never does', () => {
+    expect(CODEX_COVERED_CLIENT_METHODS).toHaveLength(13);
+    for (const method of CODEX_COVERED_CLIENT_METHODS) {
+      expect(schemaErrors(method, enforceGovAICodexOutboundPolicy(method, samples[method])), method).toEqual([]);
+      for (const bad of [undefined, null, 'x', 7, [samples[method]]]) {
+        expect(() => enforceGovAICodexOutboundPolicy(method, bad), `${method} ${String(bad)}`).toThrow();
+      }
+    }
+  });
+
+  it('refuses a method outside the covered set', () => {
+    expect(violation(() => enforceGovAICodexOutboundPolicy('not/a/method' as never, {}))).toMatchObject({
+      rule: 'method_not_covered',
+      method: 'not/a/method',
+    });
+  });
+
+  it('never accepts null for a params field; an own key holding undefined counts as absent', () => {
+    const nulls: [CodexCoveredClientMethod, Record<string, unknown>, string][] = [
+      ['thread/start', { ...GOVERNED, model: null }, 'invalid_field_value'],
+      ['thread/start', { ...GOVERNED, sandbox: null }, 'sandbox_mode_not_allowed'],
+      ['turn/start', { threadId: 't', input: USER_TEXT, approvalPolicy: null }, 'approval_policy_not_allowed'],
+      ['turn/start', { threadId: 't', input: USER_TEXT, sandboxPolicy: null }, 'sandbox_policy_not_allowed'],
+      ['thread/read', { threadId: 't', includeTurns: null }, 'invalid_field_value'],
+      ['thread/turns/list', { threadId: 't', limit: null }, 'invalid_field_value'],
+      ['thread/items/list', { threadId: 't', sortDirection: null }, 'invalid_field_value'],
+    ];
+    for (const [method, params, rule] of nulls) {
+      expect(violation(() => enforceGovAICodexOutboundPolicy(method, params)), JSON.stringify(params)).toMatchObject({ rule });
+    }
+    expect(enforceGovAICodexOutboundPolicy('thread/start', { ...GOVERNED, model: undefined })).toEqual({ ...GOVERNED });
+  });
+
+  it('is idempotent and byte-stable; the builder is a typed façade whose output it reproduces', () => {
+    const built = [
+      B.initialize(),
+      B.threadStart({ ...GOVERNED, cwd: '/tmp/w', model: 'm' }),
+      B.threadResume({ ...GOVERNED, threadId: 't' }),
+      B.threadRead({ threadId: 't', includeTurns: false }),
+      B.threadTurnsList({ threadId: 't', cursor: 'c', limit: 2, sortDirection: 'asc', itemsView: 'full' }),
+      B.threadItemsList({ threadId: 't', turnId: 'u', sortDirection: 'desc' }),
+      B.threadFork({ ...GOVERNED, threadId: 't', lastTurnId: 'u' }),
+      B.turnStart({
+        threadId: 't',
+        input: USER_TEXT,
+        sandboxPolicy: {
+          type: 'workspaceWrite',
+          writableRoots: ['/tmp/w'],
+          networkAccess: false,
+          excludeTmpdirEnvVar: true,
+          excludeSlashTmp: true,
+        },
+      }),
+      B.turnSteer({ threadId: 't', input: USER_TEXT, expectedTurnId: 'u' }),
+      B.turnInterrupt({ threadId: 't', turnId: 'u' }),
+      B.threadArchive({ threadId: 't' }),
+      B.threadDelete({ threadId: 't' }),
+      B.threadUnsubscribe({ threadId: 't' }),
+    ];
+    expect(built.map((r) => r.method)).toEqual([...CODEX_COVERED_CLIENT_METHODS]);
+    for (const r of built) {
+      const once = enforceGovAICodexOutboundPolicy(r.method, r.params);
+      const twice = enforceGovAICodexOutboundPolicy(r.method, once);
+      expect(once, r.method).toEqual(r.params);
+      expect(twice).toEqual(once);
+      expect(JSON.stringify(twice)).toBe(JSON.stringify(r.params));
+      expect(deeplyFrozen(r.params)).toBe(true);
+      expect(deeplyFrozen(once)).toBe(true);
+    }
+  });
+
+  it('returns an OWNED value: fresh containers, deep-frozen, detached from the caller', () => {
+    const caller = {
+      threadId: 't',
+      input: [{ type: 'text', text: 'hi', text_elements: [{ byteRange: { start: 0, end: 2 }, placeholder: null }] }],
+      sandboxPolicy: {
+        type: 'workspaceWrite',
+        writableRoots: ['/w'],
+        networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
+      },
+    };
+    const owned = enforceGovAICodexOutboundPolicy('turn/start', caller);
+    const ownedPolicy = owned.sandboxPolicy as { writableRoots: string[] };
+    expect(owned).not.toBe(caller);
+    expect(owned.input).not.toBe(caller.input);
+    expect(owned.input[0]).not.toBe(caller.input[0]);
+    expect(ownedPolicy).not.toBe(caller.sandboxPolicy);
+    expect(ownedPolicy.writableRoots).not.toBe(caller.sandboxPolicy.writableRoots);
+    caller.input[0]!.text = 'changed';
+    caller.input[0]!.text_elements[0]!.byteRange.end = 1;
+    caller.sandboxPolicy.writableRoots.push('/etc');
+    expect(owned).toEqual({
+      threadId: 't',
+      input: [{ type: 'text', text: 'hi', text_elements: [{ byteRange: { start: 0, end: 2 }, placeholder: null }] }],
+      sandboxPolicy: {
+        type: 'workspaceWrite',
+        writableRoots: ['/w'],
+        networkAccess: false,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
+      },
+    });
+    expect(deeplyFrozen(owned)).toBe(true);
+  });
+
+  it('reads each property once: a getter cannot make the validated and the returned value differ', () => {
+    let reads = 0;
+    const sandboxPolicy = {
+      type: 'readOnly',
+      get networkAccess(): unknown {
+        reads += 1;
+        return reads === 1 ? false : 'widened';
+      },
+    };
+    const owned = enforceGovAICodexOutboundPolicy('turn/start', { threadId: 't', input: USER_TEXT, sandboxPolicy });
+    expect(owned.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: false });
+    expect(reads).toBe(1);
   });
 });
