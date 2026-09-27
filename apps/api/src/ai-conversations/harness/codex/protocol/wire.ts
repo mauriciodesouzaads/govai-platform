@@ -28,6 +28,7 @@ import type { RequestId } from './generated/RequestId';
 import type { ServerRequest } from './generated/ServerRequest';
 import type { JsonValue } from './generated/serde_json/JsonValue';
 import type { CommandExecutionRequestApprovalResponse } from './generated/v2/CommandExecutionRequestApprovalResponse';
+import type { ExperimentalFeatureListResponse } from './generated/v2/ExperimentalFeatureListResponse';
 import type { FileChangeRequestApprovalResponse } from './generated/v2/FileChangeRequestApprovalResponse';
 import type { McpServerElicitationRequestResponse } from './generated/v2/McpServerElicitationRequestResponse';
 import type { ThreadArchiveResponse } from './generated/v2/ThreadArchiveResponse';
@@ -98,6 +99,7 @@ export const CODEX_COVERED_CLIENT_METHODS = [
   'thread/archive',
   'thread/delete',
   'thread/unsubscribe',
+  'experimentalFeature/list',
 ] as const;
 
 export type CodexCoveredClientMethod = (typeof CODEX_COVERED_CLIENT_METHODS)[number];
@@ -120,6 +122,7 @@ export type CodexCoveredClientResponses = {
   'thread/archive': ThreadArchiveResponse; // L570  response: v2::ThreadArchiveResponse
   'thread/delete': ThreadDeleteResponse; // L575  response: v2::ThreadDeleteResponse
   'thread/unsubscribe': ThreadUnsubscribeResponse; // L580  response: v2::ThreadUnsubscribeResponse
+  'experimentalFeature/list': ExperimentalFeatureListResponse; // L1094 response: v2::ExperimentalFeatureListResponse
 };
 
 // ---------------------------------------------------------------------------------------------------------

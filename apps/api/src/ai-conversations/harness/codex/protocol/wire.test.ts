@@ -97,6 +97,7 @@ describe('covered method maps — every entry is an arm of the pinned unions', (
       'thread/archive',
       'thread/delete',
       'thread/unsubscribe',
+      'experimentalFeature/list',
     ]);
     for (const m of CODEX_COVERED_CLIENT_METHODS) {
       expect(tsArms).toContain(m);
