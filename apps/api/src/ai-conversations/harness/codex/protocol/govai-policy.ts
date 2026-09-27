@@ -20,7 +20,7 @@
 // ★ FAIL CLOSED ON SHAPE. Only the listed keys are copied; an unexpected input key (a category (1) name
 //   included) is a `GovAICodexPolicyViolation`, never silently forwarded or dropped.
 // ★ ONE PRIMITIVE DECIDES. `enforceGovAICodexOutboundPolicy(method, params)` is the only place GovAI outbound policy
-//   is decided: total over the 13 covered methods, an exact-key ALLOWLIST per method (never a denylist), the
+//   is decided: total over the 14 covered methods, an exact-key ALLOWLIST per method (never a denylist), the
 //   experimental lockout kept inside it as defense in depth, and an OWNED, deep-frozen reconstruction as its
 //   return value. `CodexJsonRpcClient.request()` runs it unconditionally and serializes that return value; the
 //   builder below is a typed façade over it.
@@ -544,6 +544,16 @@ const GOVAI_CODEX_OUTBOUND_POLICY = {
     const r = new InputReader('thread/unsubscribe', params, ['threadId']);
     return { threadId: r.requiredString('threadId') };
   },
+
+  /**
+   * CONT-P5-E1 effective-feature attestation (Correction 08 section 12): the ONLY admitted params object is `{}`.
+   * `cursor` and `limit` are ABSENT (one page, `nextCursor` must come back null); `threadId` is PROHIBITED in E1
+   * (a loaded runtime is covered by its own admission record, cold paths use the no-thread context).
+   */
+  'experimentalFeature/list': (params: unknown) => {
+    new InputReader('experimentalFeature/list', params, []);
+    return {};
+  },
 } satisfies { readonly [M in CodexCoveredClientMethod]: (params: unknown) => CodexClientParams<M> };
 
 function ruleOf<M extends CodexCoveredClientMethod>(method: M): (params: unknown) => CodexClientParams<M> {
@@ -553,7 +563,7 @@ function ruleOf<M extends CodexCoveredClientMethod>(method: M): (params: unknown
 /**
  * THE GovAI outbound policy primitive — the only place it is decided, applied unconditionally by
  * `CodexJsonRpcClient.request()` to every request, whatever the client instance.
- *   · total over the 13 covered methods; any other method is refused (`method_not_covered`);
+ *   · total over the 14 covered methods; any other method is refused (`method_not_covered`);
  *   · the experimental lockout (categories (1)/(2), `experimentalApi`) runs INSIDE it first, as defense in depth,
  *     and again on the reconstruction;
  *   · then the method's exact-key ALLOWLIST: any other key is `unexpected_input_key`; a non-record is a violation;
@@ -645,5 +655,10 @@ export const GovAICodexSafeRequestBuilder = Object.freeze({
 
   threadUnsubscribe(input: GovAICodexThreadIdInput): GovAICodexOutboundRequest<'thread/unsubscribe'> {
     return finish('thread/unsubscribe', input);
+  },
+
+  /** The effective-feature attestation request: takes no input, because `{}` is the only admitted params object. */
+  experimentalFeatureList(): GovAICodexOutboundRequest<'experimentalFeature/list'> {
+    return finish('experimentalFeature/list', {});
   },
 });

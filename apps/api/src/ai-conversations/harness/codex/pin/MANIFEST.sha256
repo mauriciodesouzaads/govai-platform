@@ -1449,4 +1449,4 @@ e71b266b27eac10459bc10570fb304699cf6d96d754cf5e03379262bcfaac456  protocol/gener
 # src DERIVED VERBATIM_SOURCE_DERIVED (sources + anchors in the file's GOVAI-PROVENANCE header)
 b6497eab03e688c3a31881caf41714ae05706ea9d0d64cd60a0541bd96ff826b  protocol/method-names.ts
 # src DERIVED VERBATIM_SOURCE_DERIVED (sources + anchors in the file's GOVAI-PROVENANCE header)
-632a87de144fab91933dbb11757a58e5c3438ab04aad0b6ebb3c32f0e461629f  protocol/wire.ts
+c6630c178ef34ab4ed8d55ac26c070bcfa747a0b1858877a0da79cdd525e7577  protocol/wire.ts

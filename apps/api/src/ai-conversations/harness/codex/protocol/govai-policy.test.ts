@@ -251,6 +251,7 @@ describe('GovAICodexSafeRequestBuilder — what GovAI emits', () => {
       B.threadArchive({ threadId: 't' }),
       B.threadDelete({ threadId: 't' }),
       B.threadUnsubscribe({ threadId: 't' }),
+      B.experimentalFeatureList(),
     ];
     expect(requests.map((r) => r.method)).toEqual([
       'initialize',
@@ -266,6 +267,7 @@ describe('GovAICodexSafeRequestBuilder — what GovAI emits', () => {
       'thread/archive',
       'thread/delete',
       'thread/unsubscribe',
+      'experimentalFeature/list',
     ]);
     for (const r of requests) expect({ method: r.method, errors: schemaErrors(r.method, r.params) }).toEqual({ method: r.method, errors: [] });
   });
@@ -315,6 +317,42 @@ describe('GovAICodexSafeRequestBuilder — what GovAI emits', () => {
   });
 });
 
+describe('experimentalFeature/list — CONT-P5-E1 effective-feature attestation (exact {} params only)', () => {
+  it('builds exactly `{}`: no cursor, no limit, no threadId; the pinned schema and the lockout accept it', () => {
+    const req = B.experimentalFeatureList();
+    expect(req).toEqual({ method: 'experimentalFeature/list', params: {} });
+    expect(JSON.stringify(req.params)).toBe('{}');
+    expect(schemaErrors(req.method, req.params)).toEqual([]);
+    expect(() => assertOutboundRequestAllowed(req.method, req.params)).not.toThrow();
+    expect(deeplyFrozen(req)).toBe(true);
+    // No experimental inventory entry names the method or its params: it is a non-experimental covered method.
+    expect(CODEX_EXPERIMENTAL_INVENTORY.some((e) => e.wire === 'experimentalFeature/list' || e.requestMethods.includes('experimentalFeature/list'))).toBe(
+      false,
+    );
+  });
+
+  it('refuses cursor, limit and threadId — whatever the value, null and undefined included', () => {
+    for (const key of ['cursor', 'limit', 'threadId', 'anythingElse']) {
+      for (const value of ['c', 2, null, undefined, 'thr_1']) {
+        expect(violation(() => enforceGovAICodexOutboundPolicy('experimentalFeature/list', { [key]: value })), `${key}=${String(value)}`).toMatchObject({
+          rule: 'unexpected_input_key',
+          method: 'experimentalFeature/list',
+          field: key,
+        });
+      }
+    }
+    // The pinned wire WOULD accept them (the exclusion is GovAI policy, not a wire limit).
+    expect(schemaErrors('experimentalFeature/list', { cursor: 'c', limit: 2, threadId: 't' })).toEqual([]);
+  });
+
+  it('is idempotent and returns an owned, frozen `{}`', () => {
+    const once = enforceGovAICodexOutboundPolicy('experimentalFeature/list', {});
+    expect(once).toEqual({});
+    expect(Object.isFrozen(once)).toBe(true);
+    expect(enforceGovAICodexOutboundPolicy('experimentalFeature/list', once)).toEqual({});
+  });
+});
+
 function deeplyFrozen(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return true;
   return Object.isFrozen(value) && Object.values(value).every(deeplyFrozen);
@@ -335,10 +373,11 @@ describe('enforceGovAICodexOutboundPolicy — THE outbound policy primitive (R1)
     'thread/archive': { threadId: 't' },
     'thread/delete': { threadId: 't' },
     'thread/unsubscribe': { threadId: 't' },
+    'experimentalFeature/list': {},
   };
 
-  it('is total over the 13 covered methods: a valid request passes, a non-record never does', () => {
-    expect(CODEX_COVERED_CLIENT_METHODS).toHaveLength(13);
+  it('is total over the 14 covered methods: a valid request passes, a non-record never does', () => {
+    expect(CODEX_COVERED_CLIENT_METHODS).toHaveLength(14);
     for (const method of CODEX_COVERED_CLIENT_METHODS) {
       expect(schemaErrors(method, enforceGovAICodexOutboundPolicy(method, samples[method])), method).toEqual([]);
       for (const bad of [undefined, null, 'x', 7, [samples[method]]]) {
@@ -395,6 +434,7 @@ describe('enforceGovAICodexOutboundPolicy — THE outbound policy primitive (R1)
       B.threadArchive({ threadId: 't' }),
       B.threadDelete({ threadId: 't' }),
       B.threadUnsubscribe({ threadId: 't' }),
+      B.experimentalFeatureList(),
     ];
     expect(built.map((r) => r.method)).toEqual([...CODEX_COVERED_CLIENT_METHODS]);
     for (const r of built) {
